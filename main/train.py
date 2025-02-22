@@ -6,7 +6,7 @@ import argparse
 from PIL import Image
 
 import retro
-from stable_baselines3 import PPO, DQN
+from stable_baselines3 import PPO, DQN, MAGICS_AL
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import SubprocVecEnv
@@ -14,11 +14,44 @@ from stable_baselines3.common.vec_env import SubprocVecEnv
 from common.const import *
 from common.utils import linear_schedule, AnnealDenseCallback, AnnealAgressiveCallback
 from common.retro_wrappers import SFWrapper
+def adv_linear_schedule(initial_value: float):
+    """
+    Linear learning rate schedule.
 
+    :param initial_value: Initial learning rate.
+    :return: schedule that computes
+      current learning rate depending on remaining progress
+    """
+    def func(progress_remaining: float) -> float:
+        """
+        Progress will decrease from 1 (beginning) to 0.
+
+        :param progress_remaining:
+        :return: current learning rate
+        """
+        return progress_remaining * initial_value
+
+    return func
+def const_schedule(initial_value: float):
+    def func(progress_remaining: float) -> float:
+        return initial_value
+    return func
+def critic_decay_schedule(initial_value: float):
+    def func(curr_step: int) -> float:
+        return initial_value / curr_step
+    return func
+
+def actor_decay_schedule(initial_value: float):
+    def func(curr_step: int) -> float:
+        return initial_value / (curr_step ** (2/3))
+    return func
 
 def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, num_stack=12, num_step_frames=8, seed=0):
     def _init():
         players = 2
+        print(game)
+        print("\n")
+        print(state)
         env = retro.make(
             game=game, 
             state=state, 
@@ -152,6 +185,10 @@ def main():
         env = SubprocVecEnv([make_env(sf_game, state=state, side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, num_stack=args.num_stack, num_step_frames=args.num_step_frames, seed=i) for i, state in enumerate(states)] * (args.num_env // 8))
     else:
         env = SubprocVecEnv([make_env(sf_game, state=args.state, side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, num_stack=args.num_stack, num_step_frames=args.num_step_frames, seed=i) for i in range(args.num_env)])
+        '''env = make_env(sf_game, state=args.state, side=args.side, reset_type=args.reset,
+                                      rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo,
+                                      transform_action=args.transform_action, num_stack=args.num_stack,
+                                      num_step_frames=args.num_step_frames, seed=0)'''
 
     # Set linear schedule for learning rate
     # Start
@@ -180,7 +217,15 @@ def main():
         clip_range=clip_range_schedule,
         tensorboard_log=args.log_dir
     )
-    
+    '''model = MAGICS_AL("MLPAACCNNPolicy", dstb_action_space=env.action_space, ent_coef='auto',
+                      learning_starts=100000, env=env, verbose=2, v_learning_rate=5e-4, c_learning_rate=10e-4,
+                      d_learning_rate=50e-4, v_learning_rate_decay=critic_decay_schedule(5e-4),
+                      c_learning_rate_decay=critic_decay_schedule(10e-4),
+                      d_learning_rate_decay=critic_decay_schedule(50e-4),
+                      policy_kwargs={'net_arch': dict(pi=[64,64,64], qf=[64,64,64])},
+                      buffer_size=100000, batch_size=256, train_freq=32, gradient_steps=1000, gamma=0.9,
+                      tau=0.01, use_sde=False, use_stackelberg=True, device='auto', diag=True, use_ef=False, zofo=False, seed=0)
+    '''
     if (args.model_file):
         print("load model from " + args.model_file)
         model.set_parameters(args.model_file)
