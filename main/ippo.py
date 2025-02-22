@@ -14,13 +14,22 @@ from stable_baselines3.common.utils import get_schedule_fn
 from common.const import *
 from common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P
 from common.game import get_next_level
-from common.algorithms import IPPO
+from common.algorithms import IPPO, MAGICS_PPO, RARL_PPO, TSS_PPO
+from stable_baselines3 import MAGICS_AL
 from common.retro_wrappers import SFWrapper, Monitor2P
 
 
 STATE = "Champion.RyuVsRyu.2Player.align"
 
+def critic_decay_schedule(initial_value: float):
+    def func(curr_step: int) -> float:
+        return initial_value / curr_step
+    return func
 
+def actor_decay_schedule(initial_value: float):
+    def func(curr_step: int) -> float:
+        return initial_value / (curr_step ** (2/3))
+    return func
 def constructor(args, side, log_name=None, single_env=False):
     pass
 
@@ -139,7 +148,7 @@ def main():
                                  
     # Set up the environment and model
     def env_generator():
-        env = [make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=i) for i in range(args.num_env)]
+        env = [make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=0) for i in range(args.num_env)]
         return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
 
@@ -147,7 +156,7 @@ def main():
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6), other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6), clip_range_schedule=linear_schedule(0.075, 0.025)):
         finetune_env = env_generator()
-        finetune_model = IPPO(
+        '''finetune_model = IPPO(
             "CnnPolicy", 
             finetune_env,
             device="cuda", 
@@ -164,6 +173,35 @@ def main():
             update_right=bool(args.update_right),
             other_learning_rate=other_lr_schedule,
         )
+        '''
+        finetune_model = MAGICS_PPO(
+            "AACCnnPolicy",
+            finetune_env,
+            device="cpu",
+            verbose=1,
+            n_steps=512,
+            batch_size=128,  # 512,
+            n_epochs=100,
+            gamma=0.94,
+            v_learning_rate=5e-4, c_learning_rate=10e-4,
+            d_learning_rate=50e-4, v_learning_rate_decay=critic_decay_schedule(5e-4),
+            c_learning_rate_decay=critic_decay_schedule(10e-4),
+            d_learning_rate_decay=critic_decay_schedule(50e-4),
+            clip_range=clip_range_schedule,
+            tensorboard_log=args.log_dir,
+            seed=args.seed,
+            update_left=bool(args.update_left),
+            update_right=bool(args.update_right),
+        )
+        '''finetune_model = MAGICS_AL("MLPAACCNNPolicy", dstb_action_space=finetune_env.action_space, ent_coef='auto',
+                      learning_starts=100000, env=finetune_env, verbose=2, v_learning_rate=5e-4, c_learning_rate=10e-4,
+                      d_learning_rate=50e-4, v_learning_rate_decay=critic_decay_schedule(5e-4),
+                      c_learning_rate_decay=critic_decay_schedule(10e-4),
+                      d_learning_rate_decay=critic_decay_schedule(50e-4),
+                      policy_kwargs={'net_arch': dict(pi=[64,64,64], qf=[64,64,64])},
+                      buffer_size=100000, batch_size=256, train_freq=32, gradient_steps=1000, gamma=0.9,
+                      tau=0.01, use_sde=False, use_stackelberg=True, device='auto', diag=True, use_ef=False, zofo=False, seed=0)
+        '''
         if model_file:
             print("load model from " + model_file)
             if model_file.endswith(".pt"):

@@ -8,3 +8,5 @@ main/logs/
 main/videos/
 main/tmp/
 utils/figures/
+logs/*
+trained_models/*
