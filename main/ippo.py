@@ -10,11 +10,12 @@ import copy
 import retro
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.utils import get_schedule_fn
+from torch.backends.cudnn import deterministic
 
 from common.const import *
 from common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P
 from common.game import get_next_level
-from common.algorithms import IPPO, MAGICS_PPO, RARL_PPO, TSS_PPO
+from FightLadder.main.common.algorithms import IPPO, MAGICS_PPO, RARL_PPO, TSS_PPO
 from stable_baselines3 import MAGICS_AL
 from common.retro_wrappers import SFWrapper, Monitor2P
 
@@ -52,7 +53,7 @@ def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=N
 
 
 @torch.no_grad()
-def evaluate(args, model, greedy=0.99, record=True):
+def evaluate(args, model, greedy=0, record=True):
     win_cnt = 0
     
     for i in range(1, args.num_episodes + 1):
@@ -107,11 +108,70 @@ def evaluate(args, model, greedy=0.99, record=True):
     return win_rate
 
 
+@torch.no_grad()
+def evaluate_cross(args, model1, model2, greedy=0.5, record=True):
+    win_cnt = 0
+
+    for i in range(1, args.num_episodes + 1):
+        env = make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render,
+                       enable_combo=args.enable_combo, null_combo=args.null_combo,
+                       transform_action=args.transform_action, seed=None)().env
+
+        done = False
+
+        obs = env.reset()
+        if record:
+            video_log = [Image.fromarray(env.render(mode="rgb_array"))]
+
+        while not done:
+            #if np.random.uniform() > greedy:
+            (action, _states), (action_other, _states_other) = model1.predict(obs, deterministic=False)
+            (_, _), (action_other, _states_other) = model2.predict(obs, deterministic=False)
+            #else:
+            #    (action, _states), (action_other, _states_other) = model1.predict(obs, deterministic=True)
+            #    (_, _), (action_other, _states_other) = model2.predict(obs, deterministic=False)
+
+            obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
+            if record:
+                video_log.append(Image.fromarray(env.render(mode="rgb_array")))
+            # print(info)
+            # if done:
+            #     video_log[-1].save(f"{args.video_dir}/episode_{i}.png")
+
+            if done:
+                if record:
+                    height, width, layers = np.array(video_log[0]).shape
+                    container = av.open(f"{args.video_dir}/episode_{i}.mp4", mode='w')
+                    stream = container.add_stream('h264', rate=10)
+                    stream.width = width
+                    stream.height = height
+                    stream.pix_fmt = 'yuv420p'
+                    for img in video_log:
+                        frame = av.VideoFrame.from_image(img)
+                        for packet in stream.encode(frame):
+                            container.mux(packet)
+                    remain_packets = stream.encode(None)
+                    container.mux(remain_packets)
+                    container.close()
+
+        if info['enemy_hp'] < info['agent_hp']:
+            print("Victory!")
+            win_cnt += 1
+
+        # print("Total reward: {}\n".format(total_reward))
+        # episode_reward_sum += total_reward
+
+        env.close()
+
+    win_rate = win_cnt / args.num_episodes
+    print("Winning rate: {}".format(win_rate))
+    return win_rate
+
 def main():
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'], help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
-    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models")
+    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/magics_ws_tss")
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
     parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_ryu")
     parser.add_argument('--state', help='The state file to load. By default Champion.Level1.RyuVsGuile', default=SF_DEFAULT_STATE)
@@ -156,14 +216,14 @@ def main():
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6), other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6), clip_range_schedule=linear_schedule(0.075, 0.025)):
         finetune_env = env_generator()
-        '''finetune_model = IPPO(
+        finetune_model = IPPO(
             "CnnPolicy", 
             finetune_env,
             device="cuda", 
             verbose=1,
-            n_steps=512,
-            batch_size=1024, # 512,
-            n_epochs=4,
+            n_steps=64,
+            batch_size=32, # 512,
+            n_epochs=100,
             gamma=0.94,
             learning_rate=lr_schedule,
             clip_range=clip_range_schedule,
@@ -173,31 +233,35 @@ def main():
             update_right=bool(args.update_right),
             other_learning_rate=other_lr_schedule,
         )
-        '''
-        finetune_model = MAGICS_PPO(
+
+        finetune_model = TSS_PPO(
             "AACCnnPolicy",
             finetune_env,
-            device="cpu",
-            verbose=1,
-            n_steps=512,
-            batch_size=128,  # 512,
-            n_epochs=100,
+            device="cuda",
+            verbose=2,
+            n_steps=32,
+            batch_size=16,  # 512,
+            n_epochs=50,
             gamma=0.94,
-            v_learning_rate=5e-4, c_learning_rate=10e-4,
-            d_learning_rate=50e-4, v_learning_rate_decay=critic_decay_schedule(5e-4),
-            c_learning_rate_decay=critic_decay_schedule(10e-4),
-            d_learning_rate_decay=critic_decay_schedule(50e-4),
+            v_learning_rate=1e-3, c_learning_rate=1e-4,
+            d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            c_learning_rate_decay=critic_decay_schedule(1e-4),
+            d_learning_rate_decay=critic_decay_schedule(5e-4),
             clip_range=clip_range_schedule,
             tensorboard_log=args.log_dir,
             seed=args.seed,
+            ent_coef=.001,
+            dstb_ent_coef=.001,
             update_left=bool(args.update_left),
             update_right=bool(args.update_right),
         )
-        '''finetune_model = MAGICS_AL("MLPAACCNNPolicy", dstb_action_space=finetune_env.action_space, ent_coef='auto',
+
+        '''
+        finetune_model = MAGICS_AL("MLPAACCNNPolicy", dstb_action_space=finetune_env.action_space, ent_coef='auto',
                       learning_starts=100000, env=finetune_env, verbose=2, v_learning_rate=5e-4, c_learning_rate=10e-4,
                       d_learning_rate=50e-4, v_learning_rate_decay=critic_decay_schedule(5e-4),
                       c_learning_rate_decay=critic_decay_schedule(10e-4),
-                      d_learning_rate_decay=critic_decay_schedule(50e-4),
+                      d_learning_rate_decay=critic_decay_schedule(50e-4), 
                       policy_kwargs={'net_arch': dict(pi=[64,64,64], qf=[64,64,64])},
                       buffer_size=100000, batch_size=256, train_freq=32, gradient_steps=1000, gamma=0.9,
                       tau=0.01, use_sde=False, use_stackelberg=True, device='auto', diag=True, use_ef=False, zofo=False, seed=0)
@@ -218,11 +282,33 @@ def main():
     if args.left_model_file and args.right_model_file:
         print("load model from " + args.left_model_file + " and " + args.right_model_file)
         model.set_parameters_2p(args.left_model_file, args.right_model_file)
-    model.save(os.path.join(args.save_dir, args.model_name_prefix + f"_0_steps"))
-    
-    results = evaluate(args, model, record=True)
+    #model.save(os.path.join(args.save_dir, args.model_name_prefix + f"_0_steps"))
+
+    tss = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/tss_entropy/ppo_ryu_final_steps.zip', env=env_generator())
+    tss.warmstarted_cont_MAGICS = True
+    model = tss
+    '''
+    #rarl = RARL_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/rarl_test1/ppo_ryu_final_steps.zip', env=env_generator())
+    ippo = IPPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/ippo_test1_comp/ppo_ryu_final_steps.zip', env=env_generator())
+    args.video_dir = 'videos/tss_rarl_match'
+    tss_rarl_results = evaluate_cross(args, tss, ippo, record=True)
+    print(tss_rarl_results)
+    args.video_dir = 'videos/rarl_tss_match'
+    rarl_tss_results = evaluate_cross(args, ippo, tss, record=True)
+    print(rarl_tss_results)
+    #assert True == False
+    args.video_dir = 'videos/tss_tss_match'
+    tss_results = evaluate(args, tss, record=True)
+    args.video_dir = 'videos/rarl_rarl_match'
+    rarl_results = evaluate(args, ippo, record=True)
     print(results)
+    '''
+    '''
+    ippo = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/tss_entropy/ppo_ryu_final_steps.zip', env=env_generator())
+    args.video_dir = 'videos/tss_ppo_entropy_vid_dir'
+    results = evaluate(args, ippo, record=True)
     # assert False
+    '''
 
     checkpoint_callback = CheckpointCallback(save_freq=checkpoint_interval, save_path=args.save_dir, name_prefix=f"{args.model_name_prefix}")
     if args.async_update:
@@ -233,7 +319,7 @@ def main():
             fsp_threshold=args.fsp_threshold,
         )
     else:
-        model.learn( 
+        model.learn(
             total_timesteps=args.total_steps*args.other_timescale,
             callback=[checkpoint_callback]
         )
