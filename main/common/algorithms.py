@@ -106,7 +106,7 @@ class IPPO(PPO):
         self.update_left = update_left
         self.update_right = update_right
         self.other_learning_rate = other_learning_rate
-
+        self.adversarial = False
         if _init_setup_model:
             self._setup_model()
 
@@ -335,8 +335,8 @@ class IPPO(PPO):
 
             # Rescale and perform action
             clipped_actions = np.hstack([actions, actions_other])
-            print(clipped_actions, flush=True)
-            print(np.shape(clipped_actions),flush=True)
+            #print(clipped_actions, flush=True)
+            #print(np.shape(clipped_actions),flush=True)
             # Clip the actions to avoid out of bound error
             if isinstance(self.action_space, spaces.Box):
                 clipped_actions = np.clip(np.hstack([actions, actions_other]), self.action_space.low, self.action_space.high)
@@ -1434,7 +1434,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
         # Update optimizer learning rate
-        self._update_learning_rate(self.policy.optimizer)
+        self._update_learning_rate([self.policy.ctrl_optimizer, self.policy.dstb_optimizer,self.policy.value_optimizer])
         # Compute current clip range
         clip_range = self.clip_range(self._current_progress_remaining)
         # Optional: clip range for the value function
@@ -1901,249 +1901,6 @@ class MAGICS_PPO(OnPolicyAlgorithm):
         return unbatched
 
 
-    def train_loop(self, rollout_data, clip_range, pg_losses, clip_fractions, clip_range_vf,value_losses,buf, entropy_losses,approx_kl_divs):
-        # torch.autograd.set_detect_anomaly(True)
-        self.normalize_advantage = False
-        # torch.autograd.set_detect_anomaly(True)
-        actions = torch.from_numpy(rollout_data.actions).to(self.device)
-        dstb_actions = torch.from_numpy(rollout_data.dstb_actions).to(self.device)
-        if isinstance(self.action_space, spaces.Discrete):
-            # Convert discrete action from float to long
-            actions = rollout_data.actions.long().flatten()
-
-        # Re-sample the noise matrix because the log_std has changed
-        if self.use_sde:
-            self.policy.reset_noise(self.batch_size)
-        # traj_ids = self.rollout_buffer.env_indices[self.rollout_buffer.indices[0:self.batch_size]].squeeze()
-        # x0_states = self.rollout_buffer.X0_VALUES_MASTER[traj_ids]
-        # x0_returns = buf.X0_RETURNS_MASTER[traj_ids]
-        # x0_values, _, _, _, _ = self.policy.evaluate_actions(torch.Tensor(x0_states).to(self.device),
-        #                                                     torch.Tensor(actions[0]).to(self.device),
-        #                                                     torch.Tensor(dstb_actions[0]).to(self.device))
-        values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
-            torch.from_numpy(rollout_data.observations).to(self.device), actions, dstb_actions)
-        # _,test = self.estimators(rollout_data.advantages, ctrl_log_prob, dstb_log_prob, x0_values.squeeze(), torch.Tensor(x0_returns).to(self.device))
-        # d1f2_dstb_batched = autograd.grad(test, self.policy.value_optimizer.param_groups[0]['params'],
-        #                                  create_graph=True, retain_graph=True)
-        # d1f2_dstb = torch.hstack([u.flatten() for u in d1f2_dstb_batched])
-        # autograd.grad(d1f2_dstb[0], self.policy.dstb_optimizer.param_groups[0]['params'])
-        values = values.flatten()
-        # Normalize advantage
-        advantages = rollout_data.advantages
-        # Normalization does not make sense if mini batchsize == 1, see GH issue #325
-        if self.normalize_advantage and len(advantages) > 1:
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
-        # ratio between old and new policy, should be one at the first iteration
-        ratio = th.exp(ctrl_log_prob - torch.Tensor(rollout_data.old_log_prob).to(self.device))
-        dstb_ratio = th.exp(dstb_log_prob - torch.Tensor(rollout_data.old_dstb_log_prob).to(self.device))
-
-        # clipped surrogate loss
-        policy_loss_1 = advantages * ratio
-        policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
-        policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
-        dstb_policy_loss_1 = advantages * dstb_ratio
-        dstb_policy_loss_2 = advantages * th.clamp(dstb_ratio, 1 - clip_range, 1 + clip_range)
-        dstb_policy_loss = th.min(dstb_policy_loss_1, dstb_policy_loss_2).mean()
-        # Logging
-        pg_losses.append(policy_loss.item())
-        clip_fraction = th.mean((th.abs(ratio - 1) > clip_range).float()).item()
-        clip_fractions.append(clip_fraction)
-
-        if self.clip_range_vf is None:
-            # No clipping
-            values_pred = values
-        else:
-            # Clip the difference between old and new value
-            # NOTE: this depends on the reward scaling
-            values_pred = rollout_data.old_values + th.clamp(
-                values - rollout_data.old_values, -clip_range_vf, clip_range_vf
-            )
-        # Value loss using the TD(gae_lambda) target
-        value_loss = F.mse_loss(torch.Tensor(rollout_data.returns).to(self.device), values_pred.flatten())
-        value_losses.append(value_loss.item())
-        L_ctrl_grad_batched = autograd.grad(value_loss, self.policy.value_optimizer.param_groups[0]['params'],
-                                            create_graph=True, retain_graph=True)
-        L_ctrl_grad = torch.cat([t.flatten() for t in L_ctrl_grad_batched], dim=0)
-        # L_ctrl_grad = torch.hstack([t.flatten() for t in L_ctrl_grad_batched])
-        k = 30
-        n = sum(p.numel() for p in self.policy.value_optimizer.param_groups[0]['params'])
-
-        rademacher = torch.bernoulli(torch.from_numpy(np.ones((n, k)) * .5)).to(self.device)
-        rademacher[rademacher == 0] = -1
-        # grad_batched = autograd.grad(L_ctrl_grad, flat_params, rademacher,0,1, is_grads_batched=True)
-        grad_batched = autograd.grad(L_ctrl_grad, self.policy.value_optimizer.param_groups[0]['params'],
-                                     torch.transpose(rademacher.to(self.device), 0, 1),
-                                     is_grads_batched=True,
-                                     retain_graph=False, create_graph=False)
-
-        reshaped_grads = self.matrix_unbatch(grad_batched, k, size2=n).T
-        reshaped_grads = reshaped_grads * rademacher
-        L_ctrl_hessian = torch.mean(reshaped_grads, dim=1)
-        L_ctrl_hessian = L_ctrl_hessian + 5
-
-        d2f1_ctrl_batched = autograd.grad(policy_loss, self.policy.value_optimizer.param_groups[0]['params'],
-                                          create_graph=True, retain_graph=True)
-        d2f1_dstb_batched = autograd.grad(dstb_policy_loss, self.policy.value_optimizer.param_groups[0]['params'],
-                                          create_graph=True, retain_graph=True)
-        d2f1_ctrl = torch.hstack([t.flatten() for t in d2f1_ctrl_batched])
-
-        d2f1_dstb = torch.hstack([t.flatten() for t in d2f1_dstb_batched])
-        # d2f1_ctrl = torch.rand(d2f1_dstb.shape).to(self.device)
-
-        # diag, no other option
-        iHvp_ctrl = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_ctrl)
-        iHvp_dstb = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_dstb)
-        traj_ids = self.rollout_buffer.env_indices[self.rollout_buffer.indices[0:self.batch_size]].squeeze()
-        x0_states = self.rollout_buffer.X0_VALUES_MASTER[traj_ids]
-        x0_returns = buf.X0_RETURNS_MASTER[traj_ids]
-        x0_values, _, _, _, _ = self.policy.evaluate_actions(torch.Tensor(x0_states).to(self.device),
-                                                             torch.Tensor(actions[0]).to(self.device),
-                                                             torch.Tensor(dstb_actions[0]).to(self.device))
-
-        # clipped surrogate loss
-
-        '''policy_loss_1 = advantages * ratio
-        policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
-        policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()'''
-        # autograd.grad(L_ctrl_grad, self.policy.ctrl_optimizer.param_groups[0]['params'], iHvp_ctrl, is_grads_batched=False, create_graph=True, retain_graph=True)
-
-        # surr_L_ctrl = self.prep_grad_theta_L(advantages, ctrl_log_prob, x0_values.squeeze(), torch.tensor(x0_returns).to(self.device))
-        '''values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
-            torch.Tensor(rollout_data.observations).to(self.device), torch.Tensor(actions).to(self.device),
-            torch.Tensor(dstb_actions).to(self.device))
-        x0_values, _, _, _, _ = self.policy.evaluate_actions(torch.Tensor(x0_states).to(self.device),
-                                                             torch.Tensor(actions[0]).to(self.device),
-                                                             torch.Tensor(dstb_actions[0]).to(self.device))
-        '''
-        # surr_L_dstb = self.prep_grad_psi_L(advantages, dstb_log_prob, x0_values.squeeze(), torch.tensor(x0_returns).to(self.device))
-        # d1f2_ctrl_batched = autograd.grad(surr_L, self.policy.ctrl_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True)
-        surr_L_ctrl, surr_L_dstb = self.estimators(advantages, ctrl_log_prob, dstb_log_prob, x0_values.squeeze(),
-                                                   torch.Tensor(x0_returns).to(self.device))
-        d1f2_ctrl_batched = autograd.grad(surr_L_ctrl, self.policy.value_optimizer.param_groups[0]['params'],
-                                          create_graph=True, retain_graph=True)
-        d1f2_ctrl = torch.hstack([t.flatten() for t in d1f2_ctrl_batched])
-        d1f2_dstb_batched = autograd.grad(surr_L_dstb, self.policy.value_optimizer.param_groups[0]['params'],
-                                          create_graph=True, retain_graph=True)
-        d1f2_dstb = torch.hstack([u.flatten() for u in d1f2_dstb_batched])
-        # d1f2_dstb = d1f2_dstb.dot(dstb_log_prob)
-        # ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.value_optimizer.param_groups[0]['params'], torch.eye(d1f2_ctrl.shape[0], device=self.device), is_grads_batched=True, create_graph=True, retain_graph=True)
-        ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.ctrl_optimizer.param_groups[0]['params'], iHvp_ctrl,
-                                 is_grads_batched=False, create_graph=True, retain_graph=True)
-        dstb_imp = autograd.grad(d1f2_dstb, self.policy.dstb_optimizer.param_groups[0]['params'], iHvp_dstb,
-                                 is_grads_batched=False, create_graph=True, retain_graph=True)
-
-        # Entropy loss favor exploration
-        if ctrl_entropy is None:
-            # Approximate entropy when no analytical form
-            ctrl_entropy_loss = -th.mean(-ctrl_log_prob)
-            dstb_entropy_loss = -th.mean(-dstb_log_prob)
-        else:
-            ctrl_entropy_loss = -th.mean(ctrl_entropy)
-            dstb_entropy_loss = -th.mean(dstb_entropy)
-
-        entropy_losses.append(ctrl_entropy_loss.item())
-        policy_loss_1 = advantages * ratio
-        policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
-        policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
-        ctrl_loss = policy_loss + self.ent_coef * ctrl_entropy_loss
-        dstb_loss = dstb_policy_loss + self.dstb_ent_coef * dstb_entropy_loss
-
-        # Calculate approximate form of reverse KL Divergence for early stopping
-        # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
-        # and discussion in PR #419: https://github.com/DLR-RM/stable-baselines3/pull/419
-        # and Schulman blog: http://joschu.net/blog/kl-approx.html
-        with th.no_grad():
-            log_ratio = ctrl_log_prob.detach().cpu() - rollout_data.old_log_prob
-            approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
-            approx_kl_divs.append(approx_kl_div)
-
-        if self.target_kl is not None and approx_kl_div > 1.5 * self.target_kl:
-            continue_training = False
-            if self.verbose >= 1:
-                print("")
-                #print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
-            return
-
-        # Optimization step
-        self.policy.ctrl_optimizer.zero_grad()
-        ctrl_loss.backward(retain_graph=True)
-        # ctrl_partials = autograd.grad(ctrl_loss, self.policy.ctrl_optimizer.param_groups[0]['params'])
-        for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params'])):
-            self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad = \
-            self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad - ctrl_imp[i]
-        th.nn.utils.clip_grad_norm_(self.policy.ctrl_optimizer.param_groups[0]['params'], self.max_grad_norm)
-        self.policy.ctrl_optimizer.step()
-
-        self.policy.dstb_optimizer.zero_grad()
-        # dstb_partials = autograd.grad(dstb_loss, self.policy.dstb_optimizer.param_groups[0]['params'])
-        dstb_loss.backward(retain_graph=True)
-        for i in range(len(self.policy.dstb_optimizer.param_groups[0]['params'])):
-            self.policy.dstb_optimizer.param_groups[0]['params'][i].grad = \
-            self.policy.dstb_optimizer.param_groups[0]['params'][i].grad - dstb_imp[i]
-        th.nn.utils.clip_grad_norm_(self.policy.dstb_optimizer.param_groups[0]['params'], self.max_grad_norm)
-        self.policy.dstb_optimizer.step()
-        values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
-            torch.from_numpy(rollout_data.observations).to(self.device), actions, dstb_actions)
-        values_pred = values.flatten()
-        value_loss = F.mse_loss(torch.Tensor(rollout_data.returns).to(self.device), values_pred)
-        critic_loss = self.vf_coef * value_loss
-        self.policy.value_optimizer.zero_grad()
-        '''
-        critic_partials = autograd.grad(critic_loss, self.policy.value_optimizer.param_groups[0]['params'])
-        for i in range(len(self.policy.value_optimizer.param_groups[0]['params'])):
-            self.policy.value_optimizer.param_groups[0]['params'][i].grad = critic_partials[i]'''
-        critic_loss.backward(retain_graph=True)
-
-        # loss.backward()
-        # Clip grad norm
-        th.nn.utils.clip_grad_norm_(self.policy.value_optimizer.param_groups[0]['params'], self.max_grad_norm)
-        self.policy.value_optimizer.step()
-        '''
-        with torch.no_grad():
-            for i in range(len(self.policy.value_optimizer.param_groups[0]['params'])):
-                self.policy.value_optimizer.param_groups[0]['params'][i] = torch.tensor(self.policy.value_optimizer.param_groups[0]['params'][i].data, requires_grad=True)
-            for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params'])):
-                self.policy.ctrl_optimizer.param_groups[0]['params'][i] = torch.tensor(self.policy.ctrl_optimizer.param_groups[0]['params'][i].data, requires_grad=True)
-            for i in range(len(self.policy.dstb_optimizer.param_groups[0]['params'])):
-                self.policy.dstb_optimizer.param_groups[0]['params'][i] = torch.tensor(self.policy.dstb_optimizer.param_groups[0]['params'][i].data, requires_grad=True)
-
-            """self.ctrl_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.policy_net.parameters(), self.action_net.parameters()), joint_schedule[1](1),maximize=False)
-self.dstb_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.dstb_net.parameters(), self.dstb_action_net.parameters()), joint_schedule[2](1), maximize=False)
-self.value_optimizer = self.optimizer_class(
-    itertools.chain(self.mlp_extractor.value_net.parameters(), self.value_net.parameters()),
-    joint_schedule[0](1), **self.optimizer_kwargs)"""
-            evens = 0
-            for i in range(len(self.policy.mlp_extractor.value_net)):
-                if i % 2 == 1:
-                    evens = evens + 2
-                    continue
-                self.policy.mlp_extractor.value_net[evens].weight.data = self.policy.value_optimizer.param_groups[0]['params'][evens].data
-                self.policy.mlp_extractor.value_net[evens].bias.data = self.policy.value_optimizer.param_groups[0]['params'][evens + 1].data
-            #evens = 0
-            self.policy.value_net.bias.data = self.policy.value_optimizer.param_groups[0]['params'][-1].data
-            self.policy.value_net.weight.data = self.policy.value_optimizer.param_groups[0]['params'][-2].data
-        '''
-
-        del policy_loss
-        del dstb_policy_loss
-        del d2f1_ctrl_batched
-        del d2f1_dstb_batched
-        del policy_loss_1
-        del policy_loss_2
-        del dstb_policy_loss_1
-        del dstb_policy_loss_2
-        del L_ctrl_grad_batched
-        del L_ctrl_grad
-        del d2f1_ctrl
-        del d2f1_dstb
-        del d1f2_ctrl_batched
-        del d1f2_dstb_batched
-        del d1f2_ctrl
-        del advantages
-        del values
-
-
 class RARL_PPO(MAGICS_PPO):
     policy_aliases: Dict[str, Type[BasePolicy]] = {
         "MlpPolicy": ActorCriticPolicy,
@@ -2230,9 +1987,17 @@ class RARL_PPO(MAGICS_PPO):
         """
         Update policy using the currently gathered rollout buffer.
         """
-
+        # set flags once and for all
+        self.update_lr_ctrl = self.update_ctrl
+        self.update_lr_critic = False
+        self.update_lr_dstb = self.update_dstb
+        # modify flags after lr update is done
         self._update_learning_rate(self.policy.ctrl_optimizer) if self.update_ctrl is True else self._update_learning_rate(self.policy.dstb_optimizer)
+        self.update_lr_ctrl = False
+        self.update_lr_dstb = False
+        self.update_lr_critic = True
         self._update_learning_rate(self.policy.value_optimizer)
+        self.update_lr_critic = False
         # Compute current clip range
         clip_range = self.clip_range(self._current_progress_remaining)
         # Optional: clip range for the value function
@@ -2263,7 +2028,7 @@ class RARL_PPO(MAGICS_PPO):
                 values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
                 values = values.flatten()
                 # Normalize advantage
-                advantages = rollout_data.advantages
+                advantages = torch.from_numpy(rollout_data.advantages).to(self.device)
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
                 if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
@@ -2323,10 +2088,10 @@ class RARL_PPO(MAGICS_PPO):
                 # and Schulman blog: http://joschu.net/blog/kl-approx.html
                 with th.no_grad():
                     if self.update_ctrl is True:
-                        log_ratio = ctrl_log_prob - rollout_data.old_log_prob
+                        log_ratio = ctrl_log_prob - torch.from_numpy(rollout_data.old_log_prob).to(self.device)
                         approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
                     else:
-                        log_ratio = dstb_log_prob - rollout_data.old_dstb_log_prob
+                        log_ratio = dstb_log_prob - torch.from_numpy(rollout_data.old_dstb_log_prob).to(self.device)
                         approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
                     approx_kl_divs.append(approx_kl_div)
 
@@ -2372,6 +2137,7 @@ class RARL_PPO(MAGICS_PPO):
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
         self.update_ctrl = not self.update_ctrl
+        self.update_dstb = not self.update_ctrl
 
 class TSS_PPO(MAGICS_PPO):
     policy_aliases: Dict[str, Type[BasePolicy]] = {
@@ -2413,7 +2179,8 @@ class TSS_PPO(MAGICS_PPO):
                  _init_setup_model: bool = True,
                  update_left=True,
                  update_right=True,
-                 dstb_action_space=None
+                 dstb_action_space=None,
+                 warmstarted_cont_MAGICS=False
                  ):
         super().__init__(
             policy,
@@ -2449,11 +2216,18 @@ class TSS_PPO(MAGICS_PPO):
             update_right=update_right,
             dstb_action_space=dstb_action_space,
         )
+        self.warmstarted_cont_MAGICS=warmstarted_cont_MAGICS
+        if self.warmstarted_cont_MAGICS is True:
+            print("this model is warmstarted! now running magics_ppo training", flush=True)
 
     def train(self):
         """
         Update policy using the currently gathered rollout buffer.
         """
+        if self.warmstarted_cont_MAGICS is True:
+            if self.warmstarted_cont_MAGICS is True:
+                print("this model is warmstarted! now running magics_ppo training", flush=True)
+            return super().train()
 
         self._update_learning_rate([self.policy.ctrl_optimizer, self.policy.dstb_optimizer,self.policy.value_optimizer])
         # Compute current clip range
@@ -2540,9 +2314,9 @@ class TSS_PPO(MAGICS_PPO):
                 # and discussion in PR #419: https://github.com/DLR-RM/stable-baselines3/pull/419
                 # and Schulman blog: http://joschu.net/blog/kl-approx.html
                 with th.no_grad():
-                    ctrl_log_ratio = ctrl_log_prob - rollout_data.old_log_prob
+                    ctrl_log_ratio = ctrl_log_prob - torch.from_numpy(rollout_data.old_log_prob).to(self.device)
                     ctrl_approx_kl_div = th.mean((th.exp(ctrl_log_ratio) - 1) - ctrl_log_ratio).cpu().numpy()
-                    dstb_log_ratio = dstb_log_prob - rollout_data.old_dstb_log_prob
+                    dstb_log_ratio = dstb_log_prob - torch.from_numpy(rollout_data.old_dstb_log_prob).to(self.device)
                     dstb_approx_kl_div = th.mean((th.exp(dstb_log_ratio) - 1) - dstb_log_ratio).cpu().numpy()
                     approx_kl_divs.append(ctrl_approx_kl_div)
 
