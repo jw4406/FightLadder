@@ -1455,6 +1455,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
         # train for n_epochs epochs
 
         #self.rollout_buffer.advantages = buf.advantages
+
         buf = deepcopy(self.rollout_buffer)
         buf.values = torch.from_numpy(self.rollout_buffer.values).to(self.device)
         buf.rewards = torch.from_numpy(buf.rewards).to(self.device)
@@ -1468,6 +1469,41 @@ class MAGICS_PPO(OnPolicyAlgorithm):
         rollout_advantages_copy = deepcopy(self.rollout_buffer.advantages)
         #buf.compute_returns_and_advantage_pt_test(last_values, torch.Tensor(buf.dones[-1]).to(self.device))
         self.rollout_buffer.advantages = buf.advantages
+        '''
+        buf = deepcopy(self.rollout_buffer)
+        buf.rewards = torch.from_numpy(buf.rewards).to(self.device)
+        buf.episode_starts = torch.from_numpy(buf.episode_starts).to(self.device)
+        advantage_test = []
+        _, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
+        last_values = vf.flatten()
+        last_gae_lam = th.zeros_like(last_values)
+        dones = torch.Tensor(buf.dones[-1]).to(self.device)
+        for step in reversed(range(buf.buffer_size)):
+            # _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
+            if step == buf.buffer_size - 1:
+                next_non_terminal = 1.0 - dones.float()
+                next_values = last_values
+            else:
+                next_non_terminal = 1.0 - buf.episode_starts[step + 1].float()
+                _, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[step + 1]).to(self.device))
+                next_values = vf.flatten()
+            _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
+
+            delta = buf.rewards[step] + buf.gamma * next_values * next_non_terminal - value_query.squeeze()
+            last_gae_lam = delta + buf.gamma * buf.gae_lambda * next_non_terminal * last_gae_lam
+            advantage_test.append(last_gae_lam)
+            # buf.advantages[step] = last_gae_lam
+        advantages = torch.stack(advantage_test, dim=0)
+        # buf.returns = buf.advantages + buf.values
+        print("")
+        self.rollout_buffer.advantages = advantages
+        '''
+        # TEST - DO NOT COMMIT
+
+        # buf.compute_returns_and_advantage_pt(values, torch.Tensor(buf.dones[-1]).to(self.device))
+        # self.rollout_buffer.advantages = torch.zeros_like(self.rollout_buffer.advantages)
+        # self.rollout_buffer.flat_advantages = buf.swap_and_flatten(buf.advantages)
+        #self.rollout_buffer.advantages = self.rollout_buffer.swap_and_flatten_pt(advantages)
         #self.rollout_buffer.flat_advantages =
         env_indices = np.random.permutation(self.rollout_buffer.buffer_size * self.n_envs)
         #buffer = self.rollout_buffer.flatten()
@@ -1804,6 +1840,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 #_, _, last_values, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
                 
                 #TEST - DO NOT COMMIT
+
                 advantage_test = []
                 _, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
                 last_values = vf.flatten()

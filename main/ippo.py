@@ -9,6 +9,7 @@ import copy
 
 import retro
 from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.buffers import AdvRolloutBuffer
 from stable_baselines3.common.utils import get_schedule_fn
 from torch.backends.cudnn import deterministic
 
@@ -21,7 +22,10 @@ from common.retro_wrappers import SFWrapper, Monitor2P
 
 
 STATE = "Champion.RyuVsRyu.2Player.align"
-
+def const_schedule(initial_value: float):
+    def func(progress_remaining: float) -> float:
+        return initial_value
+    return func
 def critic_decay_schedule(initial_value: float):
     def func(curr_step: int) -> float:
         return initial_value / curr_step
@@ -180,7 +184,7 @@ def main():
     parser.add_argument('--num-env', type=int, help='How many envirorments to create', default=64)
     parser.add_argument('--num-episodes', type=int, help='In evaluation, play how many episodes', default=20)
     parser.add_argument('--num-epoch', type=int, help='Finetune how many epochs', default=50)
-    parser.add_argument('--total-steps', type=int, help='How many total steps to train', default=int(1e7))
+    parser.add_argument('--total-steps', type=int, help='How many total steps to train', default=int(10e7))
     parser.add_argument('--video-dir', help='The path to save videos', default='videos')
     parser.add_argument('--finetune-dir', help='The path to save finetune results', default='finetune')
     parser.add_argument('--init-level', type=int, help='Initial level to load from. By default 0, starting from pretrain', default=0)
@@ -239,9 +243,9 @@ def main():
             finetune_env,
             device="cuda",
             verbose=2,
-            n_steps=32,
-            batch_size=16,  # 512,
-            n_epochs=50,
+            n_steps=512,
+            batch_size=1024,  # 512,
+            n_epochs=100,
             gamma=0.94,
             v_learning_rate=1e-3, c_learning_rate=1e-4,
             d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
@@ -250,8 +254,8 @@ def main():
             clip_range=clip_range_schedule,
             tensorboard_log=args.log_dir,
             seed=args.seed,
-            ent_coef=.001,
-            dstb_ent_coef=.001,
+            ent_coef=.01,
+            dstb_ent_coef=.01,
             update_left=bool(args.update_left),
             update_right=bool(args.update_right),
         )
@@ -284,9 +288,37 @@ def main():
         model.set_parameters_2p(args.left_model_file, args.right_model_file)
     #model.save(os.path.join(args.save_dir, args.model_name_prefix + f"_0_steps"))
 
-    tss = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/tss_entropy/ppo_ryu_final_steps.zip', env=env_generator())
-    tss.warmstarted_cont_MAGICS = False
+
+    tss = TSS_PPO.load('/u/jw4406/FightLadder/main/trained_models/ppo_ryu_final_steps.zip', env=env_generator())
+    tss.warmstarted_cont_MAGICS = True
+
     model = tss
+    c_learning_rate = 1e-5
+    tau_d_v = 5
+    tau_c_d = 2
+    model.v_learning_rate = const_schedule(c_learning_rate * tau_c_d * tau_d_v)
+    model.c_learning_rate = const_schedule(c_learning_rate)
+    model.d_learning_rate = const_schedule(c_learning_rate * tau_c_d)
+    model.lr_schedule = [const_schedule(c_learning_rate * tau_c_d * tau_d_v), const_schedule(c_learning_rate),
+                         const_schedule(c_learning_rate * tau_c_d)]
+    model.v_learning_rate_decay = critic_decay_schedule(c_learning_rate * tau_c_d * tau_d_v)
+    model.c_learning_rate_decay = actor_decay_schedule(c_learning_rate)
+    model.d_learning_rate_decay = actor_decay_schedule(c_learning_rate * tau_c_d)
+    model.lr_schedule_decay = [critic_decay_schedule(c_learning_rate * tau_c_d * tau_d_v),
+                               actor_decay_schedule(c_learning_rate),
+                               actor_decay_schedule(c_learning_rate * tau_c_d)]
+    '''
+    test = AdvRolloutBuffer(
+        model.n_steps,
+        model.observation_space,
+        model.action_space,
+        device=model.device,
+        gamma=model.gamma,
+        gae_lambda=model.gae_lambda,
+        n_envs=model.n_envs,
+        **model.rollout_buffer_kwargs
+    )'''
+
     '''
 
     #rarl = RARL_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/rarl_test1/ppo_ryu_final_steps.zip', env=env_generator())
