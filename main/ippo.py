@@ -15,7 +15,7 @@ from torch.backends.cudnn import deterministic
 from common.const import *
 from common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P
 from common.game import get_next_level
-from FightLadder.main.common.algorithms import IPPO, MAGICS_PPO, RARL_PPO, TSS_PPO
+from common.algorithms import IPPO, MAGICS_PPO, RARL_PPO, TSS_PPO
 from stable_baselines3 import MAGICS_AL
 from common.retro_wrappers import SFWrapper, Monitor2P
 
@@ -285,15 +285,16 @@ def main():
     #model.save(os.path.join(args.save_dir, args.model_name_prefix + f"_0_steps"))
 
     tss = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/tss_entropy/ppo_ryu_final_steps.zip', env=env_generator())
-    tss.warmstarted_cont_MAGICS = True
+    tss.warmstarted_cont_MAGICS = False
     model = tss
     '''
+
     #rarl = RARL_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/rarl_test1/ppo_ryu_final_steps.zip', env=env_generator())
-    ippo = IPPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/ippo_test1_comp/ppo_ryu_final_steps.zip', env=env_generator())
-    args.video_dir = 'videos/tss_rarl_match'
+    ippo = IPPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/ippo_test1_comp/ppo_ryu_8000000_steps.zip', env=env_generator())
+    args.video_dir = 'videos/tss_ippo_match'
     tss_rarl_results = evaluate_cross(args, tss, ippo, record=True)
     print(tss_rarl_results)
-    args.video_dir = 'videos/rarl_tss_match'
+    args.video_dir = 'videos/ippo_tss_match'
     rarl_tss_results = evaluate_cross(args, ippo, tss, record=True)
     print(rarl_tss_results)
     #assert True == False
@@ -304,6 +305,7 @@ def main():
     print(results)
     '''
     '''
+    
     ippo = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/tss_entropy/ppo_ryu_final_steps.zip', env=env_generator())
     args.video_dir = 'videos/tss_ppo_entropy_vid_dir'
     results = evaluate(args, ippo, record=True)
