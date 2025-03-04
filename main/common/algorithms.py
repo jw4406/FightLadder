@@ -1375,8 +1375,8 @@ class MAGICS_PPO(OnPolicyAlgorithm):
             if isinstance(self.action_space, spaces.Box):
                 clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
-            new_obs, rewards, dones, _, infos = env.step(clipped_actions)
-
+            new_obs, rewards, rew_other, dones, infos = env.step(clipped_actions)
+            assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
             self.num_timesteps += env.num_envs
 
             # Give access to local variables
@@ -1552,7 +1552,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 L_ctrl_grad_batched = autograd.grad(value_loss, self.policy.value_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True)
                 L_ctrl_grad = torch.cat([t.flatten() for t in L_ctrl_grad_batched], dim=0)
                 #L_ctrl_grad = torch.hstack([t.flatten() for t in L_ctrl_grad_batched])
-                k = 5
+                k = 30
                 n = sum(p.numel() for p in self.policy.value_optimizer.param_groups[0]['params'])
 
                 rademacher = torch.bernoulli(torch.from_numpy(np.ones((n, k)) * .5)).to(self.device)
@@ -1833,6 +1833,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 #self.rollout_buffer.advantages = torch.zeros_like(self.rollout_buffer.advantages)
                 #self.rollout_buffer.flat_advantages = buf.swap_and_flatten(buf.advantages)
                 self.rollout_buffer.advantages = self.rollout_buffer.swap_and_flatten_pt(advantages)
+                count = count + 1
                 #elf.rollout_buffer.flat_advantages = self.rollout_buffer.swap_and_flatten_pt(self.rollout_buffer.advantages)
                 #self.rollout_buffer.flat_advantages = buf.swap_and_flatten_pt(buf.advantages)
 

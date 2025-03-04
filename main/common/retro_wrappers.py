@@ -31,7 +31,7 @@ class SFWrapper(gym.Wrapper):
         self.num_stack = num_stack
         self.num_step_frames = num_step_frames
 
-        self.aggresive_coeff = 3.0
+        self.aggresive_coeff = 1.0
         self.dense_coeff = 1.0
 
         self.total_timesteps = 0
