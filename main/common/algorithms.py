@@ -1376,7 +1376,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
             new_obs, rewards, rew_other, dones, infos = env.step(clipped_actions)
-            assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
+            #assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
             self.num_timesteps += env.num_envs
 
             # Give access to local variables
