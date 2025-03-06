@@ -175,7 +175,7 @@ def main():
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'], help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
-    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/magics_ws_tss")
+    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/tss_baseline_64_32")
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
     parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_ryu")
     parser.add_argument('--state', help='The state file to load. By default Champion.Level1.RyuVsGuile', default=SF_DEFAULT_STATE)
@@ -243,8 +243,8 @@ def main():
             finetune_env,
             device="cuda",
             verbose=2,
-            n_steps=512,
-            batch_size=1024,  # 512,
+            n_steps=64,
+            batch_size=32,  # 512,
             n_epochs=100,
             gamma=0.94,
             v_learning_rate=1e-3, c_learning_rate=1e-4,
@@ -287,11 +287,9 @@ def main():
         print("load model from " + args.left_model_file + " and " + args.right_model_file)
         model.set_parameters_2p(args.left_model_file, args.right_model_file)
     #model.save(os.path.join(args.save_dir, args.model_name_prefix + f"_0_steps"))
-
-
-    tss = TSS_PPO.load('/u/jw4406/FightLadder/main/trained_models/ppo_ryu_final_steps.zip', env=env_generator())
-    tss.warmstarted_cont_MAGICS = True
-
+    '''
+    tss = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/tss_entropy/ppo_ryu_final_steps.zip', env=env_generator())
+    tss.warmstarted_cont_MAGICS = False
     model = tss
     c_learning_rate = 1e-5
     tau_d_v = 5
@@ -317,8 +315,10 @@ def main():
         gae_lambda=model.gae_lambda,
         n_envs=model.n_envs,
         **model.rollout_buffer_kwargs
-    )'''
+    )
+    '''
 
+    '''
     '''
 
     #rarl = RARL_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/rarl_test1/ppo_ryu_final_steps.zip', env=env_generator())
