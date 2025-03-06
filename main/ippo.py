@@ -287,8 +287,7 @@ def main():
         print("load model from " + args.left_model_file + " and " + args.right_model_file)
         model.set_parameters_2p(args.left_model_file, args.right_model_file)
     #model.save(os.path.join(args.save_dir, args.model_name_prefix + f"_0_steps"))
-    '''
-    tss = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/tss_entropy/ppo_ryu_final_steps.zip', env=env_generator())
+    tss = TSS_PPO.load('/u/jw4406/FightLadder/main/trained_models/ppo_ryu_final_steps.zip', env=env_generator())
     tss.warmstarted_cont_MAGICS = False
     model = tss
     c_learning_rate = 1e-5
@@ -306,6 +305,7 @@ def main():
                                actor_decay_schedule(c_learning_rate),
                                actor_decay_schedule(c_learning_rate * tau_c_d)]
     '''
+    '''
     test = AdvRolloutBuffer(
         model.n_steps,
         model.observation_space,
@@ -317,9 +317,10 @@ def main():
         **model.rollout_buffer_kwargs
     )
     '''
+    '''
+    '''
 
-    '''
-    '''
+    
 
     #rarl = RARL_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/rarl_test1/ppo_ryu_final_steps.zip', env=env_generator())
     ippo = IPPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/ippo_test1_comp/ppo_ryu_8000000_steps.zip', env=env_generator())
@@ -335,13 +336,14 @@ def main():
     args.video_dir = 'videos/rarl_rarl_match'
     rarl_results = evaluate(args, ippo, record=True)
     print(results)
-    '''
+    
     '''
     
-    ippo = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/tss_entropy/ppo_ryu_final_steps.zip', env=env_generator())
-    args.video_dir = 'videos/tss_ppo_entropy_vid_dir'
-    results = evaluate(args, ippo, record=True)
+    #ippo = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/tss_entropy/ppo_ryu_final_steps.zip', env=env_generator())
+    #args.video_dir = 'videos/tss_ppo_entropy_vid_dir'
+    #results = evaluate(args, ippo, record=True)
     # assert False
+    '''
     '''
 
     checkpoint_callback = CheckpointCallback(save_freq=checkpoint_interval, save_path=args.save_dir, name_prefix=f"{args.model_name_prefix}")
