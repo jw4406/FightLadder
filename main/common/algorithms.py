@@ -41,6 +41,7 @@ from stable_baselines3.common.vec_env import VecEnv
 from .const import *
 from .nash import compute_nash
 
+import itertools
 
 SelfIPPO = TypeVar("SelfIPPO", bound="IPPO")
 SelfLeaguePPO = TypeVar("SelfLeaguePPO", bound="LeaguePPO")
@@ -1588,22 +1589,34 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 L_ctrl_grad_batched = autograd.grad(value_loss, self.policy.value_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True)
                 L_ctrl_grad = torch.cat([t.flatten() for t in L_ctrl_grad_batched], dim=0)
                 #L_ctrl_grad = torch.hstack([t.flatten() for t in L_ctrl_grad_batched])
-                k = 30
+                full_hessian = False
                 n = sum(p.numel() for p in self.policy.value_optimizer.param_groups[0]['params'])
+                if full_hessian is False:
 
-                rademacher = torch.bernoulli(torch.from_numpy(np.ones((n, k)) * .5)).to(self.device)
-                rademacher[rademacher == 0] = -1
-                # grad_batched = autograd.grad(L_ctrl_grad, flat_params, rademacher,0,1, is_grads_batched=True)
-                grad_batched = autograd.grad(L_ctrl_grad, self.policy.value_optimizer.param_groups[0]['params'],
-                                             torch.transpose(rademacher.to(self.device), 0, 1),
-                                             is_grads_batched=True,
-                                             retain_graph=True, create_graph=True)
+                    k = 100
+                    #n = sum(p.numel() for p in self.policy.value_optimizer.param_groups[0]['params'])
 
-                reshaped_grads = self.matrix_unbatch(grad_batched, k, size2=n).T
-                reshaped_grads = reshaped_grads * rademacher
-                L_ctrl_hessian = torch.mean(reshaped_grads, dim=1)
-                L_ctrl_hessian = L_ctrl_hessian + 5
+                    rademacher = torch.bernoulli(torch.from_numpy(np.ones((n, k)) * .5)).to(self.device)
+                    rademacher[rademacher == 0] = -1
+                    # grad_batched = autograd.grad(L_ctrl_grad, flat_params, rademacher,0,1, is_grads_batched=True)
+                    grad_batched = autograd.grad(L_ctrl_grad, self.policy.value_optimizer.param_groups[0]['params'],
+                                                 torch.transpose(rademacher.to(self.device), 0, 1),
+                                                 is_grads_batched=True,
+                                                 retain_graph=True, create_graph=True)
 
+                else:
+                    grad_batched = autograd.grad(L_ctrl_grad, self.policy.value_optimizer.param_groups[0]['params'],
+                                                 torch.eye(n).to(self.device),
+                                                 is_grads_batched=True,
+                                                 retain_graph=True, create_graph=True)
+                if full_hessian is False:
+                    reshaped_grads = self.matrix_unbatch(grad_batched, k, size2=n).T
+                    reshaped_grads = reshaped_grads * rademacher
+                    L_ctrl_hessian = torch.mean(reshaped_grads, dim=1)
+                    L_ctrl_hessian = L_ctrl_hessian + 10
+                else:
+                    L_ctrl_hessian = self.matrix_unbatch(grad_batched, n)
+                    L_ctrl_hessian.diag().add_(5)
                 d2f1_ctrl_batched = autograd.grad(policy_loss, self.policy.value_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True)
                 d2f1_dstb_batched = autograd.grad(dstb_policy_loss, self.policy.value_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True)
                 d2f1_ctrl = torch.hstack([t.flatten() for t in d2f1_ctrl_batched])
@@ -2257,6 +2270,37 @@ class TSS_PPO(MAGICS_PPO):
         self.warmstarted_cont_MAGICS=warmstarted_cont_MAGICS
         if self.warmstarted_cont_MAGICS is True:
             print("this model is warmstarted! now running magics_ppo training", flush=True)
+
+    def warmstart_setup(self, joint_schedule, use_policy_extractor=True):
+
+        assert self.warmstarted_cont_MAGICS == True
+        # can't call this method if not warmstarting
+
+        # use only value cnn extractor
+
+        for param in self.policy.vf_features_extractor.parameters():
+            param.requires_grad = False
+        for param in self.policy.pi_ctrl_features_extractor.parameters():
+            param.requires_grad = False
+        for param in self.policy.pi_dstb_features_extractor.parameters():
+            param.requires_grad = False
+
+        self.policy.pi_ctrl_features_extractor = self.policy.vf_features_extractor
+        self.policy.pi_dstb_features_extractor = self.policy.vf_features_extractor
+
+        self.policy.ctrl_optimizer = torch.optim.AdamW(
+            itertools.chain(self.policy.mlp_extractor.policy_net.parameters(),
+                            self.policy.action_net.parameters()), joint_schedule[1](1), maximize=False)
+        self.policy.dstb_optimizer = torch.optim.AdamW(
+            itertools.chain(self.policy.mlp_extractor.dstb_net.parameters(),
+                            self.policy.dstb_action_net.parameters()), joint_schedule[2](1), maximize=False)
+        self.policy.value_optimizer = torch.optim.AdamW(
+            itertools.chain(self.policy.mlp_extractor.value_net.parameters(),
+                            self.policy.value_net.parameters()),
+            joint_schedule[0](1), **self.policy.optimizer_kwargs)
+
+
+
 
     def train(self):
         """
