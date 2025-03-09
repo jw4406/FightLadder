@@ -175,7 +175,7 @@ def main():
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'], help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
-    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/magics_ws_tss_4")
+    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/magics_ws_tss_test")
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
     parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_ryu")
     parser.add_argument('--state', help='The state file to load. By default Champion.Level1.RyuVsGuile', default=SF_DEFAULT_STATE)
@@ -185,7 +185,7 @@ def main():
     parser.add_argument('--num-episodes', type=int, help='In evaluation, play how many episodes', default=20)
     parser.add_argument('--num-epoch', type=int, help='Finetune how many epochs', default=50)
     parser.add_argument('--total-steps', type=int, help='How many total steps to train', default=int(10e7))
-    parser.add_argument('--video-dir', help='The path to save videos', default='videos')
+    parser.add_argument('--video-dir', help='The path to save videos', default='videos/tss_baseline/')
     parser.add_argument('--finetune-dir', help='The path to save finetune results', default='finetune')
     parser.add_argument('--init-level', type=int, help='Initial level to load from. By default 0, starting from pretrain', default=0)
     parser.add_argument('--resume-epoch', type=int, help='Resume epoch. By default 0, starting from pretrain', default=0)
@@ -288,6 +288,16 @@ def main():
         model.set_parameters_2p(args.left_model_file, args.right_model_file)
     #model.save(os.path.join(args.save_dir, args.model_name_prefix + f"_0_steps"))
     tss = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/ppo_ryu_final_steps.zip', env=env_generator())
+    #tss = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/tss_baseline/ppo_ryu_final_steps.zip', env=env_generator())
+    #results = evaluate(args, tss, record=True)
+    n_envs = 2
+    tss.n_epochs = 2
+    buffer = tss.warmstart_buffer_setup(256, n_envs, 64)
+    #n_envs = 1
+    args.num_env = n_envs
+    env = env_generator()
+    tss.env = env
+    tss.rollout_buffer = buffer
     tss.warmstarted_cont_MAGICS = True
     tss.dstb_ent_coef = 0
     tss.ent_coef = 0
@@ -296,6 +306,7 @@ def main():
     tau_c_d = 2
     tss.warmstart_setup([const_schedule(c_learning_rate * tau_c_d * tau_d_v), const_schedule(c_learning_rate),
                          const_schedule(c_learning_rate * tau_c_d)])
+    #tss.warmstart_buffer_setup()
     model = tss
     model.v_learning_rate = const_schedule(c_learning_rate * tau_c_d * tau_d_v)
     model.c_learning_rate = const_schedule(c_learning_rate)
@@ -309,22 +320,8 @@ def main():
                                actor_decay_schedule(c_learning_rate),
                                actor_decay_schedule(c_learning_rate * tau_c_d)]
     '''
-    '''
-    test = AdvRolloutBuffer(
-        model.n_steps,
-        model.observation_space,
-        model.action_space,
-        device=model.device,
-        gamma=model.gamma,
-        gae_lambda=model.gae_lambda,
-        n_envs=model.n_envs,
-        **model.rollout_buffer_kwargs
-    )
-    '''
-    '''
-    '''
 
-    
+       
 
     #rarl = RARL_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/rarl_test1/ppo_ryu_final_steps.zip', env=env_generator())
     ippo = IPPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/ippo_test1_comp/ppo_ryu_8000000_steps.zip', env=env_generator())
