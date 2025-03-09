@@ -21,7 +21,7 @@ from stable_baselines3 import PPO, DQN
 from stable_baselines3.dqn.policies import QNetwork, DQNPolicy
 from stable_baselines3.common.policies import BasePolicy, ActorActorCriticCnnPolicy
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
-from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer, ReplayBuffer
+from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer, ReplayBuffer, AdvRolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.policies import ActorCriticPolicy, ActorCriticCnnPolicy, MultiInputActorCriticPolicy
@@ -1593,7 +1593,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 n = sum(p.numel() for p in self.policy.value_optimizer.param_groups[0]['params'])
                 if full_hessian is False:
 
-                    k = 100
+                    k = 50
                     #n = sum(p.numel() for p in self.policy.value_optimizer.param_groups[0]['params'])
 
                     rademacher = torch.bernoulli(torch.from_numpy(np.ones((n, k)) * .5)).to(self.device)
@@ -1629,6 +1629,9 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 # diag, no other option
                 iHvp_ctrl = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_ctrl)
                 iHvp_dstb = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_dstb)
+                assert not np.any(self.rollout_buffer.current_shot - self.rollout_buffer.indices[
+                                                                     count * self.batch_size: count * self.batch_size + self.batch_size])
+                #assert self.rollout_buffer.current_shot == self.rollout_buffer.indices[count * self.batch_size: count * self.batch_size + self.batch_size]
                 traj_ids = self.rollout_buffer.env_indices[self.rollout_buffer.indices[count * self.batch_size: count * self.batch_size + self.batch_size]].squeeze()
                 x0_states = self.rollout_buffer.X0_VALUES_MASTER[traj_ids]
                 x0_returns = buf.X0_RETURNS_MASTER[traj_ids]
@@ -2299,9 +2302,18 @@ class TSS_PPO(MAGICS_PPO):
                             self.policy.value_net.parameters()),
             joint_schedule[0](1), **self.policy.optimizer_kwargs)
 
+    def warmstart_buffer_setup(self, n_steps, n_envs, batch_size):
+        buffer = AdvRolloutBuffer(n_steps, self.observation_space, self.action_space, device=self.device, gamma=self.gamma,
+        gae_lambda=self.gae_lambda,
+        n_envs=n_envs,
+        **self.rollout_buffer_kwargs
+        )
 
+        self.batch_size = batch_size
+        self.n_envs = n_envs
+        self.n_steps = n_steps
 
-
+        return buffer
     def train(self):
         """
         Update policy using the currently gathered rollout buffer.
