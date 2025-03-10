@@ -15,6 +15,7 @@ from common.league import PayoffManager, League, FSPLeague, PSROLeague, Learner
 
 
 STATE = "Champion.RyuVsRyu.2Player.align"
+#STATE = ["Champion.RyuVsRyu.2Player.align", "Champion.Level12.RyuVsBison.2Player", "Champion.Level13.RyuVsBison.2Player", "Champion.Level1.RyuVsRyu.2Player"]
 
 
 def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, seed=0):
