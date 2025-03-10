@@ -2569,13 +2569,14 @@ class Specialized_Agent(OnPolicyAlgorithm):
         # now we need to create the adversaries
         self.num_adversaries = num_adversary
         adversaries = []
+        self.env.num_envs = 1
         for i in range(num_adversary):
             adversaries.append(TSS_PPO("AACCnnPolicy",
             self.env,
             device=self.device,
             verbose=self.verbose,
             n_steps=self.n_steps,
-            batch_size=self.batch_size,  # 512,
+            batch_size=self.batch_size // self.n_envs,  # 512,
             n_epochs=self.n_epochs,
             gamma=self.gamma,
             v_learning_rate=v_learning_rate, c_learning_rate=c_learning_rate,
@@ -2590,6 +2591,7 @@ class Specialized_Agent(OnPolicyAlgorithm):
             update_left= not self.update_left,
             update_right=not self.update_right
         ))
+        self.env.num_envs = self.n_envs
         print("created %d adversaries" % self.num_adversaries)
         self.adversaries = adversaries
 
@@ -2710,19 +2712,21 @@ class Specialized_Agent(OnPolicyAlgorithm):
                 adversary_actions,
                 rewards,
                 self._last_episode_starts,  # type: ignore[arg-type]
-                values,
+                torch.mean(all_adv_critic_values, dim=1),
                 log_probs,
-                adversary_log_probs
+                adversary_log_probs.diag()
             )
 
             for i in range(self.num_adversaries):
                 self.adversaries[i].rollout_buffer.add(
-                    self._last_obs,
-                    s_actions,
-                    adversary_actions,
-                    rewards,
-                    self._last_episode_starts,
-                    all_adv_critic_values
+                    self._last_obs[i],
+                    actions[i],
+                    adversary_actions[i],
+                    rewards[i],
+                    self._last_episode_starts[i],
+                    all_adv_critic_values[i][i],
+                    log_probs[i],
+                    adversary_log_probs[i][i]
                 )
 
             self._last_obs = new_obs
@@ -2734,6 +2738,12 @@ class Specialized_Agent(OnPolicyAlgorithm):
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
+        for i in range(self.num_adversaries):
+            self.adversaries[i].rollout_buffer.compute_returns_and_advantage(last_values=values[i], dones=dones[i])
+
         callback.on_rollout_end()
 
         return True
+
+    def train(self):
+        # train the special agent and the adversaries
