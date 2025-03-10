@@ -16,12 +16,13 @@ from torch.backends.cudnn import deterministic
 from common.const import *
 from common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P
 from common.game import get_next_level
-from common.algorithms import IPPO, MAGICS_PPO, RARL_PPO, TSS_PPO
+from common.algorithms import IPPO, MAGICS_PPO, RARL_PPO, TSS_PPO, Specialized_Agent
 from stable_baselines3 import MAGICS_AL
 from common.retro_wrappers import SFWrapper, Monitor2P
 
 
 STATE = "Champion.RyuVsRyu.2Player.align"
+STATE = ["Champion.RyuVsRyu.2Player.align", "Champion.Level12.RyuVsBison.2Player", "Champion.Level13.RyuVsBison.2Player", "Champion.Level1.RyuVsRyu.2Player"]
 def const_schedule(initial_value: float):
     def func(progress_remaining: float) -> float:
         return initial_value
@@ -215,11 +216,15 @@ def main():
         env = [make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=0) for i in range(args.num_env)]
         return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
+    def many_char_env_generator():
+        env = [make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=0) for i in range(len(STATE))]
+        return VecTransposeImage2P(SubprocVecEnv2P(env))
+        # return SubprocVecEnv2P(env)
 
     checkpoint_interval = 31250 # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6), other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6), clip_range_schedule=linear_schedule(0.075, 0.025)):
-        finetune_env = env_generator()
+        finetune_env = many_char_env_generator()
         finetune_model = IPPO(
             "CnnPolicy", 
             finetune_env,
@@ -243,9 +248,9 @@ def main():
             finetune_env,
             device="cuda",
             verbose=2,
-            n_steps=64,
+            n_steps=8,
             batch_size=32,  # 512,
-            n_epochs=100,
+            n_epochs=1,
             gamma=0.94,
             v_learning_rate=1e-3, c_learning_rate=1e-4,
             d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
@@ -258,6 +263,27 @@ def main():
             dstb_ent_coef=.01,
             update_left=bool(args.update_left),
             update_right=bool(args.update_right),
+        )
+        finetune_model = Specialized_Agent(
+            "AACCnnPolicy",
+            finetune_env,
+            device="cuda",
+            verbose=2,
+            n_steps=8,
+            batch_size=32,  # 512,
+            n_epochs=1,
+            gamma=0.94,
+            v_learning_rate=1e-3, c_learning_rate=1e-4,
+            d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            c_learning_rate_decay=critic_decay_schedule(1e-4),
+            d_learning_rate_decay=critic_decay_schedule(5e-4),
+            clip_range=clip_range_schedule,
+            tensorboard_log=args.log_dir,
+            seed=args.seed,
+            ent_coef=.01,
+            dstb_ent_coef=.01,
+            I_AM_LEFT=True,
+            I_AM_RIGHT=False,
         )
 
         '''
@@ -286,6 +312,7 @@ def main():
     if args.left_model_file and args.right_model_file:
         print("load model from " + args.left_model_file + " and " + args.right_model_file)
         model.set_parameters_2p(args.left_model_file, args.right_model_file)
+    """
     #model.save(os.path.join(args.save_dir, args.model_name_prefix + f"_0_steps"))
     tss = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/ppo_ryu_final_steps.zip', env=env_generator())
     tss.warmstarted_cont_MAGICS = True
@@ -308,6 +335,7 @@ def main():
     model.lr_schedule_decay = [critic_decay_schedule(c_learning_rate * tau_c_d * tau_d_v),
                                actor_decay_schedule(c_learning_rate),
                                actor_decay_schedule(c_learning_rate * tau_c_d)]
+    """
     '''
     '''
     test = AdvRolloutBuffer(
