@@ -22,7 +22,7 @@ from common.retro_wrappers import SFWrapper, Monitor2P
 
 
 STATE = "Champion.RyuVsRyu.2Player.align"
-STATE = ["Champion.RyuVsRyu.2Player.align", "Champion.Level12.RyuVsBison.2Player", "Champion.Level13.RyuVsBison.2Player", "Champion.Level1.RyuVsRyu.2Player"]
+#STATE = ["Champion.RyuVsRyu.2Player.align", "Champion.Level12.RyuVsBison.2Player", "Champion.Level13.RyuVsBison.2Player", "Champion.Level1.RyuVsRyu.2Player"]
 def const_schedule(initial_value: float):
     def func(progress_remaining: float) -> float:
         return initial_value
@@ -224,7 +224,7 @@ def main():
     checkpoint_interval = 31250 # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6), other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6), clip_range_schedule=linear_schedule(0.075, 0.025)):
-        finetune_env = many_char_env_generator()
+        finetune_env = env_generator()
         finetune_model = IPPO(
             "CnnPolicy", 
             finetune_env,
@@ -240,7 +240,7 @@ def main():
             seed=args.seed,
             update_left=bool(args.update_left),
             update_right=bool(args.update_right),
-            other_learning_rate=other_lr_schedule,
+            other_learning_rate=other_lr_schedule
         )
 
         finetune_model = TSS_PPO(
@@ -248,8 +248,8 @@ def main():
             finetune_env,
             device="cuda",
             verbose=2,
-            n_steps=8,
-            batch_size=32,  # 512,
+            n_steps=512,
+            batch_size=1024,  # 512,
             n_epochs=1,
             gamma=0.94,
             v_learning_rate=1e-3, c_learning_rate=1e-4,
@@ -264,13 +264,15 @@ def main():
             update_left=bool(args.update_left),
             update_right=bool(args.update_right),
         )
+
+        num_adversary=4
         finetune_model = Specialized_Agent(
             "AACCnnPolicy",
             finetune_env,
             device="cuda",
             verbose=2,
-            n_steps=8,
-            batch_size=32,  # 512,
+            n_steps=512,
+            batch_size=1024,  # 512,
             n_epochs=1,
             gamma=0.94,
             v_learning_rate=1e-3, c_learning_rate=1e-4,
@@ -284,6 +286,9 @@ def main():
             dstb_ent_coef=.01,
             I_AM_LEFT=True,
             I_AM_RIGHT=False,
+            num_adversary=num_adversary,
+            n_global_env=args.num_env,
+            n_env_per_adv=args.num_env // num_adversary
         )
 
         '''

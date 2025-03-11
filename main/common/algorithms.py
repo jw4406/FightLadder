@@ -2495,7 +2495,9 @@ class Specialized_Agent(OnPolicyAlgorithm):
             I_AM_LEFT=True,
             I_AM_RIGHT=False,
             dstb_action_space=None,
-            num_adversary=4
+            num_adversary=4,
+            n_global_env=None,
+            n_env_per_adv=None
     ):
         assert I_AM_LEFT != I_AM_RIGHT
         super().__init__(
@@ -2562,6 +2564,8 @@ class Specialized_Agent(OnPolicyAlgorithm):
         self.target_kl = target_kl
         self.smart = True
         self.adversarial = True
+        self.n_global_env = n_global_env
+        self.n_env_per_adv = n_env_per_adv
         if _init_setup_model:
             self._setup_model()
 
@@ -2569,7 +2573,7 @@ class Specialized_Agent(OnPolicyAlgorithm):
         # now we need to create the adversaries
         self.num_adversaries = num_adversary
         adversaries = []
-        self.env.num_envs = 1
+        self.env.num_envs = self.n_env_per_adv
         for i in range(num_adversary):
             adversaries.append(TSS_PPO("AACCnnPolicy",
             self.env,
@@ -2635,20 +2639,21 @@ class Specialized_Agent(OnPolicyAlgorithm):
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 s_actions, s_log_probs, s_values, s_dstb_actions, s_dstb_log_probs = self.policy(obs_tensor)
-                all_adv_left_actions = torch.zeros((self.num_adversaries, self.action_space.n))
-                all_adv_right_actions = torch.zeros((self.num_adversaries, self.action_space.n))
-                all_adv_critic_values = torch.zeros((self.num_adversaries, self.n_envs))
-                all_adv_log_probs = torch.zeros((self.num_adversaries, self.n_envs))
-                all_adv_dstb_log_probs = torch.zeros((self.num_adversaries, self.n_envs))
+                all_adv_left_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
+                all_adv_right_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
+                all_adv_critic_values = torch.zeros((self.n_global_env,1), device=self.device)
+                all_adv_log_probs = torch.zeros((self.n_global_env,), device=self.device)
+                all_adv_dstb_log_probs = torch.zeros((self.n_global_env,), device=self.device)
                 for i in range(self.num_adversaries):
                     actions, log_probs, values, dstb_actions, dstb_log_probs = self.adversaries[i].policy(obs_tensor)
-                    #actions = actions.cpu().numpy()
-                    #dstb_actions = dstb_actions.cpu().numpy()
-                    all_adv_left_actions[i] = actions[i]
-                    all_adv_log_probs[i] = log_probs[i]
-                    all_adv_critic_values[i] = values[i]
-                    all_adv_right_actions[i] = dstb_actions[i]
-                    all_adv_dstb_log_probs[i] = dstb_log_probs[i]
+                    #actions = actions.cpu()
+                    #dstb_actions = dstb_actions.cpu()
+                    chunk = range(i * self.n_env_per_adv, (i+1) * self.n_env_per_adv)
+                    all_adv_left_actions[chunk] = actions[chunk]
+                    all_adv_log_probs[chunk] = log_probs[chunk]
+                    all_adv_critic_values[chunk] = values[chunk]
+                    all_adv_right_actions[chunk] = dstb_actions[chunk]
+                    all_adv_dstb_log_probs[chunk] = dstb_log_probs[chunk]
 
                 if self.update_left is True:
                     # specialized agent is playing left
@@ -2714,19 +2719,20 @@ class Specialized_Agent(OnPolicyAlgorithm):
                 self._last_episode_starts,  # type: ignore[arg-type]
                 torch.mean(all_adv_critic_values, dim=1),
                 log_probs,
-                adversary_log_probs.diag()
+                adversary_log_probs
             )
 
             for i in range(self.num_adversaries):
+                chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
                 self.adversaries[i].rollout_buffer.add(
-                    self._last_obs[i],
-                    actions[i],
-                    adversary_actions[i],
-                    rewards[i],
-                    self._last_episode_starts[i],
-                    all_adv_critic_values[i][i],
-                    log_probs[i],
-                    adversary_log_probs[i][i]
+                    self._last_obs[chunk],
+                    actions[chunk],
+                    adversary_actions[chunk],
+                    rewards[chunk],
+                    self._last_episode_starts[chunk],
+                    all_adv_critic_values[chunk],
+                    log_probs[chunk],
+                    adversary_log_probs[chunk] # not done
                 )
 
             self._last_obs = new_obs
@@ -2747,3 +2753,4 @@ class Specialized_Agent(OnPolicyAlgorithm):
 
     def train(self):
         # train the special agent and the adversaries
+        raise NotImplementedError
