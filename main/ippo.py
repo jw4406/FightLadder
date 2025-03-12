@@ -389,6 +389,8 @@ def main():
             fsp_threshold=args.fsp_threshold,
         )
     else:
+        for i in range(model.num_adversaries):
+            model.adversaries[i]._setup_learn(model.adversaries[i].num_timesteps)
         model.learn(
             total_timesteps=args.total_steps*args.other_timescale,
             callback=[checkpoint_callback]

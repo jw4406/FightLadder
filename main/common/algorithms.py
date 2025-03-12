@@ -2600,6 +2600,7 @@ class Specialized_Agent(TSS_PPO):
         self.env.num_envs = self.n_envs
         print("created %d adversaries" % self.num_adversaries)
         self.adversaries = adversaries
+        #self._setup_learn(self._total_timesteps)
 
     def _setup_model(self) -> None:
         super()._setup_model()
@@ -2619,7 +2620,7 @@ class Specialized_Agent(TSS_PPO):
         rollout_buffer: RolloutBuffer,
         n_rollout_steps: int,
     ) -> bool:
-
+        #self._setup_learn()
         assert self._last_obs is not None, "No previous observation was provided"
         # Switch to eval mode (this affects batch norm / dropout)
         self.policy.set_training_mode(False)
@@ -2719,7 +2720,7 @@ class Specialized_Agent(TSS_PPO):
                 adversary_actions,
                 rewards,
                 self._last_episode_starts,  # type: ignore[arg-type]
-                torch.mean(all_adv_critic_values, dim=1),
+                all_adv_critic_values.squeeze(),
                 log_probs,
                 adversary_log_probs
             )
@@ -2742,9 +2743,12 @@ class Specialized_Agent(TSS_PPO):
 
         with th.no_grad():
             # Compute value for the last timestep
-            values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))
-            not bootstrapped correctly
-            use adversary critics not ma critic
+            values = torch.zeros((self.n_global_env,1))
+            for i in range(self.num_adversaries):
+                chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
+                values[chunk] = self.adversaries[i].policy.predict_values(obs_as_tensor(new_obs, self.device))[chunk].to('cpu')
+            #not bootstrapped correctly
+            #use adversary critics not ma critic
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
         for i in range(self.num_adversaries):
@@ -2762,6 +2766,7 @@ class Specialized_Agent(TSS_PPO):
 
         # main agent
         # need to query adversary critics
+        self.train_main_agent()
 
         # adversaries
         for i in range(self.num_adversaries):
@@ -2809,8 +2814,19 @@ class Specialized_Agent(TSS_PPO):
                 if self.use_sde:
                     self.policy.reset_noise(self.batch_size)
 
-                values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
-                    torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
+
+                values = torch.zeros((self.batch_size,1))
+                dstb_log_prob = torch.zeros((self.batch_size,))
+                dstb_entropy = torch.zeros((self.batch_size,))
+                for i in range(self.n_global_env):
+                    location = np.nonzero(rollout_data.env_indices==i)
+                    adversary_id = i // self.n_env_per_adv
+                    temp_values, _, _, temp_dstb_log_prob, temp_dstb_entropy = self.adversaries[adversary_id].policy.evaluate_actions(torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
+                    values[location] = temp_values[location].cpu()
+                    dstb_log_prob[location] = temp_dstb_log_prob[location].cpu()
+                    dstb_entropy[location] = temp_dstb_entropy[location].cpu()
+                #values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
+                #    torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
                 values = values.flatten()
                 # Normalize advantage
                 advantages = torch.from_numpy(rollout_data.advantages).to(self.device)
