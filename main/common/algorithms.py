@@ -2959,13 +2959,6 @@ class Specialized_Agent(TSS_PPO):
         assert self.update_left != self.update_right
 
         self.train_ma()
-        #from concurrent.futures import ProcessPoolExecutor
-        #def test(self):
-        #    with ProcessPoolExecutor() as executor:
-        #        executor.map(
-        #            lambda i: self.adversaries[i].train_one_adversary(self.policy, ma_left=self.update_left, ma_right=self.update_right),
-        #            range(self.num_adversaries)
-        #        )
         for i in range(self.num_adversaries):
             self.adversaries[i].train_one_adversary(self.policy, ma_left=self.update_left, ma_right=self.update_right),
         # adversaries
