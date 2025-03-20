@@ -289,7 +289,7 @@ def main():
         finetune_model = Specialized_Agent(
             "AACCnnPolicy",
             finetune_env,
-            device="cpu",
+            device="cuda",
             verbose=2,
             n_steps=48,
             batch_size=96,  # 512,
@@ -416,7 +416,12 @@ def main():
             total_timesteps=1000,#total_timesteps=args.total_steps*args.other_timescale,
             callback=[checkpoint_callback]
         )
-    #model.save(finetune_epoch_model_path)
+    #model.env = []
+    #model.save(model.state_dict())
+    for i in range(len(model.adversaries)):
+        model.adversaries[i].save("enemy_policy_%d.pt" % i)
+    model.adversaries = []
+    model.save(finetune_epoch_model_path)
     results = evaluate(args, model, record=True)
     print(results)
     with open(f"{args.finetune_dir}/{args.model_name_prefix}_start_results.txt", 'w') as f:
