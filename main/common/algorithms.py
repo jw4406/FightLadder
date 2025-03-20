@@ -2454,12 +2454,13 @@ class TSS_PPO(MAGICS_PPO):
             self.logger.record("train/clip_range_vf", clip_range_vf)
         #self.update_ctrl = not self.update_ctrl
 
-    def train_one_adversary(self, main_agent):
+    def train_one_adversary(self, main_agent, ma_left=False, ma_right=False):
         # helper function
 
         """
         Update policy using the currently gathered rollout buffer.
         """
+        assert ma_left != ma_right
         if self.warmstarted_cont_MAGICS is True:
             if self.warmstarted_cont_MAGICS is True:
                 print("this model is warmstarted! now running magics_ppo training", flush=True)
@@ -2494,10 +2495,11 @@ class TSS_PPO(MAGICS_PPO):
                 if self.use_sde:
                     self.policy.reset_noise(self.batch_size)
 
-                if self.update_left is True:
+                if ma_left is True:
                     # main player is the left player
                     # adversaries are "dstb" role
                     # right now we need to update adversaries
+                    '''
                     values = torch.zeros((self.batch_size, 1), device=self.device)
                     dstb_log_prob = torch.zeros((self.batch_size,), device=self.device)
                     dstb_entropy = torch.zeros((self.batch_size,), device=self.device)
@@ -2511,15 +2513,17 @@ class TSS_PPO(MAGICS_PPO):
                         values[location] = temp_values  #
                         dstb_log_prob[location] = temp_dstb_log_prob
                         dstb_entropy[location] = temp_dstb_entropy
-                    self.policy.evaluate_actions()
+                        '''
+                    values, _, _, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
                     _, ctrl_log_prob, ctrl_entropy, _, _ = main_agent.evaluate_actions(
                         torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
                     values = values.flatten()
 
                 else:
-                    assert self.update_right is True
+                    #assert self.update_right is True
                     # main player is the right player
                     # adversaries are the control role
+                    '''
                     values = torch.zeros((self.batch_size, 1), device=self.device)
                     ctrl_log_prob = torch.zeros((self.batch_size,), device=self.device)
                     ctrl_entropy = torch.zeros((self.batch_size,), device=self.device)
@@ -2533,7 +2537,10 @@ class TSS_PPO(MAGICS_PPO):
                         values[location] = temp_values  #
                         ctrl_log_prob[location] = temp_ctrl_log_prob
                         ctrl_entropy[location] = temp_ctrl_entropy
-                    _, _, _, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
+                    '''
+                    _, _, _, dstb_log_prob, dstb_entropy = main_agent.evaluate_actions(
+                        torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
+                    values, ctrl_log_prob, ctrl_entropy, _, _ = self.policy.evaluate_actions(
                         torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
                     values = values.flatten()
                 # Normalize advantage
@@ -2952,13 +2959,22 @@ class Specialized_Agent(TSS_PPO):
         assert self.update_left != self.update_right
 
         self.train_ma()
-
-        # adversaries
+        #from concurrent.futures import ProcessPoolExecutor
+        #def test(self):
+        #    with ProcessPoolExecutor() as executor:
+        #        executor.map(
+        #            lambda i: self.adversaries[i].train_one_adversary(self.policy, ma_left=self.update_left, ma_right=self.update_right),
+        #            range(self.num_adversaries)
+        #        )
         for i in range(self.num_adversaries):
-            self.adversaries[i].train_one_adversary(self.policy)
+            self.adversaries[i].train_one_adversary(self.policy, ma_left=self.update_left, ma_right=self.update_right),
+        # adversaries
+        #test(self)
+        '''for i in range(self.num_adversaries):
+            self.adversaries[i].train_one_adversary(self.policy, ma_left=self.update_left, ma_right=self.update_right)'''
 
 
-        raise NotImplementedError
+        return
 
     def train_ma(self):
         # helper function
