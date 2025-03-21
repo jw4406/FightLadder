@@ -2718,6 +2718,7 @@ class Specialized_Agent(TSS_PPO):
         self.dstb_ent_coef = dstb_ent_coef
         self.dstb_action_space = dstb_action_space
         self.update_right = I_AM_RIGHT
+        self.n_epochs = n_epochs
         #self.learning_rate = [v_learning_rate, c_learning_rate, d_learning_rate]
         #self.learning_rate_decay_phase = [v_learning_rate_decay, c_learning_rate_decay, d_learning_rate_decay]
         # Sanity check, otherwise it will lead to noisy gradient and NaN
@@ -2816,6 +2817,8 @@ class Specialized_Agent(TSS_PPO):
 
         n_steps = 0
         rollout_buffer.reset()
+        for i in range(self.num_adversaries):
+            self.adversaries[i].rollout_buffer.reset()
         # Sample new weights for the state dependent exploration
         if self.use_sde:
             self.policy.reset_noise(env.num_envs)
