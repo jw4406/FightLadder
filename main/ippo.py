@@ -291,9 +291,9 @@ def main():
             finetune_env,
             device="cuda",
             verbose=2,
-            n_steps=48,
-            batch_size=96,  # 512,
-            n_epochs=1,
+            n_steps=768,
+            batch_size=1536,  # 512,
+            n_epochs=100,
             gamma=0.94,
             v_learning_rate=1e-3, c_learning_rate=1e-4,
             d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
@@ -413,7 +413,7 @@ def main():
         for i in range(model.num_adversaries):
             model.adversaries[i]._setup_learn(model.adversaries[i].num_timesteps)
         model.learn(
-            total_timesteps=1000,#total_timesteps=args.total_steps*args.other_timescale,
+            total_timesteps=args.total_steps,
             callback=[checkpoint_callback]
         )
     #model.env = []
