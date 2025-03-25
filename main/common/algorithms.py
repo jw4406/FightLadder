@@ -2787,6 +2787,7 @@ class Specialized_Agent(TSS_PPO):
             update_left= not self.update_left,
             update_right=not self.update_right
         ))
+            adversaries[i].rollout_buffer.n_envs=self.n_env_per_adv
         self.env.num_envs = self.n_envs
         print("created %d adversaries" % self.num_adversaries)
         self.adversaries = adversaries
