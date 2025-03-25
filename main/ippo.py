@@ -22,11 +22,13 @@ from common.retro_wrappers import SFWrapper, Monitor2P
 
 
 #STATE = "Champion.RyuVsRyu.2Player.align"
+global STATE
 STATE = "two_player/Champion.Level1.RyuVsBlanka.2Player.state"
 STATE = ["two_player/Champion.Level1.RyuVsVega.2Player.state", "two_player/Champion.Level1.RyuVsBalrog.2Player.state", "two_player/Champion.Level1.RyuVsGuile.2Player.state", \
     "two_player/Champion.Level1.RyuVsEHonda.2Player.state", "two_player/Champion.Level1.RyuVsBlanka.2Player.state", "two_player/Champion.Level1.RyuVsRyu.2Player.state", \
          "two_player/Champion.Level1.RyuVsSagat.2Player.state", "two_player/Champion.Level1.RyuVsMBison.2Player.state", "two_player/Champion.Level1.RyuVsDhalsim.2Player.state", \
          "two_player/Champion.Level1.RyuVsZangief.2Player.state", "two_player/Champion.Level1.RyuVsChunLi.2Player.state", "two_player/Champion.Level1.RyuVsKen.2Player.state"]
+state_list = STATE
 def const_schedule(initial_value: float):
     def func(progress_remaining: float) -> float:
         return initial_value
@@ -63,24 +65,16 @@ def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=N
 
 @torch.no_grad()
 def evaluate(args, model, greedy=0, record=True):
+    global STATE
     win_cnt = 0
-    env = []
+    #env = []
     for i in range(1, args.num_episodes + 1):
-        #env = make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=None)().env
-        each_env_count = 4
-        for j in range(len(STATE)):
-            for k in range(each_env_count):
-                env.append(
-                    make_env(sf_game, state=STATE[j], side=args.side, reset_type=args.reset, rendering=args.render,
-                             enable_combo=args.enable_combo, null_combo=args.null_combo,
-                             transform_action=args.transform_action, seed=0))
+        env = make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=None)().env
         done = False
-        for l in range(len(env)):
-            env[l] = env[l]().env
-            env[l].close()
-        obs = env[i].reset()
+
+        obs = env.reset()
         if record:
-            video_log = [Image.fromarray(env[i].render(mode="rgb_array"))]
+            video_log = [Image.fromarray(env.render(mode="rgb_array"))]
 
         while not done:
             if np.random.uniform() > greedy:
@@ -88,17 +82,21 @@ def evaluate(args, model, greedy=0, record=True):
             else:
                 (action, _states), (action_other, _states_other) = model.predict(obs, deterministic=True)
 
-            obs, reward, reward_other, done, info = env[i].step(np.hstack([action, action_other]))
+            obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
             if record:
-                video_log.append(Image.fromarray(env[i].render(mode="rgb_array")))
+                video_log.append(Image.fromarray(env.render(mode="rgb_array")))
             # print(info)
             # if done:
             #     video_log[-1].save(f"{args.video_dir}/episode_{i}.png")
 
             if done:
                 if record:
+                    try:
+                        name = STATE.split("/")[1]
+                    except:
+                        name = STATE
                     height, width, layers = np.array(video_log[0]).shape
-                    container = av.open(f"{args.video_dir}/episode_{i}.mp4", mode='w')
+                    container = av.open(f"{args.video_dir}/{name}_episode_{i}.mp4", mode='w')
                     stream = container.add_stream('h264', rate=10)
                     stream.width = width
                     stream.height = height
@@ -118,7 +116,7 @@ def evaluate(args, model, greedy=0, record=True):
         # print("Total reward: {}\n".format(total_reward))
         # episode_reward_sum += total_reward
     
-        env[i].close()
+        env.close()
     
     win_rate = win_cnt / args.num_episodes
     print("Winning rate: {}".format(win_rate))
@@ -188,7 +186,7 @@ def main():
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'], help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
-    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/magics_ws_tss_test")
+    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/magics_ws_tss_2")
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
     parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_ryu")
     parser.add_argument('--state', help='The state file to load. By default Champion.Level1.RyuVsGuile', default=SF_DEFAULT_STATE)
@@ -197,7 +195,7 @@ def main():
     parser.add_argument('--num-env', type=int, help='How many envirorments to create', default=64)
     parser.add_argument('--num-episodes', type=int, help='In evaluation, play how many episodes', default=20)
     parser.add_argument('--num-epoch', type=int, help='Finetune how many epochs', default=50)
-    parser.add_argument('--total-steps', type=int, help='How many total steps to train', default=int(10e7))
+    parser.add_argument('--total-steps', type=int, help='How many total steps to train', default=int(10))
     parser.add_argument('--video-dir', help='The path to save videos', default='videos/tss_baseline/')
     parser.add_argument('--finetune-dir', help='The path to save finetune results', default='finetune')
     parser.add_argument('--init-level', type=int, help='Initial level to load from. By default 0, starting from pretrain', default=0)
@@ -225,6 +223,7 @@ def main():
                                  
     # Set up the environment and model
     def env_generator():
+        global STATE
         each_env_count = 4
         env = []
         for i in range(len(STATE)):
@@ -241,7 +240,7 @@ def main():
         return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
 
-    checkpoint_interval = 1000 # checkpoint_interval * num_envs = total_steps_per_checkpoint
+    checkpoint_interval = 2 # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6), other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6), clip_range_schedule=linear_schedule(0.075, 0.025)):
         finetune_env = env_generator()
@@ -291,9 +290,9 @@ def main():
             finetune_env,
             device="cuda",
             verbose=2,
-            n_steps=768,
-            batch_size=1536,  # 512,
-            n_epochs=50,
+            n_steps=96,
+            batch_size=192,  # 512,
+            n_epochs=2,
             gamma=0.94,
             v_learning_rate=1e-3, c_learning_rate=1e-4,
             d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
@@ -422,7 +421,11 @@ def main():
         model.adversaries[i].save("enemy_policy_%d.pt" % i)
     model.adversaries = []
     model.save(finetune_epoch_model_path)
-    results = evaluate(args, model, record=True)
+
+    for i in range(len(state_list)):
+        global STATE
+        STATE = state_list[i]
+        results = evaluate(args, model, record=True)
     print(results)
     with open(f"{args.finetune_dir}/{args.model_name_prefix}_start_results.txt", 'w') as f:
         f.write(str(results))
