@@ -8,7 +8,7 @@ from PIL import Image
 import copy
 
 import retro
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, SACheckpointCallback
 from stable_baselines3.common.buffers import AdvRolloutBuffer
 from stable_baselines3.common.utils import get_schedule_fn
 from torch.backends.cudnn import deterministic
@@ -241,7 +241,7 @@ def main():
         return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
 
-    checkpoint_interval = 31250 # checkpoint_interval * num_envs = total_steps_per_checkpoint
+    checkpoint_interval = 1000 # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6), other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6), clip_range_schedule=linear_schedule(0.075, 0.025)):
         finetune_env = env_generator()
@@ -293,7 +293,7 @@ def main():
             verbose=2,
             n_steps=768,
             batch_size=1536,  # 512,
-            n_epochs=100,
+            n_epochs=50,
             gamma=0.94,
             v_learning_rate=1e-3, c_learning_rate=1e-4,
             d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
@@ -401,7 +401,7 @@ def main():
     '''
     '''
 
-    checkpoint_callback = CheckpointCallback(save_freq=checkpoint_interval, save_path=args.save_dir, name_prefix=f"{args.model_name_prefix}")
+    checkpoint_callback = SACheckpointCallback(save_freq=checkpoint_interval, save_path=args.save_dir, name_prefix=f"{args.model_name_prefix}")
     if args.async_update:
         model.async_learn(
             total_timesteps=args.total_steps,
