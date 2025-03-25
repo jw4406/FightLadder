@@ -2944,8 +2944,9 @@ class Specialized_Agent(TSS_PPO):
             #use adversary critics not ma critic
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
-        for i in range(self.num_adversaries):
-            self.adversaries[i].rollout_buffer.compute_returns_and_advantage(last_values=values[i], dones=dones[i])
+        for i in range(self.num_adversaries): # is this a bug?
+            chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
+            self.adversaries[i].rollout_buffer.compute_returns_and_advantage(last_values=values[chunk], dones=dones[chunk])
 
         callback.on_rollout_end()
 
