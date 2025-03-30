@@ -401,6 +401,7 @@ def main():
     '''
 
     checkpoint_callback = SACheckpointCallback(save_freq=checkpoint_interval, save_path=args.save_dir, name_prefix=f"{args.model_name_prefix}")
+    '''
     if args.async_update:
         model.async_learn(
             total_timesteps=args.total_steps,
@@ -415,17 +416,62 @@ def main():
             total_timesteps=args.total_steps,
             callback=[checkpoint_callback]
         )
+    '''
     #model.env = []
     #model.save(model.state_dict())
+    '''
     for i in range(len(model.adversaries)):
         model.adversaries[i].save("enemy_policy_%d.pt" % i)
     model.adversaries = []
     model.save(finetune_epoch_model_path)
+    '''
+
+    finetune_model = Specialized_Agent(
+            "AACCnnPolicy",
+            env_generator(),
+            device="cuda",
+            verbose=2,
+            n_steps=96,
+            batch_size=192,  # 512,
+            n_epochs=2,
+            gamma=0.94,
+            v_learning_rate=1e-3, c_learning_rate=1e-4,
+            d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            c_learning_rate_decay=critic_decay_schedule(1e-4),
+            d_learning_rate_decay=critic_decay_schedule(5e-4),
+            clip_range=clip_range_schedule,
+            tensorboard_log=args.log_dir,
+            seed=args.seed,
+            ent_coef=.01,
+            dstb_ent_coef=.01,
+            I_AM_LEFT=True,
+            I_AM_RIGHT=False,
+            num_adversary=12,
+            n_global_env=args.num_env,
+            n_env_per_adv=args.num_env // 12,
+            warmstarted_cont_MAGICS=True
+    )
+    #model = Specialized_Agent.load("/home/jw4406/codebase/FightLadder/main/trained_models/ma/ppo_ryu_4545792_steps.zip", env=env_generator())
+    from stable_baselines3.common.save_util import load_from_zip_file
+    data, params, pytorch_variables = load_from_zip_file("/home/jw4406/codebase/FightLadder/main/trained_models/ma/ppo_ryu_4545792_steps.zip")
+    finetune_model.set_parameters(params, exact_match=True, device=finetune_model.device)
+    for i in range(finetune_model.num_adversaries):
+        data, params, pytorch_variables = load_from_zip_file("/home/jw4406/codebase/FightLadder/main/trained_models/enemies/enemy_policy_%d.pt" % i)
+        finetune_model.adversaries[i].set_parameters(params, exact_match=True, device=finetune_model.device)
+
+
+    finetune_model.warmstart_setup(finetune_model.lr_schedule)
+    for i in range(finetune_model.num_adversaries):
+        if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
+            finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
+    for i in range(model.num_adversaries):
+        finetune_model.adversaries[i]._setup_learn(finetune_model.adversaries[i].num_timesteps)
+    finetune_model.learn(total_timesteps=10e7)
 
     for i in range(len(state_list)):
         global STATE
         STATE = state_list[i]
-        results = evaluate(args, model, record=True)
+        results = evaluate(args, finetune_model, record=True)
     print(results)
     with open(f"{args.finetune_dir}/{args.model_name_prefix}_start_results.txt", 'w') as f:
         f.write(str(results))
