@@ -2175,6 +2175,11 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 self.policy.dstb_optimizer.zero_grad()
                 self.policy.value_optimizer.zero_grad()
                 loss.backward()
+
+                for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params'])):
+                    self.policy.dstb_optimizer.param_groups[0]['params'][i].grad = \
+                        self.policy.dstb_optimizer.param_groups[0]['params'][i].grad - dstb_imp[i]
+
                 # Clip grad norm
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.policy.ctrl_optimizer.step()
@@ -3351,6 +3356,7 @@ class Specialized_Agent(TSS_PPO):
             count = 0
             # Do a complete pass on the rollout buffer
             for rollout_data in self.rollout_buffer.get(self.batch_size):
+                start = time.time()
                 actions = torch.Tensor(rollout_data.actions).to(self.device)
                 dstb_actions = torch.Tensor(rollout_data.dstb_actions).to(self.device)
                 if isinstance(self.action_space, spaces.Discrete):
@@ -3561,6 +3567,8 @@ class Specialized_Agent(TSS_PPO):
                 self.policy.dstb_optimizer.zero_grad()
                 self.policy.value_optimizer.zero_grad()
                 loss.backward()
+                for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params'])):
+                    self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad = self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad - ctrl_imp[i]
                 # Clip grad norm
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.policy.ctrl_optimizer.step()
@@ -3607,7 +3615,8 @@ class Specialized_Agent(TSS_PPO):
                     # buf.advantages[step] = last_gae_lam
                 advantages = torch.stack(advantage_test, dim=0)
                 # buf.returns = buf.advantages + buf.values
-                print("")
+                end=time.time()
+                print("batch complete, elapsed = %f" % (start-end))
                 # TEST - DO NOT COMMIT
 
                 # buf.compute_returns_and_advantage_pt(values, torch.Tensor(buf.dones[-1]).to(self.device))
