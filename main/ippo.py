@@ -429,7 +429,7 @@ def main():
     finetune_model = Specialized_Agent(
             "AACCnnPolicy",
             env_generator(),
-            device="cuda",
+            device="cpu",
             verbose=2,
             n_steps=96,
             batch_size=192,  # 512,
