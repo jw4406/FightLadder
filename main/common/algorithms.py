@@ -3692,7 +3692,13 @@ class Specialized_Agent_IPPO(Specialized_Agent):
             n_env_per_adv=None,
             warmstarted_cont_MAGICS=False
         ):
-        super().__init__(self,
+
+        if warmstarted_cont_MAGICS is True:
+            print("warmstarted_cont_MAGICS is True but this is IPPO-specialized. MAGICS training not supported. Overriding to False.")
+            warmstarted_cont_MAGICS = False
+
+
+        super().__init__(
             policy,
             env,
             c_learning_rate=c_learning_rate,

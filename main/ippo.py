@@ -460,11 +460,12 @@ def main():
         data, params, pytorch_variables = load_from_zip_file("/home/jw4406/codebase/FightLadder/main/trained_models/magics_ws_tss_3_cont/enemy_policy_%d.pt" % i)
         finetune_model.adversaries[i].set_parameters(params, exact_match=True, device=finetune_model.device)
 
-    '''
+    
     finetune_model.warmstart_setup(finetune_model.lr_schedule)
     for i in range(finetune_model.num_adversaries):
         if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
             finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
+    '''
     for i in range(model.num_adversaries):
         finetune_model.adversaries[i]._setup_learn(finetune_model.adversaries[i].num_timesteps)
     finetune_model.learn(total_timesteps=10e7, callback=[checkpoint_callback])
