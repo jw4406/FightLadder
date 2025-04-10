@@ -2208,7 +2208,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                     # buf.advantages[step] = last_gae_lam
                 advantages = torch.stack(advantage_test, dim=0)
                 # buf.returns = buf.advantages + buf.values
-                print("")
+                #print("")
                 # TEST - DO NOT COMMIT
 
                 # buf.compute_returns_and_advantage_pt(values, torch.Tensor(buf.dones[-1]).to(self.device))
@@ -2362,7 +2362,7 @@ class RARL_PPO(MAGICS_PPO):
         self.update_ctrl = True
         self.update_dstb = False
 
-        print("")
+        #print("")
 
     def train(self):
         """
@@ -3646,3 +3646,241 @@ class Specialized_Agent(TSS_PPO):
         self.logger.record("train/clip_range", clip_range)
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
+
+class Specialized_Agent_IPPO(Specialized_Agent):
+    policy_aliases: Dict[str, Type[BasePolicy]] = {
+        "MlpPolicy": ActorCriticPolicy,
+        "CnnPolicy": ActorCriticCnnPolicy,
+        "MultiInputPolicy": MultiInputActorCriticPolicy,
+        "AACCnnPolicy": ActorActorCriticCnnPolicy
+    }
+    def __init__(self,
+            policy: Union[str, Type[ActorCriticPolicy]],
+            env: Union[GymEnv, str],
+            c_learning_rate: Union[float, Schedule] = 1e-4,
+            d_learning_rate: Union[float, Schedule] = 7e-4,
+            v_learning_rate: Union[float, Schedule] = 7e-4,
+            c_learning_rate_decay: Union[float, Schedule] = 1e-4,
+            d_learning_rate_decay: Union[float, Schedule] = 7e-4,
+            v_learning_rate_decay: Union[float, Schedule] = 7e-4,
+            n_steps: int = 2048,
+            batch_size: int = 64,
+            n_epochs: int = 1,
+            gamma: float = 0.99,
+            gae_lambda: float = 0.95,
+            clip_range: Union[float, Schedule] = 0.2,
+            clip_range_vf: Union[None, float, Schedule] = None,
+            normalize_advantage: bool = True,
+            ent_coef: float = 0.0,
+            dstb_ent_coef: float = 0.0,
+            vf_coef: float = 0.5,
+            max_grad_norm: float = 0.5,
+            use_sde: bool = False,
+            sde_sample_freq: int = -1,
+            target_kl: Optional[float] = None,
+            tensorboard_log: Optional[str] = None,
+            policy_kwargs: Optional[Dict[str, Any]] = None,
+            verbose: int = 0,
+            seed: Optional[int] = None,
+            device: Union[th.device, str] = "auto",
+            _init_setup_model: bool = True,
+            I_AM_LEFT=True,
+            I_AM_RIGHT=False,
+            dstb_action_space=None,
+            num_adversary=4,
+            n_global_env=None,
+            n_env_per_adv=None,
+            warmstarted_cont_MAGICS=False
+        ):
+        super().__init__(self,
+            policy,
+            env,
+            c_learning_rate=c_learning_rate,
+            d_learning_rate=d_learning_rate,
+            v_learning_rate=v_learning_rate,
+            c_learning_rate_decay=c_learning_rate_decay,
+            d_learning_rate_decay=d_learning_rate_decay,
+            v_learning_rate_decay=v_learning_rate_decay,
+            n_steps=n_steps,
+            batch_size=batch_size,
+            n_epochs=n_epochs,
+            gamma=gamma,
+            gae_lambda=gae_lambda,
+            clip_range=clip_range,
+            clip_range_vf=clip_range_vf,
+            normalize_advantage=normalize_advantage,
+            ent_coef=ent_coef,
+            dstb_ent_coef=dstb_ent_coef,
+            vf_coef=vf_coef,
+            max_grad_norm=max_grad_norm,
+            use_sde=use_sde,
+            sde_sample_freq=sde_sample_freq,
+            target_kl=target_kl,
+            tensorboard_log=tensorboard_log,
+            policy_kwargs=policy_kwargs,
+            verbose=verbose,
+            seed=seed,
+            device=device,
+            _init_setup_model=_init_setup_model,
+            I_AM_LEFT=I_AM_LEFT,
+            I_AM_RIGHT=I_AM_RIGHT,
+            dstb_action_space=dstb_action_space,
+            num_adversary=num_adversary,
+            n_global_env=n_global_env,
+            n_env_per_adv=n_env_per_adv,
+            warmstarted_cont_MAGICS=warmstarted_cont_MAGICS
+        )
+
+    def collect_rollouts(
+        self,
+        env: VecEnv,
+        callback: BaseCallback,
+        rollout_buffer: RolloutBuffer,
+        n_rollout_steps: int,
+    ) -> bool:
+        #self._setup_learn()
+        assert self._last_obs is not None, "No previous observation was provided"
+        # Switch to eval mode (this affects batch norm / dropout)
+        self.policy.set_training_mode(False)
+
+        n_steps = 0
+        rollout_buffer.reset()
+        for i in range(self.num_adversaries):
+            self.adversaries[i].rollout_buffer.reset()
+        # Sample new weights for the state dependent exploration
+        if self.use_sde:
+            self.policy.reset_noise(env.num_envs)
+
+        callback.on_rollout_start()
+
+        while n_steps < n_rollout_steps:
+            if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+                # Sample a new noise matrix
+                self.policy.reset_noise(env.num_envs)
+
+            with th.no_grad():
+                # Convert to pytorch tensor or to TensorDict
+                obs_tensor = obs_as_tensor(self._last_obs, self.device)
+                s_actions, s_log_probs, s_values, s_dstb_actions, s_dstb_log_probs = self.policy(obs_tensor)
+                all_adv_left_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
+                all_adv_right_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
+                all_adv_critic_values = torch.zeros((self.n_global_env,1), device=self.device)
+                all_adv_log_probs = torch.zeros((self.n_global_env,), device=self.device)
+                all_adv_dstb_log_probs = torch.zeros((self.n_global_env,), device=self.device)
+                for i in range(self.num_adversaries):
+                    actions, log_probs, values, dstb_actions, dstb_log_probs = self.adversaries[i].policy(obs_tensor)
+                    #actions = actions.cpu()
+                    #dstb_actions = dstb_actions.cpu()
+                    chunk = range(i * self.n_env_per_adv, (i+1) * self.n_env_per_adv)
+                    all_adv_left_actions[chunk] = actions[chunk]
+                    all_adv_log_probs[chunk] = log_probs[chunk]
+                    all_adv_critic_values[chunk] = values[chunk]
+                    all_adv_right_actions[chunk] = dstb_actions[chunk]
+                    all_adv_dstb_log_probs[chunk] = dstb_log_probs[chunk]
+
+                if self.update_left is True:
+                    # specialized agent is playing left
+                    # all adversaries are playing right.
+                    all_adv_left_actions = []
+                    all_adv_log_probs = []
+                    actions = s_actions
+                    log_probs = s_log_probs
+                    adversary_actions = all_adv_right_actions
+                    adversary_log_probs = all_adv_dstb_log_probs
+                else:
+                    all_adv_right_actions = []
+                    all_adv_dstb_log_probs = []
+                    actions = s_dstb_actions
+                    log_probs = s_dstb_log_probs
+                    adversary_actions = all_adv_left_actions
+                    adversary_log_probs = all_adv_log_probs
+            actions = actions.cpu().numpy()
+            adversary_actions = adversary_actions.cpu().numpy()
+            # Rescale and perform action
+            if self.update_left is True:
+                clipped_actions = np.hstack([actions, adversary_actions])
+            else:
+                clipped_actions = np.hstack([adversary_actions, actions])
+            # Clip the actions to avoid out of bound error
+            if isinstance(self.action_space, spaces.Box):
+                clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
+
+            new_obs, rewards, rew_other, dones, infos = env.step(clipped_actions)
+            # assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
+            self.num_timesteps += env.num_envs
+
+            # Give access to local variables
+            callback.update_locals(locals())
+            if callback.on_step() is False:
+                return False
+
+            self._update_info_buffer(infos)
+            n_steps += 1
+
+            if isinstance(self.action_space, spaces.Discrete):
+                # Reshape in case of discrete action
+                actions = actions.reshape(-1, 1)
+
+            # Handle timeout by bootstraping with value function
+            # see GitHub issue #633
+            for idx, done in enumerate(dones):
+                if (
+                        done
+                        and infos[idx].get("terminal_observation") is not None
+                        and infos[idx].get("TimeLimit.truncated", False)
+                ):
+                    terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
+                    with th.no_grad():
+                        terminal_value = self.policy.predict_values(terminal_obs)[0]
+                    rewards[idx] += self.gamma * terminal_value
+
+            rollout_buffer.add(
+                self._last_obs,  # type: ignore[arg-type]
+                actions,
+                adversary_actions,
+                rewards,
+                self._last_episode_starts,  # type: ignore[arg-type]
+                all_adv_critic_values.squeeze(),
+                log_probs,
+                adversary_log_probs
+            )
+
+            for i in range(self.num_adversaries):
+                chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
+                self.adversaries[i].rollout_buffer.add(
+                    self._last_obs[chunk],
+                    actions[chunk],
+                    adversary_actions[chunk],
+                    rewards[chunk],
+                    self._last_episode_starts[chunk],
+                    all_adv_critic_values[chunk],
+                    log_probs[chunk],
+                    adversary_log_probs[chunk] # not done
+                )
+
+            self._last_obs = new_obs
+            self._last_episode_starts = dones
+
+        with th.no_grad():
+            # Compute value for the last timestep
+            #values = torch.zeros((self.n_global_env,1))
+            #for i in range(self.num_adversaries):
+            #    chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
+            #    values[chunk] = self.adversaries[i].policy.predict_values(obs_as_tensor(new_obs, self.device))[chunk].to('cpu')
+            #not bootstrapped correctly
+            #use adversary critics not ma critic
+            values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))
+        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+
+        for i in range(self.num_adversaries): # is this a bug?
+            chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
+            self.adversaries[i].rollout_buffer.compute_returns_and_advantage(last_values=values[chunk], dones=dones[chunk])
+
+        callback.on_rollout_end()
+
+        return True
+
+    def train(self):
+        TSS_PPO.train(self)
+        for i in range(self.num_adversaries):
+            self.adversaries[i].train_one_adversary(self.policy, ma_left=self.update_left, ma_right=self.update_right)

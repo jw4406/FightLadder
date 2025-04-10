@@ -16,7 +16,7 @@ from torch.backends.cudnn import deterministic
 from common.const import *
 from common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P
 from common.game import get_next_level
-from common.algorithms import IPPO, MAGICS_PPO, RARL_PPO, TSS_PPO, Specialized_Agent
+from common.algorithms import IPPO, MAGICS_PPO, RARL_PPO, TSS_PPO, Specialized_Agent, Specialized_Agent_IPPO
 from stable_baselines3 import MAGICS_AL
 from common.retro_wrappers import SFWrapper, Monitor2P
 
@@ -186,7 +186,7 @@ def main():
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'], help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
-    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/magics_ws_tss_2")
+    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/magics_ws_tss_9")
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
     parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_ryu")
     parser.add_argument('--state', help='The state file to load. By default Champion.Level1.RyuVsGuile', default=SF_DEFAULT_STATE)
@@ -294,15 +294,15 @@ def main():
             batch_size=192,  # 512,
             n_epochs=2,
             gamma=0.94,
-            v_learning_rate=1e-3, c_learning_rate=1e-4,
-            d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
-            c_learning_rate_decay=critic_decay_schedule(1e-4),
-            d_learning_rate_decay=critic_decay_schedule(5e-4),
+            v_learning_rate=1e-5, c_learning_rate=1e-6,
+            d_learning_rate=5e-6, v_learning_rate_decay=critic_decay_schedule(1e-5),
+            c_learning_rate_decay=critic_decay_schedule(1e-6),
+            d_learning_rate_decay=critic_decay_schedule(5e-6),
             clip_range=clip_range_schedule,
             tensorboard_log=args.log_dir,
             seed=args.seed,
-            ent_coef=.01,
-            dstb_ent_coef=.01,
+            ent_coef=0,
+            dstb_ent_coef=0,
             I_AM_LEFT=True,
             I_AM_RIGHT=False,
             num_adversary=num_adversary,
@@ -426,24 +426,24 @@ def main():
     model.save(finetune_epoch_model_path)
     '''
 
-    finetune_model = Specialized_Agent(
+    finetune_model = Specialized_Agent_IPPO(
             "AACCnnPolicy",
             env_generator(),
-            device="cpu",
+            device="cuda",
             verbose=2,
-            n_steps=96,
-            batch_size=192,  # 512,
+            n_steps=192,
+            batch_size=384,  # 512,
             n_epochs=2,
             gamma=0.94,
-            v_learning_rate=1e-3, c_learning_rate=1e-4,
-            d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
-            c_learning_rate_decay=critic_decay_schedule(1e-4),
-            d_learning_rate_decay=critic_decay_schedule(5e-4),
+            v_learning_rate=1e-5, c_learning_rate=1e-6,
+            d_learning_rate=5e-6, v_learning_rate_decay=critic_decay_schedule(1e-5),
+            c_learning_rate_decay=critic_decay_schedule(1e-6),
+            d_learning_rate_decay=critic_decay_schedule(5e-6),
             clip_range=clip_range_schedule,
             tensorboard_log=args.log_dir,
             seed=args.seed,
-            ent_coef=.01,
-            dstb_ent_coef=.01,
+            ent_coef=0,
+            dstb_ent_coef=0,
             I_AM_LEFT=True,
             I_AM_RIGHT=False,
             num_adversary=12,
@@ -452,21 +452,22 @@ def main():
             warmstarted_cont_MAGICS=True
     )
     #model = Specialized_Agent.load("/home/jw4406/codebase/FightLadder/main/trained_models/ma/ppo_ryu_4545792_steps.zip", env=env_generator())
+    '''
     from stable_baselines3.common.save_util import load_from_zip_file
-    data, params, pytorch_variables = load_from_zip_file("/home/jw4406/codebase/FightLadder/main/trained_models/ma/ppo_ryu_4545792_steps.zip")
+    data, params, pytorch_variables = load_from_zip_file("/home/jw4406/codebase/FightLadder/main/trained_models/magics_ws_tss_3_cont/ppo_ryu_final_steps.zip")
     finetune_model.set_parameters(params, exact_match=True, device=finetune_model.device)
     for i in range(finetune_model.num_adversaries):
-        data, params, pytorch_variables = load_from_zip_file("/home/jw4406/codebase/FightLadder/main/trained_models/enemies/enemy_policy_%d.pt" % i)
+        data, params, pytorch_variables = load_from_zip_file("/home/jw4406/codebase/FightLadder/main/trained_models/magics_ws_tss_3_cont/enemy_policy_%d.pt" % i)
         finetune_model.adversaries[i].set_parameters(params, exact_match=True, device=finetune_model.device)
 
-
+    '''
     finetune_model.warmstart_setup(finetune_model.lr_schedule)
     for i in range(finetune_model.num_adversaries):
         if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
             finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
     for i in range(model.num_adversaries):
         finetune_model.adversaries[i]._setup_learn(finetune_model.adversaries[i].num_timesteps)
-    finetune_model.learn(total_timesteps=10e7)
+    finetune_model.learn(total_timesteps=10e7, callback=[checkpoint_callback])
 
     for i in range(len(state_list)):
         global STATE
