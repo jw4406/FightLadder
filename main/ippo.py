@@ -69,7 +69,7 @@ def evaluate(args, model, greedy=0, record=True):
     win_cnt = 0
     #env = []
     for i in range(1, args.num_episodes + 1):
-        env = make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=None)().env
+        env = make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=1)().env
         done = False
 
         obs = env.reset()
@@ -78,7 +78,7 @@ def evaluate(args, model, greedy=0, record=True):
 
         while not done:
             if np.random.uniform() > greedy:
-                (action, _states), (action_other, _states_other) = model.predict(obs, deterministic=False)
+                (action, _states), (action_other, _states_other) = model.predict(obs, deterministic=True)
             else:
                 (action, _states), (action_other, _states_other) = model.predict(obs, deterministic=True)
 
@@ -124,6 +124,68 @@ def evaluate(args, model, greedy=0, record=True):
 
 
 @torch.no_grad()
+def evaluate_sa(args, model, env_index, greedy=0, record=True):
+    assert isinstance(model, Specialized_Agent)
+    global STATE
+    win_cnt = 0
+    # env = []
+    for i in range(1, args.num_episodes + 1):
+        env = make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render,
+                       enable_combo=args.enable_combo, null_combo=args.null_combo,
+                       transform_action=args.transform_action, seed=None)().env
+        done = False
+
+        obs = env.reset()
+        if record:
+            video_log = [Image.fromarray(env.render(mode="rgb_array"))]
+
+        while not done:
+            if np.random.uniform() > greedy:
+                (action, _states), (action_other, _states_other) = model.predict(obs, env_index, deterministic=False)
+            else:
+                (action, _states), (action_other, _states_other) = model.predict(obs, env_index, deterministic=False)
+
+            obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
+            if record:
+                video_log.append(Image.fromarray(env.render(mode="rgb_array")))
+            # print(info)
+            # if done:
+            #     video_log[-1].save(f"{args.video_dir}/episode_{i}.png")
+
+            if done:
+                if record:
+                    try:
+                        name = STATE.split("/")[1]
+                    except:
+                        name = STATE
+                    height, width, layers = np.array(video_log[0]).shape
+                    container = av.open(f"{args.video_dir}/{name}_episode_{i}.mp4", mode='w')
+                    stream = container.add_stream('h264', rate=10)
+                    stream.width = width
+                    stream.height = height
+                    stream.pix_fmt = 'yuv420p'
+                    for img in video_log:
+                        frame = av.VideoFrame.from_image(img)
+                        for packet in stream.encode(frame):
+                            container.mux(packet)
+                    remain_packets = stream.encode(None)
+                    container.mux(remain_packets)
+                    container.close()
+
+        if info['enemy_hp'] < info['agent_hp']:
+            print("Victory!")
+            win_cnt += 1
+
+        # print("Total reward: {}\n".format(total_reward))
+        # episode_reward_sum += total_reward
+
+        env.close()
+
+    win_rate = win_cnt / args.num_episodes
+    print("Winning rate: {}".format(win_rate))
+    return win_rate
+
+@torch.no_grad()
 def evaluate_cross(args, model1, model2, greedy=0.5, record=True):
     win_cnt = 0
 
@@ -155,8 +217,12 @@ def evaluate_cross(args, model1, model2, greedy=0.5, record=True):
 
             if done:
                 if record:
+                    try:
+                        name = STATE.split("/")[1]
+                    except:
+                        name = STATE
                     height, width, layers = np.array(video_log[0]).shape
-                    container = av.open(f"{args.video_dir}/episode_{i}.mp4", mode='w')
+                    container = av.open(f"{args.video_dir}/{name}episode_{i}.mp4", mode='w')
                     stream = container.add_stream('h264', rate=10)
                     stream.width = width
                     stream.height = height
@@ -196,7 +262,7 @@ def main():
     parser.add_argument('--num-episodes', type=int, help='In evaluation, play how many episodes', default=20)
     parser.add_argument('--num-epoch', type=int, help='Finetune how many epochs', default=50)
     parser.add_argument('--total-steps', type=int, help='How many total steps to train', default=int(10))
-    parser.add_argument('--video-dir', help='The path to save videos', default='videos/tss_baseline/')
+    parser.add_argument('--video-dir', help='The path to save videos', default='videos/spar_ippo_sa_fight_2/')
     parser.add_argument('--finetune-dir', help='The path to save finetune results', default='finetune')
     parser.add_argument('--init-level', type=int, help='Initial level to load from. By default 0, starting from pretrain', default=0)
     parser.add_argument('--resume-epoch', type=int, help='Resume epoch. By default 0, starting from pretrain', default=0)
@@ -426,7 +492,7 @@ def main():
     model.save(finetune_epoch_model_path)
     '''
 
-    finetune_model = Specialized_Agent_IPPO(
+    finetune_model = Specialized_Agent(
             "AACCnnPolicy",
             env_generator(),
             device="cuda",
@@ -451,29 +517,36 @@ def main():
             n_env_per_adv=args.num_env // 12,
             warmstarted_cont_MAGICS=True
     )
-    #model = Specialized_Agent.load("/home/jw4406/codebase/FightLadder/main/trained_models/ma/ppo_ryu_4545792_steps.zip", env=env_generator())
-    '''
-    from stable_baselines3.common.save_util import load_from_zip_file
-    data, params, pytorch_variables = load_from_zip_file("/home/jw4406/codebase/FightLadder/main/trained_models/magics_ws_tss_3_cont/ppo_ryu_final_steps.zip")
-    finetune_model.set_parameters(params, exact_match=True, device=finetune_model.device)
-    for i in range(finetune_model.num_adversaries):
-        data, params, pytorch_variables = load_from_zip_file("/home/jw4406/codebase/FightLadder/main/trained_models/magics_ws_tss_3_cont/enemy_policy_%d.pt" % i)
-        finetune_model.adversaries[i].set_parameters(params, exact_match=True, device=finetune_model.device)
+    finetune_model.warmstart_setup(finetune_model.lr_schedule)
+    #finetune_model = Specialized_Agent.load("/home/jw4406/codebase/FightLadder/main/trained_models/ma/ppo_ryu_4545792_steps.zip", env=env_generator())
 
+    from stable_baselines3.common.save_util import load_from_zip_file
+    data, params, pytorch_variables = load_from_zip_file("/home/jw4406/codebase/FightLadder/main/trained_models/ws3_8/ppo_ryu_1668096_steps.zip")
+    finetune_model.set_parameters(params, exact_match=False, device=finetune_model.device)
+    #for i in range(finetune_model.num_adversaries):
+    #    if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
+    #        finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
+    for i in range(finetune_model.num_adversaries):
+        data, params, pytorch_variables = load_from_zip_file("/home/jw4406/codebase/FightLadder/main/trained_models/neuronic_ippo/enemy_policy_%d.pt" % i)
+        finetune_model.adversaries[i].set_parameters(params, exact_match=False, device=finetune_model.device)
+    '''
     
     finetune_model.warmstart_setup(finetune_model.lr_schedule)
     for i in range(finetune_model.num_adversaries):
         if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
             finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
     '''
+
+    '''
     for i in range(model.num_adversaries):
         finetune_model.adversaries[i]._setup_learn(finetune_model.adversaries[i].num_timesteps)
     finetune_model.learn(total_timesteps=10e7, callback=[checkpoint_callback])
+    '''
 
     for i in range(len(state_list)):
         global STATE
         STATE = state_list[i]
-        results = evaluate(args, finetune_model, record=True)
+        results = evaluate_sa(args, finetune_model, i, record=True)
     print(results)
     with open(f"{args.finetune_dir}/{args.model_name_prefix}_start_results.txt", 'w') as f:
         f.write(str(results))
