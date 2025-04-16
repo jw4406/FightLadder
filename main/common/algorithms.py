@@ -3333,23 +3333,24 @@ class Specialized_Agent(TSS_PPO):
         clip_fractions = []
 
         continue_training = True
-        buf = deepcopy(self.rollout_buffer)
-        buf.values = torch.from_numpy(self.rollout_buffer.values).to(self.device)
-        buf.rewards = torch.from_numpy(buf.rewards).to(self.device)
-        buf.advantages = torch.from_numpy(buf.advantages).to(self.device)
-        buf.episode_starts = torch.from_numpy(buf.episode_starts).to(self.device)
-        for i in range(buf.buffer_size):
-            #location = np.nonzero(rollout_data.env_indices == i)
-            adversary_id = buf.env_indices[i] // self.n_env_per_adv
-            for j in range(self.num_adversaries):
-                _, _, values, _, _ = self.adversaries[j].policy(torch.Tensor(buf.observations[i][adversary_id==j]).to(self.device))
-            #_, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
-                buf.values[i][adversary_id==j] = values.squeeze()
-        #_, _, last_values, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
-        buf.compute_returns_and_advantage_pt(buf.values[i], torch.Tensor(buf.dones[-1]).to(self.device))
-        rollout_advantages_copy = deepcopy(self.rollout_buffer.advantages)
-        # buf.compute_returns_and_advantage_pt_test(last_values, torch.Tensor(buf.dones[-1]).to(self.device))
-        self.rollout_buffer.advantages = buf.advantages
+        if self.warmstarted_cont_MAGICS is True:
+            buf = deepcopy(self.rollout_buffer)
+            buf.values = torch.from_numpy(self.rollout_buffer.values).to(self.device)
+            buf.rewards = torch.from_numpy(buf.rewards).to(self.device)
+            buf.advantages = torch.from_numpy(buf.advantages).to(self.device)
+            buf.episode_starts = torch.from_numpy(buf.episode_starts).to(self.device)
+            for i in range(buf.buffer_size):
+                #location = np.nonzero(rollout_data.env_indices == i)
+                adversary_id = buf.env_indices[i] // self.n_env_per_adv
+                for j in range(self.num_adversaries):
+                    _, _, values, _, _ = self.adversaries[j].policy(torch.Tensor(buf.observations[i][adversary_id==j]).to(self.device))
+                #_, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
+                    buf.values[i][adversary_id==j] = values.squeeze()
+            #_, _, last_values, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
+            buf.compute_returns_and_advantage_pt(buf.values[i], torch.Tensor(buf.dones[-1]).to(self.device))
+            rollout_advantages_copy = deepcopy(self.rollout_buffer.advantages)
+            # buf.compute_returns_and_advantage_pt_test(last_values, torch.Tensor(buf.dones[-1]).to(self.device))
+            self.rollout_buffer.advantages = buf.advantages
         # train for n_epochs epochs
         for epoch in range(self.n_epochs):
             approx_kl_divs = []
@@ -3442,94 +3443,95 @@ class Specialized_Agent(TSS_PPO):
                 value_loss = F.mse_loss(torch.Tensor(rollout_data.returns).to(self.device), values_pred)
                 value_losses.append(value_loss.item())
                 all_adv_val_params = list(itertools.chain.from_iterable([self.adversaries[i].policy.value_optimizer.param_groups[0]['params'] for i in range(self.num_adversaries)]))
-                L_ctrl_grad_batched = autograd.grad(value_loss, all_adv_val_params,
-                                                    create_graph=True, retain_graph=True)
-                L_ctrl_grad = torch.cat([t.flatten() for t in L_ctrl_grad_batched], dim=0)
-                # L_ctrl_grad = torch.hstack([t.flatten() for t in L_ctrl_grad_batched])
-                full_hessian = False
-                n = sum(p.numel() for p in all_adv_val_params)
-                if full_hessian is False:
+                if self.warmstarted_cont_MAGICS is True:
+                    L_ctrl_grad_batched = autograd.grad(value_loss, all_adv_val_params,
+                                                        create_graph=True, retain_graph=True)
+                    L_ctrl_grad = torch.cat([t.flatten() for t in L_ctrl_grad_batched], dim=0)
+                    # L_ctrl_grad = torch.hstack([t.flatten() for t in L_ctrl_grad_batched])
+                    full_hessian = False
+                    n = sum(p.numel() for p in all_adv_val_params)
+                    if full_hessian is False:
 
-                    k = 50
-                    # n = sum(p.numel() for p in self.policy.value_optimizer.param_groups[0]['params'])
+                        k = 50
+                        # n = sum(p.numel() for p in self.policy.value_optimizer.param_groups[0]['params'])
 
-                    rademacher = torch.bernoulli(torch.from_numpy(np.ones((n, k)) * .5)).to(self.device)
-                    rademacher[rademacher == 0] = -1
-                    # grad_batched = autograd.grad(L_ctrl_grad, flat_params, rademacher,0,1, is_grads_batched=True)
-                    grad_batched = autograd.grad(L_ctrl_grad, all_adv_val_params,
-                                                 torch.transpose(rademacher.to(self.device), 0, 1),
-                                                 is_grads_batched=True,
-                                                 retain_graph=True, create_graph=True)
+                        rademacher = torch.bernoulli(torch.from_numpy(np.ones((n, k)) * .5)).to(self.device)
+                        rademacher[rademacher == 0] = -1
+                        # grad_batched = autograd.grad(L_ctrl_grad, flat_params, rademacher,0,1, is_grads_batched=True)
+                        grad_batched = autograd.grad(L_ctrl_grad, all_adv_val_params,
+                                                     torch.transpose(rademacher.to(self.device), 0, 1),
+                                                     is_grads_batched=True,
+                                                     retain_graph=True, create_graph=True)
 
-                else:
-                    grad_batched = autograd.grad(L_ctrl_grad, self.policy.value_optimizer.param_groups[0]['params'],
-                                                 torch.eye(n).to(self.device),
-                                                 is_grads_batched=True,
-                                                 retain_graph=True, create_graph=True)
-                if full_hessian is False:
-                    reshaped_grads = self.matrix_unbatch(grad_batched, k, size2=n).T
-                    reshaped_grads = reshaped_grads * rademacher
-                    L_ctrl_hessian = torch.mean(reshaped_grads, dim=1)
-                    L_ctrl_hessian = L_ctrl_hessian + 10
-                else:
-                    L_ctrl_hessian = self.matrix_unbatch(grad_batched, n)
-                    L_ctrl_hessian.diag().add_(5)
-                d2f1_ctrl_batched = autograd.grad(ctrl_policy_loss, all_adv_val_params,
-                                                  create_graph=True, retain_graph=True)
-                #d2f1_dstb_batched = autograd.grad(dstb_policy_loss,
-                #                                  self.policy.value_optimizer.param_groups[0]['params'],
-                #                                  create_graph=True, retain_graph=True)
-                d2f1_ctrl = torch.hstack([t.flatten() for t in d2f1_ctrl_batched])
+                    else:
+                        grad_batched = autograd.grad(L_ctrl_grad, self.policy.value_optimizer.param_groups[0]['params'],
+                                                     torch.eye(n).to(self.device),
+                                                     is_grads_batched=True,
+                                                     retain_graph=True, create_graph=True)
+                    if full_hessian is False:
+                        reshaped_grads = self.matrix_unbatch(grad_batched, k, size2=n).T
+                        reshaped_grads = reshaped_grads * rademacher
+                        L_ctrl_hessian = torch.mean(reshaped_grads, dim=1)
+                        L_ctrl_hessian = L_ctrl_hessian + 10
+                    else:
+                        L_ctrl_hessian = self.matrix_unbatch(grad_batched, n)
+                        L_ctrl_hessian.diag().add_(5)
+                    d2f1_ctrl_batched = autograd.grad(ctrl_policy_loss, all_adv_val_params,
+                                                      create_graph=True, retain_graph=True)
+                    #d2f1_dstb_batched = autograd.grad(dstb_policy_loss,
+                    #                                  self.policy.value_optimizer.param_groups[0]['params'],
+                    #                                  create_graph=True, retain_graph=True)
+                    d2f1_ctrl = torch.hstack([t.flatten() for t in d2f1_ctrl_batched])
 
-                #d2f1_dstb = torch.hstack([t.flatten() for t in d2f1_dstb_batched])
-                # d2f1_ctrl = torch.rand(d2f1_dstb.shape).to(self.device)
+                    #d2f1_dstb = torch.hstack([t.flatten() for t in d2f1_dstb_batched])
+                    # d2f1_ctrl = torch.rand(d2f1_dstb.shape).to(self.device)
 
-                # diag, no other option
-                iHvp_ctrl = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_ctrl)
-                #iHvp_dstb = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_dstb)
-                #assert not np.any(self.rollout_buffer.current_shot - self.rollout_buffer.indices[
-                #                                                     count * self.batch_size: count * self.batch_size + self.batch_size])
-                # assert self.rollout_buffer.current_shot == self.rollout_buffer.indices[count * self.batch_size: count * self.batch_size + self.batch_size]
-                traj_ids = self.rollout_buffer.env_indices[self.rollout_buffer.indices[
-                                                           count * self.batch_size: count * self.batch_size + self.batch_size]].squeeze()
-                x0_states = self.rollout_buffer.X0_VALUES_MASTER[traj_ids]
-                x0_returns = buf.X0_RETURNS_MASTER[traj_ids]
-                x0_values, _, _, _, _ = self.policy.evaluate_actions(torch.Tensor(x0_states).to(self.device),
-                                                                     torch.Tensor(actions[0]).to(self.device),
-                                                                     torch.Tensor(dstb_actions[0]).to(self.device))
+                    # diag, no other option
+                    iHvp_ctrl = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_ctrl)
+                    #iHvp_dstb = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_dstb)
+                    #assert not np.any(self.rollout_buffer.current_shot - self.rollout_buffer.indices[
+                    #                                                     count * self.batch_size: count * self.batch_size + self.batch_size])
+                    # assert self.rollout_buffer.current_shot == self.rollout_buffer.indices[count * self.batch_size: count * self.batch_size + self.batch_size]
+                    traj_ids = self.rollout_buffer.env_indices[self.rollout_buffer.indices[
+                                                               count * self.batch_size: count * self.batch_size + self.batch_size]].squeeze()
+                    x0_states = self.rollout_buffer.X0_VALUES_MASTER[traj_ids]
+                    x0_returns = buf.X0_RETURNS_MASTER[traj_ids]
+                    x0_values, _, _, _, _ = self.policy.evaluate_actions(torch.Tensor(x0_states).to(self.device),
+                                                                         torch.Tensor(actions[0]).to(self.device),
+                                                                         torch.Tensor(dstb_actions[0]).to(self.device))
 
-                # clipped surrogate loss
+                    # clipped surrogate loss
 
-                '''policy_loss_1 = advantages * ratio
-                policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
-                policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()'''
-                # autograd.grad(L_ctrl_grad, self.policy.ctrl_optimizer.param_groups[0]['params'], iHvp_ctrl, is_grads_batched=False, create_graph=True, retain_graph=True)
+                    '''policy_loss_1 = advantages * ratio
+                    policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
+                    policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()'''
+                    # autograd.grad(L_ctrl_grad, self.policy.ctrl_optimizer.param_groups[0]['params'], iHvp_ctrl, is_grads_batched=False, create_graph=True, retain_graph=True)
 
-                # surr_L_ctrl = self.prep_grad_theta_L(advantages, ctrl_log_prob, x0_values.squeeze(), torch.tensor(x0_returns).to(self.device))
-                '''values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
-                    torch.Tensor(rollout_data.observations).to(self.device), torch.Tensor(actions).to(self.device),
-                    torch.Tensor(dstb_actions).to(self.device))
-                x0_values, _, _, _, _ = self.policy.evaluate_actions(torch.Tensor(x0_states).to(self.device),
-                                                                     torch.Tensor(actions[0]).to(self.device),
-                                                                     torch.Tensor(dstb_actions[0]).to(self.device))
-                '''
-                # surr_L_dstb = self.prep_grad_psi_L(advantages, dstb_log_prob, x0_values.squeeze(), torch.tensor(x0_returns).to(self.device))
-                # d1f2_ctrl_batched = autograd.grad(surr_L, self.policy.ctrl_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True)
-                surr_L_ctrl, surr_L_dstb = self.estimators(advantages, ctrl_log_prob, dstb_log_prob,
-                                                           x0_values.squeeze(),
-                                                           torch.Tensor(x0_returns).to(self.device))
-                d1f2_ctrl_batched = autograd.grad(surr_L_ctrl, all_adv_val_params,
-                                                  create_graph=True, retain_graph=True)
-                d1f2_ctrl = torch.hstack([t.flatten() for t in d1f2_ctrl_batched])
-                #d1f2_dstb_batched = autograd.grad(surr_L_dstb, self.policy.value_optimizer.param_groups[0]['params'],
-                #                                  create_graph=True, retain_graph=True)
-                #d1f2_dstb = torch.hstack([u.flatten() for u in d1f2_dstb_batched])
-                # d1f2_dstb = d1f2_dstb.dot(dstb_log_prob)
-                # ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.value_optimizer.param_groups[0]['params'], torch.eye(d1f2_ctrl.shape[0], device=self.device), is_grads_batched=True, create_graph=True, retain_graph=True)
-                ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.ctrl_optimizer.param_groups[0]['params'], iHvp_ctrl,
-                                         is_grads_batched=False, create_graph=True, retain_graph=True)
-                #dstb_imp = autograd.grad(d1f2_dstb, self.policy.dstb_optimizer.param_groups[0]['params'], iHvp_dstb,
-                #                         is_grads_batched=False, create_graph=True, retain_graph=True)
+                    # surr_L_ctrl = self.prep_grad_theta_L(advantages, ctrl_log_prob, x0_values.squeeze(), torch.tensor(x0_returns).to(self.device))
+                    '''values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
+                        torch.Tensor(rollout_data.observations).to(self.device), torch.Tensor(actions).to(self.device),
+                        torch.Tensor(dstb_actions).to(self.device))
+                    x0_values, _, _, _, _ = self.policy.evaluate_actions(torch.Tensor(x0_states).to(self.device),
+                                                                         torch.Tensor(actions[0]).to(self.device),
+                                                                         torch.Tensor(dstb_actions[0]).to(self.device))
+                    '''
+                    # surr_L_dstb = self.prep_grad_psi_L(advantages, dstb_log_prob, x0_values.squeeze(), torch.tensor(x0_returns).to(self.device))
+                    # d1f2_ctrl_batched = autograd.grad(surr_L, self.policy.ctrl_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True)
+                    surr_L_ctrl, surr_L_dstb = self.estimators(advantages, ctrl_log_prob, dstb_log_prob,
+                                                               x0_values.squeeze(),
+                                                               torch.Tensor(x0_returns).to(self.device))
+                    d1f2_ctrl_batched = autograd.grad(surr_L_ctrl, all_adv_val_params,
+                                                      create_graph=True, retain_graph=True)
+                    d1f2_ctrl = torch.hstack([t.flatten() for t in d1f2_ctrl_batched])
+                    #d1f2_dstb_batched = autograd.grad(surr_L_dstb, self.policy.value_optimizer.param_groups[0]['params'],
+                    #                                  create_graph=True, retain_graph=True)
+                    #d1f2_dstb = torch.hstack([u.flatten() for u in d1f2_dstb_batched])
+                    # d1f2_dstb = d1f2_dstb.dot(dstb_log_prob)
+                    # ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.value_optimizer.param_groups[0]['params'], torch.eye(d1f2_ctrl.shape[0], device=self.device), is_grads_batched=True, create_graph=True, retain_graph=True)
+                    ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.ctrl_optimizer.param_groups[0]['params'], iHvp_ctrl,
+                                             is_grads_batched=False, create_graph=True, retain_graph=True)
+                    #dstb_imp = autograd.grad(d1f2_dstb, self.policy.dstb_optimizer.param_groups[0]['params'], iHvp_dstb,
+                    #                         is_grads_batched=False, create_graph=True, retain_graph=True)
 
                 # Entropy loss favor exploration
                 if (ctrl_entropy is None) or (dstb_entropy is None):
@@ -3567,63 +3569,64 @@ class Specialized_Agent(TSS_PPO):
                 self.policy.dstb_optimizer.zero_grad()
                 self.policy.value_optimizer.zero_grad()
                 loss.backward()
-                for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params'])):
-                    self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad = self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad - ctrl_imp[i]
+                if self.warmstarted_cont_MAGICS is True:
+                    for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params'])):
+                        self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad = self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad - ctrl_imp[i]
                 # Clip grad norm
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.policy.ctrl_optimizer.step()
                 self.policy.dstb_optimizer.step()
                 self.policy.value_optimizer.step()
-
-                advantage_test = []
-                vf = torch.zeros_like(buf.values[-1])
-                adversary_id = buf.env_indices[-1] // self.n_env_per_adv
-                for j in range(self.num_adversaries):
-                    _, _, values, _, _ = self.adversaries[j].policy(
-                        torch.Tensor(buf.observations[-1][adversary_id == j]).to(self.device))
-                    # _, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
-                    vf[adversary_id == j] = values.squeeze()
-                #_, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
-                last_values = vf.flatten()
-                last_gae_lam = th.zeros_like(last_values)
-                dones = torch.Tensor(buf.dones[-1]).to(self.device)
-                for step in reversed(range(buf.buffer_size)):
-                    next_values = torch.zeros_like(buf.values[-1])
-                    # _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
-                    if step == buf.buffer_size - 1:
-                        next_non_terminal = 1.0 - dones.float()
-                        next_values = last_values
-                    else:
-                        next_non_terminal = 1.0 - buf.episode_starts[step + 1].float()
-                        adversary_id = buf.env_indices[-1] // self.n_env_per_adv
+                if self.warmstarted_cont_MAGICS is True:
+                    advantage_test = []
+                    vf = torch.zeros_like(buf.values[-1])
+                    adversary_id = buf.env_indices[-1] // self.n_env_per_adv
+                    for j in range(self.num_adversaries):
+                        _, _, values, _, _ = self.adversaries[j].policy(
+                            torch.Tensor(buf.observations[-1][adversary_id == j]).to(self.device))
+                        # _, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
+                        vf[adversary_id == j] = values.squeeze()
+                    #_, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
+                    last_values = vf.flatten()
+                    last_gae_lam = th.zeros_like(last_values)
+                    dones = torch.Tensor(buf.dones[-1]).to(self.device)
+                    for step in reversed(range(buf.buffer_size)):
+                        next_values = torch.zeros_like(buf.values[-1])
+                        # _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
+                        if step == buf.buffer_size - 1:
+                            next_non_terminal = 1.0 - dones.float()
+                            next_values = last_values
+                        else:
+                            next_non_terminal = 1.0 - buf.episode_starts[step + 1].float()
+                            adversary_id = buf.env_indices[-1] // self.n_env_per_adv
+                            for j in range(self.num_adversaries):
+                                _, _, temp_values, _, _ = self.adversaries[j].policy(
+                                    torch.Tensor(buf.observations[step + 1][adversary_id == j]).to(self.device))
+                            #_, _, temp_values, _, _ = self.policy(torch.Tensor(buf.observations[step + 1]).to(self.device))
+                                next_values[adversary_id==j] = temp_values.flatten()
+                        value_query = torch.zeros_like(buf.values[-1])
+                        #_, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
+                        adversary_id = buf.env_indices[step] // self.n_env_per_adv
                         for j in range(self.num_adversaries):
                             _, _, temp_values, _, _ = self.adversaries[j].policy(
-                                torch.Tensor(buf.observations[step + 1][adversary_id == j]).to(self.device))
-                        #_, _, temp_values, _, _ = self.policy(torch.Tensor(buf.observations[step + 1]).to(self.device))
-                            next_values[adversary_id==j] = temp_values.flatten()
-                    value_query = torch.zeros_like(buf.values[-1])
-                    #_, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
-                    adversary_id = buf.env_indices[step] // self.n_env_per_adv
-                    for j in range(self.num_adversaries):
-                        _, _, temp_values, _, _ = self.adversaries[j].policy(
-                            torch.Tensor(buf.observations[step][adversary_id == j]).to(self.device))
-                        value_query[adversary_id==j] = temp_values.squeeze()
+                                torch.Tensor(buf.observations[step][adversary_id == j]).to(self.device))
+                            value_query[adversary_id==j] = temp_values.squeeze()
 
-                    delta = buf.rewards[step] + buf.gamma * next_values * next_non_terminal - value_query.squeeze()
-                    last_gae_lam = delta + buf.gamma * buf.gae_lambda * next_non_terminal * last_gae_lam
-                    advantage_test.append(last_gae_lam)
-                    # buf.advantages[step] = last_gae_lam
-                advantages = torch.stack(advantage_test, dim=0)
-                # buf.returns = buf.advantages + buf.values
-                end=time.time()
-                print("batch complete, elapsed = %f" % (start-end))
-                # TEST - DO NOT COMMIT
+                        delta = buf.rewards[step] + buf.gamma * next_values * next_non_terminal - value_query.squeeze()
+                        last_gae_lam = delta + buf.gamma * buf.gae_lambda * next_non_terminal * last_gae_lam
+                        advantage_test.append(last_gae_lam)
+                        # buf.advantages[step] = last_gae_lam
+                    advantages = torch.stack(advantage_test, dim=0)
+                    # buf.returns = buf.advantages + buf.values
+                    end=time.time()
+                    print("batch complete, elapsed = %f" % (start-end))
+                    # TEST - DO NOT COMMIT
 
-                # buf.compute_returns_and_advantage_pt(values, torch.Tensor(buf.dones[-1]).to(self.device))
-                # self.rollout_buffer.advantages = torch.zeros_like(self.rollout_buffer.advantages)
-                # self.rollout_buffer.flat_advantages = buf.swap_and_flatten(buf.advantages)
-                self.rollout_buffer.advantages = self.rollout_buffer.swap_and_flatten_pt(advantages)
-                count = count + 1
+                    # buf.compute_returns_and_advantage_pt(values, torch.Tensor(buf.dones[-1]).to(self.device))
+                    # self.rollout_buffer.advantages = torch.zeros_like(self.rollout_buffer.advantages)
+                    # self.rollout_buffer.flat_advantages = buf.swap_and_flatten(buf.advantages)
+                    self.rollout_buffer.advantages = self.rollout_buffer.swap_and_flatten_pt(advantages)
+                    count = count + 1
 
                 if not continue_training:
                     break

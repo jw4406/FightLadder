@@ -21,13 +21,30 @@ from stable_baselines3 import MAGICS_AL
 from common.retro_wrappers import SFWrapper, Monitor2P
 
 
+PRETRAIN = True
+FINETUNE = False
+EVAL = False
+
+
+if EVAL is False:
+    assert PRETRAIN != FINETUNE
+else:
+    assert (PRETRAIN is False) and (FINETUNE is False)
+
 #STATE = "Champion.RyuVsRyu.2Player.align"
+PLAYER = "Dhalsim" # "Blanka
+OPPONENT_LIST = ["Vega", "Balrog", "Guile", "EHonda", "Blanka", "Ryu", "Sagat", "MBison", "Dhalsim", "Zangief", "ChunLi", "Ken"]
+SIDE = "left" # "right"
+player_folder_name = PLAYER + '_' + SIDE
 global STATE
-STATE = "two_player/Champion.Level1.RyuVsBlanka.2Player.state"
-STATE = ["two_player/Champion.Level1.RyuVsVega.2Player.state", "two_player/Champion.Level1.RyuVsBalrog.2Player.state", "two_player/Champion.Level1.RyuVsGuile.2Player.state", \
-    "two_player/Champion.Level1.RyuVsEHonda.2Player.state", "two_player/Champion.Level1.RyuVsBlanka.2Player.state", "two_player/Champion.Level1.RyuVsRyu.2Player.state", \
-         "two_player/Champion.Level1.RyuVsSagat.2Player.state", "two_player/Champion.Level1.RyuVsMBison.2Player.state", "two_player/Champion.Level1.RyuVsDhalsim.2Player.state", \
-         "two_player/Champion.Level1.RyuVsZangief.2Player.state", "two_player/Champion.Level1.RyuVsChunLi.2Player.state", "two_player/Champion.Level1.RyuVsKen.2Player.state"]
+#files  = os.listdir
+STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name, PLAYER, OPPONENT_LIST[i]) for i in range(len(OPPONENT_LIST))]
+
+#STATE = "two_player/Champion.Level1.RyuVsBlanka.2Player.state"
+#STATE = ["two_player/Champion.Level1.RyuVsVega.2Player.state", "two_player/Champion.Level1.RyuVsBalrog.2Player.state", "two_player/Champion.Level1.RyuVsGuile.2Player.state", \
+#    "two_player/Champion.Level1.RyuVsEHonda.2Player.state", "two_player/Champion.Level1.RyuVsBlanka.2Player.state", "two_player/Champion.Level1.RyuVsRyu.2Player.state", \
+#         "two_player/Champion.Level1.RyuVsSagat.2Player.state", "two_player/Champion.Level1.RyuVsMBison.2Player.state", "two_player/Champion.Level1.RyuVsDhalsim.2Player.state", \
+#         "two_player/Champion.Level1.RyuVsZangief.2Player.state", "two_player/Champion.Level1.RyuVsChunLi.2Player.state", "two_player/Champion.Level1.RyuVsKen.2Player.state"]
 state_list = STATE
 def const_schedule(initial_value: float):
     def func(progress_remaining: float) -> float:
@@ -252,16 +269,16 @@ def main():
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'], help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
-    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/magics_ws_tss_9")
+    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/magics_test_PLAYER")
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
-    parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_ryu")
+    parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_%s" % PLAYER)
     parser.add_argument('--state', help='The state file to load. By default Champion.Level1.RyuVsGuile', default=SF_DEFAULT_STATE)
     parser.add_argument('--side', help='The side for AI to control. By default both', default='both', choices=['left', 'right', 'both'])
     parser.add_argument('--render', action='store_true', help='Whether to render the game screen')
     parser.add_argument('--num-env', type=int, help='How many envirorments to create', default=64)
     parser.add_argument('--num-episodes', type=int, help='In evaluation, play how many episodes', default=20)
     parser.add_argument('--num-epoch', type=int, help='Finetune how many epochs', default=50)
-    parser.add_argument('--total-steps', type=int, help='How many total steps to train', default=int(10))
+    parser.add_argument('--total-steps', type=int, help='How many total steps to train', default=int(1000))
     parser.add_argument('--video-dir', help='The path to save videos', default='videos/spar_ippo_sa_fight_2/')
     parser.add_argument('--finetune-dir', help='The path to save finetune results', default='finetune')
     parser.add_argument('--init-level', type=int, help='Initial level to load from. By default 0, starting from pretrain', default=0)
@@ -467,89 +484,54 @@ def main():
     '''
 
     checkpoint_callback = SACheckpointCallback(save_freq=checkpoint_interval, save_path=args.save_dir, name_prefix=f"{args.model_name_prefix}")
-    '''
-    if args.async_update:
-        model.async_learn(
-            total_timesteps=args.total_steps,
-            callback=[checkpoint_callback],
-            fsp=args.fsp,
-            fsp_threshold=args.fsp_threshold,
-        )
+    if (FINETUNE is True) or (EVAL is True):
+        finetune_model = finetune_model_generator(args.model_file, lr_schedule=lr_schedule,
+                                                  other_lr_schedule=other_lr_schedule,
+                                                  clip_range_schedule=clip_range_schedule)
+
+        finetune_model.warmstart_setup(finetune_model.lr_schedule)
+        # finetune_model = Specialized_Agent.load("/home/jw4406/codebase/FightLadder/main/trained_models/ma/ppo_ryu_4545792_steps.zip", env=env_generator())
+
+        from stable_baselines3.common.save_util import load_from_zip_file
+        data, params, pytorch_variables = load_from_zip_file(
+            "/home/jw4406/codebase/FightLadder/main/trained_models/ws3_8/ppo_ryu_1668096_steps.zip")
+        finetune_model.set_parameters(params, exact_match=False, device=finetune_model.device)
+        for i in range(finetune_model.num_adversaries):
+            if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
+                finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
+        for i in range(finetune_model.num_adversaries):
+            data, params, pytorch_variables = load_from_zip_file(
+                "/home/jw4406/codebase/FightLadder/main/trained_models/neuronic_ippo/enemy_policy_%d.pt" % i)
+            finetune_model.adversaries[i].set_parameters(params, exact_match=False, device=finetune_model.device)
+
+    if not EVAL:
+        if args.async_update:
+            model.async_learn(
+                total_timesteps=args.total_steps,
+                callback=[checkpoint_callback],
+                fsp=args.fsp,
+                fsp_threshold=args.fsp_threshold,
+            )
+        else:
+            for i in range(model.num_adversaries):
+                model.adversaries[i]._setup_learn(model.adversaries[i].num_timesteps)
+            model.learn(
+                total_timesteps=args.total_steps,
+                callback=[checkpoint_callback]
+            )
+        for i in range(len(model.adversaries)):
+            model.adversaries[i].save("enemy_policy_%d.pt" % i)
+        model.adversaries = []
+        model.save(finetune_epoch_model_path)
     else:
-        for i in range(model.num_adversaries):
-            model.adversaries[i]._setup_learn(model.adversaries[i].num_timesteps)
-        model.learn(
-            total_timesteps=args.total_steps,
-            callback=[checkpoint_callback]
-        )
-    '''
-    #model.env = []
-    #model.save(model.state_dict())
-    '''
-    for i in range(len(model.adversaries)):
-        model.adversaries[i].save("enemy_policy_%d.pt" % i)
-    model.adversaries = []
-    model.save(finetune_epoch_model_path)
-    '''
 
-    finetune_model = Specialized_Agent(
-            "AACCnnPolicy",
-            env_generator(),
-            device="cuda",
-            verbose=2,
-            n_steps=192,
-            batch_size=384,  # 512,
-            n_epochs=2,
-            gamma=0.94,
-            v_learning_rate=1e-5, c_learning_rate=1e-6,
-            d_learning_rate=5e-6, v_learning_rate_decay=critic_decay_schedule(1e-5),
-            c_learning_rate_decay=critic_decay_schedule(1e-6),
-            d_learning_rate_decay=critic_decay_schedule(5e-6),
-            clip_range=clip_range_schedule,
-            tensorboard_log=args.log_dir,
-            seed=args.seed,
-            ent_coef=0,
-            dstb_ent_coef=0,
-            I_AM_LEFT=True,
-            I_AM_RIGHT=False,
-            num_adversary=12,
-            n_global_env=args.num_env,
-            n_env_per_adv=args.num_env // 12,
-            warmstarted_cont_MAGICS=True
-    )
-    finetune_model.warmstart_setup(finetune_model.lr_schedule)
-    #finetune_model = Specialized_Agent.load("/home/jw4406/codebase/FightLadder/main/trained_models/ma/ppo_ryu_4545792_steps.zip", env=env_generator())
-
-    from stable_baselines3.common.save_util import load_from_zip_file
-    data, params, pytorch_variables = load_from_zip_file("/home/jw4406/codebase/FightLadder/main/trained_models/ws3_8/ppo_ryu_1668096_steps.zip")
-    finetune_model.set_parameters(params, exact_match=False, device=finetune_model.device)
-    #for i in range(finetune_model.num_adversaries):
-    #    if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
-    #        finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
-    for i in range(finetune_model.num_adversaries):
-        data, params, pytorch_variables = load_from_zip_file("/home/jw4406/codebase/FightLadder/main/trained_models/neuronic_ippo/enemy_policy_%d.pt" % i)
-        finetune_model.adversaries[i].set_parameters(params, exact_match=False, device=finetune_model.device)
-    '''
-    
-    finetune_model.warmstart_setup(finetune_model.lr_schedule)
-    for i in range(finetune_model.num_adversaries):
-        if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
-            finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
-    '''
-
-    '''
-    for i in range(model.num_adversaries):
-        finetune_model.adversaries[i]._setup_learn(finetune_model.adversaries[i].num_timesteps)
-    finetune_model.learn(total_timesteps=10e7, callback=[checkpoint_callback])
-    '''
-
-    for i in range(len(state_list)):
-        global STATE
-        STATE = state_list[i]
-        results = evaluate_sa(args, finetune_model, i, record=True)
-    print(results)
-    with open(f"{args.finetune_dir}/{args.model_name_prefix}_start_results.txt", 'w') as f:
-        f.write(str(results))
+        for i in range(len(state_list)):
+            global STATE
+            STATE = state_list[i]
+            results = evaluate_sa(args, finetune_model, i, record=True)
+        print(results)
+        with open(f"{args.finetune_dir}/{args.model_name_prefix}_start_results.txt", 'w') as f:
+            f.write(str(results))
 
 
 if __name__ == "__main__":
