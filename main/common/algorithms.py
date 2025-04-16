@@ -3647,6 +3647,11 @@ class Specialized_Agent(TSS_PPO):
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
 
+    def predict(self, obs, env_index, deterministic=False):
+        (left_action, state), (_, _) = self.policy.predict(obs, deterministic=deterministic)
+        (_, _), (right_action, _) = self.adversaries[env_index].predict(obs, deterministic=deterministic)
+        return (left_action, state), (right_action, state)
+
 class Specialized_Agent_IPPO(Specialized_Agent):
     policy_aliases: Dict[str, Type[BasePolicy]] = {
         "MlpPolicy": ActorCriticPolicy,
