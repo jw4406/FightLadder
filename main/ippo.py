@@ -32,10 +32,15 @@ else:
     assert (PRETRAIN is False) and (FINETUNE is False)
 
 #STATE = "Champion.RyuVsRyu.2Player.align"
-PLAYER = "Dhalsim" # "Blanka
+PLAYER = "Vega" # "Blanka
+global REMOVAL
+REMOVAL = "ChunLi"
 OPPONENT_LIST = ["Vega", "Balrog", "Guile", "EHonda", "Blanka", "Ryu", "Sagat", "MBison", "Dhalsim", "Zangief", "ChunLi", "Ken"]
 SIDE = "left" # "right"
 player_folder_name = PLAYER + '_' + SIDE
+if REMOVAL is not None:
+    OPPONENT_LIST.remove(REMOVAL)
+
 global STATE
 #files  = os.listdir
 STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name, PLAYER, OPPONENT_LIST[i]) for i in range(len(OPPONENT_LIST))]
@@ -266,6 +271,7 @@ def evaluate_cross(args, model1, model2, greedy=0.5, record=True):
     return win_rate
 
 def main():
+    global REMOVAL
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'], help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
@@ -323,9 +329,10 @@ def main():
         return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
 
-    checkpoint_interval = 2 # checkpoint_interval * num_envs = total_steps_per_checkpoint
+    checkpoint_interval = 10000 # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6), other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6), clip_range_schedule=linear_schedule(0.075, 0.025)):
+        global REMOVAL
         finetune_env = env_generator()
         finetune_model = IPPO(
             "CnnPolicy", 
@@ -367,25 +374,32 @@ def main():
             update_right=bool(args.update_right),
         )
 
-        num_adversary=12
+        if REMOVAL is None:
+            num_adversary = 12
+        else:
+            if isinstance(REMOVAL, str):
+                num_adversary = 11
+            else:
+                assert isinstance(REMOVAL, list)
+                num_adversary = 12 - len(REMOVAL)
         finetune_model = Specialized_Agent(
             "AACCnnPolicy",
             finetune_env,
             device="cuda",
             verbose=2,
-            n_steps=96,
-            batch_size=192,  # 512,
+            n_steps=704,
+            batch_size=1408,  # 512,
             n_epochs=2,
             gamma=0.94,
-            v_learning_rate=1e-5, c_learning_rate=1e-6,
-            d_learning_rate=5e-6, v_learning_rate_decay=critic_decay_schedule(1e-5),
-            c_learning_rate_decay=critic_decay_schedule(1e-6),
-            d_learning_rate_decay=critic_decay_schedule(5e-6),
+            v_learning_rate=1e-3, c_learning_rate=1e-4,
+            d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            c_learning_rate_decay=critic_decay_schedule(1e-4),
+            d_learning_rate_decay=critic_decay_schedule(5e-4),
             clip_range=clip_range_schedule,
             tensorboard_log=args.log_dir,
             seed=args.seed,
-            ent_coef=0,
-            dstb_ent_coef=0,
+            ent_coef=.01,
+            dstb_ent_coef=.01,
             I_AM_LEFT=True,
             I_AM_RIGHT=False,
             num_adversary=num_adversary,
@@ -414,9 +428,18 @@ def main():
     lr_schedule = 1e-4 # if args.async_update else linear_schedule(2.5e-4, 2.5e-6)
     other_lr_schedule = 1e-4 # if args.async_update else linear_schedule(2.5e-4/args.other_timescale, 2.5e-6/args.other_timescale)
     clip_range_schedule = 0.1 # if args.async_update else linear_schedule(0.15, 0.025)
-    args.num_env=48
-    model = finetune_model_generator(args.model_file, lr_schedule=lr_schedule, other_lr_schedule=other_lr_schedule, clip_range_schedule=clip_range_schedule)
+    if REMOVAL is None:
+        args.num_env=48
+    else:
 
+        if isinstance(REMOVAL, str):
+            args.num_env = 11 * 4
+        else:
+            assert isinstance(REMOVAL, list)
+            args.num_env = (12 - len(REMOVAL)) * 4
+    model = finetune_model_generator(args.model_file, lr_schedule=lr_schedule, other_lr_schedule=other_lr_schedule, clip_range_schedule=clip_range_schedule)
+    if REMOVAL is not None:
+        model.REMOVAL = REMOVAL
     if args.left_model_file and args.right_model_file:
         print("load model from " + args.left_model_file + " and " + args.right_model_file)
         model.set_parameters_2p(args.left_model_file, args.right_model_file)
