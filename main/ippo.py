@@ -32,6 +32,9 @@ else:
     assert (PRETRAIN is False) and (FINETUNE is False)
 
 #STATE = "Champion.RyuVsRyu.2Player.align"
+global REMOVAL
+global STATE
+'''
 PLAYER = "Blanka" # "Blanka
 global REMOVAL
 REMOVAL = None
@@ -44,13 +47,13 @@ if REMOVAL is not None:
 global STATE
 #files  = os.listdir
 STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name, PLAYER, OPPONENT_LIST[i]) for i in range(len(OPPONENT_LIST))]
-
+'''
 #STATE = "two_player/Champion.Level1.RyuVsBlanka.2Player.state"
 #STATE = ["two_player/Champion.Level1.RyuVsVega.2Player.state", "two_player/Champion.Level1.RyuVsBalrog.2Player.state", "two_player/Champion.Level1.RyuVsGuile.2Player.state", \
 #    "two_player/Champion.Level1.RyuVsEHonda.2Player.state", "two_player/Champion.Level1.RyuVsBlanka.2Player.state", "two_player/Champion.Level1.RyuVsRyu.2Player.state", \
 #         "two_player/Champion.Level1.RyuVsSagat.2Player.state", "two_player/Champion.Level1.RyuVsMBison.2Player.state", "two_player/Champion.Level1.RyuVsDhalsim.2Player.state", \
 #         "two_player/Champion.Level1.RyuVsZangief.2Player.state", "two_player/Champion.Level1.RyuVsChunLi.2Player.state", "two_player/Champion.Level1.RyuVsKen.2Player.state"]
-state_list = STATE
+#state_list = STATE
 def const_schedule(initial_value: float):
     def func(progress_remaining: float) -> float:
         return initial_value
@@ -271,7 +274,21 @@ def evaluate_cross(args, model1, model2, greedy=0.5, record=True):
     return win_rate
 
 def main(PLAYER):
+    #global REMOVAL
+    #PLAYER = "Blanka"  # "Blanka
     global REMOVAL
+    REMOVAL = None
+    OPPONENT_LIST = ["Vega", "Balrog", "Guile", "EHonda", "Blanka", "Ryu", "Sagat", "MBison", "Dhalsim", "Zangief",
+                     "ChunLi", "Ken"]
+    SIDE = "left"  # "right"
+    player_folder_name = PLAYER + '_' + SIDE
+    if REMOVAL is not None:
+        OPPONENT_LIST.remove(REMOVAL)
+
+    # files  = os.listdir
+    STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name, PLAYER, OPPONENT_LIST[i]) for i
+             in range(len(OPPONENT_LIST))]
+    state_list = STATE
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'], help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
@@ -316,7 +333,7 @@ def main(PLAYER):
                                  
     # Set up the environment and model
     def env_generator():
-        global STATE
+        #STATE
         each_env_count = 4
         env = []
         for i in range(len(STATE)):
@@ -336,7 +353,7 @@ def main(PLAYER):
     checkpoint_interval = 2 # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6), other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6), clip_range_schedule=linear_schedule(0.075, 0.025)):
-        global REMOVAL
+        REMOVAL
         finetune_env = env_generator()
         finetune_model = IPPO(
             "CnnPolicy", 
@@ -553,7 +570,7 @@ def main(PLAYER):
     else:
 
         for i in range(len(state_list)):
-            global STATE
+            #global STATE
             STATE = state_list[i]
             results = evaluate_sa(args, finetune_model, i, record=True)
         print(results)
