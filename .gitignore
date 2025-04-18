@@ -11,3 +11,4 @@ utils/figures/
 logs/*
 trained_models/*
 main/*.pt
+main/enemy_policy*.pt

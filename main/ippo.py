@@ -32,9 +32,9 @@ else:
     assert (PRETRAIN is False) and (FINETUNE is False)
 
 #STATE = "Champion.RyuVsRyu.2Player.align"
-PLAYER = "Vega" # "Blanka
+PLAYER = "Blanka" # "Blanka
 global REMOVAL
-REMOVAL = "ChunLi"
+REMOVAL = None
 OPPONENT_LIST = ["Vega", "Balrog", "Guile", "EHonda", "Blanka", "Ryu", "Sagat", "MBison", "Dhalsim", "Zangief", "ChunLi", "Ken"]
 SIDE = "left" # "right"
 player_folder_name = PLAYER + '_' + SIDE
@@ -270,12 +270,12 @@ def evaluate_cross(args, model1, model2, greedy=0.5, record=True):
     print("Winning rate: {}".format(win_rate))
     return win_rate
 
-def main():
+def main(PLAYER):
     global REMOVAL
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'], help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
-    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/magics_test_PLAYER")
+    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/magics_test_%s" % PLAYER)
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
     parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_%s" % PLAYER)
     parser.add_argument('--state', help='The state file to load. By default Champion.Level1.RyuVsGuile', default=SF_DEFAULT_STATE)
@@ -284,7 +284,7 @@ def main():
     parser.add_argument('--num-env', type=int, help='How many envirorments to create', default=64)
     parser.add_argument('--num-episodes', type=int, help='In evaluation, play how many episodes', default=20)
     parser.add_argument('--num-epoch', type=int, help='Finetune how many epochs', default=50)
-    parser.add_argument('--total-steps', type=int, help='How many total steps to train', default=int(1000))
+    parser.add_argument('--total-steps', type=int, help='How many total steps to train', default=int(10e7))
     parser.add_argument('--video-dir', help='The path to save videos', default='videos/spar_ippo_sa_fight_2/')
     parser.add_argument('--finetune-dir', help='The path to save finetune results', default='finetune')
     parser.add_argument('--init-level', type=int, help='Initial level to load from. By default 0, starting from pretrain', default=0)
@@ -301,6 +301,10 @@ def main():
     parser.add_argument('--fsp', action='store_true', help='Fictitious self-play')
     parser.add_argument('--fsp-threshold', type=float, help='Fictitious self-play threshold', default=0.5)
     parser.add_argument('--async-update', action='store_true', help='Update left and right asynchronously')
+    parser.add_argument("--player", type=str, required=True)
+    args = parser.parse_args()
+
+    #PLAYER = args.player
     
     args = parser.parse_args()
     print("command line args:" + str(args))
@@ -329,7 +333,7 @@ def main():
         return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
 
-    checkpoint_interval = 10000 # checkpoint_interval * num_envs = total_steps_per_checkpoint
+    checkpoint_interval = 2 # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6), other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6), clip_range_schedule=linear_schedule(0.075, 0.025)):
         global REMOVAL
@@ -387,8 +391,8 @@ def main():
             finetune_env,
             device="cuda",
             verbose=2,
-            n_steps=704,
-            batch_size=1408,  # 512,
+            n_steps=768,#704,
+            batch_size=1536,#1408,  # 512,
             n_epochs=2,
             gamma=0.94,
             v_learning_rate=1e-3, c_learning_rate=1e-4,
@@ -558,4 +562,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--player", type=str, required=True)
+    args = parser.parse_args()
+
+    PLAYER = args.player
+    main(PLAYER)
