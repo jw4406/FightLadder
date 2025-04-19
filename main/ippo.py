@@ -21,9 +21,9 @@ from stable_baselines3 import MAGICS_AL
 from common.retro_wrappers import SFWrapper, Monitor2P
 
 
-PRETRAIN = True
+PRETRAIN = False
 FINETUNE = False
-EVAL = False
+EVAL = True
 
 
 if EVAL is False:
@@ -149,13 +149,13 @@ def evaluate(args, model, greedy=0, record=True):
 
 
 @torch.no_grad()
-def evaluate_sa(args, model, env_index, greedy=0, record=True):
+def evaluate_sa(curr_state, args, model, env_index, greedy=0, record=True):
     assert isinstance(model, Specialized_Agent)
-    global STATE
+    #global STATE
     win_cnt = 0
     # env = []
     for i in range(1, args.num_episodes + 1):
-        env = make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render,
+        env = make_env(sf_game, state=curr_state, side=args.side, reset_type=args.reset, rendering=args.render,
                        enable_combo=args.enable_combo, null_combo=args.null_combo,
                        transform_action=args.transform_action, seed=None)().env
         done = False
@@ -180,9 +180,9 @@ def evaluate_sa(args, model, env_index, greedy=0, record=True):
             if done:
                 if record:
                     try:
-                        name = STATE.split("/")[1]
+                        name = curr_state.split("/")[1]
                     except:
-                        name = STATE
+                        name = curr_state
                     height, width, layers = np.array(video_log[0]).shape
                     container = av.open(f"{args.video_dir}/{name}_episode_{i}.mp4", mode='w')
                     stream = container.add_stream('h264', rate=10)
@@ -302,7 +302,7 @@ def main(PLAYER):
     parser.add_argument('--num-episodes', type=int, help='In evaluation, play how many episodes', default=20)
     parser.add_argument('--num-epoch', type=int, help='Finetune how many epochs', default=50)
     parser.add_argument('--total-steps', type=int, help='How many total steps to train', default=int(10e7))
-    parser.add_argument('--video-dir', help='The path to save videos', default='videos/spar_ippo_sa_fight_2/')
+    parser.add_argument('--video-dir', help='The path to save videos', default='videos/spar_spar_%s' % PLAYER)
     parser.add_argument('--finetune-dir', help='The path to save finetune results', default='finetune')
     parser.add_argument('--init-level', type=int, help='Initial level to load from. By default 0, starting from pretrain', default=0)
     parser.add_argument('--resume-epoch', type=int, help='Resume epoch. By default 0, starting from pretrain', default=0)
@@ -406,7 +406,7 @@ def main(PLAYER):
         finetune_model = Specialized_Agent(
             "AACCnnPolicy",
             finetune_env,
-            device="cuda",
+            device="cpu",
             verbose=2,
             n_steps=768,#704,
             batch_size=1536,#1408,  # 512,
@@ -533,19 +533,23 @@ def main(PLAYER):
                                                   other_lr_schedule=other_lr_schedule,
                                                   clip_range_schedule=clip_range_schedule)
 
-        finetune_model.warmstart_setup(finetune_model.lr_schedule)
+        #finetune_model.warmstart_setup(finetune_model.lr_schedule)
         # finetune_model = Specialized_Agent.load("/home/jw4406/codebase/FightLadder/main/trained_models/ma/ppo_ryu_4545792_steps.zip", env=env_generator())
 
         from stable_baselines3.common.save_util import load_from_zip_file
+        #data, params, pytorch_variables = load_from_zip_file(
+        #    "/home/jw4406/codebase/FightLadder/main/trained_models/ws3_8/ppo_ryu_1668096_steps.zip")
         data, params, pytorch_variables = load_from_zip_file(
-            "/home/jw4406/codebase/FightLadder/main/trained_models/ws3_8/ppo_ryu_1668096_steps.zip")
+            "/home/jw4406/codebase/FightLadder/main/trained_models/sa/sagat/ppo_Sagat_4272000_steps.zip")
         finetune_model.set_parameters(params, exact_match=False, device=finetune_model.device)
         for i in range(finetune_model.num_adversaries):
             if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
                 finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
         for i in range(finetune_model.num_adversaries):
+            #data, params, pytorch_variables = load_from_zip_file(
+            #    "/home/jw4406/codebase/FightLadder/main/trained_models/neuronic_ippo/enemy_policy_%d.pt" % i)
             data, params, pytorch_variables = load_from_zip_file(
-                "/home/jw4406/codebase/FightLadder/main/trained_models/neuronic_ippo/enemy_policy_%d.pt" % i)
+                "/home/jw4406/codebase/FightLadder/main/trained_models/sa/sagat/enemy_policy_89000_steps_%d.pt" % i)
             finetune_model.adversaries[i].set_parameters(params, exact_match=False, device=finetune_model.device)
 
     if not EVAL:
@@ -571,8 +575,8 @@ def main(PLAYER):
 
         for i in range(len(state_list)):
             #global STATE
-            STATE = state_list[i]
-            results = evaluate_sa(args, finetune_model, i, record=True)
+            #STATE = state_list[i]
+            results = evaluate_sa(state_list[i], args, finetune_model, i, record=True)
         print(results)
         with open(f"{args.finetune_dir}/{args.model_name_prefix}_start_results.txt", 'w') as f:
             f.write(str(results))
