@@ -3313,12 +3313,14 @@ class Specialized_Agent(TSS_PPO):
         Update policy using the currently gathered rollout buffer.
         """
 
+
         '''
         if self.warmstarted_cont_MAGICS is True:
             if self.warmstarted_cont_MAGICS is True:
                 print("this model is warmstarted! now running magics_ppo training", flush=True)
             return super().train()
         '''
+
 
         self._update_learning_rate(
             [self.policy.ctrl_optimizer, self.policy.dstb_optimizer, self.policy.value_optimizer])
