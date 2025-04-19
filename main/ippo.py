@@ -22,8 +22,8 @@ from common.retro_wrappers import SFWrapper, Monitor2P
 
 
 PRETRAIN = False
-FINETUNE = False
-EVAL = True
+FINETUNE = True
+EVAL = False
 
 
 if EVAL is False:
@@ -350,7 +350,7 @@ def main(PLAYER):
         return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
 
-    checkpoint_interval = 2 # checkpoint_interval * num_envs = total_steps_per_checkpoint
+    checkpoint_interval = 2000 # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6), other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6), clip_range_schedule=linear_schedule(0.075, 0.025)):
         REMOVAL
@@ -408,14 +408,14 @@ def main(PLAYER):
             finetune_env,
             device="cpu",
             verbose=2,
-            n_steps=768,#704,
-            batch_size=1536,#1408,  # 512,
+            n_steps=96,#704,
+            batch_size=192,#1408,  # 512,
             n_epochs=2,
             gamma=0.94,
-            v_learning_rate=1e-3, c_learning_rate=1e-4,
-            d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
-            c_learning_rate_decay=critic_decay_schedule(1e-4),
-            d_learning_rate_decay=critic_decay_schedule(5e-4),
+            v_learning_rate=50e-5, c_learning_rate=5e-5,
+            d_learning_rate=25e-5, v_learning_rate_decay=critic_decay_schedule(50e-5),
+            c_learning_rate_decay=critic_decay_schedule(5e-5),
+            d_learning_rate_decay=critic_decay_schedule(25e-5),
             clip_range=clip_range_schedule,
             tensorboard_log=args.log_dir,
             seed=args.seed,
@@ -540,17 +540,23 @@ def main(PLAYER):
         #data, params, pytorch_variables = load_from_zip_file(
         #    "/home/jw4406/codebase/FightLadder/main/trained_models/ws3_8/ppo_ryu_1668096_steps.zip")
         data, params, pytorch_variables = load_from_zip_file(
-            "/home/jw4406/codebase/FightLadder/main/trained_models/sa/sagat/ppo_Sagat_4272000_steps.zip")
+            "/home/jw4406/codebase/FightLadder/main/trained_models/magics_test_%s/ppo_%s_288000_steps.zip" % (PLAYER, PLAYER))
         finetune_model.set_parameters(params, exact_match=False, device=finetune_model.device)
-        for i in range(finetune_model.num_adversaries):
-            if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
-                finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
+        finetune_model.warmstarted_cont_MAGICS = True
+        finetune_model.warmstart_setup(finetune_model.lr_schedule)
+        #for i in range(finetune_model.num_adversaries):
+        #    if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
+        #        finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
         for i in range(finetune_model.num_adversaries):
             #data, params, pytorch_variables = load_from_zip_file(
             #    "/home/jw4406/codebase/FightLadder/main/trained_models/neuronic_ippo/enemy_policy_%d.pt" % i)
             data, params, pytorch_variables = load_from_zip_file(
-                "/home/jw4406/codebase/FightLadder/main/trained_models/sa/sagat/enemy_policy_89000_steps_%d.pt" % i)
+                "/home/jw4406/codebase/FightLadder/main/trained_models/magics_test_%s/enemy_policy_6000_steps_%d.pt" % (PLAYER, i))
             finetune_model.adversaries[i].set_parameters(params, exact_match=False, device=finetune_model.device)
+            finetune_model.adversaries[i].warmstarted_cont_MAGICS = True
+            if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
+                finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
+        model = finetune_model
 
     if not EVAL:
         if args.async_update:

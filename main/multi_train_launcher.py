@@ -1,7 +1,7 @@
 import subprocess
 
-# List of characters to train against
-CHARACTERS = ["Vega", "Balrog", "Guile", "EHonda", "Blanka", "Ryu", "Sagat", "MBison", "Dhalsim", "Zangief", "ChunLi", "Ken"]
+# List of player characters
+CHARACTERS = ["Vega", "Balrog", "Guile", "EHonda", "Blanka"]#, "Sagat", "MBison", "Dhalsim", "Zangief", "ChunLi", "Ken"]
 
 MAX_PARALLEL = 12  # Adjust to fit your cluster's CPU/GPU availability
 PROCESSES = []
