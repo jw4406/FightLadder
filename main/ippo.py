@@ -292,7 +292,7 @@ def main(PLAYER):
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'], help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
-    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/magics_test_%s" % PLAYER)
+    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/magics_test_%s_ft" % PLAYER)
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
     parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_%s" % PLAYER)
     parser.add_argument('--state', help='The state file to load. By default Champion.Level1.RyuVsGuile', default=SF_DEFAULT_STATE)
@@ -350,7 +350,7 @@ def main(PLAYER):
         return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
 
-    checkpoint_interval = 2000 # checkpoint_interval * num_envs = total_steps_per_checkpoint
+    checkpoint_interval = 100 # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6), other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6), clip_range_schedule=linear_schedule(0.075, 0.025)):
         REMOVAL
@@ -406,11 +406,11 @@ def main(PLAYER):
         finetune_model = Specialized_Agent(
             "AACCnnPolicy",
             finetune_env,
-            device="cpu",
+            device="cuda",
             verbose=2,
             n_steps=96,#704,
             batch_size=192,#1408,  # 512,
-            n_epochs=2,
+            n_epochs=10,
             gamma=0.94,
             v_learning_rate=50e-5, c_learning_rate=5e-5,
             d_learning_rate=25e-5, v_learning_rate_decay=critic_decay_schedule(50e-5),
@@ -419,8 +419,8 @@ def main(PLAYER):
             clip_range=clip_range_schedule,
             tensorboard_log=args.log_dir,
             seed=args.seed,
-            ent_coef=.01,
-            dstb_ent_coef=.01,
+            ent_coef=0,
+            dstb_ent_coef=0,
             I_AM_LEFT=True,
             I_AM_RIGHT=False,
             num_adversary=num_adversary,
@@ -540,10 +540,11 @@ def main(PLAYER):
         #data, params, pytorch_variables = load_from_zip_file(
         #    "/home/jw4406/codebase/FightLadder/main/trained_models/ws3_8/ppo_ryu_1668096_steps.zip")
         data, params, pytorch_variables = load_from_zip_file(
-            "/home/jw4406/codebase/FightLadder/main/trained_models/magics_test_%s/ppo_%s_288000_steps.zip" % (PLAYER, PLAYER))
+            "/home/jw4406/codebase/FightLadder/main/trained_models/magics_test_%s/ppo_%s_2688000_steps.zip" % (PLAYER, PLAYER))
         finetune_model.set_parameters(params, exact_match=False, device=finetune_model.device)
-        finetune_model.warmstarted_cont_MAGICS = True
-        finetune_model.warmstart_setup(finetune_model.lr_schedule)
+        if FINETUNE is True:
+            finetune_model.warmstarted_cont_MAGICS = True
+            finetune_model.warmstart_setup(finetune_model.lr_schedule)
         #for i in range(finetune_model.num_adversaries):
         #    if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
         #        finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
@@ -551,11 +552,12 @@ def main(PLAYER):
             #data, params, pytorch_variables = load_from_zip_file(
             #    "/home/jw4406/codebase/FightLadder/main/trained_models/neuronic_ippo/enemy_policy_%d.pt" % i)
             data, params, pytorch_variables = load_from_zip_file(
-                "/home/jw4406/codebase/FightLadder/main/trained_models/magics_test_%s/enemy_policy_6000_steps_%d.pt" % (PLAYER, i))
+                "/home/jw4406/codebase/FightLadder/main/trained_models/magics_test_%s/enemy_policy_58000_steps_%d.pt" % (PLAYER, i))
             finetune_model.adversaries[i].set_parameters(params, exact_match=False, device=finetune_model.device)
-            finetune_model.adversaries[i].warmstarted_cont_MAGICS = True
-            if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
-                finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
+            if FINETUNE is True:
+                finetune_model.adversaries[i].warmstarted_cont_MAGICS = True
+                if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
+                    finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
         model = finetune_model
 
     if not EVAL:

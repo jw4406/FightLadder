@@ -3124,6 +3124,7 @@ class Specialized_Agent(TSS_PPO):
         print("created %d adversaries" % self.num_adversaries)
         self.adversaries = adversaries
         #self._setup_learn(self._total_timesteps)
+        self.vf_coef = 1
 
     def _setup_model(self) -> None:
         super()._setup_model()
