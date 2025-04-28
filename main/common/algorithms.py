@@ -1589,7 +1589,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 L_ctrl_grad_batched = autograd.grad(value_loss, self.policy.value_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True)
                 L_ctrl_grad = torch.cat([t.flatten() for t in L_ctrl_grad_batched], dim=0)
                 #L_ctrl_grad = torch.hstack([t.flatten() for t in L_ctrl_grad_batched])
-                full_hessian = False
+                full_hessian = True
                 n = sum(p.numel() for p in self.policy.value_optimizer.param_groups[0]['params'])
                 if full_hessian is False:
 
@@ -2054,7 +2054,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                                                     create_graph=True, retain_graph=True)
                 L_ctrl_grad = torch.cat([t.flatten() for t in L_ctrl_grad_batched], dim=0)
                 # L_ctrl_grad = torch.hstack([t.flatten() for t in L_ctrl_grad_batched])
-                full_hessian = False
+                full_hessian = True
                 n = sum(p.numel() for p in self.policy.value_optimizer.param_groups[0]['params'])
                 if full_hessian is False:
 
@@ -2094,7 +2094,10 @@ class MAGICS_PPO(OnPolicyAlgorithm):
 
                 # diag, no other option
                 #iHvp_ctrl = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_ctrl)
-                iHvp_dstb = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_dstb)
+                if not full_hessian:
+                    iHvp_dstb = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_dstb)
+                else:
+                    iHvp_dstb = torch.linalg.solve(L_ctrl_hessian, d2f1_dstb)
                 #assert not np.any(self.rollout_buffer.current_shot - self.rollout_buffer.indices[
                 #                                                     count * self.batch_size: count * self.batch_size + self.batch_size])
                 # assert self.rollout_buffer.current_shot == self.rollout_buffer.indices[count * self.batch_size: count * self.batch_size + self.batch_size]
@@ -2600,7 +2603,8 @@ class TSS_PPO(MAGICS_PPO):
         self.warmstarted_cont_MAGICS=warmstarted_cont_MAGICS
         if self.warmstarted_cont_MAGICS is True:
             print("this model is warmstarted! now running magics_ppo training", flush=True)
-
+        self.learning_rate = [c_learning_rate, d_learning_rate, v_learning_rate]
+        #self.learning_rate_decay_phase =
     def warmstart_setup(self, joint_schedule, use_policy_extractor=True):
 
         assert self.warmstarted_cont_MAGICS == True
@@ -3087,6 +3091,7 @@ class Specialized_Agent(TSS_PPO):
         '''
         self.n_global_env = n_global_env
         self.n_env_per_adv = n_env_per_adv
+        self.learning_rate = [c_learning_rate, d_learning_rate, v_learning_rate]
         if _init_setup_model:
             self._setup_model()
 

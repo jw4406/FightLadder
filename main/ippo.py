@@ -21,8 +21,8 @@ from stable_baselines3 import MAGICS_AL
 from common.retro_wrappers import SFWrapper, Monitor2P
 
 
-PRETRAIN = False
-FINETUNE = True
+PRETRAIN = True
+FINETUNE = False
 EVAL = False
 
 
@@ -154,7 +154,7 @@ def evaluate_sa(curr_state, args, model, env_index, greedy=0, record=True):
     #global STATE
     win_cnt = 0
     # env = []
-    for i in range(1, args.num_episodes + 1):
+    for j in range(1, args.num_episodes + 1):
         env = make_env(sf_game, state=curr_state, side=args.side, reset_type=args.reset, rendering=args.render,
                        enable_combo=args.enable_combo, null_combo=args.null_combo,
                        transform_action=args.transform_action, seed=None)().env
@@ -184,7 +184,7 @@ def evaluate_sa(curr_state, args, model, env_index, greedy=0, record=True):
                     except:
                         name = curr_state
                     height, width, layers = np.array(video_log[0]).shape
-                    container = av.open(f"{args.video_dir}/{name}_episode_{i}.mp4", mode='w')
+                    container = av.open(f"{args.video_dir}/{name}_episode_{j}.mp4", mode='w')
                     stream = container.add_stream('h264', rate=10)
                     stream.width = width
                     stream.height = height
@@ -292,7 +292,7 @@ def main(PLAYER):
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'], help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
-    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/magics_test_%s_ft" % PLAYER)
+    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/magics_test_%s_ft_56789" % PLAYER)
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
     parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_%s" % PLAYER)
     parser.add_argument('--state', help='The state file to load. By default Champion.Level1.RyuVsGuile', default=SF_DEFAULT_STATE)
@@ -408,14 +408,14 @@ def main(PLAYER):
             finetune_env,
             device="cuda",
             verbose=2,
-            n_steps=96,#704,
+            n_steps=5000,#704,
             batch_size=192,#1408,  # 512,
-            n_epochs=10,
+            n_epochs=20,
             gamma=0.94,
-            v_learning_rate=50e-5, c_learning_rate=5e-5,
-            d_learning_rate=25e-5, v_learning_rate_decay=critic_decay_schedule(50e-5),
-            c_learning_rate_decay=critic_decay_schedule(5e-5),
-            d_learning_rate_decay=critic_decay_schedule(25e-5),
+            v_learning_rate=1e-3, c_learning_rate=1e-4,
+            d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            c_learning_rate_decay=critic_decay_schedule(1e-4),
+            d_learning_rate_decay=critic_decay_schedule(5e-4),
             clip_range=clip_range_schedule,
             tensorboard_log=args.log_dir,
             seed=args.seed,
@@ -426,6 +426,28 @@ def main(PLAYER):
             num_adversary=num_adversary,
             n_global_env=args.num_env,
             n_env_per_adv=args.num_env // num_adversary
+        )
+
+        finetune_model = TSS_PPO(
+            "AACCnnPolicy",
+            finetune_env,
+            device="cuda",
+            verbose=2,
+            n_steps=768,
+            batch_size=1536,  # 512,
+            n_epochs=10,
+            gamma=0.94,
+            v_learning_rate=1e-3, c_learning_rate=1e-4,
+            d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            c_learning_rate_decay=critic_decay_schedule(1e-4),
+            d_learning_rate_decay=critic_decay_schedule(5e-4),
+            clip_range=clip_range_schedule,
+            tensorboard_log=args.log_dir,
+            seed=args.seed,
+            ent_coef=0,
+            dstb_ent_coef=0,
+            update_left=bool(args.update_left),
+            update_right=bool(args.update_right),
         )
 
         '''
@@ -527,7 +549,7 @@ def main(PLAYER):
     '''
     '''
 
-    checkpoint_callback = SACheckpointCallback(save_freq=checkpoint_interval, save_path=args.save_dir, name_prefix=f"{args.model_name_prefix}")
+    checkpoint_callback = SACheckpointCallback(save_freq=checkpoint_interval, save_path=args.save_dir, name_prefix=f"{args.model_name_prefix}") if hasattr(model, "num_adversaries") else CheckpointCallback(save_freq=checkpoint_interval, save_path=args.save_dir, name_prefix=f"{args.model_name_prefix}")
     if (FINETUNE is True) or (EVAL is True):
         finetune_model = finetune_model_generator(args.model_file, lr_schedule=lr_schedule,
                                                   other_lr_schedule=other_lr_schedule,
@@ -539,23 +561,43 @@ def main(PLAYER):
         from stable_baselines3.common.save_util import load_from_zip_file
         #data, params, pytorch_variables = load_from_zip_file(
         #    "/home/jw4406/codebase/FightLadder/main/trained_models/ws3_8/ppo_ryu_1668096_steps.zip")
+        #if FINETUNE is True:
+        #finetune_model.warmstarted_cont_MAGICS = True
+        #finetune_model.warmstart_setup(finetune_model.lr_schedule)
         data, params, pytorch_variables = load_from_zip_file(
-            "/home/jw4406/codebase/FightLadder/main/trained_models/magics_test_%s/ppo_%s_2688000_steps.zip" % (PLAYER, PLAYER))
+            "/home/jw4406/codebase/FightLadder/main/trained_models/blanka_tss_test/ppo_%s_1728000_steps.zip" % (PLAYER))
+        #data, params, pytorch_variables = load_from_zip_file(
+        #        "/home/jw4406/codebase/FightLadder/main/trained_models/guile_tss_test/ppo_%s_1728000_steps.zip" % (PLAYER))
+        if EVAL is True:
+            del params['policy.ctrl_optimizer']
+            del params['policy.value_optimizer']
+            del params['policy.dstb_optimizer']
         finetune_model.set_parameters(params, exact_match=False, device=finetune_model.device)
-        if FINETUNE is True:
-            finetune_model.warmstarted_cont_MAGICS = True
-            finetune_model.warmstart_setup(finetune_model.lr_schedule)
+        #finetune_model.warmstarted_cont_MAGICS = True
+        #finetune_model.warmstart_setup(finetune_model.lr_schedule)
+        #finetune_model.load_state_dict(torch.load("/home/jw4406/codebase/FightLadder/main/trained_models/magics_test_%s_ft/ppo_%s_24000_steps.zip" % (PLAYER, PLAYER), weights_only=True))
+        #if FINETUNE is True:
+        #    finetune_model.warmstarted_cont_MAGICS = True
+        #    finetune_model.warmstart_setup(finetune_model.lr_schedule)
         #for i in range(finetune_model.num_adversaries):
         #    if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
         #        finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
         for i in range(finetune_model.num_adversaries):
             #data, params, pytorch_variables = load_from_zip_file(
             #    "/home/jw4406/codebase/FightLadder/main/trained_models/neuronic_ippo/enemy_policy_%d.pt" % i)
+            #if FINETUNE is True:
             data, params, pytorch_variables = load_from_zip_file(
-                "/home/jw4406/codebase/FightLadder/main/trained_models/magics_test_%s/enemy_policy_58000_steps_%d.pt" % (PLAYER, i))
+                "/home/jw4406/codebase/FightLadder/main/trained_models/blanka_tss_test/enemy_policy_36000_steps_%d.pt" % (i))
+            #data, params, pytorch_variables = load_from_zip_file(
+            #        "/home/jw4406/codebase/FightLadder/main/trained_models/guile_tss_test/enemy_policy_36000_steps_%d.pt" % (i))
+            #enemy_policy_36000_steps_0.pt
+            if EVAL is True:
+                del params['policy.ctrl_optimizer']
+                del params['policy.value_optimizer']
+                del params['policy.dstb_optimizer']
             finetune_model.adversaries[i].set_parameters(params, exact_match=False, device=finetune_model.device)
             if FINETUNE is True:
-                finetune_model.adversaries[i].warmstarted_cont_MAGICS = True
+                #finetune_model.adversaries[i].warmstarted_cont_MAGICS = True
                 if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
                     finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
         model = finetune_model
@@ -569,8 +611,9 @@ def main(PLAYER):
                 fsp_threshold=args.fsp_threshold,
             )
         else:
-            for i in range(model.num_adversaries):
-                model.adversaries[i]._setup_learn(model.adversaries[i].num_timesteps)
+            if hasattr(model, "num_adversaries"):
+                for i in range(model.num_adversaries):
+                    model.adversaries[i]._setup_learn(model.adversaries[i].num_timesteps)
             model.learn(
                 total_timesteps=args.total_steps,
                 callback=[checkpoint_callback]
