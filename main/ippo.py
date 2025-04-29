@@ -431,7 +431,7 @@ def main(PLAYER):
         finetune_model = eepy(
             "AACCnnPolicy",
             finetune_env,
-            device="cuda",
+            device="cpu",
             verbose=2,
             n_steps=768,
             batch_size=1536,  # 512,
