@@ -16,7 +16,7 @@ from torch.backends.cudnn import deterministic
 from common.const import *
 from common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P
 from common.game import get_next_level
-from common.algorithms import IPPO, MAGICS_PPO, RARL_PPO, TSS_PPO, Specialized_Agent, Specialized_Agent_IPPO
+from common.algorithms import IPPO, MAGICS_PPO, RARL_PPO, TSS_PPO, Specialized_Agent, Specialized_Agent_IPPO, eepy
 from stable_baselines3 import MAGICS_AL
 from common.retro_wrappers import SFWrapper, Monitor2P
 
@@ -428,7 +428,7 @@ def main(PLAYER):
             n_env_per_adv=args.num_env // num_adversary
         )
 
-        finetune_model = TSS_PPO(
+        finetune_model = eepy(
             "AACCnnPolicy",
             finetune_env,
             device="cuda",
@@ -448,6 +448,7 @@ def main(PLAYER):
             dstb_ent_coef=0,
             update_left=bool(args.update_left),
             update_right=bool(args.update_right),
+            #warmstarted_cont_MAGICS=True
         )
 
         '''
