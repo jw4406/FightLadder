@@ -1278,8 +1278,8 @@ class MAGICS_PPO(OnPolicyAlgorithm):
         self.dstb_ent_coef = dstb_ent_coef
         self.dstb_action_space = dstb_action_space
         self.update_right = update_right
-        self.learning_rate = [v_learning_rate, c_learning_rate, d_learning_rate]
-        self.learning_rate_decay_phase = [v_learning_rate_decay, c_learning_rate_decay, d_learning_rate_decay]
+        self.learning_rate = [c_learning_rate, d_learning_rate, v_learning_rate]
+        self.learning_rate_decay_phase = [c_learning_rate_decay, d_learning_rate_decay, v_learning_rate_decay]
         # Sanity check, otherwise it will lead to noisy gradient and NaN
         # because of the advantage normalization
         if normalize_advantage:
