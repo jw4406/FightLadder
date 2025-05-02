@@ -34,8 +34,10 @@ from stable_baselines3.common.torch_layers import (
 )
 from stable_baselines3.common.preprocessing import maybe_transpose
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
-from stable_baselines3.common.utils import obs_as_tensor, safe_mean, explained_variance, get_schedule_fn, update_learning_rate, is_vectorized_observation
-from stable_baselines3.common.save_util import load_from_zip_file, recursive_getattr, recursive_setattr, save_to_zip_file
+from stable_baselines3.common.utils import obs_as_tensor, safe_mean, explained_variance, get_schedule_fn, \
+    update_learning_rate, is_vectorized_observation
+from stable_baselines3.common.save_util import load_from_zip_file, recursive_getattr, recursive_setattr, \
+    save_to_zip_file
 from stable_baselines3.common.vec_env import VecEnv
 
 from .const import *
@@ -47,36 +49,37 @@ SelfIPPO = TypeVar("SelfIPPO", bound="IPPO")
 SelfLeaguePPO = TypeVar("SelfLeaguePPO", bound="LeaguePPO")
 MAGICS_PPO = TypeVar("MAGICS_PPO", bound="MAGICS_PPO")
 
+
 class IPPO(PPO):
 
     def __init__(
-        self,
-        policy: Union[str, Type[ActorCriticPolicy]],
-        env: Union[GymEnv, str],
-        learning_rate: Union[float, Schedule] = 3e-4,
-        n_steps: int = 2048,
-        batch_size: int = 64,
-        n_epochs: int = 10,
-        gamma: float = 0.99,
-        gae_lambda: float = 0.95,
-        clip_range: Union[float, Schedule] = 0.2,
-        clip_range_vf: Union[None, float, Schedule] = None,
-        normalize_advantage: bool = True,
-        ent_coef: float = 0.0,
-        vf_coef: float = 0.5,
-        max_grad_norm: float = 0.5,
-        use_sde: bool = False,
-        sde_sample_freq: int = -1,
-        target_kl: Optional[float] = None,
-        tensorboard_log: Optional[str] = None,
-        policy_kwargs: Optional[Dict[str, Any]] = None,
-        verbose: int = 0,
-        seed: Optional[int] = None,
-        device: Union[th.device, str] = "auto",
-        _init_setup_model: bool = True,
-        update_left = True,
-        update_right = True,
-        other_learning_rate = None,
+            self,
+            policy: Union[str, Type[ActorCriticPolicy]],
+            env: Union[GymEnv, str],
+            learning_rate: Union[float, Schedule] = 3e-4,
+            n_steps: int = 2048,
+            batch_size: int = 64,
+            n_epochs: int = 10,
+            gamma: float = 0.99,
+            gae_lambda: float = 0.95,
+            clip_range: Union[float, Schedule] = 0.2,
+            clip_range_vf: Union[None, float, Schedule] = None,
+            normalize_advantage: bool = True,
+            ent_coef: float = 0.0,
+            vf_coef: float = 0.5,
+            max_grad_norm: float = 0.5,
+            use_sde: bool = False,
+            sde_sample_freq: int = -1,
+            target_kl: Optional[float] = None,
+            tensorboard_log: Optional[str] = None,
+            policy_kwargs: Optional[Dict[str, Any]] = None,
+            verbose: int = 0,
+            seed: Optional[int] = None,
+            device: Union[th.device, str] = "auto",
+            _init_setup_model: bool = True,
+            update_left=True,
+            update_right=True,
+            other_learning_rate=None,
     ):
         super().__init__(
             policy,
@@ -113,7 +116,7 @@ class IPPO(PPO):
 
     def _setup_model(self) -> None:
         super()._setup_model()
-        
+
         buffer_cls = DictRolloutBuffer if isinstance(self.observation_space, spaces.Dict) else RolloutBuffer
 
         self.rollout_buffer_other = buffer_cls(
@@ -125,7 +128,8 @@ class IPPO(PPO):
             gae_lambda=self.gae_lambda,
             n_envs=self.n_envs,
         )
-        self.other_lr_schedule = self.lr_schedule if self.other_learning_rate is None else get_schedule_fn(self.other_learning_rate)
+        self.other_lr_schedule = self.lr_schedule if self.other_learning_rate is None else get_schedule_fn(
+            self.other_learning_rate)
         self.policy_other = self.policy_class(  # pytype:disable=not-instantiable
             self.observation_space,
             self.action_space,
@@ -134,7 +138,7 @@ class IPPO(PPO):
             **self.policy_kwargs  # pytype:disable=not-instantiable
         )
         self.policy_other = self.policy_other.to(self.device)
-    
+
     def _update_other_learning_rate(self, optimizers: Union[List[th.optim.Optimizer], th.optim.Optimizer]) -> None:
         self.logger.record("train/other_learning_rate", self.other_lr_schedule(self._current_progress_remaining))
 
@@ -142,7 +146,7 @@ class IPPO(PPO):
             optimizers = [optimizers]
         for optimizer in optimizers:
             update_learning_rate(optimizer, self.other_lr_schedule(self._current_progress_remaining))
-    
+
     def _excluded_save_params(self) -> List[str]:
         return [
             "policy",
@@ -164,11 +168,11 @@ class IPPO(PPO):
         return state_dicts, []
 
     def set_parameters_2p(
-        self,
-        load_path_or_dict: Union[str, Dict[str, Dict]],
-        load_path_or_dict_other: Union[str, Dict[str, Dict]],
-        exact_match: bool = True,
-        device: Union[th.device, str] = "auto",
+            self,
+            load_path_or_dict: Union[str, Dict[str, Dict]],
+            load_path_or_dict_other: Union[str, Dict[str, Dict]],
+            exact_match: bool = True,
+            device: Union[th.device, str] = "auto",
     ) -> None:
         """
         Load parameters from a given zip-file or a nested dictionary containing parameters for
@@ -230,7 +234,7 @@ class IPPO(PPO):
                 # Assume attr is th.nn.Module
                 attr.load_state_dict(params[name], strict=exact_match)
             updated_objects.add(name)
-        
+
         for name in params_other:
             attr = None
             name_other = name.replace("policy", "policy_other")
@@ -269,26 +273,27 @@ class IPPO(PPO):
                 "Names of parameters do not match agents' parameters: "
                 f"expected {objects_needing_update}, got {updated_objects}"
             )
-    
+
     def predict(
-        self,
-        observation: Union[np.ndarray, Dict[str, np.ndarray]],
-        state: Optional[Tuple[np.ndarray, ...]] = None,
-        episode_start: Optional[np.ndarray] = None,
-        deterministic: bool = False,
+            self,
+            observation: Union[np.ndarray, Dict[str, np.ndarray]],
+            state: Optional[Tuple[np.ndarray, ...]] = None,
+            episode_start: Optional[np.ndarray] = None,
+            deterministic: bool = False,
     ) -> Tuple[np.ndarray, Optional[Tuple[np.ndarray, ...]]]:
-        return self.policy.predict(observation, state, episode_start, deterministic), self.policy_other.predict(observation, state, episode_start, deterministic)
-    
+        return self.policy.predict(observation, state, episode_start, deterministic), self.policy_other.predict(
+            observation, state, episode_start, deterministic)
+
     def collect_rollouts(
-        self,
-        env: VecEnv,
-        callback: BaseCallback,
-        rollout_buffer: RolloutBuffer,
-        rollout_buffer_other: RolloutBuffer,
-        n_rollout_steps: int,
-        policy = None,
-        policy_other = None,
-        coordinate_fn = None,
+            self,
+            env: VecEnv,
+            callback: BaseCallback,
+            rollout_buffer: RolloutBuffer,
+            rollout_buffer_other: RolloutBuffer,
+            n_rollout_steps: int,
+            policy=None,
+            policy_other=None,
+            coordinate_fn=None,
     ) -> bool:
         """
         Collect experiences using the current policy and fill a ``RolloutBuffer``.
@@ -336,11 +341,12 @@ class IPPO(PPO):
 
             # Rescale and perform action
             clipped_actions = np.hstack([actions, actions_other])
-            #print(clipped_actions, flush=True)
-            #print(np.shape(clipped_actions),flush=True)
+            # print(clipped_actions, flush=True)
+            # print(np.shape(clipped_actions),flush=True)
             # Clip the actions to avoid out of bound error
             if isinstance(self.action_space, spaces.Box):
-                clipped_actions = np.clip(np.hstack([actions, actions_other]), self.action_space.low, self.action_space.high)
+                clipped_actions = np.clip(np.hstack([actions, actions_other]), self.action_space.low,
+                                          self.action_space.high)
 
             new_obs, rewards, rewards_other, dones, infos = env.step(clipped_actions)
 
@@ -363,14 +369,14 @@ class IPPO(PPO):
             # see GitHub issue #633
             for idx, done in enumerate(dones):
                 if (
-                    done
-                    and coordinate_fn is not None
+                        done
+                        and coordinate_fn is not None
                 ):
                     coordinate_fn(infos[idx]["outcome"])
                 if (
-                    done
-                    and infos[idx].get("terminal_observation") is not None
-                    and infos[idx].get("TimeLimit.truncated", False)
+                        done
+                        and infos[idx].get("terminal_observation") is not None
+                        and infos[idx].get("TimeLimit.truncated", False)
                 ):
                     # print(f"[PPO] idx: {idx}, done: {done}, outcome: {infos[idx]['outcome']}", flush=True)
                     terminal_obs = rollout_policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
@@ -379,13 +385,15 @@ class IPPO(PPO):
                         terminal_value = rollout_policy.predict_values(terminal_obs)[0]
                         terminal_value_other = rollout_policy_other.predict_values(terminal_obs_other)[0]
                     rewards[idx] += self.gamma * terminal_value
-                    rewards_other[idx] += self.gamma * terminal_value_other                        
+                    rewards_other[idx] += self.gamma * terminal_value_other
 
-            # from IPython import embed; embed()
+                    # from IPython import embed; embed()
             if self.update_left:
-                rollout_buffer.add(self._last_obs.copy(), actions, rewards, self._last_episode_starts, values, log_probs)
+                rollout_buffer.add(self._last_obs.copy(), actions, rewards, self._last_episode_starts, values,
+                                   log_probs)
             if self.update_right:
-                rollout_buffer_other.add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts, values_other, log_probs_other)
+                rollout_buffer_other.add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts,
+                                         values_other, log_probs_other)
             self._last_obs = new_obs
             self._last_episode_starts = dones
 
@@ -402,7 +410,7 @@ class IPPO(PPO):
         callback.on_rollout_end()
 
         return True
-    
+
     def train(self) -> None:
         """
         Update policy using the currently gathered rollout buffer.
@@ -431,7 +439,7 @@ class IPPO(PPO):
         for policy, rollout_buffer, suffix, update_flag in zip(policies, rollout_buffers, suffixes, update_flags):
             if not update_flag:
                 continue
-            
+
             entropy_losses = []
             pg_losses, value_losses = [], []
             clip_fractions = []
@@ -542,13 +550,13 @@ class IPPO(PPO):
             self.logger.record("train/clip_range_vf", clip_range_vf)
 
     def learn(
-        self: SelfIPPO,
-        total_timesteps: int,
-        callback: MaybeCallback = None,
-        log_interval: int = 1,
-        tb_log_name: str = "IPPO",
-        reset_num_timesteps: bool = True,
-        progress_bar: bool = False,
+            self: SelfIPPO,
+            total_timesteps: int,
+            callback: MaybeCallback = None,
+            log_interval: int = 1,
+            tb_log_name: str = "IPPO",
+            reset_num_timesteps: bool = True,
+            progress_bar: bool = False,
     ) -> SelfIPPO:
         iteration = 0
 
@@ -564,7 +572,8 @@ class IPPO(PPO):
 
         while self.num_timesteps < total_timesteps:
 
-            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.rollout_buffer_other, n_rollout_steps=self.n_steps)
+            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer,
+                                                      self.rollout_buffer_other, n_rollout_steps=self.n_steps)
 
             if continue_training is False:
                 break
@@ -578,9 +587,12 @@ class IPPO(PPO):
                 fps = int((self.num_timesteps - self._num_timesteps_at_start) / time_elapsed)
                 self.logger.record("time/iterations", iteration, exclude="tensorboard")
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-                    self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    self.logger.record("rollout/ep_rew_other_mean", safe_mean([ep_info["ro"] for ep_info in self.ep_info_buffer]))
-                    self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+                    self.logger.record("rollout/ep_rew_mean",
+                                       safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+                    self.logger.record("rollout/ep_rew_other_mean",
+                                       safe_mean([ep_info["ro"] for ep_info in self.ep_info_buffer]))
+                    self.logger.record("rollout/ep_len_mean",
+                                       safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                 self.logger.record("time/fps", fps)
                 self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
                 self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
@@ -591,23 +603,24 @@ class IPPO(PPO):
         callback.on_training_end()
 
         return self
-    
+
     def async_learn(
-        self: SelfIPPO,
-        total_timesteps: int,
-        callback: MaybeCallback = None,
-        log_interval: int = 1,
-        tb_log_name: str = "IPPO",
-        reset_num_timesteps: bool = True,
-        progress_bar: bool = False,
-        fsp: bool = False, # NOTE: this method implements an approximate version of FSP, the full version is implemented in league.py
-        max_fsp_num: int = 50,
-        fsp_threshold: float = 0.3,
+            self: SelfIPPO,
+            total_timesteps: int,
+            callback: MaybeCallback = None,
+            log_interval: int = 1,
+            tb_log_name: str = "IPPO",
+            reset_num_timesteps: bool = True,
+            progress_bar: bool = False,
+            fsp: bool = False,
+            # NOTE: this method implements an approximate version of FSP, the full version is implemented in league.py
+            max_fsp_num: int = 50,
+            fsp_threshold: float = 0.3,
     ) -> SelfIPPO:
         iteration = 0
 
         total_timesteps, callback = self._setup_learn(
-            total_timesteps * 10, # Async learning is much slower
+            total_timesteps * 10,  # Async learning is much slower
             callback,
             reset_num_timesteps,
             tb_log_name,
@@ -623,7 +636,7 @@ class IPPO(PPO):
 
         while self.num_timesteps < total_timesteps:
             self._update_current_progress_remaining(self.num_timesteps, total_timesteps)
-            
+
             self.update_left = True
             self.update_right = False
             rew_diff = 0
@@ -632,9 +645,14 @@ class IPPO(PPO):
                 for _ in range(10):
                     if fsp:
                         tmp_right_policy.load_state_dict(random.choice(right_state_dicts))
-                        continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.rollout_buffer_other, n_rollout_steps=self.n_steps, policy_other=tmp_right_policy)
+                        continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer,
+                                                                  self.rollout_buffer_other,
+                                                                  n_rollout_steps=self.n_steps,
+                                                                  policy_other=tmp_right_policy)
                     else:
-                        continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.rollout_buffer_other, n_rollout_steps=self.n_steps)
+                        continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer,
+                                                                  self.rollout_buffer_other,
+                                                                  n_rollout_steps=self.n_steps)
                     if continue_training is False:
                         break
                     iteration += 1
@@ -644,14 +662,18 @@ class IPPO(PPO):
                         fps = int((self.num_timesteps - self._num_timesteps_at_start) / time_elapsed)
                         self.logger.record("time/iterations", iteration, exclude="tensorboard")
                         if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-                            self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                            self.logger.record("rollout/ep_rew_other_mean", safe_mean([ep_info["ro"] for ep_info in self.ep_info_buffer]))
-                            self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+                            self.logger.record("rollout/ep_rew_mean",
+                                               safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+                            self.logger.record("rollout/ep_rew_other_mean",
+                                               safe_mean([ep_info["ro"] for ep_info in self.ep_info_buffer]))
+                            self.logger.record("rollout/ep_len_mean",
+                                               safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                         self.logger.record("time/fps", fps)
                         self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
                         self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
                         self.logger.dump(step=self.num_timesteps)
-                    rew_diff = rew_diff + safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]) - safe_mean([ep_info["ro"] for ep_info in self.ep_info_buffer])
+                    rew_diff = rew_diff + safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]) - safe_mean(
+                        [ep_info["ro"] for ep_info in self.ep_info_buffer])
                     self.train()
                 rew_diff = rew_diff / 10
                 if continue_training is False:
@@ -672,9 +694,13 @@ class IPPO(PPO):
                 for _ in range(10):
                     if fsp:
                         tmp_left_policy.load_state_dict(random.choice(left_state_dicts))
-                        continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.rollout_buffer_other, n_rollout_steps=self.n_steps, policy=tmp_left_policy)
+                        continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer,
+                                                                  self.rollout_buffer_other,
+                                                                  n_rollout_steps=self.n_steps, policy=tmp_left_policy)
                     else:
-                        continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.rollout_buffer_other, n_rollout_steps=self.n_steps)
+                        continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer,
+                                                                  self.rollout_buffer_other,
+                                                                  n_rollout_steps=self.n_steps)
                     if continue_training is False:
                         break
                     iteration += 1
@@ -684,14 +710,18 @@ class IPPO(PPO):
                         fps = int((self.num_timesteps - self._num_timesteps_at_start) / time_elapsed)
                         self.logger.record("time/iterations", iteration, exclude="tensorboard")
                         if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-                            self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                            self.logger.record("rollout/ep_rew_other_mean", safe_mean([ep_info["ro"] for ep_info in self.ep_info_buffer]))
-                            self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+                            self.logger.record("rollout/ep_rew_mean",
+                                               safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+                            self.logger.record("rollout/ep_rew_other_mean",
+                                               safe_mean([ep_info["ro"] for ep_info in self.ep_info_buffer]))
+                            self.logger.record("rollout/ep_len_mean",
+                                               safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                         self.logger.record("time/fps", fps)
                         self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
                         self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
                         self.logger.dump(step=self.num_timesteps)
-                    rew_diff = rew_diff + safe_mean([ep_info["ro"] for ep_info in self.ep_info_buffer]) - safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])
+                    rew_diff = rew_diff + safe_mean([ep_info["ro"] for ep_info in self.ep_info_buffer]) - safe_mean(
+                        [ep_info["r"] for ep_info in self.ep_info_buffer])
                     self.train()
                 rew_diff = rew_diff / 10
                 if continue_training is False:
@@ -712,15 +742,15 @@ class IPPO(PPO):
 class BRIPPO(IPPO):
 
     def collect_rollouts(
-        self,
-        env: VecEnv,
-        callback: BaseCallback,
-        rollout_buffer: RolloutBuffer,
-        rollout_buffer_other: RolloutBuffer,
-        n_rollout_steps: int,
-        policy = None,
-        policy_other = None,
-        # coordinate_fn = None,
+            self,
+            env: VecEnv,
+            callback: BaseCallback,
+            rollout_buffer: RolloutBuffer,
+            rollout_buffer_other: RolloutBuffer,
+            n_rollout_steps: int,
+            policy=None,
+            policy_other=None,
+            # coordinate_fn = None,
     ) -> bool:
         """
         Collect experiences using the current policy and fill a ``RolloutBuffer``.
@@ -773,7 +803,8 @@ class BRIPPO(IPPO):
             clipped_actions = np.hstack([actions, actions_other])
             # Clip the actions to avoid out of bound error
             if isinstance(self.action_space, spaces.Box):
-                clipped_actions = np.clip(np.hstack([actions, actions_other]), self.action_space.low, self.action_space.high)
+                clipped_actions = np.clip(np.hstack([actions, actions_other]), self.action_space.low,
+                                          self.action_space.high)
 
             new_obs, rewards, rewards_other, dones, infos = env.step(clipped_actions)
 
@@ -796,15 +827,15 @@ class BRIPPO(IPPO):
             # see GitHub issue #633
             for idx, done in enumerate(dones):
                 if (
-                    done
-                    # and coordinate_fn is not None
+                        done
+                        # and coordinate_fn is not None
                 ):
                     round_results[infos[idx]["outcome"]] += 1
                     # coordinate_fn(infos[idx]["outcome"])
                 if (
-                    done
-                    and infos[idx].get("terminal_observation") is not None
-                    and infos[idx].get("TimeLimit.truncated", False)
+                        done
+                        and infos[idx].get("terminal_observation") is not None
+                        and infos[idx].get("TimeLimit.truncated", False)
                 ):
                     # print(f"[PPO] idx: {idx}, done: {done}, outcome: {infos[idx]['outcome']}", flush=True)
                     terminal_obs = rollout_policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
@@ -813,13 +844,15 @@ class BRIPPO(IPPO):
                         terminal_value = rollout_policy.predict_values(terminal_obs)[0]
                         terminal_value_other = rollout_policy_other.predict_values(terminal_obs_other)[0]
                     rewards[idx] += self.gamma * terminal_value
-                    rewards_other[idx] += self.gamma * terminal_value_other                        
+                    rewards_other[idx] += self.gamma * terminal_value_other
 
-            # from IPython import embed; embed()
+                    # from IPython import embed; embed()
             if self.update_left:
-                rollout_buffer.add(self._last_obs.copy(), actions, rewards, self._last_episode_starts, values, log_probs)
+                rollout_buffer.add(self._last_obs.copy(), actions, rewards, self._last_episode_starts, values,
+                                   log_probs)
             if self.update_right:
-                rollout_buffer_other.add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts, values_other, log_probs_other)
+                rollout_buffer_other.add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts,
+                                         values_other, log_probs_other)
             self._last_obs = new_obs
             self._last_episode_starts = dones
 
@@ -847,32 +880,32 @@ class BRIPPO(IPPO):
 class LeaguePPO(IPPO):
 
     def __init__(
-        self,
-        side,
-        policy: Union[str, Type[ActorCriticPolicy]],
-        env: Union[GymEnv, str],
-        learning_rate: Union[float, Schedule] = 3e-4,
-        n_steps: int = 2048,
-        batch_size: int = 64,
-        n_epochs: int = 10,
-        gamma: float = 0.99,
-        gae_lambda: float = 0.95,
-        clip_range: Union[float, Schedule] = 0.2,
-        clip_range_vf: Union[None, float, Schedule] = None,
-        normalize_advantage: bool = True,
-        ent_coef: float = 0.0,
-        vf_coef: float = 0.5,
-        max_grad_norm: float = 0.5,
-        use_sde: bool = False,
-        sde_sample_freq: int = -1,
-        target_kl: Optional[float] = None,
-        tensorboard_log: Optional[str] = None,
-        policy_kwargs: Optional[Dict[str, Any]] = None,
-        verbose: int = 0,
-        seed: Optional[int] = None,
-        device: Union[th.device, str] = "auto",
-        _init_setup_model: bool = True,
-        other_learning_rate = None,
+            self,
+            side,
+            policy: Union[str, Type[ActorCriticPolicy]],
+            env: Union[GymEnv, str],
+            learning_rate: Union[float, Schedule] = 3e-4,
+            n_steps: int = 2048,
+            batch_size: int = 64,
+            n_epochs: int = 10,
+            gamma: float = 0.99,
+            gae_lambda: float = 0.95,
+            clip_range: Union[float, Schedule] = 0.2,
+            clip_range_vf: Union[None, float, Schedule] = None,
+            normalize_advantage: bool = True,
+            ent_coef: float = 0.0,
+            vf_coef: float = 0.5,
+            max_grad_norm: float = 0.5,
+            use_sde: bool = False,
+            sde_sample_freq: int = -1,
+            target_kl: Optional[float] = None,
+            tensorboard_log: Optional[str] = None,
+            policy_kwargs: Optional[Dict[str, Any]] = None,
+            verbose: int = 0,
+            seed: Optional[int] = None,
+            device: Union[th.device, str] = "auto",
+            _init_setup_model: bool = True,
+            other_learning_rate=None,
     ):
         if side == "left":
             update_left = True
@@ -912,7 +945,7 @@ class LeaguePPO(IPPO):
             update_right=update_right,
             other_learning_rate=other_learning_rate,
         )
-    
+
     def train(self, rollout_buffer: RolloutBuffer) -> None:
         """
         Update policy using the currently gathered rollout buffer.
@@ -1037,17 +1070,17 @@ class LeaguePPO(IPPO):
         self.logger.record("train/clip_range", clip_range)
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
-    
+
     def learn(
-        self: SelfLeaguePPO,
-        total_timesteps: int,
-        rollout_opponent_num: int,
-        callback: MaybeCallback = None,
-        log_interval: int = 1,
-        tb_log_name: str = "IPPO",
-        reset_num_timesteps: bool = True,
-        progress_bar: bool = False,
-        get_kwargs_fn = None,
+            self: SelfLeaguePPO,
+            total_timesteps: int,
+            rollout_opponent_num: int,
+            callback: MaybeCallback = None,
+            log_interval: int = 1,
+            tb_log_name: str = "IPPO",
+            reset_num_timesteps: bool = True,
+            progress_bar: bool = False,
+            get_kwargs_fn=None,
     ) -> SelfLeaguePPO:
         iteration = 0
 
@@ -1073,7 +1106,7 @@ class LeaguePPO(IPPO):
         )
 
         while self.num_timesteps < total_timesteps:
-            
+
             all_rollouts.reset()
 
             for i in range(rollout_opponent_num):
@@ -1085,7 +1118,11 @@ class LeaguePPO(IPPO):
                 if self._vec_normalize_env is not None:
                     self._last_original_obs = self._vec_normalize_env.get_original_obs()
 
-                continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.rollout_buffer_other, n_rollout_steps=self.n_steps, policy=kwargs.get("policy"), policy_other=kwargs.get("policy_other"), coordinate_fn=kwargs.get("coordinate_fn"))
+                continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer,
+                                                          self.rollout_buffer_other, n_rollout_steps=self.n_steps,
+                                                          policy=kwargs.get("policy"),
+                                                          policy_other=kwargs.get("policy_other"),
+                                                          coordinate_fn=kwargs.get("coordinate_fn"))
                 if continue_training is False:
                     break
 
@@ -1106,7 +1143,7 @@ class LeaguePPO(IPPO):
                     all_rollouts.full = True
 
             if continue_training is False:
-                break    
+                break
 
             iteration += 1
             self._update_current_progress_remaining(self.num_timesteps, total_timesteps)
@@ -1117,9 +1154,12 @@ class LeaguePPO(IPPO):
                 fps = int((self.num_timesteps - self._num_timesteps_at_start) / time_elapsed)
                 self.logger.record("time/iterations", iteration, exclude="tensorboard")
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-                    self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    self.logger.record("rollout/ep_rew_other_mean", safe_mean([ep_info["ro"] for ep_info in self.ep_info_buffer]))
-                    self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+                    self.logger.record("rollout/ep_rew_mean",
+                                       safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+                    self.logger.record("rollout/ep_rew_other_mean",
+                                       safe_mean([ep_info["ro"] for ep_info in self.ep_info_buffer]))
+                    self.logger.record("rollout/ep_len_mean",
+                                       safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                 self.logger.record("time/fps", fps)
                 self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
                 self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
@@ -1134,10 +1174,10 @@ class LeaguePPO(IPPO):
 
     def get_steps(self) -> int:
         return self.num_timesteps
-    
+
     def set_steps(self, steps: int) -> None:
         self.num_timesteps = steps
-    
+
     def get_parameters(self) -> Dict[str, Dict]:
         """
         Return the parameters of the agent. This includes parameters from different networks, e.g.
@@ -1213,39 +1253,39 @@ class MAGICS_PPO(OnPolicyAlgorithm):
     }
 
     def __init__(
-        self,
-        policy: Union[str, Type[ActorCriticPolicy]],
-        env: Union[GymEnv, str],
-        c_learning_rate: Union[float, Schedule] = 1e-4,
-        d_learning_rate: Union[float, Schedule] = 7e-4,
-        v_learning_rate: Union[float, Schedule] = 7e-4,
-        c_learning_rate_decay: Union[float, Schedule] = 1e-4,
-        d_learning_rate_decay: Union[float, Schedule] = 7e-4,
-        v_learning_rate_decay: Union[float, Schedule] = 7e-4,
-        n_steps: int = 2048,
-        batch_size: int = 64,
-        n_epochs: int = 1,
-        gamma: float = 0.99,
-        gae_lambda: float = 0.95,
-        clip_range: Union[float, Schedule] = 0.2,
-        clip_range_vf: Union[None, float, Schedule] = None,
-        normalize_advantage: bool = True,
-        ent_coef: float = 0.0,
-        dstb_ent_coef: float = 0.0,
-        vf_coef: float = 0.5,
-        max_grad_norm: float = 0.5,
-        use_sde: bool = False,
-        sde_sample_freq: int = -1,
-        target_kl: Optional[float] = None,
-        tensorboard_log: Optional[str] = None,
-        policy_kwargs: Optional[Dict[str, Any]] = None,
-        verbose: int = 0,
-        seed: Optional[int] = None,
-        device: Union[th.device, str] = "auto",
-        _init_setup_model: bool = True,
-        update_left = True,
-        update_right = True,
-        dstb_action_space =None
+            self,
+            policy: Union[str, Type[ActorCriticPolicy]],
+            env: Union[GymEnv, str],
+            c_learning_rate: Union[float, Schedule] = 1e-4,
+            d_learning_rate: Union[float, Schedule] = 7e-4,
+            v_learning_rate: Union[float, Schedule] = 7e-4,
+            c_learning_rate_decay: Union[float, Schedule] = 1e-4,
+            d_learning_rate_decay: Union[float, Schedule] = 7e-4,
+            v_learning_rate_decay: Union[float, Schedule] = 7e-4,
+            n_steps: int = 2048,
+            batch_size: int = 64,
+            n_epochs: int = 1,
+            gamma: float = 0.99,
+            gae_lambda: float = 0.95,
+            clip_range: Union[float, Schedule] = 0.2,
+            clip_range_vf: Union[None, float, Schedule] = None,
+            normalize_advantage: bool = True,
+            ent_coef: float = 0.0,
+            dstb_ent_coef: float = 0.0,
+            vf_coef: float = 0.5,
+            max_grad_norm: float = 0.5,
+            use_sde: bool = False,
+            sde_sample_freq: int = -1,
+            target_kl: Optional[float] = None,
+            tensorboard_log: Optional[str] = None,
+            policy_kwargs: Optional[Dict[str, Any]] = None,
+            verbose: int = 0,
+            seed: Optional[int] = None,
+            device: Union[th.device, str] = "auto",
+            _init_setup_model: bool = True,
+            update_left=True,
+            update_right=True,
+            dstb_action_space=None
     ):
 
         super().__init__(
@@ -1284,7 +1324,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
         # because of the advantage normalization
         if normalize_advantage:
             assert (
-                batch_size > 1
+                    batch_size > 1
             ), "`batch_size` must be greater than 1. See https://github.com/DLR-RM/stable-baselines3/issues/440"
 
         if self.env is not None:
@@ -1328,11 +1368,11 @@ class MAGICS_PPO(OnPolicyAlgorithm):
             self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
 
     def collect_rollouts(
-        self,
-        env: VecEnv,
-        callback: BaseCallback,
-        rollout_buffer: RolloutBuffer,
-        n_rollout_steps: int,
+            self,
+            env: VecEnv,
+            callback: BaseCallback,
+            rollout_buffer: RolloutBuffer,
+            n_rollout_steps: int,
     ) -> bool:
         """
         Collect experiences using the current policy and fill a ``RolloutBuffer``.
@@ -1377,7 +1417,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
             new_obs, rewards, rew_other, dones, infos = env.step(clipped_actions)
-            #assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
+            # assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
             self.num_timesteps += env.num_envs
 
             # Give access to local variables
@@ -1396,9 +1436,9 @@ class MAGICS_PPO(OnPolicyAlgorithm):
             # see GitHub issue #633
             for idx, done in enumerate(dones):
                 if (
-                    done
-                    and infos[idx].get("terminal_observation") is not None
-                    and infos[idx].get("TimeLimit.truncated", False)
+                        done
+                        and infos[idx].get("terminal_observation") is not None
+                        and infos[idx].get("TimeLimit.truncated", False)
                 ):
                     terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
                     with th.no_grad():
@@ -1435,7 +1475,8 @@ class MAGICS_PPO(OnPolicyAlgorithm):
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
         # Update optimizer learning rate
-        self._update_learning_rate([self.policy.ctrl_optimizer, self.policy.dstb_optimizer,self.policy.value_optimizer])
+        self._update_learning_rate(
+            [self.policy.ctrl_optimizer, self.policy.dstb_optimizer, self.policy.value_optimizer])
         # Compute current clip range
         clip_range = self.clip_range(self._current_progress_remaining)
         # Optional: clip range for the value function
@@ -1455,7 +1496,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
 
         # train for n_epochs epochs
 
-        #self.rollout_buffer.advantages = buf.advantages
+        # self.rollout_buffer.advantages = buf.advantages
 
         buf = deepcopy(self.rollout_buffer)
         buf.values = torch.from_numpy(self.rollout_buffer.values).to(self.device)
@@ -1468,7 +1509,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
         _, _, last_values, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
         buf.compute_returns_and_advantage_pt(last_values, torch.Tensor(buf.dones[-1]).to(self.device))
         rollout_advantages_copy = deepcopy(self.rollout_buffer.advantages)
-        #buf.compute_returns_and_advantage_pt_test(last_values, torch.Tensor(buf.dones[-1]).to(self.device))
+        # buf.compute_returns_and_advantage_pt_test(last_values, torch.Tensor(buf.dones[-1]).to(self.device))
         self.rollout_buffer.advantages = buf.advantages
         '''
         buf = deepcopy(self.rollout_buffer)
@@ -1504,31 +1545,31 @@ class MAGICS_PPO(OnPolicyAlgorithm):
         # buf.compute_returns_and_advantage_pt(values, torch.Tensor(buf.dones[-1]).to(self.device))
         # self.rollout_buffer.advantages = torch.zeros_like(self.rollout_buffer.advantages)
         # self.rollout_buffer.flat_advantages = buf.swap_and_flatten(buf.advantages)
-        #self.rollout_buffer.advantages = self.rollout_buffer.swap_and_flatten_pt(advantages)
-        #self.rollout_buffer.flat_advantages =
+        # self.rollout_buffer.advantages = self.rollout_buffer.swap_and_flatten_pt(advantages)
+        # self.rollout_buffer.flat_advantages =
         env_indices = np.random.permutation(self.rollout_buffer.buffer_size * self.n_envs)
-        #buffer = self.rollout_buffer.flatten()
+        # buffer = self.rollout_buffer.flatten()
         for epoch in range(self.n_epochs):
-            #if epoch == 0:
+            # if epoch == 0:
             #    self.rollout_buffer.advantages = buf.advantages
-            #else:
+            # else:
             #    self.rollout_buffer.advantages = buf.swap_and_flatten_pt(buf.advantages)
-            #self.rollout_buffer.advantages = buf.swap_and_flatten_pt(buf.advantages)
-            #torch.autograd.set_detect_anomaly(True)
+            # self.rollout_buffer.advantages = buf.swap_and_flatten_pt(buf.advantages)
+            # torch.autograd.set_detect_anomaly(True)
             approx_kl_divs = []
-            #self.rollout_buffer.advantages = buf.advantages
+            # self.rollout_buffer.advantages = buf.advantages
             # Do a complete pass on the rollout buffer
             count = 0
             for rollout_data in self.rollout_buffer.get(self.batch_size):
-                #start_idx = epoch * self.batch_size
-                #selection = env_indices[start_idx: start_idx + self.batch_size]
-                #rollout_data = buffer.sample(selection)
-                #torch.autograd.set_detect_anomaly(True)
-                #self.train_loop(rollout_data, clip_range, pg_losses, clip_fractions, None,value_losses,buf, entropy_losses,approx_kl_divs)
+                # start_idx = epoch * self.batch_size
+                # selection = env_indices[start_idx: start_idx + self.batch_size]
+                # rollout_data = buffer.sample(selection)
+                # torch.autograd.set_detect_anomaly(True)
+                # self.train_loop(rollout_data, clip_range, pg_losses, clip_fractions, None,value_losses,buf, entropy_losses,approx_kl_divs)
 
-                #torch.autograd.set_detect_anomaly(True)
+                # torch.autograd.set_detect_anomaly(True)
                 self.normalize_advantage = False
-                #torch.autograd.set_detect_anomaly(True)
+                # torch.autograd.set_detect_anomaly(True)
                 actions = torch.from_numpy(rollout_data.actions).to(self.device)
                 dstb_actions = torch.from_numpy(rollout_data.dstb_actions).to(self.device)
                 if isinstance(self.action_space, spaces.Discrete):
@@ -1538,18 +1579,19 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 # Re-sample the noise matrix because the log_std has changed
                 if self.use_sde:
                     self.policy.reset_noise(self.batch_size)
-                #traj_ids = self.rollout_buffer.env_indices[self.rollout_buffer.indices[0:self.batch_size]].squeeze()
-                #x0_states = self.rollout_buffer.X0_VALUES_MASTER[traj_ids]
-                #x0_returns = buf.X0_RETURNS_MASTER[traj_ids]
-                #x0_values, _, _, _, _ = self.policy.evaluate_actions(torch.Tensor(x0_states).to(self.device),
+                # traj_ids = self.rollout_buffer.env_indices[self.rollout_buffer.indices[0:self.batch_size]].squeeze()
+                # x0_states = self.rollout_buffer.X0_VALUES_MASTER[traj_ids]
+                # x0_returns = buf.X0_RETURNS_MASTER[traj_ids]
+                # x0_values, _, _, _, _ = self.policy.evaluate_actions(torch.Tensor(x0_states).to(self.device),
                 #                                                     torch.Tensor(actions[0]).to(self.device),
                 #                                                     torch.Tensor(dstb_actions[0]).to(self.device))
-                values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(torch.from_numpy(rollout_data.observations).to(self.device), actions, dstb_actions)
-                #_,test = self.estimators(rollout_data.advantages, ctrl_log_prob, dstb_log_prob, x0_values.squeeze(), torch.Tensor(x0_returns).to(self.device))
-                #d1f2_dstb_batched = autograd.grad(test, self.policy.value_optimizer.param_groups[0]['params'],
+                values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
+                    torch.from_numpy(rollout_data.observations).to(self.device), actions, dstb_actions)
+                # _,test = self.estimators(rollout_data.advantages, ctrl_log_prob, dstb_log_prob, x0_values.squeeze(), torch.Tensor(x0_returns).to(self.device))
+                # d1f2_dstb_batched = autograd.grad(test, self.policy.value_optimizer.param_groups[0]['params'],
                 #                                  create_graph=True, retain_graph=True)
-                #d1f2_dstb = torch.hstack([u.flatten() for u in d1f2_dstb_batched])
-                #autograd.grad(d1f2_dstb[0], self.policy.dstb_optimizer.param_groups[0]['params'])
+                # d1f2_dstb = torch.hstack([u.flatten() for u in d1f2_dstb_batched])
+                # autograd.grad(d1f2_dstb[0], self.policy.dstb_optimizer.param_groups[0]['params'])
                 values = values.flatten()
                 # Normalize advantage
                 advantages = rollout_data.advantages
@@ -1583,18 +1625,19 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                         values - rollout_data.old_values, -clip_range_vf, clip_range_vf
                     )
                 # Value loss using the TD(gae_lambda) target
-                #_, _, values_pred, _, _ = self.policy(torch.Tensor(rollout_data.observations).to(self.device))
+                # _, _, values_pred, _, _ = self.policy(torch.Tensor(rollout_data.observations).to(self.device))
                 value_loss = F.mse_loss(torch.Tensor(rollout_data.returns).to(self.device), values)
                 value_losses.append(value_loss.item())
-                L_ctrl_grad_batched = autograd.grad(value_loss, self.policy.value_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True)
+                L_ctrl_grad_batched = autograd.grad(value_loss, self.policy.value_optimizer.param_groups[0]['params'],
+                                                    create_graph=True, retain_graph=True)
                 L_ctrl_grad = torch.cat([t.flatten() for t in L_ctrl_grad_batched], dim=0)
-                #L_ctrl_grad = torch.hstack([t.flatten() for t in L_ctrl_grad_batched])
+                # L_ctrl_grad = torch.hstack([t.flatten() for t in L_ctrl_grad_batched])
                 full_hessian = False
                 n = sum(p.numel() for p in self.policy.value_optimizer.param_groups[0]['params'])
                 if full_hessian is False:
 
                     k = 50
-                    #n = sum(p.numel() for p in self.policy.value_optimizer.param_groups[0]['params'])
+                    # n = sum(p.numel() for p in self.policy.value_optimizer.param_groups[0]['params'])
 
                     rademacher = torch.bernoulli(torch.from_numpy(np.ones((n, k)) * .5)).bfloat16().to(self.device)
                     rademacher[rademacher == 0] = -1
@@ -1605,7 +1648,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                                                  retain_graph=True, create_graph=True)
 
                 else:
-                    #import torch
+                    # import torch
 
                     def compute_jacobian_batched(x, params, batch_size=128):
                         N = x.shape[0]
@@ -1636,9 +1679,10 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                         return jacobian
 
                     # Now use vmap over all elements of x
-                    jacobian = compute_jacobian_batched(L_ctrl_grad, self.policy.value_optimizer.param_groups[0]['params'])
+                    jacobian = compute_jacobian_batched(L_ctrl_grad,
+                                                        self.policy.value_optimizer.param_groups[0]['params'])
                     print("eee")
-                    #grad_batched = autograd.grad(L_ctrl_grad, self.policy.value_optimizer.param_groups[0]['params'],
+                    # grad_batched = autograd.grad(L_ctrl_grad, self.policy.value_optimizer.param_groups[0]['params'],
                     #                             torch.eye(n).to(self.device),
                     #                             is_grads_batched=True,
                     #                             retain_graph=True, create_graph=True)
@@ -1650,37 +1694,38 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 else:
                     L_ctrl_hessian = self.matrix_unbatch(grad_batched, n)
                     L_ctrl_hessian.diag().add_(5)
-                d2f1_ctrl_batched = autograd.grad(policy_loss, self.policy.value_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True)
-                d2f1_dstb_batched = autograd.grad(dstb_policy_loss, self.policy.value_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True)
+                d2f1_ctrl_batched = autograd.grad(policy_loss, self.policy.value_optimizer.param_groups[0]['params'],
+                                                  create_graph=True, retain_graph=True)
+                d2f1_dstb_batched = autograd.grad(dstb_policy_loss,
+                                                  self.policy.value_optimizer.param_groups[0]['params'],
+                                                  create_graph=True, retain_graph=True)
                 d2f1_ctrl = torch.hstack([t.flatten() for t in d2f1_ctrl_batched])
 
                 d2f1_dstb = torch.hstack([t.flatten() for t in d2f1_dstb_batched])
-                #d2f1_ctrl = torch.rand(d2f1_dstb.shape).to(self.device)
-
-
+                # d2f1_ctrl = torch.rand(d2f1_dstb.shape).to(self.device)
 
                 # diag, no other option
                 iHvp_ctrl = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_ctrl)
                 iHvp_dstb = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_dstb)
                 assert not np.any(self.rollout_buffer.current_shot - self.rollout_buffer.indices[
                                                                      count * self.batch_size: count * self.batch_size + self.batch_size])
-                #assert self.rollout_buffer.current_shot == self.rollout_buffer.indices[count * self.batch_size: count * self.batch_size + self.batch_size]
-                traj_ids = self.rollout_buffer.env_indices[self.rollout_buffer.indices[count * self.batch_size: count * self.batch_size + self.batch_size]].squeeze()
+                # assert self.rollout_buffer.current_shot == self.rollout_buffer.indices[count * self.batch_size: count * self.batch_size + self.batch_size]
+                traj_ids = self.rollout_buffer.env_indices[self.rollout_buffer.indices[
+                                                           count * self.batch_size: count * self.batch_size + self.batch_size]].squeeze()
                 x0_states = self.rollout_buffer.X0_VALUES_MASTER[traj_ids]
                 x0_returns = buf.X0_RETURNS_MASTER[traj_ids]
-                x0_values,  _, _, _, _ = self.policy.evaluate_actions(torch.Tensor(x0_states).to(self.device), torch.Tensor(actions[0]).to(self.device), torch.Tensor(dstb_actions[0]).to(self.device))
-
-
-
+                x0_values, _, _, _, _ = self.policy.evaluate_actions(torch.Tensor(x0_states).to(self.device),
+                                                                     torch.Tensor(actions[0]).to(self.device),
+                                                                     torch.Tensor(dstb_actions[0]).to(self.device))
 
                 # clipped surrogate loss
 
                 '''policy_loss_1 = advantages * ratio
                 policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
                 policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()'''
-                #autograd.grad(L_ctrl_grad, self.policy.ctrl_optimizer.param_groups[0]['params'], iHvp_ctrl, is_grads_batched=False, create_graph=True, retain_graph=True)
+                # autograd.grad(L_ctrl_grad, self.policy.ctrl_optimizer.param_groups[0]['params'], iHvp_ctrl, is_grads_batched=False, create_graph=True, retain_graph=True)
 
-                #surr_L_ctrl = self.prep_grad_theta_L(advantages, ctrl_log_prob, x0_values.squeeze(), torch.tensor(x0_returns).to(self.device))
+                # surr_L_ctrl = self.prep_grad_theta_L(advantages, ctrl_log_prob, x0_values.squeeze(), torch.tensor(x0_returns).to(self.device))
                 '''values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
                     torch.Tensor(rollout_data.observations).to(self.device), torch.Tensor(actions).to(self.device),
                     torch.Tensor(dstb_actions).to(self.device))
@@ -1688,19 +1733,23 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                                                                      torch.Tensor(actions[0]).to(self.device),
                                                                      torch.Tensor(dstb_actions[0]).to(self.device))
                 '''
-                #surr_L_dstb = self.prep_grad_psi_L(advantages, dstb_log_prob, x0_values.squeeze(), torch.tensor(x0_returns).to(self.device))
-                #d1f2_ctrl_batched = autograd.grad(surr_L, self.policy.ctrl_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True)
-                surr_L_ctrl, surr_L_dstb = self.estimators(advantages, ctrl_log_prob, dstb_log_prob, x0_values.squeeze(), torch.Tensor(x0_returns).to(self.device))
+                # surr_L_dstb = self.prep_grad_psi_L(advantages, dstb_log_prob, x0_values.squeeze(), torch.tensor(x0_returns).to(self.device))
+                # d1f2_ctrl_batched = autograd.grad(surr_L, self.policy.ctrl_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True)
+                surr_L_ctrl, surr_L_dstb = self.estimators(advantages, ctrl_log_prob, dstb_log_prob,
+                                                           x0_values.squeeze(),
+                                                           torch.Tensor(x0_returns).to(self.device))
                 d1f2_ctrl_batched = autograd.grad(surr_L_ctrl, self.policy.value_optimizer.param_groups[0]['params'],
                                                   create_graph=True, retain_graph=True)
                 d1f2_ctrl = torch.hstack([t.flatten() for t in d1f2_ctrl_batched])
                 d1f2_dstb_batched = autograd.grad(surr_L_dstb, self.policy.value_optimizer.param_groups[0]['params'],
                                                   create_graph=True, retain_graph=True)
                 d1f2_dstb = torch.hstack([u.flatten() for u in d1f2_dstb_batched])
-                #d1f2_dstb = d1f2_dstb.dot(dstb_log_prob)
-                #ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.value_optimizer.param_groups[0]['params'], torch.eye(d1f2_ctrl.shape[0], device=self.device), is_grads_batched=True, create_graph=True, retain_graph=True)
-                ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.ctrl_optimizer.param_groups[0]['params'], iHvp_ctrl, is_grads_batched=False, create_graph=True, retain_graph=True)
-                dstb_imp = autograd.grad(d1f2_dstb, self.policy.dstb_optimizer.param_groups[0]['params'], iHvp_dstb, is_grads_batched=False, create_graph=True, retain_graph=True)
+                # d1f2_dstb = d1f2_dstb.dot(dstb_log_prob)
+                # ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.value_optimizer.param_groups[0]['params'], torch.eye(d1f2_ctrl.shape[0], device=self.device), is_grads_batched=True, create_graph=True, retain_graph=True)
+                ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.ctrl_optimizer.param_groups[0]['params'], iHvp_ctrl,
+                                         is_grads_batched=False, create_graph=True, retain_graph=True)
+                dstb_imp = autograd.grad(d1f2_dstb, self.policy.dstb_optimizer.param_groups[0]['params'], iHvp_dstb,
+                                         is_grads_batched=False, create_graph=True, retain_graph=True)
 
                 # Entropy loss favor exploration
                 if ctrl_entropy is None:
@@ -1712,9 +1761,9 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                     dstb_entropy_loss = -th.mean(dstb_entropy)
 
                 entropy_losses.append(ctrl_entropy_loss.item())
-                #policy_loss_1 = advantages * ratio
-                #policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
-                #policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
+                # policy_loss_1 = advantages * ratio
+                # policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
+                # policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
                 ctrl_loss = policy_loss + self.ent_coef * ctrl_entropy_loss
                 dstb_loss = dstb_policy_loss + self.dstb_ent_coef * dstb_entropy_loss
 
@@ -1735,13 +1784,14 @@ class MAGICS_PPO(OnPolicyAlgorithm):
 
                 # Optimization step
                 critic_loss = self.vf_coef * value_loss
-                #big_loss = ctrl_loss + dstb_loss + critic_loss
+                # big_loss = ctrl_loss + dstb_loss + critic_loss
                 self.policy.ctrl_optimizer.zero_grad()
                 self.policy.dstb_optimizer.zero_grad()
                 self.policy.value_optimizer.zero_grad()
                 ctrl_tensors = autograd.grad(ctrl_loss, self.policy.ctrl_optimizer.param_groups[0]['params'])
                 dstb_tensors = autograd.grad(dstb_loss, self.policy.dstb_optimizer.param_groups[0]['params'])
-                value_tensors = autograd.grad(critic_loss, self.policy.value_optimizer.param_groups[0]['params'])#, create_graph=True, retain_graph=True)
+                value_tensors = autograd.grad(critic_loss, self.policy.value_optimizer.param_groups[0][
+                    'params'])  # , create_graph=True, retain_graph=True)
 
                 for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params'])):
                     self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad = ctrl_tensors[i]
@@ -1751,22 +1801,25 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 for i in range(len(self.policy.value_optimizer.param_groups[0]['params'])):
                     self.policy.value_optimizer.param_groups[0]['params'][i].grad = value_tensors[i]
                 th.nn.utils.clip_grad_norm_(self.policy.value_optimizer.param_groups[0]['params'], self.max_grad_norm)
-                #big_loss.backward()
+                # big_loss.backward()
                 print("e done")
-                #ctrl_loss.backward(retain_graph=True)
+                # ctrl_loss.backward(retain_graph=True)
 
                 with (torch.no_grad()):
-                    #ctrl_partials = autograd.grad(ctrl_loss, self.policy.ctrl_optimizer.param_groups[0]['params'])
+                    # ctrl_partials = autograd.grad(ctrl_loss, self.policy.ctrl_optimizer.param_groups[0]['params'])
                     for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params'])):
                         self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad = \
-                        self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad - ctrl_imp[i]
-                    th.nn.utils.clip_grad_norm_(self.policy.ctrl_optimizer.param_groups[0]['params'], self.max_grad_norm)
+                            self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad - ctrl_imp[i]
+                    th.nn.utils.clip_grad_norm_(self.policy.ctrl_optimizer.param_groups[0]['params'],
+                                                self.max_grad_norm)
 
                     for i in range(len(self.policy.dstb_optimizer.param_groups[0]['params'])):
                         self.policy.dstb_optimizer.param_groups[0]['params'][i].grad = \
-                        self.policy.dstb_optimizer.param_groups[0]['params'][i].grad - dstb_imp[i]
-                    th.nn.utils.clip_grad_norm_(self.policy.dstb_optimizer.param_groups[0]['params'], self.max_grad_norm)
-                    th.nn.utils.clip_grad_norm_(self.policy.value_optimizer.param_groups[0]['params'], self.max_grad_norm)
+                            self.policy.dstb_optimizer.param_groups[0]['params'][i].grad - dstb_imp[i]
+                    th.nn.utils.clip_grad_norm_(self.policy.dstb_optimizer.param_groups[0]['params'],
+                                                self.max_grad_norm)
+                    th.nn.utils.clip_grad_norm_(self.policy.value_optimizer.param_groups[0]['params'],
+                                                self.max_grad_norm)
 
                 '''
                 for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params'])):
@@ -1810,25 +1863,25 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                     # Reassign parameters to the optimizer (clear old state)
                     self.policy.dstb_optimizer.param_groups[0]['params'] = dstb_list
                 '''
-                #self.policy.dstb_optimizer.zero_grad()
-                #dstb_partials = autograd.grad(dstb_loss, self.policy.dstb_optimizer.param_groups[0]['params'])
-                #dstb_loss.backward(retain_graph=True)
-                #self.policy.dstb_optimizer.step()
-                #values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
+                # self.policy.dstb_optimizer.zero_grad()
+                # dstb_partials = autograd.grad(dstb_loss, self.policy.dstb_optimizer.param_groups[0]['params'])
+                # dstb_loss.backward(retain_graph=True)
+                # self.policy.dstb_optimizer.step()
+                # values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
                 #    torch.from_numpy(rollout_data.observations).to(self.device), actions, dstb_actions)
-                #values_pred = values.flatten()
-                #value_loss = F.mse_loss(torch.Tensor(rollout_data.returns).to(self.device), values_pred)
-                #critic_loss = self.vf_coef * value_loss
-                #self.policy.value_optimizer.zero_grad()
+                # values_pred = values.flatten()
+                # value_loss = F.mse_loss(torch.Tensor(rollout_data.returns).to(self.device), values_pred)
+                # critic_loss = self.vf_coef * value_loss
+                # self.policy.value_optimizer.zero_grad()
                 '''
                 critic_partials = autograd.grad(critic_loss, self.policy.value_optimizer.param_groups[0]['params'])
                 for i in range(len(self.policy.value_optimizer.param_groups[0]['params'])):
                     self.policy.value_optimizer.param_groups[0]['params'][i].grad = critic_partials[i]'''
-                #critic_loss.backward(retain_graph=True)
+                # critic_loss.backward(retain_graph=True)
 
-                #loss.backward()
+                # loss.backward()
                 # Clip grad norm
-                #self.policy.value_optimizer.step()
+                # self.policy.value_optimizer.step()
                 '''
                 with torch.no_grad():
                     for i in range(len(self.policy.value_optimizer.param_groups[0]['params'])):
@@ -1837,7 +1890,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                         self.policy.ctrl_optimizer.param_groups[0]['params'][i] = torch.tensor(self.policy.ctrl_optimizer.param_groups[0]['params'][i].data, requires_grad=True)
                     for i in range(len(self.policy.dstb_optimizer.param_groups[0]['params'])):
                         self.policy.dstb_optimizer.param_groups[0]['params'][i] = torch.tensor(self.policy.dstb_optimizer.param_groups[0]['params'][i].data, requires_grad=True)
-    
+
                     """self.ctrl_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.policy_net.parameters(), self.action_net.parameters()), joint_schedule[1](1),maximize=False)
                     self.dstb_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.dstb_net.parameters(), self.dstb_action_net.parameters()), joint_schedule[2](1), maximize=False)
                     self.value_optimizer = self.optimizer_class(
@@ -1855,7 +1908,6 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                     self.policy.value_net.bias.data = self.policy.value_optimizer.param_groups[0]['params'][-1].data
                     self.policy.value_net.weight.data = self.policy.value_optimizer.param_groups[0]['params'][-2].data
                 '''
-
 
                 '''
                 del policy_loss
@@ -1877,18 +1929,18 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 del values, values_pred
                 '''
 
-                #buf = deepcopy(self.rollout_buffer)
-                #buf.values = torch.from_numpy(self.rollout_buffer.values).to(self.device)
-                #buf.rewards = torch.from_numpy(buf.rewards).to(self.device)
-                #buf.advantages = torch.from_numpy(buf.advantages).to(self.device)
-                #buf.episode_starts = torch.from_numpy(buf.episode_starts).to(self.device)
+                # buf = deepcopy(self.rollout_buffer)
+                # buf.values = torch.from_numpy(self.rollout_buffer.values).to(self.device)
+                # buf.rewards = torch.from_numpy(buf.rewards).to(self.device)
+                # buf.advantages = torch.from_numpy(buf.advantages).to(self.device)
+                # buf.episode_starts = torch.from_numpy(buf.episode_starts).to(self.device)
 
-                #for i in range(buf.buffer_size):
+                # for i in range(buf.buffer_size):
                 #    _, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
                 #    buf.values[i] = values.squeeze()
-                #_, _, last_values, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
-                
-                #TEST - DO NOT COMMIT
+                # _, _, last_values, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
+
+                # TEST - DO NOT COMMIT
 
                 advantage_test = []
                 _, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
@@ -1896,32 +1948,32 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 last_gae_lam = th.zeros_like(last_values)
                 dones = torch.Tensor(buf.dones[-1]).to(self.device)
                 for step in reversed(range(buf.buffer_size)):
-                    #_, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
+                    # _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
                     if step == buf.buffer_size - 1:
                         next_non_terminal = 1.0 - dones.float()
                         next_values = last_values
                     else:
                         next_non_terminal = 1.0 - buf.episode_starts[step + 1].float()
-                        _, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[step+1]).to(self.device))
+                        _, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[step + 1]).to(self.device))
                         next_values = vf.flatten()
                     _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
 
                     delta = buf.rewards[step] + buf.gamma * next_values * next_non_terminal - value_query.squeeze()
                     last_gae_lam = delta + buf.gamma * buf.gae_lambda * next_non_terminal * last_gae_lam
                     advantage_test.append(last_gae_lam)
-                    #buf.advantages[step] = last_gae_lam
+                    # buf.advantages[step] = last_gae_lam
                 advantages = torch.stack(advantage_test, dim=0)
-                #buf.returns = buf.advantages + buf.values
+                # buf.returns = buf.advantages + buf.values
                 print("")
-                #TEST - DO NOT COMMIT
-                
-                #buf.compute_returns_and_advantage_pt(values, torch.Tensor(buf.dones[-1]).to(self.device))
-                #self.rollout_buffer.advantages = torch.zeros_like(self.rollout_buffer.advantages)
-                #self.rollout_buffer.flat_advantages = buf.swap_and_flatten(buf.advantages)
+                # TEST - DO NOT COMMIT
+
+                # buf.compute_returns_and_advantage_pt(values, torch.Tensor(buf.dones[-1]).to(self.device))
+                # self.rollout_buffer.advantages = torch.zeros_like(self.rollout_buffer.advantages)
+                # self.rollout_buffer.flat_advantages = buf.swap_and_flatten(buf.advantages)
                 self.rollout_buffer.advantages = self.rollout_buffer.swap_and_flatten_pt(advantages)
                 count = count + 1
-                #elf.rollout_buffer.flat_advantages = self.rollout_buffer.swap_and_flatten_pt(self.rollout_buffer.advantages)
-                #self.rollout_buffer.flat_advantages = buf.swap_and_flatten_pt(buf.advantages)
+                # elf.rollout_buffer.flat_advantages = self.rollout_buffer.swap_and_flatten_pt(self.rollout_buffer.advantages)
+                # self.rollout_buffer.flat_advantages = buf.swap_and_flatten_pt(buf.advantages)
 
                 if not continue_training:
                     break
@@ -2014,13 +2066,14 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                         dstb_log_prob[location] = temp_dstb_log_prob
                         dstb_entropy[location] = temp_dstb_entropy
                         '''
-                    values, _, _, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
+                    values, _, _, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
+                        torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
                     _, ctrl_log_prob, ctrl_entropy, _, _ = main_agent.evaluate_actions(
                         torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
                     values = values.flatten()
 
                 else:
-                    #assert self.update_right is True
+                    # assert self.update_right is True
                     # main player is the right player
                     # adversaries are the control role
                     '''
@@ -2048,7 +2101,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                     advantages = torch.from_numpy(rollout_data.advantages).to(self.device)
                 else:
                     advantages = rollout_data.advantages
-                #advantages = torch.from_numpy(rollout_data.advantages).to(self.device)
+                # advantages = torch.from_numpy(rollout_data.advantages).to(self.device)
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
                 if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
@@ -2087,7 +2140,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                                                     create_graph=True, retain_graph=True)
                 L_ctrl_grad = torch.cat([t.flatten() for t in L_ctrl_grad_batched], dim=0)
                 # L_ctrl_grad = torch.hstack([t.flatten() for t in L_ctrl_grad_batched])
-                full_hessian = True
+                full_hessian = False
                 n = sum(p.numel() for p in self.policy.value_optimizer.param_groups[0]['params'])
                 if full_hessian is False:
 
@@ -2115,23 +2168,23 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 else:
                     L_ctrl_hessian = self.matrix_unbatch(grad_batched, n)
                     L_ctrl_hessian.diag().add_(5)
-                #d2f1_ctrl_batched = autograd.grad(policy_loss, self.policy.value_optimizer.param_groups[0]['params'],
+                # d2f1_ctrl_batched = autograd.grad(policy_loss, self.policy.value_optimizer.param_groups[0]['params'],
                 #                                  create_graph=True, retain_graph=True)
                 d2f1_dstb_batched = autograd.grad(dstb_policy_loss,
                                                   self.policy.value_optimizer.param_groups[0]['params'],
                                                   create_graph=True, retain_graph=True)
-                #d2f1_ctrl = torch.hstack([t.flatten() for t in d2f1_ctrl_batched])
+                # d2f1_ctrl = torch.hstack([t.flatten() for t in d2f1_ctrl_batched])
 
                 d2f1_dstb = torch.hstack([t.flatten() for t in d2f1_dstb_batched])
                 # d2f1_ctrl = torch.rand(d2f1_dstb.shape).to(self.device)
 
                 # diag, no other option
-                #iHvp_ctrl = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_ctrl)
+                # iHvp_ctrl = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_ctrl)
                 if not full_hessian:
                     iHvp_dstb = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_dstb)
                 else:
                     iHvp_dstb = torch.linalg.solve(L_ctrl_hessian, d2f1_dstb)
-                #assert not np.any(self.rollout_buffer.current_shot - self.rollout_buffer.indices[
+                # assert not np.any(self.rollout_buffer.current_shot - self.rollout_buffer.indices[
                 #                                                     count * self.batch_size: count * self.batch_size + self.batch_size])
                 # assert self.rollout_buffer.current_shot == self.rollout_buffer.indices[count * self.batch_size: count * self.batch_size + self.batch_size]
                 traj_ids = self.rollout_buffer.env_indices[self.rollout_buffer.indices[
@@ -2162,15 +2215,15 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 surr_L_ctrl, surr_L_dstb = self.estimators(advantages, ctrl_log_prob, dstb_log_prob,
                                                            x0_values.squeeze(),
                                                            torch.Tensor(x0_returns).to(self.device))
-                #d1f2_ctrl_batched = autograd.grad(surr_L_ctrl, self.policy.value_optimizer.param_groups[0]['params'],
+                # d1f2_ctrl_batched = autograd.grad(surr_L_ctrl, self.policy.value_optimizer.param_groups[0]['params'],
                 #                                  create_graph=True, retain_graph=True)
-                #d1f2_ctrl = torch.hstack([t.flatten() for t in d1f2_ctrl_batched])
+                # d1f2_ctrl = torch.hstack([t.flatten() for t in d1f2_ctrl_batched])
                 d1f2_dstb_batched = autograd.grad(surr_L_dstb, self.policy.value_optimizer.param_groups[0]['params'],
                                                   create_graph=True, retain_graph=True)
                 d1f2_dstb = torch.hstack([u.flatten() for u in d1f2_dstb_batched])
                 # d1f2_dstb = d1f2_dstb.dot(dstb_log_prob)
                 # ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.value_optimizer.param_groups[0]['params'], torch.eye(d1f2_ctrl.shape[0], device=self.device), is_grads_batched=True, create_graph=True, retain_graph=True)
-                #ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.ctrl_optimizer.param_groups[0]['params'], iHvp_ctrl,
+                # ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.ctrl_optimizer.param_groups[0]['params'], iHvp_ctrl,
                 #                         is_grads_batched=False, create_graph=True, retain_graph=True)
                 dstb_imp = autograd.grad(d1f2_dstb, self.policy.dstb_optimizer.param_groups[0]['params'], iHvp_dstb,
                                          is_grads_batched=False, create_graph=True, retain_graph=True)
@@ -2244,7 +2297,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                     # buf.advantages[step] = last_gae_lam
                 advantages = torch.stack(advantage_test, dim=0)
                 # buf.returns = buf.advantages + buf.values
-                #print("")
+                # print("")
                 # TEST - DO NOT COMMIT
 
                 # buf.compute_returns_and_advantage_pt(values, torch.Tensor(buf.dones[-1]).to(self.device))
@@ -2276,13 +2329,13 @@ class MAGICS_PPO(OnPolicyAlgorithm):
             self.logger.record("train/clip_range_vf", clip_range_vf)
 
     def learn(
-        self: MAGICS_PPO,
-        total_timesteps: int,
-        callback: MaybeCallback = None,
-        log_interval: int = 1,
-        tb_log_name: str = "PPO",
-        reset_num_timesteps: bool = True,
-        progress_bar: bool = False,
+            self: MAGICS_PPO,
+            total_timesteps: int,
+            callback: MaybeCallback = None,
+            log_interval: int = 1,
+            tb_log_name: str = "PPO",
+            reset_num_timesteps: bool = True,
+            progress_bar: bool = False,
     ) -> MAGICS_PPO:
 
         return super().learn(
@@ -2295,14 +2348,18 @@ class MAGICS_PPO(OnPolicyAlgorithm):
         )
 
     def prep_grad_theta_L(self, advantages, ctrl_logp, x0_values, x0_returns):
-        #TODO: self.rollout_buffer.X0_VALUES_MASTER + env_indices
+        # TODO: self.rollout_buffer.X0_VALUES_MASTER + env_indices
         grad_estimator = 2 * (advantages * ctrl_logp).mean() * (x0_returns - x0_values).mean()
         return grad_estimator
+
     def prep_grad_psi_L(self, advantages, dstb_logp, x0_values, x0_returns):
         grad_estimator = 2 * (advantages * dstb_logp).mean() * (x0_returns - x0_values).mean()
         return grad_estimator
+
     def estimators(self, advantages, ctrl_logp, dstb_logp, x0_values, x0_returns):
-        return 2 * (advantages * ctrl_logp).mean() * (x0_returns - x0_values).mean(), 2 * (advantages * dstb_logp).mean() * (x0_returns - x0_values).mean()
+        return 2 * (advantages * ctrl_logp).mean() * (x0_returns - x0_values).mean(), 2 * (
+                    advantages * dstb_logp).mean() * (x0_returns - x0_values).mean()
+
     def matrix_unbatch(self, to_be_unbatched, size1, size2=None):
         if size2 is None:
             size2 = size1
@@ -2327,78 +2384,78 @@ class RARL_PPO(MAGICS_PPO):
     }
 
     def __init__(self,
-        policy: Union[str, Type[ActorCriticPolicy]],
-        env: Union[GymEnv, str],
-        c_learning_rate: Union[float, Schedule] = 1e-4,
-        d_learning_rate: Union[float, Schedule] = 7e-4,
-        v_learning_rate: Union[float, Schedule] = 7e-4,
-        c_learning_rate_decay: Union[float, Schedule] = 1e-4,
-        d_learning_rate_decay: Union[float, Schedule] = 7e-4,
-        v_learning_rate_decay: Union[float, Schedule] = 7e-4,
-        n_steps: int = 2048,
-        batch_size: int = 64,
-        n_epochs: int = 1,
-        gamma: float = 0.99,
-        gae_lambda: float = 0.95,
-        clip_range: Union[float, Schedule] = 0.2,
-        clip_range_vf: Union[None, float, Schedule] = None,
-        normalize_advantage: bool = True,
-        ent_coef: float = 0.0,
-        dstb_ent_coef: float = 0.0,
-        vf_coef: float = 0.5,
-        max_grad_norm: float = 0.5,
-        use_sde: bool = False,
-        sde_sample_freq: int = -1,
-        target_kl: Optional[float] = None,
-        tensorboard_log: Optional[str] = None,
-        policy_kwargs: Optional[Dict[str, Any]] = None,
-        verbose: int = 0,
-        seed: Optional[int] = None,
-        device: Union[th.device, str] = "auto",
-        _init_setup_model: bool = True,
-        update_left = True,
-        update_right = True,
-        dstb_action_space =None
-    ):
+                 policy: Union[str, Type[ActorCriticPolicy]],
+                 env: Union[GymEnv, str],
+                 c_learning_rate: Union[float, Schedule] = 1e-4,
+                 d_learning_rate: Union[float, Schedule] = 7e-4,
+                 v_learning_rate: Union[float, Schedule] = 7e-4,
+                 c_learning_rate_decay: Union[float, Schedule] = 1e-4,
+                 d_learning_rate_decay: Union[float, Schedule] = 7e-4,
+                 v_learning_rate_decay: Union[float, Schedule] = 7e-4,
+                 n_steps: int = 2048,
+                 batch_size: int = 64,
+                 n_epochs: int = 1,
+                 gamma: float = 0.99,
+                 gae_lambda: float = 0.95,
+                 clip_range: Union[float, Schedule] = 0.2,
+                 clip_range_vf: Union[None, float, Schedule] = None,
+                 normalize_advantage: bool = True,
+                 ent_coef: float = 0.0,
+                 dstb_ent_coef: float = 0.0,
+                 vf_coef: float = 0.5,
+                 max_grad_norm: float = 0.5,
+                 use_sde: bool = False,
+                 sde_sample_freq: int = -1,
+                 target_kl: Optional[float] = None,
+                 tensorboard_log: Optional[str] = None,
+                 policy_kwargs: Optional[Dict[str, Any]] = None,
+                 verbose: int = 0,
+                 seed: Optional[int] = None,
+                 device: Union[th.device, str] = "auto",
+                 _init_setup_model: bool = True,
+                 update_left=True,
+                 update_right=True,
+                 dstb_action_space=None
+                 ):
 
         super().__init__(
             policy,
             env,
-            c_learning_rate= c_learning_rate,
-            d_learning_rate= d_learning_rate,
-            v_learning_rate= v_learning_rate,
-            c_learning_rate_decay= c_learning_rate_decay,
-            d_learning_rate_decay= d_learning_rate_decay,
-            v_learning_rate_decay= v_learning_rate_decay,
+            c_learning_rate=c_learning_rate,
+            d_learning_rate=d_learning_rate,
+            v_learning_rate=v_learning_rate,
+            c_learning_rate_decay=c_learning_rate_decay,
+            d_learning_rate_decay=d_learning_rate_decay,
+            v_learning_rate_decay=v_learning_rate_decay,
             n_steps=n_steps,
-            batch_size = batch_size,
-            n_epochs = n_epochs,
-            gamma = gamma,
-            gae_lambda = gae_lambda,
-            clip_range = clip_range,
-            clip_range_vf= clip_range_vf,
-            normalize_advantage= normalize_advantage,
-            ent_coef= ent_coef,
-            dstb_ent_coef = dstb_ent_coef,
-            vf_coef = vf_coef,
-            max_grad_norm = max_grad_norm,
-            use_sde = use_sde,
-            sde_sample_freq = sde_sample_freq,
-            target_kl = target_kl,
-            tensorboard_log = tensorboard_log,
-            policy_kwargs = policy_kwargs,
-            verbose= verbose,
-            seed = seed,
-            device = device,
-            _init_setup_model = _init_setup_model,
-            update_left = update_left,
-            update_right = update_right,
-            dstb_action_space = dstb_action_space,
+            batch_size=batch_size,
+            n_epochs=n_epochs,
+            gamma=gamma,
+            gae_lambda=gae_lambda,
+            clip_range=clip_range,
+            clip_range_vf=clip_range_vf,
+            normalize_advantage=normalize_advantage,
+            ent_coef=ent_coef,
+            dstb_ent_coef=dstb_ent_coef,
+            vf_coef=vf_coef,
+            max_grad_norm=max_grad_norm,
+            use_sde=use_sde,
+            sde_sample_freq=sde_sample_freq,
+            target_kl=target_kl,
+            tensorboard_log=tensorboard_log,
+            policy_kwargs=policy_kwargs,
+            verbose=verbose,
+            seed=seed,
+            device=device,
+            _init_setup_model=_init_setup_model,
+            update_left=update_left,
+            update_right=update_right,
+            dstb_action_space=dstb_action_space,
         )
         self.update_ctrl = True
         self.update_dstb = False
 
-        #print("")
+        # print("")
 
     def train(self):
         """
@@ -2409,7 +2466,9 @@ class RARL_PPO(MAGICS_PPO):
         self.update_lr_critic = False
         self.update_lr_dstb = self.update_dstb
         # modify flags after lr update is done
-        self._update_learning_rate(self.policy.ctrl_optimizer) if self.update_ctrl is True else self._update_learning_rate(self.policy.dstb_optimizer)
+        self._update_learning_rate(
+            self.policy.ctrl_optimizer) if self.update_ctrl is True else self._update_learning_rate(
+            self.policy.dstb_optimizer)
         self.update_lr_ctrl = False
         self.update_lr_dstb = False
         self.update_lr_critic = True
@@ -2442,7 +2501,8 @@ class RARL_PPO(MAGICS_PPO):
                 if self.use_sde:
                     self.policy.reset_noise(self.batch_size)
 
-                values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
+                values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
+                    torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
                 values = values.flatten()
                 # Normalize advantage
                 advantages = torch.from_numpy(rollout_data.advantages).to(self.device)
@@ -2556,6 +2616,7 @@ class RARL_PPO(MAGICS_PPO):
         self.update_ctrl = not self.update_ctrl
         self.update_dstb = not self.update_ctrl
 
+
 class TSS_PPO(MAGICS_PPO):
     policy_aliases: Dict[str, Type[BasePolicy]] = {
         "MlpPolicy": ActorCriticPolicy,
@@ -2633,11 +2694,12 @@ class TSS_PPO(MAGICS_PPO):
             update_right=update_right,
             dstb_action_space=dstb_action_space,
         )
-        self.warmstarted_cont_MAGICS=warmstarted_cont_MAGICS
+        self.warmstarted_cont_MAGICS = warmstarted_cont_MAGICS
         if self.warmstarted_cont_MAGICS is True:
             print("this model is warmstarted! now running magics_ppo training", flush=True)
         self.learning_rate = [c_learning_rate, d_learning_rate, v_learning_rate]
-        #self.learning_rate_decay_phase =
+        # self.learning_rate_decay_phase =
+
     def warmstart_setup(self, joint_schedule, use_policy_extractor=True):
 
         assert self.warmstarted_cont_MAGICS == True
@@ -2667,17 +2729,19 @@ class TSS_PPO(MAGICS_PPO):
             joint_schedule[0](1), **self.policy.optimizer_kwargs)
 
     def warmstart_buffer_setup(self, n_steps, n_envs, batch_size):
-        buffer = AdvRolloutBuffer(n_steps, self.observation_space, self.action_space, device=self.device, gamma=self.gamma,
-        gae_lambda=self.gae_lambda,
-        n_envs=n_envs,
-        **self.rollout_buffer_kwargs
-        )
+        buffer = AdvRolloutBuffer(n_steps, self.observation_space, self.action_space, device=self.device,
+                                  gamma=self.gamma,
+                                  gae_lambda=self.gae_lambda,
+                                  n_envs=n_envs,
+                                  **self.rollout_buffer_kwargs
+                                  )
 
         self.batch_size = batch_size
         self.n_envs = n_envs
         self.n_steps = n_steps
 
         return buffer
+
     def train(self):
         """
         Update policy using the currently gathered rollout buffer.
@@ -2687,7 +2751,8 @@ class TSS_PPO(MAGICS_PPO):
                 print("this model is warmstarted! now running magics_ppo training", flush=True)
             return super().train()
 
-        self._update_learning_rate([self.policy.ctrl_optimizer, self.policy.dstb_optimizer,self.policy.value_optimizer])
+        self._update_learning_rate(
+            [self.policy.ctrl_optimizer, self.policy.dstb_optimizer, self.policy.value_optimizer])
         # Compute current clip range
         clip_range = self.clip_range(self._current_progress_remaining)
         # Optional: clip range for the value function
@@ -2778,7 +2843,8 @@ class TSS_PPO(MAGICS_PPO):
                     dstb_approx_kl_div = th.mean((th.exp(dstb_log_ratio) - 1) - dstb_log_ratio).cpu().numpy()
                     approx_kl_divs.append(ctrl_approx_kl_div)
 
-                if self.target_kl is not None and torch.max(ctrl_approx_kl_div, dstb_approx_kl_div) > 1.5 * self.target_kl:
+                if self.target_kl is not None and torch.max(ctrl_approx_kl_div,
+                                                            dstb_approx_kl_div) > 1.5 * self.target_kl:
                     continue_training = False
                     if self.verbose >= 1:
                         print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
@@ -2816,7 +2882,7 @@ class TSS_PPO(MAGICS_PPO):
         self.logger.record("train/clip_range", clip_range)
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
-        #self.update_ctrl = not self.update_ctrl
+        # self.update_ctrl = not self.update_ctrl
 
     def train_one_adversary(self, main_agent, ma_left=False, ma_right=False):
         # helper function
@@ -2878,13 +2944,14 @@ class TSS_PPO(MAGICS_PPO):
                         dstb_log_prob[location] = temp_dstb_log_prob
                         dstb_entropy[location] = temp_dstb_entropy
                         '''
-                    values, _, _, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
+                    values, _, _, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
+                        torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
                     _, ctrl_log_prob, ctrl_entropy, _, _ = main_agent.evaluate_actions(
                         torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
                     values = values.flatten()
 
                 else:
-                    #assert self.update_right is True
+                    # assert self.update_right is True
                     # main player is the right player
                     # adversaries are the control role
                     '''
@@ -3007,6 +3074,7 @@ class TSS_PPO(MAGICS_PPO):
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
 
+
 class Specialized_Agent(TSS_PPO):
     policy_aliases: Dict[str, Type[BasePolicy]] = {
         "MlpPolicy": ActorCriticPolicy,
@@ -3014,6 +3082,7 @@ class Specialized_Agent(TSS_PPO):
         "MultiInputPolicy": MultiInputActorCriticPolicy,
         "AACCnnPolicy": ActorActorCriticCnnPolicy
     }
+
     def __init__(
             self,
             policy: Union[str, Type[ActorCriticPolicy]],
@@ -3051,7 +3120,9 @@ class Specialized_Agent(TSS_PPO):
             num_adversary=4,
             n_global_env=None,
             n_env_per_adv=None,
-            warmstarted_cont_MAGICS=False
+            warmstarted_cont_MAGICS=False,
+            opp_list=None,
+            use_mirror=False
     ):
         assert I_AM_LEFT != I_AM_RIGHT
         super().__init__(
@@ -3085,8 +3156,8 @@ class Specialized_Agent(TSS_PPO):
         self.dstb_action_space = dstb_action_space
         self.update_right = I_AM_RIGHT
         self.n_epochs = n_epochs
-        #self.learning_rate = [v_learning_rate, c_learning_rate, d_learning_rate]
-        #self.learning_rate_decay_phase = [v_learning_rate_decay, c_learning_rate_decay, d_learning_rate_decay]
+        # self.learning_rate = [v_learning_rate, c_learning_rate, d_learning_rate]
+        # self.learning_rate_decay_phase = [v_learning_rate_decay, c_learning_rate_decay, d_learning_rate_decay]
         # Sanity check, otherwise it will lead to noisy gradient and NaN
         # because of the advantage normalization
         if normalize_advantage:
@@ -3135,34 +3206,35 @@ class Specialized_Agent(TSS_PPO):
         self.env.num_envs = self.n_env_per_adv
         for i in range(num_adversary):
             adversaries.append(TSS_PPO("AACCnnPolicy",
-            self.env,
-            device=self.device,
-            verbose=self.verbose,
-            n_steps=self.n_steps,
-            batch_size=self.batch_size // self.n_envs,  # 512,
-            n_epochs=self.n_epochs,
-            gamma=self.gamma,
-            v_learning_rate=v_learning_rate, c_learning_rate=c_learning_rate,
-            d_learning_rate=d_learning_rate, v_learning_rate_decay=v_learning_rate_decay,
-            c_learning_rate_decay=c_learning_rate_decay,
-            d_learning_rate_decay=d_learning_rate_decay,
-            clip_range=self.clip_range,
-            tensorboard_log=self.tensorboard_log,
-            seed=self.seed,
-            ent_coef=self.ent_coef,
-            dstb_ent_coef=self.dstb_ent_coef,
-            update_left= not self.update_left,
-            update_right=not self.update_right,
-            warmstarted_cont_MAGICS=self.warmstarted_cont_MAGICS
-        ))
-            adversaries[i].rollout_buffer.n_envs=self.n_env_per_adv
-
+                                       self.env,
+                                       device=self.device,
+                                       verbose=self.verbose,
+                                       n_steps=self.n_steps,
+                                       batch_size=self.batch_size // self.n_envs,  # 512,
+                                       n_epochs=self.n_epochs,
+                                       gamma=self.gamma,
+                                       v_learning_rate=v_learning_rate, c_learning_rate=c_learning_rate,
+                                       d_learning_rate=d_learning_rate, v_learning_rate_decay=v_learning_rate_decay,
+                                       c_learning_rate_decay=c_learning_rate_decay,
+                                       d_learning_rate_decay=d_learning_rate_decay,
+                                       clip_range=self.clip_range,
+                                       tensorboard_log=self.tensorboard_log,
+                                       seed=self.seed,
+                                       ent_coef=self.ent_coef,
+                                       dstb_ent_coef=self.dstb_ent_coef,
+                                       update_left=not self.update_left,
+                                       update_right=not self.update_right,
+                                       warmstarted_cont_MAGICS=self.warmstarted_cont_MAGICS
+                                       ))
+            adversaries[i].this_adv = opp_list[i]
+            adversaries[i].rollout_buffer.n_envs = self.n_env_per_adv
 
         self.env.num_envs = self.n_envs
         print("created %d adversaries" % self.num_adversaries)
         self.adversaries = adversaries
-        #self._setup_learn(self._total_timesteps)
+        # self._setup_learn(self._total_timesteps)
         self.vf_coef = 1
+        self.use_mirror = use_mirror
 
     def _setup_model(self) -> None:
         super()._setup_model()
@@ -3176,13 +3248,13 @@ class Specialized_Agent(TSS_PPO):
             self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
 
     def collect_rollouts(
-        self,
-        env: VecEnv,
-        callback: BaseCallback,
-        rollout_buffer: RolloutBuffer,
-        n_rollout_steps: int,
+            self,
+            env: VecEnv,
+            callback: BaseCallback,
+            rollout_buffer: RolloutBuffer,
+            n_rollout_steps: int,
     ) -> bool:
-        #self._setup_learn()
+        # self._setup_learn()
         assert self._last_obs is not None, "No previous observation was provided"
         # Switch to eval mode (this affects batch norm / dropout)
         self.policy.set_training_mode(False)
@@ -3208,14 +3280,14 @@ class Specialized_Agent(TSS_PPO):
                 s_actions, s_log_probs, s_values, s_dstb_actions, s_dstb_log_probs = self.policy(obs_tensor)
                 all_adv_left_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
                 all_adv_right_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
-                all_adv_critic_values = torch.zeros((self.n_global_env,1), device=self.device)
+                all_adv_critic_values = torch.zeros((self.n_global_env, 1), device=self.device)
                 all_adv_log_probs = torch.zeros((self.n_global_env,), device=self.device)
                 all_adv_dstb_log_probs = torch.zeros((self.n_global_env,), device=self.device)
                 for i in range(self.num_adversaries):
                     actions, log_probs, values, dstb_actions, dstb_log_probs = self.adversaries[i].policy(obs_tensor)
-                    #actions = actions.cpu()
-                    #dstb_actions = dstb_actions.cpu()
-                    chunk = range(i * self.n_env_per_adv, (i+1) * self.n_env_per_adv)
+                    # actions = actions.cpu()
+                    # dstb_actions = dstb_actions.cpu()
+                    chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
                     all_adv_left_actions[chunk] = actions[chunk]
                     all_adv_log_probs[chunk] = log_probs[chunk]
                     all_adv_critic_values[chunk] = values[chunk]
@@ -3240,6 +3312,23 @@ class Specialized_Agent(TSS_PPO):
                     adversary_log_probs = all_adv_log_probs
             actions = actions.cpu().numpy()
             adversary_actions = adversary_actions.cpu().numpy()
+
+            # upper half, lower half
+
+            if self.use_mirror is True:
+                print("SINGLE TRAIN EXTRACTOR MIRROR")
+
+                actions[0:-1:2, :]  # actions for the prot when he is on the left
+                actions[1:-1:2, :]
+
+                half = self.env.num_envs // 2
+
+                temp = np.ones_like(actions) * 99  # for debugging ease
+                temp[half:, :] = actions[half:, :]
+
+                actions[half:, :] = adversary_actions[half:, :]
+                adversary_actions[half:, :] = temp[half:, :]
+
             # Rescale and perform action
             if self.update_left is True:
                 clipped_actions = np.hstack([actions, adversary_actions])
@@ -3299,7 +3388,7 @@ class Specialized_Agent(TSS_PPO):
                     self._last_episode_starts[chunk],
                     all_adv_critic_values[chunk],
                     log_probs[chunk],
-                    adversary_log_probs[chunk] # not done
+                    adversary_log_probs[chunk]  # not done
                 )
 
             self._last_obs = new_obs
@@ -3307,17 +3396,19 @@ class Specialized_Agent(TSS_PPO):
 
         with th.no_grad():
             # Compute value for the last timestep
-            values = torch.zeros((self.n_global_env,1))
+            values = torch.zeros((self.n_global_env, 1))
             for i in range(self.num_adversaries):
                 chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
-                values[chunk] = self.adversaries[i].policy.predict_values(obs_as_tensor(new_obs, self.device))[chunk].to('cpu')
-            #not bootstrapped correctly
-            #use adversary critics not ma critic
+                values[chunk] = self.adversaries[i].policy.predict_values(obs_as_tensor(new_obs, self.device))[
+                    chunk].to('cpu')
+            # not bootstrapped correctly
+            # use adversary critics not ma critic
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
-        for i in range(self.num_adversaries): # is this a bug?
+        for i in range(self.num_adversaries):  # is this a bug?
             chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
-            self.adversaries[i].rollout_buffer.compute_returns_and_advantage(last_values=values[chunk], dones=dones[chunk])
+            self.adversaries[i].rollout_buffer.compute_returns_and_advantage(last_values=values[chunk],
+                                                                             dones=dones[chunk])
 
         callback.on_rollout_end()
 
@@ -3338,10 +3429,9 @@ class Specialized_Agent(TSS_PPO):
         for i in range(self.num_adversaries):
             self.adversaries[i].train_one_adversary(self.policy, ma_left=self.update_left, ma_right=self.update_right),
         # adversaries
-        #test(self)
+        # test(self)
         '''for i in range(self.num_adversaries):
             self.adversaries[i].train_one_adversary(self.policy, ma_left=self.update_left, ma_right=self.update_right)'''
-
 
         return
 
@@ -3352,14 +3442,12 @@ class Specialized_Agent(TSS_PPO):
         Update policy using the currently gathered rollout buffer.
         """
 
-
         '''
         if self.warmstarted_cont_MAGICS is True:
             if self.warmstarted_cont_MAGICS is True:
                 print("this model is warmstarted! now running magics_ppo training", flush=True)
             return super().train()
         '''
-
 
         self._update_learning_rate(
             [self.policy.ctrl_optimizer, self.policy.dstb_optimizer, self.policy.value_optimizer])
@@ -3381,13 +3469,14 @@ class Specialized_Agent(TSS_PPO):
             buf.advantages = torch.from_numpy(buf.advantages).to(self.device)
             buf.episode_starts = torch.from_numpy(buf.episode_starts).to(self.device)
             for i in range(buf.buffer_size):
-                #location = np.nonzero(rollout_data.env_indices == i)
+                # location = np.nonzero(rollout_data.env_indices == i)
                 adversary_id = buf.env_indices[i] // self.n_env_per_adv
                 for j in range(self.num_adversaries):
-                    _, _, values, _, _ = self.adversaries[j].policy(torch.Tensor(buf.observations[i][adversary_id==j]).to(self.device))
-                #_, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
-                    buf.values[i][adversary_id==j] = values.squeeze()
-            #_, _, last_values, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
+                    _, _, values, _, _ = self.adversaries[j].policy(
+                        torch.Tensor(buf.observations[i][adversary_id == j]).to(self.device))
+                    # _, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
+                    buf.values[i][adversary_id == j] = values.squeeze()
+            # _, _, last_values, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
             buf.compute_returns_and_advantage_pt(buf.values[i], torch.Tensor(buf.dones[-1]).to(self.device))
             rollout_advantages_copy = deepcopy(self.rollout_buffer.advantages)
             # buf.compute_returns_and_advantage_pt_test(last_values, torch.Tensor(buf.dones[-1]).to(self.device))
@@ -3412,14 +3501,17 @@ class Specialized_Agent(TSS_PPO):
                 if self.update_left is True:
                     # main player is the left player
                     # adversaries are "dstb" role
-                    values = torch.zeros((self.batch_size,1),device=self.device)
-                    dstb_log_prob = torch.zeros((self.batch_size,),device=self.device)
-                    dstb_entropy = torch.zeros((self.batch_size,),device=self.device)
+                    values = torch.zeros((self.batch_size, 1), device=self.device)
+                    dstb_log_prob = torch.zeros((self.batch_size,), device=self.device)
+                    dstb_entropy = torch.zeros((self.batch_size,), device=self.device)
                     for i in range(self.n_global_env):
-                        location = np.nonzero(rollout_data.env_indices==i)
+                        location = np.nonzero(rollout_data.env_indices == i)
                         adversary_id = i // self.n_env_per_adv
-                        temp_values, _, _, temp_dstb_log_prob, temp_dstb_entropy = self.adversaries[adversary_id].policy.evaluate_actions(torch.Tensor(rollout_data.observations[location]).to(self.device), actions[location], dstb_actions[location])
-                        values[location] = temp_values#
+                        temp_values, _, _, temp_dstb_log_prob, temp_dstb_entropy = self.adversaries[
+                            adversary_id].policy.evaluate_actions(
+                            torch.Tensor(rollout_data.observations[location]).to(self.device), actions[location],
+                            dstb_actions[location])
+                        values[location] = temp_values  #
                         dstb_log_prob[location] = temp_dstb_log_prob
                         dstb_entropy[location] = temp_dstb_entropy
                     _, ctrl_log_prob, ctrl_entropy, _, _ = self.policy.evaluate_actions(
@@ -3483,7 +3575,9 @@ class Specialized_Agent(TSS_PPO):
                 # Value loss using the TD(gae_lambda) target
                 value_loss = F.mse_loss(torch.Tensor(rollout_data.returns).to(self.device), values_pred)
                 value_losses.append(value_loss.item())
-                all_adv_val_params = list(itertools.chain.from_iterable([self.adversaries[i].policy.value_optimizer.param_groups[0]['params'] for i in range(self.num_adversaries)]))
+                all_adv_val_params = list(itertools.chain.from_iterable(
+                    [self.adversaries[i].policy.value_optimizer.param_groups[0]['params'] for i in
+                     range(self.num_adversaries)]))
                 if self.warmstarted_cont_MAGICS is True:
                     L_ctrl_grad_batched = autograd.grad(value_loss, all_adv_val_params,
                                                         create_graph=True, retain_graph=True)
@@ -3519,18 +3613,18 @@ class Specialized_Agent(TSS_PPO):
                         L_ctrl_hessian.diag().add_(5)
                     d2f1_ctrl_batched = autograd.grad(ctrl_policy_loss, all_adv_val_params,
                                                       create_graph=True, retain_graph=True)
-                    #d2f1_dstb_batched = autograd.grad(dstb_policy_loss,
+                    # d2f1_dstb_batched = autograd.grad(dstb_policy_loss,
                     #                                  self.policy.value_optimizer.param_groups[0]['params'],
                     #                                  create_graph=True, retain_graph=True)
                     d2f1_ctrl = torch.hstack([t.flatten() for t in d2f1_ctrl_batched])
 
-                    #d2f1_dstb = torch.hstack([t.flatten() for t in d2f1_dstb_batched])
+                    # d2f1_dstb = torch.hstack([t.flatten() for t in d2f1_dstb_batched])
                     # d2f1_ctrl = torch.rand(d2f1_dstb.shape).to(self.device)
 
                     # diag, no other option
                     iHvp_ctrl = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_ctrl)
-                    #iHvp_dstb = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_dstb)
-                    #assert not np.any(self.rollout_buffer.current_shot - self.rollout_buffer.indices[
+                    # iHvp_dstb = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_dstb)
+                    # assert not np.any(self.rollout_buffer.current_shot - self.rollout_buffer.indices[
                     #                                                     count * self.batch_size: count * self.batch_size + self.batch_size])
                     # assert self.rollout_buffer.current_shot == self.rollout_buffer.indices[count * self.batch_size: count * self.batch_size + self.batch_size]
                     traj_ids = self.rollout_buffer.env_indices[self.rollout_buffer.indices[
@@ -3564,14 +3658,14 @@ class Specialized_Agent(TSS_PPO):
                     d1f2_ctrl_batched = autograd.grad(surr_L_ctrl, all_adv_val_params,
                                                       create_graph=True, retain_graph=True)
                     d1f2_ctrl = torch.hstack([t.flatten() for t in d1f2_ctrl_batched])
-                    #d1f2_dstb_batched = autograd.grad(surr_L_dstb, self.policy.value_optimizer.param_groups[0]['params'],
+                    # d1f2_dstb_batched = autograd.grad(surr_L_dstb, self.policy.value_optimizer.param_groups[0]['params'],
                     #                                  create_graph=True, retain_graph=True)
-                    #d1f2_dstb = torch.hstack([u.flatten() for u in d1f2_dstb_batched])
+                    # d1f2_dstb = torch.hstack([u.flatten() for u in d1f2_dstb_batched])
                     # d1f2_dstb = d1f2_dstb.dot(dstb_log_prob)
                     # ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.value_optimizer.param_groups[0]['params'], torch.eye(d1f2_ctrl.shape[0], device=self.device), is_grads_batched=True, create_graph=True, retain_graph=True)
                     ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.ctrl_optimizer.param_groups[0]['params'], iHvp_ctrl,
                                              is_grads_batched=False, create_graph=True, retain_graph=True)
-                    #dstb_imp = autograd.grad(d1f2_dstb, self.policy.dstb_optimizer.param_groups[0]['params'], iHvp_dstb,
+                    # dstb_imp = autograd.grad(d1f2_dstb, self.policy.dstb_optimizer.param_groups[0]['params'], iHvp_dstb,
                     #                         is_grads_batched=False, create_graph=True, retain_graph=True)
 
                 # Entropy loss favor exploration
@@ -3612,7 +3706,8 @@ class Specialized_Agent(TSS_PPO):
                 loss.backward()
                 if self.warmstarted_cont_MAGICS is True:
                     for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params'])):
-                        self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad = self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad - ctrl_imp[i]
+                        self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad = \
+                        self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad - ctrl_imp[i]
                 # Clip grad norm
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.policy.ctrl_optimizer.step()
@@ -3627,7 +3722,7 @@ class Specialized_Agent(TSS_PPO):
                             torch.Tensor(buf.observations[-1][adversary_id == j]).to(self.device))
                         # _, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
                         vf[adversary_id == j] = values.squeeze()
-                    #_, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
+                    # _, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
                     last_values = vf.flatten()
                     last_gae_lam = th.zeros_like(last_values)
                     dones = torch.Tensor(buf.dones[-1]).to(self.device)
@@ -3643,15 +3738,15 @@ class Specialized_Agent(TSS_PPO):
                             for j in range(self.num_adversaries):
                                 _, _, temp_values, _, _ = self.adversaries[j].policy(
                                     torch.Tensor(buf.observations[step + 1][adversary_id == j]).to(self.device))
-                            #_, _, temp_values, _, _ = self.policy(torch.Tensor(buf.observations[step + 1]).to(self.device))
-                                next_values[adversary_id==j] = temp_values.flatten()
+                                # _, _, temp_values, _, _ = self.policy(torch.Tensor(buf.observations[step + 1]).to(self.device))
+                                next_values[adversary_id == j] = temp_values.flatten()
                         value_query = torch.zeros_like(buf.values[-1])
-                        #_, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
+                        # _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
                         adversary_id = buf.env_indices[step] // self.n_env_per_adv
                         for j in range(self.num_adversaries):
                             _, _, temp_values, _, _ = self.adversaries[j].policy(
                                 torch.Tensor(buf.observations[step][adversary_id == j]).to(self.device))
-                            value_query[adversary_id==j] = temp_values.squeeze()
+                            value_query[adversary_id == j] = temp_values.squeeze()
 
                         delta = buf.rewards[step] + buf.gamma * next_values * next_non_terminal - value_query.squeeze()
                         last_gae_lam = delta + buf.gamma * buf.gae_lambda * next_non_terminal * last_gae_lam
@@ -3659,8 +3754,8 @@ class Specialized_Agent(TSS_PPO):
                         # buf.advantages[step] = last_gae_lam
                     advantages = torch.stack(advantage_test, dim=0)
                     # buf.returns = buf.advantages + buf.values
-                    end=time.time()
-                    print("batch complete, elapsed = %f" % (start-end))
+                    end = time.time()
+                    print("batch complete, elapsed = %f" % (start - end))
                     # TEST - DO NOT COMMIT
 
                     # buf.compute_returns_and_advantage_pt(values, torch.Tensor(buf.dones[-1]).to(self.device))
@@ -3696,6 +3791,7 @@ class Specialized_Agent(TSS_PPO):
         (_, _), (right_action, _) = self.adversaries[env_index].predict(obs, deterministic=deterministic)
         return (left_action, state), (right_action, state)
 
+
 class Specialized_Agent_IPPO(Specialized_Agent):
     policy_aliases: Dict[str, Type[BasePolicy]] = {
         "MlpPolicy": ActorCriticPolicy,
@@ -3703,49 +3799,51 @@ class Specialized_Agent_IPPO(Specialized_Agent):
         "MultiInputPolicy": MultiInputActorCriticPolicy,
         "AACCnnPolicy": ActorActorCriticCnnPolicy
     }
+
     def __init__(self,
-            policy: Union[str, Type[ActorCriticPolicy]],
-            env: Union[GymEnv, str],
-            c_learning_rate: Union[float, Schedule] = 1e-4,
-            d_learning_rate: Union[float, Schedule] = 7e-4,
-            v_learning_rate: Union[float, Schedule] = 7e-4,
-            c_learning_rate_decay: Union[float, Schedule] = 1e-4,
-            d_learning_rate_decay: Union[float, Schedule] = 7e-4,
-            v_learning_rate_decay: Union[float, Schedule] = 7e-4,
-            n_steps: int = 2048,
-            batch_size: int = 64,
-            n_epochs: int = 1,
-            gamma: float = 0.99,
-            gae_lambda: float = 0.95,
-            clip_range: Union[float, Schedule] = 0.2,
-            clip_range_vf: Union[None, float, Schedule] = None,
-            normalize_advantage: bool = True,
-            ent_coef: float = 0.0,
-            dstb_ent_coef: float = 0.0,
-            vf_coef: float = 0.5,
-            max_grad_norm: float = 0.5,
-            use_sde: bool = False,
-            sde_sample_freq: int = -1,
-            target_kl: Optional[float] = None,
-            tensorboard_log: Optional[str] = None,
-            policy_kwargs: Optional[Dict[str, Any]] = None,
-            verbose: int = 0,
-            seed: Optional[int] = None,
-            device: Union[th.device, str] = "auto",
-            _init_setup_model: bool = True,
-            I_AM_LEFT=True,
-            I_AM_RIGHT=False,
-            dstb_action_space=None,
-            num_adversary=4,
-            n_global_env=None,
-            n_env_per_adv=None,
-            warmstarted_cont_MAGICS=False
-        ):
+                 policy: Union[str, Type[ActorCriticPolicy]],
+                 env: Union[GymEnv, str],
+                 c_learning_rate: Union[float, Schedule] = 1e-4,
+                 d_learning_rate: Union[float, Schedule] = 7e-4,
+                 v_learning_rate: Union[float, Schedule] = 7e-4,
+                 c_learning_rate_decay: Union[float, Schedule] = 1e-4,
+                 d_learning_rate_decay: Union[float, Schedule] = 7e-4,
+                 v_learning_rate_decay: Union[float, Schedule] = 7e-4,
+                 n_steps: int = 2048,
+                 batch_size: int = 64,
+                 n_epochs: int = 1,
+                 gamma: float = 0.99,
+                 gae_lambda: float = 0.95,
+                 clip_range: Union[float, Schedule] = 0.2,
+                 clip_range_vf: Union[None, float, Schedule] = None,
+                 normalize_advantage: bool = True,
+                 ent_coef: float = 0.0,
+                 dstb_ent_coef: float = 0.0,
+                 vf_coef: float = 0.5,
+                 max_grad_norm: float = 0.5,
+                 use_sde: bool = False,
+                 sde_sample_freq: int = -1,
+                 target_kl: Optional[float] = None,
+                 tensorboard_log: Optional[str] = None,
+                 policy_kwargs: Optional[Dict[str, Any]] = None,
+                 verbose: int = 0,
+                 seed: Optional[int] = None,
+                 device: Union[th.device, str] = "auto",
+                 _init_setup_model: bool = True,
+                 I_AM_LEFT=True,
+                 I_AM_RIGHT=False,
+                 dstb_action_space=None,
+                 num_adversary=4,
+                 n_global_env=None,
+                 n_env_per_adv=None,
+                 warmstarted_cont_MAGICS=False,
+                 opp_list=None
+                 ):
 
         if warmstarted_cont_MAGICS is True:
-            print("warmstarted_cont_MAGICS is True but this is IPPO-specialized. MAGICS training not supported. Overriding to False.")
+            print(
+                "warmstarted_cont_MAGICS is True but this is IPPO-specialized. MAGICS training not supported. Overriding to False.")
             warmstarted_cont_MAGICS = False
-
 
         super().__init__(
             policy,
@@ -3783,17 +3881,18 @@ class Specialized_Agent_IPPO(Specialized_Agent):
             num_adversary=num_adversary,
             n_global_env=n_global_env,
             n_env_per_adv=n_env_per_adv,
-            warmstarted_cont_MAGICS=warmstarted_cont_MAGICS
+            warmstarted_cont_MAGICS=warmstarted_cont_MAGICS,
+            opp_list=opp_list
         )
 
     def collect_rollouts(
-        self,
-        env: VecEnv,
-        callback: BaseCallback,
-        rollout_buffer: RolloutBuffer,
-        n_rollout_steps: int,
+            self,
+            env: VecEnv,
+            callback: BaseCallback,
+            rollout_buffer: RolloutBuffer,
+            n_rollout_steps: int,
     ) -> bool:
-        #self._setup_learn()
+        # self._setup_learn()
         assert self._last_obs is not None, "No previous observation was provided"
         # Switch to eval mode (this affects batch norm / dropout)
         self.policy.set_training_mode(False)
@@ -3819,14 +3918,14 @@ class Specialized_Agent_IPPO(Specialized_Agent):
                 s_actions, s_log_probs, s_values, s_dstb_actions, s_dstb_log_probs = self.policy(obs_tensor)
                 all_adv_left_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
                 all_adv_right_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
-                all_adv_critic_values = torch.zeros((self.n_global_env,1), device=self.device)
+                all_adv_critic_values = torch.zeros((self.n_global_env, 1), device=self.device)
                 all_adv_log_probs = torch.zeros((self.n_global_env,), device=self.device)
                 all_adv_dstb_log_probs = torch.zeros((self.n_global_env,), device=self.device)
                 for i in range(self.num_adversaries):
                     actions, log_probs, values, dstb_actions, dstb_log_probs = self.adversaries[i].policy(obs_tensor)
-                    #actions = actions.cpu()
-                    #dstb_actions = dstb_actions.cpu()
-                    chunk = range(i * self.n_env_per_adv, (i+1) * self.n_env_per_adv)
+                    # actions = actions.cpu()
+                    # dstb_actions = dstb_actions.cpu()
+                    chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
                     all_adv_left_actions[chunk] = actions[chunk]
                     all_adv_log_probs[chunk] = log_probs[chunk]
                     all_adv_critic_values[chunk] = values[chunk]
@@ -3910,7 +4009,7 @@ class Specialized_Agent_IPPO(Specialized_Agent):
                     self._last_episode_starts[chunk],
                     all_adv_critic_values[chunk],
                     log_probs[chunk],
-                    adversary_log_probs[chunk] # not done
+                    adversary_log_probs[chunk]  # not done
                 )
 
             self._last_obs = new_obs
@@ -3918,18 +4017,19 @@ class Specialized_Agent_IPPO(Specialized_Agent):
 
         with th.no_grad():
             # Compute value for the last timestep
-            #values = torch.zeros((self.n_global_env,1))
-            #for i in range(self.num_adversaries):
+            # values = torch.zeros((self.n_global_env,1))
+            # for i in range(self.num_adversaries):
             #    chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
             #    values[chunk] = self.adversaries[i].policy.predict_values(obs_as_tensor(new_obs, self.device))[chunk].to('cpu')
-            #not bootstrapped correctly
-            #use adversary critics not ma critic
+            # not bootstrapped correctly
+            # use adversary critics not ma critic
             values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
-        for i in range(self.num_adversaries): # is this a bug?
+        for i in range(self.num_adversaries):  # is this a bug?
             chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
-            self.adversaries[i].rollout_buffer.compute_returns_and_advantage(last_values=values[chunk], dones=dones[chunk])
+            self.adversaries[i].rollout_buffer.compute_returns_and_advantage(last_values=values[chunk],
+                                                                             dones=dones[chunk])
 
         callback.on_rollout_end()
 
@@ -3939,6 +4039,7 @@ class Specialized_Agent_IPPO(Specialized_Agent):
         TSS_PPO.train(self)
         for i in range(self.num_adversaries):
             self.adversaries[i].train_one_adversary(self.policy, ma_left=self.update_left, ma_right=self.update_right)
+
 
 class eepy(MAGICS_PPO):
     def __init__(
@@ -4113,7 +4214,7 @@ class eepy(MAGICS_PPO):
                 # self.train_loop(rollout_data, clip_range, pg_losses, clip_fractions, None,value_losses,buf, entropy_losses,approx_kl_divs)
 
                 # torch.autograd.set_detect_anomaly(True)
-                self.normalize_advantage = False
+                # self.normalize_advantage = False
                 # torch.autograd.set_detect_anomaly(True)
                 actions = torch.from_numpy(rollout_data.actions).to(self.device)
                 dstb_actions = torch.from_numpy(rollout_data.dstb_actions).to(self.device)
@@ -4198,7 +4299,7 @@ class eepy(MAGICS_PPO):
                 # BLENDING TIME
 
                 full_hessian = False
-                #ee = [x for xs in value_head_params for x in xs]
+                # ee = [x for xs in value_head_params for x in xs]
                 n = sum(p.numel() for p in value_head_params)
                 if full_hessian is False:
 
@@ -4256,10 +4357,10 @@ class eepy(MAGICS_PPO):
                     reshaped_grads = self.matrix_unbatch(grad_batched, k, size2=n).T
                     reshaped_grads = reshaped_grads * rademacher
                     L_ctrl_hessian = torch.mean(reshaped_grads, dim=1)
-                    L_ctrl_hessian = L_ctrl_hessian + 10
+                    L_ctrl_hessian = L_ctrl_hessian + 1
                 else:
                     L_ctrl_hessian = self.matrix_unbatch(grad_batched, n)
-                    L_ctrl_hessian.diag().add_(5)
+                    L_ctrl_hessian.diag().add_(1)
                 d2f1_ctrl_batched = autograd.grad(policy_loss, value_head_params, create_graph=True, retain_graph=True)
                 d2f1_dstb_batched = autograd.grad(dstb_policy_loss, value_head_params, create_graph=True,
                                                   retain_graph=True)
@@ -4385,16 +4486,16 @@ class eepy(MAGICS_PPO):
                     for i in range(len(ctrl_head_params)):
                         self.policy.ctrl_optimizer.param_groups[0]['params'][head_indices[i]].grad = \
                             self.policy.ctrl_optimizer.param_groups[0]['params'][head_indices[i]].grad - ctrl_imp[i]
-                    th.nn.utils.clip_grad_norm_(self.policy.ctrl_optimizer.param_groups[0]['params'],
-                                                self.max_grad_norm)
+                    # th.nn.utils.clip_grad_norm_(self.policy.ctrl_optimizer.param_groups[0]['params'],
+                    #                            self.max_grad_norm)
 
                     for i in range(len(dstb_head_params)):
                         self.policy.dstb_optimizer.param_groups[0]['params'][head_indices[i]].grad = \
                             self.policy.dstb_optimizer.param_groups[0]['params'][head_indices[i]].grad - dstb_imp[i]
-                    th.nn.utils.clip_grad_norm_(self.policy.dstb_optimizer.param_groups[0]['params'],
-                                                self.max_grad_norm)
-                    th.nn.utils.clip_grad_norm_(self.policy.value_optimizer.param_groups[0]['params'],
-                                                self.max_grad_norm)
+                    # th.nn.utils.clip_grad_norm_(self.policy.dstb_optimizer.param_groups[0]['params'],
+                    #                            self.max_grad_norm)
+                    # th.nn.utils.clip_grad_norm_(self.policy.value_optimizer.param_groups[0]['params'],
+                    #                            self.max_grad_norm)
 
                 '''
                 for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params'])):
