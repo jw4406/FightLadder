@@ -3313,21 +3313,46 @@ class Specialized_Agent(TSS_PPO):
             actions = actions.cpu().numpy()
             adversary_actions = adversary_actions.cpu().numpy()
 
+            if self.use_mirror is True:
+                mirror_master_copy_actions = deepcopy(actions)
+                mirror_master_copy_adv_actions = deepcopy(adversary_actions)
+
             # upper half, lower half
 
             if self.use_mirror is True:
                 print("SINGLE TRAIN EXTRACTOR MIRROR")
 
-                actions[0:-1:2, :]  # actions for the prot when he is on the left
-                actions[1:-1:2, :]
+                '''
+                assume wlog Ehonda is the prot.
+                
+                action right now is:                  adv_action right now is:
+                EHonda left                                              Sagat    right
+                EHonda left                                              Sagat    right
+                EHonda left                                             MBison    right
+                EHonda left                                             MBison    right
+                 
+                EHonda v Sagat       0
+                Sagat v. EHonda      1
+                EHonda v. MBison     2
+                MBison v. EHonda     3
+                
+                action[odds] needs to go to the other side because our design makes prot actions left
+                
+                same with adversary[odds] -- adversary is on the right so adv[ods] is backwards
+                
+                '''
 
-                half = self.env.num_envs // 2
+                prot_left = actions[0::2, :]  # actions for the prot when he is on the left
+                prot_reversed = actions[1::2, :] # actions for prot when he is on the right... but its backwards right now!
 
-                temp = np.ones_like(actions) * 99  # for debugging ease
-                temp[half:, :] = actions[half:, :]
+                adv_right = adversary_actions[0::2, :]
+                adv_reversed = adversary_actions[1::2, :]
 
-                actions[half:, :] = adversary_actions[half:, :]
-                adversary_actions[half:, :] = temp[half:, :]
+                temp = np.zeros((self.num_adversaries, self.action_space.shape[0]))
+                temp = prot_reversed
+
+                actions[1::2, :] = adversary_actions[1::2, :]
+                adversary_actions[1::2, :] = temp
 
             # Rescale and perform action
             if self.update_left is True:
@@ -3366,30 +3391,53 @@ class Specialized_Agent(TSS_PPO):
                     with th.no_grad():
                         terminal_value = self.policy.predict_values(terminal_obs)[0]
                     rewards[idx] += self.gamma * terminal_value
-
-            rollout_buffer.add(
-                self._last_obs,  # type: ignore[arg-type]
-                actions,
-                adversary_actions,
-                rewards,
-                self._last_episode_starts,  # type: ignore[arg-type]
-                all_adv_critic_values.squeeze(),
-                log_probs,
-                adversary_log_probs
-            )
+            if self.use_mirror is True:
+                rollout_buffer.add(
+                    self._last_obs,  # type: ignore[arg-type]
+                    mirror_master_copy_actions,
+                    mirror_master_copy_adv_actions,
+                    rewards,
+                    self._last_episode_starts,  # type: ignore[arg-type]
+                    all_adv_critic_values.squeeze(),
+                    log_probs,
+                    adversary_log_probs
+                )
+            else:
+                rollout_buffer.add(
+                    self._last_obs,  # type: ignore[arg-type]
+                    actions,
+                    adversary_actions,
+                    rewards,
+                    self._last_episode_starts,  # type: ignore[arg-type]
+                    all_adv_critic_values.squeeze(),
+                    log_probs,
+                    adversary_log_probs
+                )
 
             for i in range(self.num_adversaries):
                 chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
-                self.adversaries[i].rollout_buffer.add(
-                    self._last_obs[chunk],
-                    actions[chunk],
-                    adversary_actions[chunk],
-                    rewards[chunk],
-                    self._last_episode_starts[chunk],
-                    all_adv_critic_values[chunk],
-                    log_probs[chunk],
-                    adversary_log_probs[chunk]  # not done
-                )
+                if self.use_mirror is True:
+                    self.adversaries[i].rollout_buffer.add(
+                        self._last_obs[chunk],
+                        mirror_master_copy_actions[chunk],
+                        mirror_master_copy_adv_actions[chunk],
+                        rewards[chunk],
+                        self._last_episode_starts[chunk],
+                        all_adv_critic_values[chunk],
+                        log_probs[chunk],
+                        adversary_log_probs[chunk]  # not done
+                    )
+                else:
+                    self.adversaries[i].rollout_buffer.add(
+                        self._last_obs[chunk],
+                        actions[chunk],
+                        adversary_actions[chunk],
+                        rewards[chunk],
+                        self._last_episode_starts[chunk],
+                        all_adv_critic_values[chunk],
+                        log_probs[chunk],
+                        adversary_log_probs[chunk]  # not done
+                    )
 
             self._last_obs = new_obs
             self._last_episode_starts = dones
