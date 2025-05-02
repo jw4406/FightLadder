@@ -3320,7 +3320,7 @@ class Specialized_Agent(TSS_PPO):
             # upper half, lower half
 
             if self.use_mirror is True:
-                print("SINGLE TRAIN EXTRACTOR MIRROR")
+                #print("SINGLE TRAIN EXTRACTOR MIRROR")
 
                 '''
                 assume wlog Ehonda is the prot.

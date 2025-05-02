@@ -20,8 +20,8 @@ from common.algorithms import IPPO, MAGICS_PPO, RARL_PPO, TSS_PPO, Specialized_A
 from stable_baselines3 import MAGICS_AL
 from common.retro_wrappers import SFWrapper, Monitor2P
 
-PRETRAIN = True
-FINETUNE = False
+PRETRAIN = False
+FINETUNE = True
 EVAL = False
 
 if EVAL is False:
@@ -297,7 +297,7 @@ def main(PLAYER):
     REMOVAL = None
 
     if use_mirror is True:
-        OPPONENT_LIST = ["Sagat", "Zangief", "MBison"]
+        OPPONENT_LIST = ["Sagat", "EHonda", "MBison"]
     else:
         OPPONENT_LIST = ["Vega", "Balrog", "Guile", "EHonda", "Blanka", "Ryu", "Sagat", "MBison", "Dhalsim", "Zangief",
                          "ChunLi", "Ken"]
@@ -338,7 +338,7 @@ def main(PLAYER):
                         help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
     parser.add_argument('--save-dir', help='The directory to save the trained models',
-                        default="trained_models/ippo_removal_%s" % PLAYER)
+                        default="trained_models/sa_mirror_pre_%s_ft" % PLAYER)
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
     parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_%s" % PLAYER)
     parser.add_argument('--state', help='The state file to load. By default Champion.Level1.RyuVsGuile',
@@ -631,7 +631,7 @@ def main(PLAYER):
         # finetune_model.warmstarted_cont_MAGICS = True
         # finetune_model.warmstart_setup(finetune_model.lr_schedule)
         data, params, pytorch_variables = load_from_zip_file(
-            "/n/fs/magics/2141555/FightLadder/main/trained_models/magics_test_%s_ft_56789/ppo_%s_4488000_steps.zip" % (
+            "/home/jw4406/codebase/FightLadder/main/trained_models/sa_mirror_pre_%s/ppo_%s_6846000_steps.zip" % (
             PLAYER, PLAYER))
         # data, params, pytorch_variables = load_from_zip_file(
         #        "/home/jw4406/codebase/FightLadder/main/trained_models/guile_tss_test/ppo_%s_1728000_steps.zip" % (PLAYER))
@@ -640,8 +640,8 @@ def main(PLAYER):
             del params['policy.value_optimizer']
             del params['policy.dstb_optimizer']
         finetune_model.set_parameters(params, exact_match=False, device=finetune_model.device)
-        # finetune_model.warmstarted_cont_MAGICS = True
-        # finetune_model.warmstart_setup(finetune_model.lr_schedule)
+        finetune_model.warmstarted_cont_MAGICS = True
+        finetune_model.warmstart_setup(finetune_model.lr_schedule)
         # finetune_model.load_state_dict(torch.load("/home/jw4406/codebase/FightLadder/main/trained_models/magics_test_%s_ft/ppo_%s_24000_steps.zip" % (PLAYER, PLAYER), weights_only=True))
         # if FINETUNE is True:
         #    finetune_model.warmstarted_cont_MAGICS = True
@@ -654,7 +654,7 @@ def main(PLAYER):
             #    "/home/jw4406/codebase/FightLadder/main/trained_models/neuronic_ippo/enemy_policy_%d.pt" % i)
             # if FINETUNE is True:
             data, params, pytorch_variables = load_from_zip_file(
-                "/n/fs/magics/2141555/FightLadder/main/trained_models/magics_test_%s_ft_56789/enemy_policy_%s_102000_steps_%d.pt" % (
+                "/home/jw4406/codebase/FightLadder/main/trained_models/sa_mirror_pre_%s/enemy_policy_%s_1141000_steps_%d.pt" % (
                 PLAYER, OPPONENT_LIST[i], i))
             # data, params, pytorch_variables = load_from_zip_file(
             #        "/home/jw4406/codebase/FightLadder/main/trained_models/guile_tss_test/enemy_policy_36000_steps_%d.pt" % (i))
@@ -665,7 +665,7 @@ def main(PLAYER):
                 del params['policy.dstb_optimizer']
             finetune_model.adversaries[i].set_parameters(params, exact_match=False, device=finetune_model.device)
             if FINETUNE is True:
-                # finetune_model.adversaries[i].warmstarted_cont_MAGICS = True
+                finetune_model.adversaries[i].warmstarted_cont_MAGICS = True
                 if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
                     finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
         model = finetune_model
