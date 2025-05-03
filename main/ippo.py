@@ -21,8 +21,13 @@ from stable_baselines3 import MAGICS_AL
 from common.retro_wrappers import SFWrapper, Monitor2P
 
 PRETRAIN = False
+<<<<<<< Updated upstream
 FINETUNE = True
 EVAL = False
+=======
+FINETUNE = False
+EVAL = True
+>>>>>>> Stashed changes
 
 if EVAL is False:
     assert PRETRAIN != FINETUNE
@@ -179,10 +184,20 @@ def evaluate_sa(curr_state, args, model, env_index, greedy=0, record=True):
             video_log = [Image.fromarray(env.render(mode="rgb_array"))]
 
         while not done:
-            if np.random.uniform() > greedy:
-                (action, _states), (action_other, _states_other) = model.predict(obs, env_index, deterministic=False)
+            if model.use_mirror is True:
+                not_ego = model
+
+                (action, _states), (_,_) = model.predict(obs, env_index, deterministic=False)
+                (not_ego_action, _), (_,_) = not_ego.predict(obs, env_index, deterministic=False)
+
+                action_other = not_ego_action
+
             else:
-                (action, _states), (action_other, _states_other) = model.predict(obs, env_index, deterministic=False)
+
+                if np.random.uniform() > greedy:
+                    (action, _states), (action_other, _states_other) = model.predict(obs, env_index, deterministic=False)
+                else:
+                    (action, _states), (action_other, _states_other) = model.predict(obs, env_index, deterministic=False)
 
             obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
             if record:
@@ -338,7 +353,8 @@ def main(PLAYER):
                         help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
     parser.add_argument('--save-dir', help='The directory to save the trained models',
-                        default="trained_models/sa_mirror_pre_%s_ft" % PLAYER)
+                        default="trained_models/ippo_mirror_pre_%s" % PLAYER)
+
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
     parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_%s" % PLAYER)
     parser.add_argument('--state', help='The state file to load. By default Champion.Level1.RyuVsGuile',
@@ -461,17 +477,17 @@ def main(PLAYER):
             else:
                 assert isinstance(REMOVAL, list)
                 num_adversary = 12 - len(REMOVAL)
-        finetune_model = Specialized_Agent(
+        finetune_model = Specialized_Agent_IPPO(
             "AACCnnPolicy",
             finetune_env,
             device="cuda",
             verbose=2,
             n_steps=768,  # 1408,
             batch_size=1536,  # 2816,  # 512,
-            n_epochs=30,
+            n_epochs=1,
             gamma=0.94,
-            v_learning_rate=1e-2, c_learning_rate=5e-4,
-            d_learning_rate=5e-3, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            v_learning_rate=5e-4, c_learning_rate=5e-4,
+            d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
             c_learning_rate_decay=critic_decay_schedule(1e-4),
             d_learning_rate_decay=critic_decay_schedule(5e-4),
             clip_range=clip_range_schedule,
@@ -631,7 +647,9 @@ def main(PLAYER):
         # finetune_model.warmstarted_cont_MAGICS = True
         # finetune_model.warmstart_setup(finetune_model.lr_schedule)
         data, params, pytorch_variables = load_from_zip_file(
-            "/home/jw4406/codebase/FightLadder/main/trained_models/sa_mirror_pre_%s/ppo_%s_6846000_steps.zip" % (
+
+            "/home/jw4406/codebase/FightLadder/main/trained_models/ippo_mirror_pre_%s/ppo_%s_14166000_steps.zip" % (
+
             PLAYER, PLAYER))
         # data, params, pytorch_variables = load_from_zip_file(
         #        "/home/jw4406/codebase/FightLadder/main/trained_models/guile_tss_test/ppo_%s_1728000_steps.zip" % (PLAYER))
@@ -653,11 +671,12 @@ def main(PLAYER):
             # data, params, pytorch_variables = load_from_zip_file(
             #    "/home/jw4406/codebase/FightLadder/main/trained_models/neuronic_ippo/enemy_policy_%d.pt" % i)
             # if FINETUNE is True:
+            #data, params, pytorch_variables = load_from_zip_file(
+            #    "/n/fs/magics/2141555/FightLadder/main/trained_models/magics_test_%s_ft_56789/enemy_policy_%s_102000_steps_%d.pt" % (
+            #    PLAYER, OPPONENT_LIST[i], i))
             data, params, pytorch_variables = load_from_zip_file(
-                "/home/jw4406/codebase/FightLadder/main/trained_models/sa_mirror_pre_%s/enemy_policy_%s_1141000_steps_%d.pt" % (
-                PLAYER, OPPONENT_LIST[i], i))
-            # data, params, pytorch_variables = load_from_zip_file(
-            #        "/home/jw4406/codebase/FightLadder/main/trained_models/guile_tss_test/enemy_policy_36000_steps_%d.pt" % (i))
+                   "/home/jw4406/codebase/FightLadder/main/trained_models/ippo_mirror_pre_EHonda/enemy_policy_2361000_steps_%d.pt" % (i))
+
             # enemy_policy_36000_steps_0.pt
             if EVAL is True or FINETUNE is True:
                 del params['policy.ctrl_optimizer']
@@ -691,7 +710,7 @@ def main(PLAYER):
         model.adversaries = []
         model.save(finetune_epoch_model_path)
     else:
-
+        state_list = ['two_player/EHonda_left/Champion.Level1.EHondaVsEHonda.2Player.state']
         for i in range(len(state_list)):
             # global STATE
             # STATE = state_list[i]
