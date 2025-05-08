@@ -12,3 +12,6 @@ logs/*
 trained_models/*
 main/*.pt
 main/enemy_policy*.pt
+*.png
+main/*.png
+main/ee.py
