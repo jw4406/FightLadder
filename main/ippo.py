@@ -183,6 +183,7 @@ def evaluate_sa(curr_state, args, model, env_index, greedy=0, record=True):
         while not done:
             from stable_baselines3.common.save_util import load_from_zip_file
             if model.use_mirror is True:
+
                 data, params, pytorch_variables = load_from_zip_file(
 
                     "/home/jw4406/codebase/FightLadder/main/trained_models/ippo_mirror_pre_%s/ppo_%s_27894000_steps.zip" % (
@@ -191,6 +192,7 @@ def evaluate_sa(curr_state, args, model, env_index, greedy=0, record=True):
                 del params['policy.ctrl_optimizer']
                 del params['policy.value_optimizer']
                 del params['policy.dstb_optimizer']
+
                 not_ego = model
                 not_ego.set_parameters(params, exact_match=False, device=model.device)
 
@@ -360,7 +362,7 @@ def main(PLAYER):
                         help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
     parser.add_argument('--save-dir', help='The directory to save the trained models',
-                        default="trained_models/ippo_mirror_pre_%s" % PLAYER)
+                        default="trained_models/sa_mirror_ft_2_174000cont_%s" % PLAYER)
 
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
     parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_%s" % PLAYER)
@@ -484,16 +486,16 @@ def main(PLAYER):
             else:
                 assert isinstance(REMOVAL, list)
                 num_adversary = 12 - len(REMOVAL)
-        finetune_model = Specialized_Agent_IPPO(
+        finetune_model = Specialized_Agent(
             "AACCnnPolicy",
             finetune_env,
             device="cuda",
             verbose=2,
             n_steps=768,  # 1408,
             batch_size=1536,  # 2816,  # 512,
-            n_epochs=1,
+            n_epochs=5,
             gamma=0.94,
-            v_learning_rate=5e-4, c_learning_rate=5e-4,
+            v_learning_rate=1e-3, c_learning_rate=1e-4,
             d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
             c_learning_rate_decay=critic_decay_schedule(1e-4),
             d_learning_rate_decay=critic_decay_schedule(5e-4),
@@ -654,10 +656,23 @@ def main(PLAYER):
         # finetune_model.warmstarted_cont_MAGICS = True
         # finetune_model.warmstart_setup(finetune_model.lr_schedule)
         data, params, pytorch_variables = load_from_zip_file(
+            "/home/jw4406/codebase/FightLadder/main/trained_models/sa_mirror_pretrain_2_%s/ppo_%s_2928000_steps.zip" % (
 
-            "/home/jw4406/codebase/FightLadder/main/trained_models/ippo_mirror_pre_%s/ppo_%s_8064000_steps.zip" % (
+                PLAYER, PLAYER))
+        '''
+        data, params, pytorch_variables = load_from_zip_file(
 
-            PLAYER, PLAYER))
+            "/home/jw4406/codebase/FightLadder/main/trained_models/ppo_%s_8064000_steps.zip" % (
+
+            PLAYER))
+        '''
+
+        #data, params, pytorch_variables = load_from_zip_file(
+
+        #    "/home/jw4406/codebase/FightLadder/main/trained_models/sa_mirror_ft_2_174000cont_%s/ppo_%s_84000_steps.zip" % (
+
+        #        PLAYER, PLAYER))
+
         # data, params, pytorch_variables = load_from_zip_file(
         #        "/home/jw4406/codebase/FightLadder/main/trained_models/guile_tss_test/ppo_%s_1728000_steps.zip" % (PLAYER))
         if EVAL is True or FINETUNE is True:
@@ -682,7 +697,9 @@ def main(PLAYER):
             #    "/n/fs/magics/2141555/FightLadder/main/trained_models/magics_test_%s_ft_56789/enemy_policy_%s_102000_steps_%d.pt" % (
             #    PLAYER, OPPONENT_LIST[i], i))
             data, params, pytorch_variables = load_from_zip_file(
-                   "/home/jw4406/codebase/FightLadder/main/trained_models/ippo_mirror_pre_EHonda/enemy_policy_4649000_steps_%d.pt" % (i))
+
+                   "/home/jw4406/codebase/FightLadder/main/trained_models/sa_mirror_ft_2_%s/enemy_policy_%s_29000_steps_%d.pt" % (PLAYER, OPPONENT_LIST[i],i))
+
 
             # enemy_policy_36000_steps_0.pt
             if EVAL is True or FINETUNE is True:
