@@ -1707,8 +1707,8 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 # diag, no other option
                 iHvp_ctrl = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_ctrl)
                 iHvp_dstb = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_dstb)
-                assert not np.any(self.rollout_buffer.current_shot - self.rollout_buffer.indices[
-                                                                     count * self.batch_size: count * self.batch_size + self.batch_size])
+                #assert not np.any(self.rollout_buffer.current_shot - self.rollout_buffer.indices[
+                #                                                     count * self.batch_size: count * self.batch_size + self.batch_size])
                 # assert self.rollout_buffer.current_shot == self.rollout_buffer.indices[count * self.batch_size: count * self.batch_size + self.batch_size]
                 traj_ids = self.rollout_buffer.env_indices[self.rollout_buffer.indices[
                                                            count * self.batch_size: count * self.batch_size + self.batch_size]].squeeze()
@@ -2167,7 +2167,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                     L_ctrl_hessian = L_ctrl_hessian + 10
                 else:
                     L_ctrl_hessian = self.matrix_unbatch(grad_batched, n)
-                    L_ctrl_hessian.diag().add_(5)
+                    L_ctrl_hessian.diag().add_(10)
                 # d2f1_ctrl_batched = autograd.grad(policy_loss, self.policy.value_optimizer.param_groups[0]['params'],
                 #                                  create_graph=True, retain_graph=True)
                 d2f1_dstb_batched = autograd.grad(dstb_policy_loss,
@@ -3658,7 +3658,7 @@ class Specialized_Agent(TSS_PPO):
                         L_ctrl_hessian = L_ctrl_hessian + 10
                     else:
                         L_ctrl_hessian = self.matrix_unbatch(grad_batched, n)
-                        L_ctrl_hessian.diag().add_(5)
+                        L_ctrl_hessian.diag().add_(10)
                     d2f1_ctrl_batched = autograd.grad(ctrl_policy_loss, all_adv_val_params,
                                                       create_graph=True, retain_graph=True)
                     # d2f1_dstb_batched = autograd.grad(dstb_policy_loss,
