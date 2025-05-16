@@ -15,3 +15,5 @@ main/enemy_policy*.pt
 *.png
 main/*.png
 main/ee.py
+main/wandb/*
+main/benchmark_models/*

@@ -6,9 +6,10 @@ import argparse
 import numpy as np
 from PIL import Image
 import copy
-
+import wandb
 import retro
-from stable_baselines3.common.callbacks import CheckpointCallback, SACheckpointCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, SACheckpointCallback, ExploiterCheckpointCallback, \
+    Exploiter_EvalCallback, CallbackList
 from stable_baselines3.common.buffers import AdvRolloutBuffer
 from stable_baselines3.common.utils import get_schedule_fn
 from torch.backends.cudnn import deterministic
@@ -16,17 +17,15 @@ from torch.backends.cudnn import deterministic
 from common.const import *
 from common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P
 from common.game import get_next_level
-from common.algorithms import IPPO, MAGICS_PPO, RARL_PPO, TSS_PPO, Specialized_Agent, Specialized_Agent_IPPO, eepy
-from common.justin.spar import Single_SPAR
-from common.justin.Generalist_SPAR import Generalist_SPAR
+from common.algorithms import IPPO, LeaguePPO, MAGICS_PPO, RARL_PPO, TSS_PPO, Specialized_Agent, Specialized_Agent_IPPO, eepy, \
+    Exploiter
 from stable_baselines3 import MAGICS_AL
 from common.retro_wrappers import SFWrapper, Monitor2P
 
-PRETRAIN = True
+PRETRAIN = False
 
 FINETUNE = False
-EVAL = False
-
+EVAL = True
 
 if EVAL is False:
     assert PRETRAIN != FINETUNE
@@ -36,28 +35,8 @@ else:
 # STATE = "Champion.RyuVsRyu.2Player.align"
 global REMOVAL
 global STATE
-'''
-PLAYER = "Blanka" # "Blanka
-global REMOVAL
-REMOVAL = None
-OPPONENT_LIST = ["Vega", "Balrog", "Guile", "EHonda", "Blanka", "Ryu", "Sagat", "MBison", "Dhalsim", "Zangief", "ChunLi", "Ken"]
-SIDE = "left" # "right"
-player_folder_name = PLAYER + '_' + SIDE
-if REMOVAL is not None:
-    OPPONENT_LIST.remove(REMOVAL)
-
-global STATE
-#files  = os.listdir
-STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name, PLAYER, OPPONENT_LIST[i]) for i in range(len(OPPONENT_LIST))]
-'''
 
 
-# STATE = "two_player/Champion.Level1.RyuVsBlanka.2Player.state"
-# STATE = ["two_player/Champion.Level1.RyuVsVega.2Player.state", "two_player/Champion.Level1.RyuVsBalrog.2Player.state", "two_player/Champion.Level1.RyuVsGuile.2Player.state", \
-#    "two_player/Champion.Level1.RyuVsEHonda.2Player.state", "two_player/Champion.Level1.RyuVsBlanka.2Player.state", "two_player/Champion.Level1.RyuVsRyu.2Player.state", \
-#         "two_player/Champion.Level1.RyuVsSagat.2Player.state", "two_player/Champion.Level1.RyuVsMBison.2Player.state", "two_player/Champion.Level1.RyuVsDhalsim.2Player.state", \
-#         "two_player/Champion.Level1.RyuVsZangief.2Player.state", "two_player/Champion.Level1.RyuVsChunLi.2Player.state", "two_player/Champion.Level1.RyuVsKen.2Player.state"]
-# state_list = STATE
 def const_schedule(initial_value: float):
     def func(progress_remaining: float) -> float:
         return initial_value
@@ -165,11 +144,69 @@ def evaluate(args, model, greedy=0, record=True):
     print("Winning rate: {}".format(win_rate))
     return win_rate
 
+def action_transformer(player_action):
+    player_action = player_action[0]
+    players_action = []
+    if player_action >= len(DIRECTIONS_BUTTONS) + len(ATTACKS_BUTTONS):
+        # if self.null_combo:
+        #     print(f"player_action = {player_action}, invalid for null combo", flush=True)
+        button_bits = [0 for _ in range(12)]
+        combo_bits = [int(i) for i in
+                      np.binary_repr(player_action - len(DIRECTIONS_BUTTONS) - len(ATTACKS_BUTTONS)).zfill(3)]
+    elif player_action >= len(DIRECTIONS_BUTTONS):
+        direction_buttons = []
+        attack_buttons = ATTACKS_BUTTONS[player_action - len(DIRECTIONS_BUTTONS)]
+        button_bits = [int(b in direction_buttons + attack_buttons) for b in BUTTONS]
+        combo_bits = [1 for _ in range(3)]
+    else:
+        direction_buttons = DIRECTIONS_BUTTONS[player_action]
+        attack_buttons = []
+        button_bits = [int(b in direction_buttons + attack_buttons) for b in BUTTONS]
+        combo_bits = [1 for _ in range(3)]
+    players_action.append(np.array(button_bits))# + combo_bits))
+    return players_action[0]
+
+
+def probability(rating1, rating2):
+    return 1.0 * 1.0 / (1 + 1.0 * np.power(10, 1.0 * (rating1 - rating2) / 400))
+
+
+# some credit to https://www.geeksforgeeks.org/elo-rating-algorithm
+# Function to calculate Elo rating
+# K is a constant.
+# d (true is player A wins) determines whether
+# Player A wins or Player B
+# returns new Elo scores
+def elo_rating(Ra, Rb, d, K=40):
+    # To calculate the Winning
+    # Probability of Player B
+    Pb = probability(Ra, Rb)
+
+    # To calculate the Winning
+    # Probability of Player A
+    Pa = probability(Rb, Ra)
+
+    # Case -1 When Player A wins
+    # Updating the Elo Ratings
+    if d:
+        Ra = Ra + K * (1 - Pa)
+        Rb = Rb + K * (0 - Pb)
+
+    # Case -2 When Player B wins
+    # Updating the Elo Ratings
+    else:
+        Ra = Ra + K * (0 - Pa)
+        Rb = Rb + K * (1 - Pb)
+
+    return Ra, Rb
+
 
 @torch.no_grad()
-def evaluate_sa(curr_state, args, model, env_index, greedy=0, record=True):
+def evaluate_sa(curr_state, args, model, exploiter_model, env_index, greedy=0, record=True):
+    rating1, rating2 = 1000,1000
     assert isinstance(model, Specialized_Agent)
     # global STATE
+    args.num_episodes = 50
     win_cnt = 0
     # env = []
     for j in range(1, args.num_episodes + 1):
@@ -183,32 +220,34 @@ def evaluate_sa(curr_state, args, model, env_index, greedy=0, record=True):
             video_log = [Image.fromarray(env.render(mode="rgb_array"))]
 
         while not done:
-            from stable_baselines3.common.save_util import load_from_zip_file
             if model.use_mirror is True:
+                '''
+                from stable_baselines3.common.save_util import load_from_zip_file
+                if model.use_mirror is True:
+                    data, params, pytorch_variables = load_from_zip_file(
 
-                data, params, pytorch_variables = load_from_zip_file(
+                        "/home/jw4406/codebase/FightLadder/main/trained_models/ippo_mirror_pre_%s/ppo_%s_27894000_steps.zip" % (
 
-                    "/home/jw4406/codebase/FightLadder/main/trained_models/ippo_mirror_pre_%s/ppo_%s_27894000_steps.zip" % (
-
-                        PLAYER, PLAYER))
-                del params['policy.ctrl_optimizer']
-                del params['policy.value_optimizer']
-                del params['policy.dstb_optimizer']
-
-                not_ego = model
-                not_ego.set_parameters(params, exact_match=False, device=model.device)
-
-                (action, _states), (_,_) = model.predict(obs, env_index, deterministic=False)
-                (not_ego_action, _), (_,_) = not_ego.predict(obs, env_index, deterministic=False)
-
-                action_other = not_ego_action
+                            PLAYER, PLAYER))
+                    del params['policy.ctrl_optimizer']
+                    del params['policy.value_optimizer']
+                    del params['policy.dstb_optimizer']
+                    not_ego = model
+                    not_ego.set_parameters(params, exact_match=False, device=model.device)
+                    '''
+                (action, _states), (_, _) = model.predict(obs, env_index, deterministic=False)
+                (_, _), (action_other, _states_other) = exploiter_model.predict(obs, env_index, deterministic=False)
+                action_other = action_transformer(action_other)
+                #action_other = action_other
 
             else:
 
                 if np.random.uniform() > greedy:
-                    (action, _states), (action_other, _states_other) = model.predict(obs, env_index, deterministic=False)
+                    (action, _states), (action_other, _states_other) = model.predict(obs, env_index,
+                                                                                     deterministic=False)
                 else:
-                    (action, _states), (action_other, _states_other) = model.predict(obs, env_index, deterministic=False)
+                    (action, _states), (action_other, _states_other) = model.predict(obs, env_index,
+                                                                                     deterministic=False)
 
             obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
             if record:
@@ -240,70 +279,10 @@ def evaluate_sa(curr_state, args, model, env_index, greedy=0, record=True):
         if info['enemy_hp'] < info['agent_hp']:
             print("Victory!")
             win_cnt += 1
-
-        # print("Total reward: {}\n".format(total_reward))
-        # episode_reward_sum += total_reward
-
-        env.close()
-
-    win_rate = win_cnt / args.num_episodes
-    print("Winning rate: {}".format(win_rate))
-    return win_rate
+            rating1, rating2 = elo_rating(rating1, rating2, d=1)
 
 
-@torch.no_grad()
-def evaluate_cross(args, model1, model2, greedy=0.5, record=True):
-    win_cnt = 0
 
-    for i in range(1, args.num_episodes + 1):
-        env = make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render,
-                       enable_combo=args.enable_combo, null_combo=args.null_combo,
-                       transform_action=args.transform_action, seed=None)().env
-
-        done = False
-
-        obs = env.reset()
-        if record:
-            video_log = [Image.fromarray(env.render(mode="rgb_array"))]
-
-        while not done:
-            # if np.random.uniform() > greedy:
-            (action, _states), (action_other, _states_other) = model1.predict(obs, deterministic=False)
-            (_, _), (action_other, _states_other) = model2.predict(obs, deterministic=False)
-            # else:
-            #    (action, _states), (action_other, _states_other) = model1.predict(obs, deterministic=True)
-            #    (_, _), (action_other, _states_other) = model2.predict(obs, deterministic=False)
-
-            obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
-            if record:
-                video_log.append(Image.fromarray(env.render(mode="rgb_array")))
-            # print(info)
-            # if done:
-            #     video_log[-1].save(f"{args.video_dir}/episode_{i}.png")
-
-            if done:
-                if record:
-                    try:
-                        name = STATE.split("/")[1]
-                    except:
-                        name = STATE
-                    height, width, layers = np.array(video_log[0]).shape
-                    container = av.open(f"{args.video_dir}/{name}episode_{i}.mp4", mode='w')
-                    stream = container.add_stream('h264', rate=10)
-                    stream.width = width
-                    stream.height = height
-                    stream.pix_fmt = 'yuv420p'
-                    for img in video_log:
-                        frame = av.VideoFrame.from_image(img)
-                        for packet in stream.encode(frame):
-                            container.mux(packet)
-                    remain_packets = stream.encode(None)
-                    container.mux(remain_packets)
-                    container.close()
-
-        if info['enemy_hp'] < info['agent_hp']:
-            print("Victory!")
-            win_cnt += 1
 
         # print("Total reward: {}\n".format(total_reward))
         # episode_reward_sum += total_reward
@@ -319,7 +298,7 @@ def main(PLAYER):
     # global REMOVAL
     # PLAYER = "Blanka"  # "Blanka
     global REMOVAL
-    use_mirror = True
+    use_mirror = False
     REMOVAL = None
 
     if use_mirror is True:
@@ -350,7 +329,7 @@ def main(PLAYER):
 
         # interleave
         STATE = [val for pair in zip(STATE_prot_left, STATE_prot_right) for val in pair]
-        #STATE = STATE_prot_right
+
 
     else:
 
@@ -363,7 +342,7 @@ def main(PLAYER):
                         help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
     parser.add_argument('--save-dir', help='The directory to save the trained models',
-                        default="trained_models/sa_cont_league_question_%s" % PLAYER)
+                        default="trained_models/exploiting_%s_12_ippo_match" % PLAYER)
 
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
     parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_%s" % PLAYER)
@@ -410,6 +389,23 @@ def main(PLAYER):
     # Set up the environment and model
     def env_generator():
         # STATE
+        each_env_count = 1
+        env = []
+        for i in range(len(STATE)):
+            for j in range(each_env_count):
+                env.append(
+                    make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render,
+                             enable_combo=args.enable_combo, null_combo=args.null_combo,
+                             transform_action=args.transform_action, seed=0))
+        # env = [make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=0) for i in range(args.num_env)]
+        # env = make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render,
+        #         enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action,
+        #         seed=0)
+        return VecTransposeImage2P(SubprocVecEnv2P(env))
+        # return SubprocVecEnv2P(env)
+
+    def exploiter_env_generator():
+        # STATE
         each_env_count = 4
         env = []
         for i in range(len(STATE)):
@@ -425,14 +421,7 @@ def main(PLAYER):
         return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
 
-    def many_char_env_generator():
-        env = [make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render,
-                        enable_combo=args.enable_combo, null_combo=args.null_combo,
-                        transform_action=args.transform_action, seed=0) for i in range(len(STATE))]
-        return VecTransposeImage2P(SubprocVecEnv2P(env))
-        # return SubprocVecEnv2P(env)
-
-    checkpoint_interval = 1000  # checkpoint_interval * num_envs = total_steps_per_checkpoint
+    checkpoint_interval = 10000  # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
                                  other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
@@ -444,9 +433,9 @@ def main(PLAYER):
             finetune_env,
             device="cuda",
             verbose=1,
-            n_steps=768,
-            batch_size=1536,  # 512,
-            n_epochs=5,
+            n_steps=48,
+            batch_size=24,  # 512,
+            n_epochs=100,
             gamma=0.94,
             learning_rate=lr_schedule,
             clip_range=clip_range_schedule,
@@ -456,6 +445,8 @@ def main(PLAYER):
             update_right=bool(args.update_right),
             other_learning_rate=other_lr_schedule
         )
+
+        """
 
         finetune_model = TSS_PPO(
             "AACCnnPolicy",
@@ -487,17 +478,16 @@ def main(PLAYER):
             else:
                 assert isinstance(REMOVAL, list)
                 num_adversary = 12 - len(REMOVAL)
-
-        finetune_model = Generalist_SPAR(
+        finetune_model = Specialized_Agent_IPPO(
             "AACCnnPolicy",
             finetune_env,
             device="cuda",
             verbose=2,
-            n_steps=768,  # 1408,
-            batch_size=1536,  # 2816,  # 512,
-            n_epochs=5,
+            n_steps=2048,  # 1408,
+            batch_size=256,  # 2816,  # 512,
+            n_epochs=1,
             gamma=0.94,
-            v_learning_rate=1e-3, c_learning_rate=1e-4,
+            v_learning_rate=5e-4, c_learning_rate=5e-4,
             d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
             c_learning_rate_decay=critic_decay_schedule(1e-4),
             d_learning_rate_decay=critic_decay_schedule(5e-4),
@@ -512,8 +502,11 @@ def main(PLAYER):
             n_global_env=args.num_env,
             n_env_per_adv=args.num_env // num_adversary,
             opp_list=OPPONENT_LIST,
-            use_mirror=False
+            use_mirror=True
         )
+        """
+
+        # finetune_model = Exploiter('CnnPolicy',finetune_env, device='cuda', exploited=)
 
         ''' 
         finetune_model = eepy(
@@ -577,61 +570,6 @@ def main(PLAYER):
     if args.left_model_file and args.right_model_file:
         print("load model from " + args.left_model_file + " and " + args.right_model_file)
         model.set_parameters_2p(args.left_model_file, args.right_model_file)
-    """
-    #model.save(os.path.join(args.save_dir, args.model_name_prefix + f"_0_steps"))
-    tss = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/ppo_ryu_final_steps.zip', env=env_generator())
-    #tss = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/tss_baseline/ppo_ryu_final_steps.zip', env=env_generator())
-    #results = evaluate(args, tss, record=True)
-    n_envs = 2
-    tss.n_epochs = 2
-    buffer = tss.warmstart_buffer_setup(256, n_envs, 64)
-    #n_envs = 1
-    args.num_env = n_envs
-    env = env_generator()
-    tss.env = env
-    tss.rollout_buffer = buffer
-    tss.warmstarted_cont_MAGICS = True
-    tss.dstb_ent_coef = 0
-    tss.ent_coef = 0
-    c_learning_rate = 1e-5
-    tau_d_v = 5
-    tau_c_d = 2
-    tss.warmstart_setup([const_schedule(c_learning_rate * tau_c_d * tau_d_v), const_schedule(c_learning_rate),
-                         const_schedule(c_learning_rate * tau_c_d)])
-    #tss.warmstart_buffer_setup()
-    model = tss
-    model.v_learning_rate = const_schedule(c_learning_rate * tau_c_d * tau_d_v)
-    model.c_learning_rate = const_schedule(c_learning_rate)
-    model.d_learning_rate = const_schedule(c_learning_rate * tau_c_d)
-    model.lr_schedule = [const_schedule(c_learning_rate * tau_c_d * tau_d_v), const_schedule(c_learning_rate),
-                         const_schedule(c_learning_rate * tau_c_d)]
-    model.v_learning_rate_decay = critic_decay_schedule(c_learning_rate * tau_c_d * tau_d_v)
-    model.c_learning_rate_decay = actor_decay_schedule(c_learning_rate)
-    model.d_learning_rate_decay = actor_decay_schedule(c_learning_rate * tau_c_d)
-    model.lr_schedule_decay = [critic_decay_schedule(c_learning_rate * tau_c_d * tau_d_v),
-                               actor_decay_schedule(c_learning_rate),
-                               actor_decay_schedule(c_learning_rate * tau_c_d)]
-    """
-    '''
-
-
-
-    #rarl = RARL_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/rarl_test1/ppo_ryu_final_steps.zip', env=env_generator())
-    ippo = IPPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/ippo_test1_comp/ppo_ryu_8000000_steps.zip', env=env_generator())
-    args.video_dir = 'videos/tss_ippo_match'
-    tss_rarl_results = evaluate_cross(args, tss, ippo, record=True)
-    print(tss_rarl_results)
-    args.video_dir = 'videos/ippo_tss_match'
-    rarl_tss_results = evaluate_cross(args, ippo, tss, record=True)
-    print(rarl_tss_results)
-    #assert True == False
-    args.video_dir = 'videos/tss_tss_match'
-    tss_results = evaluate(args, tss, record=True)
-    args.video_dir = 'videos/rarl_rarl_match'
-    rarl_results = evaluate(args, ippo, record=True)
-    print(results)
-
-    '''
 
     # ippo = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/tss_entropy/ppo_ryu_final_steps.zip', env=env_generator())
     # args.video_dir = 'videos/tss_ppo_entropy_vid_dir'
@@ -640,81 +578,116 @@ def main(PLAYER):
     '''
     '''
 
-    checkpoint_callback = SACheckpointCallback(save_freq=checkpoint_interval, save_path=args.save_dir,
-                                               name_prefix=f"{args.model_name_prefix}") if hasattr(model,
-                                                                                                   "num_adversaries") else CheckpointCallback(
+    finetune_model = finetune_model_generator(args.model_file, lr_schedule=lr_schedule,
+                                              other_lr_schedule=other_lr_schedule,
+                                              clip_range_schedule=clip_range_schedule)
+
+    # finetune_model.warmstart_setup(finetune_model.lr_schedule)
+    # finetune_model = Specialized_Agent.load("/home/jw4406/codebase/FightLadder/main/trained_models/ma/ppo_ryu_4545792_steps.zip", env=env_generator())
+
+    from stable_baselines3.common.save_util import load_from_zip_file
+    # data, params, pytorch_variables = load_from_zip_file(
+    #    "/home/jw4406/codebase/FightLadder/main/trained_models/ws3_8/ppo_ryu_1668096_steps.zip")
+    # if FINETUNE is True:
+    # finetune_model.warmstarted_cont_MAGICS = True
+    # finetune_model.warmstart_setup(finetune_model.lr_schedule)
+
+    data, params, pytorch_variables = load_from_zip_file(
+
+        "/home/jw4406/codebase/FightLadder/main/benchmark_models/right/ippo.zip")
+    # data, params, pytorch_variables = load_from_zip_file(
+
+    #    "/home/jw4406/codebase/FightLadder/main/trained_models/ippo_%s_12_cont/ppo_%s_10536000_steps.zip" %
+
+    #    (PLAYER, PLAYER))
+
+    # data, params, pytorch_variables = load_from_zip_file(
+    #        "/home/jw4406/codebase/FightLadder/main/trained_models/guile_tss_test/ppo_%s_1728000_steps.zip" % (PLAYER))
+    #if EVAL is True or FINETUNE is True:
+    #    del params['policy.ctrl_optimizer']
+    #    del params['policy.value_optimizer']
+    #    del params['policy.dstb_optimizer']
+    # finetune_model.warmstarted_cont_MAGICS = True
+    # finetune_model.warmstart_setup(finetune_model.lr_schedule)
+    #finetune_model.set_parameters(params, exact_match=False, device=finetune_model.device)
+    finetune_model = IPPO.load("/home/jw4406/codebase/FightLadder/main/benchmark_models/right/ippo.zip")
+    '''
+    x = LeaguePPO(
+        "left",
+        "CnnPolicy",
+        env_generator(),
+        device="cuda",
+        verbose=1,
+        n_steps=512,
+        batch_size=1024, # 512,
+        n_epochs=4,
+        gamma=0.94,
+        learning_rate=1e-4, # lr_schedule,
+        clip_range=0.1, # clip_range_schedule,
+        tensorboard_log=None,
+        # seed=args.seed,
+        other_learning_rate=1e-4, # other_lr_schedule,
+    )
+    finetune_model = x.set_parameters_2p(load_path_or_dict="/home/jw4406/codebase/FightLadder/main/benchmark_models/left/LEAGUE.pt", load_path_or_dict_other="/home/jw4406/codebase/FightLadder/main/benchmark_models/right/LEAGUE.pt")'''
+    right_benchmark = finetune_model
+
+    left_agent = Specialized_Agent(
+            "AACCnnPolicy",
+            env_generator(),
+            device="cuda",
+            verbose=2,
+            n_steps=2048,  # 1408,
+            batch_size=256,  # 2816,  # 512,
+            n_epochs=1,
+            gamma=0.94,
+            v_learning_rate=5e-4, c_learning_rate=5e-4,
+            d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            c_learning_rate_decay=critic_decay_schedule(1e-4),
+            d_learning_rate_decay=critic_decay_schedule(5e-4),
+            clip_range=clip_range_schedule,
+            tensorboard_log=args.log_dir,
+            seed=1,
+            ent_coef=0,
+            dstb_ent_coef=0,
+            I_AM_LEFT=True,
+            I_AM_RIGHT=False,
+            num_adversary=1,
+            n_global_env=args.num_env,
+            n_env_per_adv=1,
+            opp_list=OPPONENT_LIST,
+            use_mirror=True
+        )
+    data, params, pytorch_variables = load_from_zip_file(
+
+        "/home/jw4406/codebase/FightLadder/main/trained_models/ippo_Guile_12_cont/ppo_Guile_10536000_steps.zip")
+
+    left_agent.set_parameters(params, exact_match=False, device=finetune_model.device)
+
+
+
+    # finetune_model.warmstarted_cont_MAGICS = True
+    # finetune_model.warmstart_setup(finetune_model.lr_schedule)
+
+    # need to fix env generator
+    exploiter = Exploiter('CnnPolicy', exploiter_env_generator(), device='cuda', exploited=finetune_model, n_steps=1024,
+                          batch_size=512, n_epochs=1)
+    # exploiter_path = "/home/jw4406/codebase/FightLadder/main/trained_models/exploiting_%s/ppo_%s_15480000_steps.zip" % (PLAYER, PLAYER)
+    exploiter_path = "/home/jw4406/codebase/FightLadder/main/trained_models/exploiting_%s/ppo_%s_34680000_steps.zip" % (
+        PLAYER, PLAYER)
+    exploiter_path = "/home/jw4406/codebase/FightLadder/main/trained_models/exploiting_%s_12_ippo_match/ppo_%s_13600000_steps.zip" % (
+        PLAYER, PLAYER)
+    exploiter_path = "/home/jw4406/codebase/FightLadder/main/trained_models/exploiting_%s_sa/ppo_%s_30440000_steps.zip" % (
+    PLAYER, PLAYER)
+    #exploiter = Exploiter.load(exploiter_path)
+    # model = exploiter
+    checkpoint_callback = ExploiterCheckpointCallback(
         save_freq=checkpoint_interval, save_path=args.save_dir, name_prefix=f"{args.model_name_prefix}")
-    if (FINETUNE is True) or (EVAL is True):
-        finetune_model = finetune_model_generator(args.model_file, lr_schedule=lr_schedule,
-                                                  other_lr_schedule=other_lr_schedule,
-                                                  clip_range_schedule=clip_range_schedule)
+    eval_callback = Exploiter_EvalCallback(exploiter_env_generator(), verbose=2, eval_freq=1000, n_eval_episodes=10)
 
-        # finetune_model.warmstart_setup(finetune_model.lr_schedule)
-        # finetune_model = Specialized_Agent.load("/home/jw4406/codebase/FightLadder/main/trained_models/ma/ppo_ryu_4545792_steps.zip", env=env_generator())
-
-        from stable_baselines3.common.save_util import load_from_zip_file
-        # data, params, pytorch_variables = load_from_zip_file(
-        #    "/home/jw4406/codebase/FightLadder/main/trained_models/ws3_8/ppo_ryu_1668096_steps.zip")
-        # if FINETUNE is True:
-        # finetune_model.warmstarted_cont_MAGICS = True
-        # finetune_model.warmstart_setup(finetune_model.lr_schedule)
-        data, params, pytorch_variables = load_from_zip_file(
-            "/home/jw4406/codebase/FightLadder/main/trained_models/ppo_%s_sa.zip" % (
-
-                PLAYER))
-        '''
-        data, params, pytorch_variables = load_from_zip_file(
-
-            "/home/jw4406/codebase/FightLadder/main/trained_models/ppo_%s_8064000_steps.zip" % (
-
-            PLAYER))
-        '''
-
-        #data, params, pytorch_variables = load_from_zip_file(
-
-        #    "/home/jw4406/codebase/FightLadder/main/trained_models/sa_mirror_ft_2_174000cont_%s/ppo_%s_84000_steps.zip" % (
-
-        #        PLAYER, PLAYER))
-
-        # data, params, pytorch_variables = load_from_zip_file(
-        #        "/home/jw4406/codebase/FightLadder/main/trained_models/guile_tss_test/ppo_%s_1728000_steps.zip" % (PLAYER))
-        if EVAL is True or FINETUNE is True:
-            del params['policy.ctrl_optimizer']
-            del params['policy.value_optimizer']
-            del params['policy.dstb_optimizer']
-        finetune_model.set_parameters(params, exact_match=False, device=finetune_model.device)
-        #finetune_model.warmstarted_cont_MAGICS = True
-        #finetune_model.warmstart_setup(finetune_model.lr_schedule)
-        # finetune_model.load_state_dict(torch.load("/home/jw4406/codebase/FightLadder/main/trained_models/magics_test_%s_ft/ppo_%s_24000_steps.zip" % (PLAYER, PLAYER), weights_only=True))
-        # if FINETUNE is True:
-        #    finetune_model.warmstarted_cont_MAGICS = True
-        #    finetune_model.warmstart_setup(finetune_model.lr_schedule)
-        # for i in range(finetune_model.num_adversaries):
-        #    if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
-        #        finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
-        for i in range(finetune_model.num_adversaries):
-            # data, params, pytorch_variables = load_from_zip_file(
-            #    "/home/jw4406/codebase/FightLadder/main/trained_models/neuronic_ippo/enemy_policy_%d.pt" % i)
-            # if FINETUNE is True:
-            #data, params, pytorch_variables = load_from_zip_file(
-            #    "/n/fs/magics/2141555/FightLadder/main/trained_models/magics_test_%s_ft_56789/enemy_policy_%s_102000_steps_%d.pt" % (
-            #    PLAYER, OPPONENT_LIST[i], i))
-            data, params, pytorch_variables = load_from_zip_file(
-
-                   "/home/jw4406/codebase/FightLadder/main/trained_models/enemy_policy_%s_4092000_steps_%d.pt" % (OPPONENT_LIST[i], i))
-
-
-            # enemy_policy_36000_steps_0.pt
-            if EVAL is True or FINETUNE is True:
-                del params['policy.ctrl_optimizer']
-                del params['policy.value_optimizer']
-                del params['policy.dstb_optimizer']
-            finetune_model.adversaries[i].set_parameters(params, exact_match=False, device=finetune_model.device)
-            if FINETUNE is True:
-                finetune_model.adversaries[i].warmstarted_cont_MAGICS = False
-                if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
-                    finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
-        model = finetune_model
+    # wandb.init(project="exploit_Guile_12_ippo_match",
+    #           entity='jw4406',
+    #           config={"eval_rew": 0,
+    #                   "epochs": 0})
 
     if not EVAL:
         if args.async_update:
@@ -725,29 +698,31 @@ def main(PLAYER):
                 fsp_threshold=args.fsp_threshold,
             )
         else:
-            #if hasattr(model, "num_adversaries"):
-            #    for i in range(model.num_adversaries):
-            #        model.adversaries[i]._setup_learn(model.adversaries[i].num_timesteps)
+            if hasattr(model, "num_adversaries"):
+                for i in range(model.num_adversaries):
+                    model.adversaries[i]._setup_learn(model.adversaries[i].num_timesteps)
             model.learn(
                 total_timesteps=args.total_steps,
-                callback=[checkpoint_callback]
-            )
+                callback=[checkpoint_callback])
+
         for i in range(len(model.adversaries)):
             model.adversaries[i].save("enemy_policy_%d.pt" % i)
         model.adversaries = []
         model.save(finetune_epoch_model_path)
     else:
-        state_list = ['two_player/EHonda_left/Champion.Level1.EHondaVsEHonda.2Player.state']
+        state_list = ['two_player/Guile_left/Champion.Level1.GuileVsRyu.2Player.state']
         for i in range(len(state_list)):
             # global STATE
             # STATE = state_list[i]
-            results = evaluate_sa(state_list[i], args, finetune_model, i, record=True)
+            results = evaluate_sa(state_list[i], args, left_agent, right_benchmark, i, record=False)
         print(results)
         with open(f"{args.finetune_dir}/{args.model_name_prefix}_start_results.txt", 'w') as f:
             f.write(str(results))
 
 
 if __name__ == "__main__":
+    # wandb.init(entity='jw4406')
+    # wandb.login(key='d95a51c4001b862123a34a3853fe0306906d2f07')
     parser = argparse.ArgumentParser()
     parser.add_argument("--player", type=str, required=True)
     args = parser.parse_args()
