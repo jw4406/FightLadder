@@ -2,7 +2,7 @@ import sys
 import time
 import random
 from venv import create
-
+import wandb
 import torch
 import torch as th
 import torch.autograd as autograd
@@ -1694,7 +1694,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 else:
                     L_ctrl_hessian = self.matrix_unbatch(grad_batched, n)
                     L_ctrl_hessian.diag().add_(5)
-                d2f1_ctrl_batched = autograd.grad(policy_loss, self.policy.value_optimizer.param_groups[0]['params'],
+                d2f1_ctrl_batched = autograd.grad(-policy_loss, self.policy.value_optimizer.param_groups[0]['params'],
                                                   create_graph=True, retain_graph=True)
                 d2f1_dstb_batched = autograd.grad(dstb_policy_loss,
                                                   self.policy.value_optimizer.param_groups[0]['params'],
@@ -1809,7 +1809,7 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                     # ctrl_partials = autograd.grad(ctrl_loss, self.policy.ctrl_optimizer.param_groups[0]['params'])
                     for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params'])):
                         self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad = \
-                            self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad - ctrl_imp[i]
+                            self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad + ctrl_imp[i]
                     th.nn.utils.clip_grad_norm_(self.policy.ctrl_optimizer.param_groups[0]['params'],
                                                 self.max_grad_norm)
 
@@ -2719,14 +2719,14 @@ class TSS_PPO(MAGICS_PPO):
 
         self.policy.ctrl_optimizer = torch.optim.AdamW(
             itertools.chain(self.policy.mlp_extractor.policy_net.parameters(),
-                            self.policy.action_net.parameters()), joint_schedule[1](1), maximize=False)
+                            self.policy.action_net.parameters()), joint_schedule[0](1), maximize=False)
         self.policy.dstb_optimizer = torch.optim.AdamW(
             itertools.chain(self.policy.mlp_extractor.dstb_net.parameters(),
-                            self.policy.dstb_action_net.parameters()), joint_schedule[2](1), maximize=False)
+                            self.policy.dstb_action_net.parameters()), joint_schedule[1](1), maximize=False)
         self.policy.value_optimizer = torch.optim.AdamW(
             itertools.chain(self.policy.mlp_extractor.value_net.parameters(),
                             self.policy.value_net.parameters()),
-            joint_schedule[0](1), **self.policy.optimizer_kwargs)
+            joint_schedule[2](1), **self.policy.optimizer_kwargs)
 
     def warmstart_buffer_setup(self, n_steps, n_envs, batch_size):
         buffer = AdvRolloutBuffer(n_steps, self.observation_space, self.action_space, device=self.device,
@@ -3356,6 +3356,7 @@ class Specialized_Agent(TSS_PPO):
 
             # Rescale and perform action
             if self.update_left is True:
+                #MESSY
                 clipped_actions = np.hstack([actions, adversary_actions])
             else:
                 clipped_actions = np.hstack([adversary_actions, actions])
@@ -3941,6 +3942,7 @@ class Specialized_Agent_IPPO(Specialized_Agent):
             opp_list=opp_list,
             use_mirror=use_mirror
         )
+        self.vf_coef = .5
 
     def collect_rollouts(
             self,
@@ -4060,8 +4062,7 @@ class Specialized_Agent_IPPO(Specialized_Agent):
             new_obs, rewards, rew_other, dones, infos = env.step(clipped_actions)
             # assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
             self.num_timesteps += env.num_envs
-
-            # Give access to local variables
+            wandb.log({"epochs": self.num_timesteps})            # Give access to local variables
             callback.update_locals(locals())
             if callback.on_step() is False:
                 return False
@@ -4846,7 +4847,7 @@ class Exploiter(PPO):
         device=device,
         _init_setup_model=_init_setup_model)
 
-        assert exploited is not None
+        #assert exploited is not None
 
         self.exploited = exploited
 
@@ -4897,15 +4898,16 @@ class Exploiter(PPO):
             EXPLOITED_ACTIONS = EXPLOITED_ACTIONS.cpu().numpy()
             #dstb_actions = dstb_actions.cpu().numpy()
             # Rescale and perform action
-            clipped_actions = np.hstack([actions, EXPLOITED_ACTIONS])
+            clipped_actions = np.hstack([EXPLOITED_ACTIONS, actions])
             # Clip the actions to avoid out of bound error
             if isinstance(self.action_space, spaces.Box):
                 clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
             new_obs, rewards, rew_other, dones, infos = env.step(clipped_actions)
+            #print(rewards)
             # assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
             self.num_timesteps += env.num_envs
-
+            wandb.log({"epochs": self.num_timesteps})
             # Give access to local variables
             callback.update_locals(locals())
             if callback.on_step() is False:
@@ -4934,7 +4936,7 @@ class Exploiter(PPO):
             rollout_buffer.add(
                 self._last_obs,  # type: ignore[arg-type]
                 actions,
-                rewards,
+                rew_other,
                 self._last_episode_starts,  # type: ignore[arg-type]
                 values,
                 log_probs
