@@ -421,13 +421,12 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
 
         with th.no_grad():
             # Compute value for the last timestep
-            values = torch.zeros((self.n_global_env,))
-            for i in range(self.num_adversaries):
-                chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
-                values[chunk] = self.policy.predict_values(obs_as_tensor(new_obs, self.device))[
-                    chunk].to('cpu')
-            # not bootstrapped correctly
-            # use adversary critics not ma critic
+            #values = torch.zeros((self.n_global_env,))
+            values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))
+            #for i in range(self.num_adversaries):
+            #    chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
+            #    values[chunk] = self.policy.predict_values(obs_as_tensor(new_obs, self.device))[
+            #        chunk].to('cpu')
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
         for i in range(self.num_adversaries):  # is this a bug?
@@ -473,7 +472,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                 print("this model is warmstarted! now running magics_ppo training", flush=True)
             return super().train()
         '''
-
+        self.warmstarted_cont_MAGICS = True
         self._update_learning_rate(
             [self.policy.ctrl_optimizer, self.policy.dstb_optimizer, self.policy.value_optimizer])
         # Compute current clip range
@@ -495,12 +494,13 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             buf.episode_starts = torch.from_numpy(buf.episode_starts).to(self.device)
             for i in range(buf.buffer_size):
                 # location = np.nonzero(rollout_data.env_indices == i)
-                adversary_id = buf.env_indices[i] // self.n_env_per_adv
-                for j in range(self.num_adversaries):
-                    _, _, values, _, _ = self.adversaries[j].policy(
-                        torch.Tensor(buf.observations[i][adversary_id == j]).to(self.device))
+                #adversary_id = buf.env_indices[i] // self.n_env_per_adv
+                #for j in range(self.num_adversaries):
+                #    _, _, values, _, _ = self.policy(
+                #        torch.Tensor(buf.observations[i][adversary_id == j]).to(self.device))
                     # _, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
-                    buf.values[i][adversary_id == j] = values.squeeze()
+                #    buf.values[i][adversary_id == j] = values.squeeze()
+                _, _, buf.values[i], _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
             # _, _, last_values, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
             buf.compute_returns_and_advantage_pt(buf.values[i], torch.Tensor(buf.dones[-1]).to(self.device))
             rollout_advantages_copy = deepcopy(self.rollout_buffer.advantages)
@@ -544,7 +544,9 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                     _, ctrl_log_prob, ctrl_entropy, _, _ = self.policy.evaluate_actions(
                         torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
                     '''
-                    values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
+                    self.policy.num_global_env = self.n_global_env
+                    self.policy.num_adv = self.num_adversaries
+                    values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions, shuffle_keys=rollout_data.env_indices)
 
                     values = values.flatten()
                 else:
@@ -605,15 +607,13 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                 # Value loss using the TD(gae_lambda) target
                 value_loss = F.mse_loss(torch.Tensor(rollout_data.returns).to(self.device), values_pred)
                 value_losses.append(value_loss.item())
-                all_adv_val_params = list(itertools.chain.from_iterable(
-                    [self.adversaries[i].policy.value_optimizer.param_groups[0]['params'] for i in
-                     range(self.num_adversaries)]))
+                all_adv_val_params = self.policy.value_optimizer.param_groups[0]['params'][-self.num_adversaries*2:]
                 if self.warmstarted_cont_MAGICS is True:
                     L_ctrl_grad_batched = autograd.grad(value_loss, all_adv_val_params,
                                                         create_graph=True, retain_graph=True)
                     L_ctrl_grad = torch.cat([t.flatten() for t in L_ctrl_grad_batched], dim=0)
                     # L_ctrl_grad = torch.hstack([t.flatten() for t in L_ctrl_grad_batched])
-                    full_hessian = False
+                    full_hessian = True
                     n = sum(p.numel() for p in all_adv_val_params)
                     if full_hessian is False:
 
@@ -629,7 +629,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                                                      retain_graph=True, create_graph=True)
 
                     else:
-                        grad_batched = autograd.grad(L_ctrl_grad, self.policy.value_optimizer.param_groups[0]['params'],
+                        grad_batched = autograd.grad(L_ctrl_grad, all_adv_val_params,
                                                      torch.eye(n).to(self.device),
                                                      is_grads_batched=True,
                                                      retain_graph=True, create_graph=True)
@@ -652,18 +652,22 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                     # d2f1_ctrl = torch.rand(d2f1_dstb.shape).to(self.device)
 
                     # diag, no other option
-                    iHvp_ctrl = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_ctrl)
+                    #iHvp_ctrl = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_ctrl)
+
+                    iHvp_ctrl = torch.linalg.solve(L_ctrl_hessian, d2f1_ctrl)
+
                     # iHvp_dstb = torch.mul(torch.pow(L_ctrl_hessian, -1), d2f1_dstb)
                     # assert not np.any(self.rollout_buffer.current_shot - self.rollout_buffer.indices[
                     #                                                     count * self.batch_size: count * self.batch_size + self.batch_size])
                     # assert self.rollout_buffer.current_shot == self.rollout_buffer.indices[count * self.batch_size: count * self.batch_size + self.batch_size]
                     traj_ids = self.rollout_buffer.env_indices[self.rollout_buffer.indices[
                                                                count * self.batch_size: count * self.batch_size + self.batch_size]].squeeze()
+                    assert (np.max(traj_ids - rollout_data.env_indices) == 0) and (np.min(traj_ids - rollout_data.env_indices) == 0)
                     x0_states = self.rollout_buffer.X0_VALUES_MASTER[traj_ids]
                     x0_returns = buf.X0_RETURNS_MASTER[traj_ids]
                     x0_values, _, _, _, _ = self.policy.evaluate_actions(torch.Tensor(x0_states).to(self.device),
-                                                                         torch.Tensor(actions[0]).to(self.device),
-                                                                         torch.Tensor(dstb_actions[0]).to(self.device))
+                                                                         torch.Tensor(actions).to(self.device),
+                                                                         torch.Tensor(dstb_actions).to(self.device), shuffle_keys=traj_ids)
 
                     # clipped surrogate loss
 
@@ -745,14 +749,15 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                 self.policy.value_optimizer.step()
                 if self.warmstarted_cont_MAGICS is True:
                     advantage_test = []
-                    vf = torch.zeros_like(buf.values[-1])
+                    #vf = torch.zeros_like(buf.values[-1])
                     adversary_id = buf.env_indices[-1] // self.n_env_per_adv
-                    for j in range(self.num_adversaries):
-                        _, _, values, _, _ = self.adversaries[j].policy(
-                            torch.Tensor(buf.observations[-1][adversary_id == j]).to(self.device))
-                        # _, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
-                        vf[adversary_id == j] = values.squeeze()
-                    # _, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
+                    #for j in range(self.num_adversaries):
+                    #    _, _, values, _, _ = self.policy(
+                    #        torch.Tensor(buf.observations[-1][adversary_id == j]).to(self.device))
+                    #    # _, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
+                    #    vf[adversary_id == j] = values.squeeze()
+
+                    _, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
                     last_values = vf.flatten()
                     last_gae_lam = th.zeros_like(last_values)
                     dones = torch.Tensor(buf.dones[-1]).to(self.device)
@@ -764,19 +769,22 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                             next_values = last_values
                         else:
                             next_non_terminal = 1.0 - buf.episode_starts[step + 1].float()
-                            adversary_id = buf.env_indices[-1] // self.n_env_per_adv
-                            for j in range(self.num_adversaries):
-                                _, _, temp_values, _, _ = self.adversaries[j].policy(
-                                    torch.Tensor(buf.observations[step + 1][adversary_id == j]).to(self.device))
+                            #adversary_id = buf.env_indices[-1] // self.n_env_per_adv
+                            #for j in range(self.num_adversaries):
+                            #    _, _, temp_values, _, _ = self.policy(
+                            #        torch.Tensor(buf.observations[step + 1][adversary_id == j]).to(self.device))
                                 # _, _, temp_values, _, _ = self.policy(torch.Tensor(buf.observations[step + 1]).to(self.device))
-                                next_values[adversary_id == j] = temp_values.flatten()
-                        value_query = torch.zeros_like(buf.values[-1])
+                            #    next_values[adversary_id == j] = temp_values.flatten()
+                            _, _, next_values, _, _ = self.policy(
+                                torch.Tensor(buf.observations[step + 1]).to(self.device))
+                        #value_query = torch.zeros_like(buf.values[-1])
                         # _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
                         adversary_id = buf.env_indices[step] // self.n_env_per_adv
-                        for j in range(self.num_adversaries):
-                            _, _, temp_values, _, _ = self.adversaries[j].policy(
-                                torch.Tensor(buf.observations[step][adversary_id == j]).to(self.device))
-                            value_query[adversary_id == j] = temp_values.squeeze()
+                        #for j in range(self.num_adversaries):
+                        #    _, _, temp_values, _, _ = self.policy(
+                        #        torch.Tensor(buf.observations[step][adversary_id == j]).to(self.device))
+                        #    value_query[adversary_id == j] = temp_values.squeeze()
+                        _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
 
                         delta = buf.rewards[step] + buf.gamma * next_values * next_non_terminal - value_query.squeeze()
                         last_gae_lam = delta + buf.gamma * buf.gae_lambda * next_non_terminal * last_gae_lam
