@@ -450,6 +450,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
         assert self.update_left != self.update_right
 
         self.train_ma()
+        #self.train_advs()
         for i in range(self.num_adversaries):
             self.adversaries[i].train_one_adversary(self.policy, ma_left=self.update_left, ma_right=self.update_right),
         # adversaries
@@ -526,9 +527,9 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                 if self.update_left is True:
                     # main player is the left player
                     # adversaries are "dstb" role
-                    values = torch.zeros((self.batch_size, 1), device=self.device)
-                    dstb_log_prob = torch.zeros((self.batch_size,), device=self.device)
-                    dstb_entropy = torch.zeros((self.batch_size,), device=self.device)
+                    #values = torch.zeros((self.batch_size, 1), device=self.device)
+                    #dstb_log_prob = torch.zeros((self.batch_size,), device=self.device)
+                    #dstb_entropy = torch.zeros((self.batch_size,), device=self.device)
 
                     '''
                     for i in range(self.n_global_env):
