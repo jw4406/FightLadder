@@ -1249,13 +1249,13 @@ class Single_SPAR(OnPolicyAlgorithm):
     def matrix_unbatch(self, to_be_unbatched, size1, size2=None):
         if size2 is None:
             size2 = size1
-        unbatched = torch.zeros((size1, size2), device=self.device)
+        unbatched = th.zeros((size1, size2), device=self.device)
         for jac_row_count in range(size1):
             curr = 0
             for count in range(len(to_be_unbatched)):
                 unbatched[jac_row_count,
                 curr:curr + len(
-                    torch.flatten(to_be_unbatched[count][jac_row_count, :]))] = torch.flatten(
+                    th.flatten(to_be_unbatched[count][jac_row_count, :]))] = th.flatten(
                     to_be_unbatched[count][jac_row_count, :])
-                curr = curr + len(torch.flatten(to_be_unbatched[count][jac_row_count, :]))
+                curr = curr + len(th.flatten(to_be_unbatched[count][jac_row_count, :]))
         return unbatched
