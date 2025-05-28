@@ -319,13 +319,13 @@ def main(PLAYER):
     # global REMOVAL
     # PLAYER = "Blanka"  # "Blanka
     global REMOVAL
-    use_mirror = True
+    use_mirror = False
     REMOVAL = None
 
     if use_mirror is True:
-        OPPONENT_LIST = ["Sagat", "EHonda", "MBison"]
+        OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
-        OPPONENT_LIST = [PLAYER]
+        OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     SIDE = "left"  # "right"
     player_folder_name = PLAYER + '_' + SIDE
     if REMOVAL is not None:
@@ -493,8 +493,8 @@ def main(PLAYER):
             finetune_env,
             device="cuda",
             verbose=2,
-            n_steps=768,  # 1408,
-            batch_size=1536,  # 2816,  # 512,
+            n_steps=384,  # 1408,
+            batch_size=768,  # 2816,  # 512,
             n_epochs=5,
             gamma=0.94,
             v_learning_rate=1e-3, c_learning_rate=1e-4,
