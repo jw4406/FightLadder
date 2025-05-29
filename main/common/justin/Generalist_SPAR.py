@@ -838,9 +838,9 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                 print("this model is warmstarted! now running magics_ppo training", flush=True)
             return super().train()
         '''
-        ego_buffer = deepcopy(self.rollout_buffer)
-        for i in range(self.num_adversaries):
-            self.rollout_buffer = self.adversary_buffers[i]
+        ego_buffer = self.rollout_buffer
+        for k in range(self.num_adversaries):
+            self.rollout_buffer = self.adversary_buffers[k]
             self.warmstarted_cont_MAGICS = True
             self._update_learning_rate(
                 [self.policy.ctrl_optimizer, self.policy.dstb_optimizer, self.policy.value_optimizer])
@@ -913,8 +913,8 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                         _, ctrl_log_prob, ctrl_entropy, _, _ = self.policy.evaluate_actions(
                             torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
                         '''
-                        self.policy.num_global_env = self.n_global_env
-                        self.policy.num_adv = self.num_adversaries
+                        self.policy.num_global_env = self.n_env_per_adv
+                        self.policy.num_adv = 1
                         values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions, shuffle_keys=rollout_data.env_indices)
 
                         values = values.flatten()
@@ -976,7 +976,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                     # Value loss using the TD(gae_lambda) target
                     value_loss = F.mse_loss(torch.Tensor(rollout_data.returns).to(self.device), values_pred)
                     value_losses.append(value_loss.item())
-                    all_adv_val_params = self.policy.value_optimizer.param_groups[0]['params'][-self.num_adversaries*2:]
+                    all_adv_val_params = list(self.policy.value_net[k].parameters())
                     if self.warmstarted_cont_MAGICS is True:
                         L_dstb_grad_batched = autograd.grad(value_loss, all_adv_val_params,
                                                             create_graph=True, retain_graph=True)
@@ -1009,7 +1009,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                             L_ctrl_hessian = L_ctrl_hessian + 10
                         else:
                             L_dstb_hessian = self.matrix_unbatch(grad_batched, n)
-                            L_dstb_hessian.diag().add_(10)
+                            #L_dstb_hessian.diag().add_(10)
                         d2f1_dstb_batched = autograd.grad(dstb_policy_loss, all_adv_val_params,
                                                           create_graph=True, retain_graph=True)
                         # d2f1_dstb_batched = autograd.grad(dstb_policy_loss,
