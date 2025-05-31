@@ -1538,7 +1538,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             num_adversaries=num_adversaries
         )
 
-    def forward(self, obs: th.Tensor, deterministic: bool = False) -> Tuple[
+    def forward(self, obs: th.Tensor, deterministic: bool = False, network_keys=None) -> Tuple[
         th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
         """
         Forward pass in all the networks (actor and critic)
@@ -1548,6 +1548,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         :return: action, value and log probability of the action
         """
         # Preprocess the observation if needed
+        num_adversaries = len(network_keys)
         features = self.extract_features(obs)
         if self.share_features_extractor:
             latent_both, latent_vf = self.mlp_extractor(features)
@@ -1560,22 +1561,22 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             latent_pi_dstb = latent_both[1]
             latent_vf = self.mlp_extractor.forward_critic(vf_features)
         # Evaluate the values for the given observations
-        num_env_per_adv = latent_vf.shape[0] // self.num_adversaries
+        num_env_per_adv = latent_vf.shape[0] // num_adversaries
         values = th.zeros((latent_vf.shape[0],), device=self.device)
-        for i in range(self.num_adversaries):
-            non_chunked = self.value_net[i](latent_vf)
+        for i in range(num_adversaries):
+            non_chunked = self.value_net[network_keys[i]](latent_vf)
             values[i * num_env_per_adv : (i+1)*num_env_per_adv] = non_chunked[i * num_env_per_adv : (i+1)*num_env_per_adv, 0]
         #values = self.value_net(latent_vf)
-        ctrl_distribution, dstb_distribution = self._get_action_dist_from_latent(latent_pi, latent_pi_dstb)
+        ctrl_distribution, dstb_distribution = self._get_action_dist_from_latent(latent_pi, latent_pi_dstb, network_keys=network_keys)
         ctrl_actions = ctrl_distribution.get_actions(deterministic=deterministic)
         ctrl_log_prob = ctrl_distribution.log_prob(ctrl_actions)
-        dstb_actions = [dstb_distribution[i].get_actions(deterministic=deterministic) for i in range(self.num_adversaries)]
-        dstb_log_prob = [dstb_distribution[i].log_prob(dstb_actions[i]) for i in range(self.num_adversaries)]
+        dstb_actions = [dstb_distribution[i].get_actions(deterministic=deterministic) for i in range(num_adversaries)]
+        dstb_log_prob = [dstb_distribution[i].log_prob(dstb_actions[i]) for i in range(num_adversaries)]
         ctrl_actions = ctrl_actions.reshape((-1, *self.action_space.shape))  # type: ignore[misc]
-        dstb_actions = [dstb_actions[i].reshape((-1, *self.dstb_action_space.shape)) for i in range(self.num_adversaries)]
+        dstb_actions = [dstb_actions[i].reshape((-1, *self.dstb_action_space.shape)) for i in range(num_adversaries)]
         dstb_actions = th.vstack(dstb_actions)
         test = th.zeros((ctrl_actions.shape[0],))
-        for i in range(self.num_adversaries):
+        for i in range(num_adversaries):
             test[i * (num_env_per_adv): (i + 1) * num_env_per_adv] = dstb_log_prob[i][:]
         dstb_log_prob = test
         return ctrl_actions, ctrl_log_prob, values, dstb_actions, dstb_log_prob
@@ -1606,7 +1607,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             vf_features = self.vf_features_extractor(preprocessed_obs)
             return pi_ctrl_features, pi_dstb_features, vf_features
 
-    def _get_action_dist_from_latent(self, latent_pi: th.Tensor, latent_pi_dstb: th.Tensor) -> [Distribution,
+    def _get_action_dist_from_latent(self, latent_pi: th.Tensor, latent_pi_dstb: th.Tensor, network_keys=None) -> [Distribution,
                                                                                                 Distribution]:
         """
         Retrieve action distribution given the latent codes.
@@ -1614,11 +1615,12 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         :param latent_pi: Latent code for the actor
         :return: Action distribution
         """
+        num_adversaries = len(network_keys)
         mean_actions = self.action_net(latent_pi)
         dstb_mean_actions = th.zeros_like(mean_actions)
-        num_env_per_adv = mean_actions.shape[0] // self.num_adversaries
-        for i in range(self.num_adversaries):
-            dstb_mean_actions[i * num_env_per_adv : (i+1) * num_env_per_adv, :] = self.dstb_action_net[i](latent_pi_dstb)[i * num_env_per_adv : (i+1) * num_env_per_adv, :]
+        num_env_per_adv = mean_actions.shape[0] // num_adversaries
+        for i in range(num_adversaries):
+            dstb_mean_actions[i * num_env_per_adv : (i+1) * num_env_per_adv, :] = self.dstb_action_net[network_keys[i]](latent_pi_dstb)[i * num_env_per_adv : (i+1) * num_env_per_adv, :]
         if isinstance(self.action_dist, DiagGaussianDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std)
         elif isinstance(self.action_dist, CategoricalDistribution):
@@ -1630,7 +1632,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         elif isinstance(self.action_dist, BernoulliDistribution):
             # Here mean_actions are the logits (before rounding to get the binary actions)
             return self.action_dist.proba_distribution(
-                action_logits=mean_actions), [self.dstb_action_dist[i].proba_distribution(action_logits=dstb_mean_actions[i * num_env_per_adv : (i + 1) * num_env_per_adv, :]) for i in range(self.num_adversaries)]
+                action_logits=mean_actions), [self.dstb_action_dist[network_keys[i]].proba_distribution(action_logits=dstb_mean_actions[i * num_env_per_adv : (i + 1) * num_env_per_adv, :]) for i in range(num_adversaries)]
         elif isinstance(self.action_dist, StateDependentNoiseDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std,
                                                        latent_pi), self.dstb_action_dist.proba_distribution(
@@ -1639,7 +1641,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             raise ValueError("Invalid action distribution")
 
     def _get_action_dist_from_latent_nonuniform(self, latent_pi: th.Tensor, latent_pi_dstb: th.Tensor,
-                                                shuffle_keys) -> [Distribution,
+                                                shuffle_keys, network_keys=None) -> [Distribution,
                                                                   Distribution]:
         """
         Retrieve action distribution given the latent codes.
@@ -1647,21 +1649,22 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         :param latent_pi: Latent code for the actor
         :return: Action distribution
         """
+        num_adversaries = len(network_keys)
         mean_actions = self.action_net(latent_pi)
-        num_env_per_adv = self.num_global_env // self.num_adv
+        num_env_per_adv = self.num_global_env // num_adversaries
         dstb_mean_actions = th.zeros_like(mean_actions)
-        num_per = mean_actions.shape[0] // self.num_adversaries
+        num_per = mean_actions.shape[0] // num_adversaries
         full = [i for i in range(self.num_global_env)]
         adv_distros = []
-        for i in range(self.num_adversaries):
+        for i in range(num_adversaries):
             which_envs = range(i * num_env_per_adv, (i + 1) * num_env_per_adv)
             indices = np.isin(shuffle_keys, which_envs)
             this_env_latent_pi_dstb = latent_pi_dstb[indices]
-            self.dstb_action_net[i] = self.dstb_action_net[i].to('cuda')
+            self.dstb_action_net[network_keys[i]] = self.dstb_action_net[network_keys[i]].to('cuda')
             # chunk = full[i * num_per : (i+1) * num_per]
-            this_adv_dstb_mean_actions = self.dstb_action_net[i](this_env_latent_pi_dstb)
+            this_adv_dstb_mean_actions = self.dstb_action_net[network_keys[i]](this_env_latent_pi_dstb)
 
-            adv_distros.append(self.dstb_action_dist[i].proba_distribution(action_logits=this_adv_dstb_mean_actions))
+            adv_distros.append(self.dstb_action_dist[network_keys[i]].proba_distribution(action_logits=this_adv_dstb_mean_actions))
 
         ctrl_distro = self.action_dist.proba_distribution(
             action_logits=mean_actions)
@@ -1678,7 +1681,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         ctrl_dstro, dstb_dstro = self.get_distribution(observation)
         return ctrl_dstro.get_actions(deterministic=deterministic), dstb_dstro.get_actions(deterministic=deterministic)
 
-    def evaluate_actions(self, obs, actions: th.Tensor, dstb_actions: th.Tensor, shuffle_keys=None) -> Tuple[
+    def evaluate_actions(self, obs, actions: th.Tensor, dstb_actions: th.Tensor, shuffle_keys=None, network_keys=None) -> Tuple[
         th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
         """
         Evaluate actions according to the current policy,
@@ -1691,6 +1694,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             and entropy of the action distribution.
         """
         # Preprocess the observation if needed
+        num_adversaries = len(network_keys)
         features = self.extract_features(obs)
         if self.share_features_extractor:
             latent_both, latent_vf = self.mlp_extractor(features)
@@ -1702,14 +1706,14 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             latent_pi = latent_both[0]
             latent_pi_dstb = latent_both[1]
             latent_vf = self.mlp_extractor.forward_critic(vf_features)
-        ctrl_distribution, dstb_distribution = self._get_action_dist_from_latent_nonuniform(latent_pi, latent_pi_dstb, shuffle_keys=shuffle_keys)
+        ctrl_distribution, dstb_distribution = self._get_action_dist_from_latent_nonuniform(latent_pi, latent_pi_dstb, shuffle_keys=shuffle_keys, network_keys=network_keys)
         ctrl_log_prob = ctrl_distribution.log_prob(actions)
         #dstb_log_prob = th.zeros_like(ctrl_log_prob)
         num_global_env = np.max(shuffle_keys) + 1
-        num_env_per_adv = num_global_env // self.num_adversaries
+        num_env_per_adv = num_global_env // num_adversaries
         full = [i for i in range(num_global_env)]
         concated_adv_log_probs = th.zeros_like(ctrl_log_prob)
-        for i in range(self.num_adversaries):
+        for i in range(num_adversaries):
             chunk = full[i * num_env_per_adv : (i+1)*num_env_per_adv]
             indices = np.isin(shuffle_keys, chunk) # is a bool array can be directly be used as keys
 
@@ -1719,21 +1723,21 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
 
         #dstb_log_prob = [dstb_distribution[i].log_prob(dstb_actions[i]) for i in range(self.num_adversaries)]
         #test = th.zeros((actions.shape[0],))
-        chunk_size = actions.shape[0] // self.num_adversaries
+        chunk_size = actions.shape[0] // num_adversaries
         #for i in range(self.num_adversaries):
         #    test[i * (chunk_size): (i + 1) * chunk_size] = dstb_log_prob[i][:]
         #dstb_log_prob = test
         values = th.zeros((latent_vf.shape[0],), device=self.device)
         num_global_env = np.max(shuffle_keys) + 1 #latent_vf.shape[0] // self.num_adversaries
-        num_env_per_adv = num_global_env // self.num_adversaries
-        for i in range(self.num_adversaries):
+        num_env_per_adv = num_global_env // num_adversaries
+        for i in range(num_adversaries):
             chunk = full[i * num_env_per_adv: (i + 1) * num_env_per_adv]
             indices = np.isin(shuffle_keys, chunk)
-            values[indices] = self.value_net[i](latent_vf[indices]).flatten()
+            values[indices] = self.value_net[network_keys[i]](latent_vf[indices]).flatten()
             #values[i * chunk_size: (i + 1) * chunk_size] = non_chunked[
             #                                                         i * chunk_size: (i + 1) * chunk_size, 0]
         ctrl_entropy = ctrl_distribution.entropy()
-        stacked_dstb_entropy = [dstb_distribution[i].entropy() for i in range(self.num_adversaries)]
+        stacked_dstb_entropy = [dstb_distribution[i].entropy() for i in range(num_adversaries)]
         #test = th.zeros((actions.shape[0],))
         #chunk_size = actions.shape[0] // self.num_adversaries
         #for i in range(self.num_adversaries):
