@@ -493,7 +493,7 @@ def main(PLAYER):
             finetune_env,
             device="cuda",
             verbose=2,
-            n_steps=384,  # 1408,
+            n_steps=192,  # 1408,
             batch_size=768,  # 2816,  # 512,
             n_epochs=5,
             gamma=0.94,
