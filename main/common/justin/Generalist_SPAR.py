@@ -245,7 +245,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                s_actions, s_log_probs, s_values, s_dstb_actions, s_dstb_log_probs = self.policy(obs_tensor)
+                s_actions, s_log_probs, s_values, s_dstb_actions, s_dstb_log_probs = self.policy(obs_tensor, network_keys=[i for i in range(self.num_adversaries)])
                 all_adv_left_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
                 all_adv_right_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
                 all_adv_critic_values = torch.zeros((self.n_global_env, 1), device=self.device)
@@ -448,11 +448,12 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
         # need to query adversary critics
 
         assert self.update_left != self.update_right
-
+        self.policy.num_adversaries = self.num_adversaries
         self.train_ma()
+        #self.policy.num_adversaries = 1
         self.train_advs()
-        for i in range(self.num_adversaries):
-            self.adversaries[i].train_one_adversary(self.policy, ma_left=self.update_left, ma_right=self.update_right),
+        #for i in range(self.num_adversaries):
+        #    self.adversaries[i].train_one_adversary(self.policy, ma_left=self.update_left, ma_right=self.update_right),
         # adversaries
         # test(self)
         '''for i in range(self.num_adversaries):
@@ -501,7 +502,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                 #        torch.Tensor(buf.observations[i][adversary_id == j]).to(self.device))
                     # _, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
                 #    buf.values[i][adversary_id == j] = values.squeeze()
-                _, _, buf.values[i], _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
+                _, _, buf.values[i], _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device), network_keys=[i for i in range(self.num_adversaries)])
             # _, _, last_values, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
             buf.compute_returns_and_advantage_pt(buf.values[i], torch.Tensor(buf.dones[-1]).to(self.device))
             rollout_advantages_copy = deepcopy(self.rollout_buffer.advantages)
@@ -547,7 +548,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                     '''
                     self.policy.num_global_env = self.n_global_env
                     self.policy.num_adv = self.num_adversaries
-                    values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions, shuffle_keys=rollout_data.env_indices)
+                    values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions, shuffle_keys=rollout_data.env_indices, network_keys=[i for i in range(self.num_adversaries)])
 
                     values = values.flatten()
                 else:
@@ -668,7 +669,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                     x0_returns = buf.X0_RETURNS_MASTER[traj_ids]
                     x0_values, _, _, _, _ = self.policy.evaluate_actions(torch.Tensor(x0_states).to(self.device),
                                                                          torch.Tensor(actions).to(self.device),
-                                                                         torch.Tensor(dstb_actions).to(self.device), shuffle_keys=traj_ids)
+                                                                         torch.Tensor(dstb_actions).to(self.device), shuffle_keys=traj_ids, network_keys=[i for i in range(self.num_adversaries)])
 
                     # clipped surrogate loss
 
@@ -758,7 +759,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                     #    # _, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
                     #    vf[adversary_id == j] = values.squeeze()
 
-                    _, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
+                    _, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device), network_keys=[i for i in range(self.num_adversaries)])
                     last_values = vf.flatten()
                     last_gae_lam = th.zeros_like(last_values)
                     dones = torch.Tensor(buf.dones[-1]).to(self.device)
@@ -777,7 +778,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                                 # _, _, temp_values, _, _ = self.policy(torch.Tensor(buf.observations[step + 1]).to(self.device))
                             #    next_values[adversary_id == j] = temp_values.flatten()
                             _, _, next_values, _, _ = self.policy(
-                                torch.Tensor(buf.observations[step + 1]).to(self.device))
+                                torch.Tensor(buf.observations[step + 1]).to(self.device), network_keys=[i for i in range(self.num_adversaries)])
                         #value_query = torch.zeros_like(buf.values[-1])
                         # _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
                         adversary_id = buf.env_indices[step] // self.n_env_per_adv
@@ -785,7 +786,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                         #    _, _, temp_values, _, _ = self.policy(
                         #        torch.Tensor(buf.observations[step][adversary_id == j]).to(self.device))
                         #    value_query[adversary_id == j] = temp_values.squeeze()
-                        _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
+                        _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device), network_keys=[i for i in range(self.num_adversaries)])
 
                         delta = buf.rewards[step] + buf.gamma * next_values * next_non_terminal - value_query.squeeze()
                         last_gae_lam = delta + buf.gamma * buf.gae_lambda * next_non_terminal * last_gae_lam
@@ -869,7 +870,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                     #        torch.Tensor(buf.observations[i][adversary_id == j]).to(self.device))
                         # _, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
                     #    buf.values[i][adversary_id == j] = values.squeeze()
-                    _, _, buf.values[i], _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
+                    _, _, buf.values[i], _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device), network_keys=[k])
                 # _, _, last_values, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
                 buf.compute_returns_and_advantage_pt(buf.values[i], torch.Tensor(buf.dones[-1]).to(self.device))
                 rollout_advantages_copy = deepcopy(self.rollout_buffer.advantages)
@@ -915,7 +916,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                         '''
                         self.policy.num_global_env = self.n_env_per_adv
                         self.policy.num_adv = 1
-                        values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions, shuffle_keys=rollout_data.env_indices)
+                        values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions, shuffle_keys=rollout_data.env_indices, network_keys=[k])
 
                         values = values.flatten()
                     else:
@@ -977,6 +978,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                     value_loss = F.mse_loss(torch.Tensor(rollout_data.returns).to(self.device), values_pred)
                     value_losses.append(value_loss.item())
                     all_adv_val_params = list(self.policy.value_net[k].parameters())
+                    this_dstb_params = list(itertools.chain(list(self.policy.mlp_extractor.dstb_net.parameters()), self.policy.dstb_action_net[k].parameters()))
                     if self.warmstarted_cont_MAGICS is True:
                         L_dstb_grad_batched = autograd.grad(value_loss, all_adv_val_params,
                                                             create_graph=True, retain_graph=True)
@@ -1036,7 +1038,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                         x0_returns = buf.X0_RETURNS_MASTER[traj_ids]
                         x0_values, _, _, _, _ = self.policy.evaluate_actions(torch.Tensor(x0_states).to(self.device),
                                                                              torch.Tensor(actions).to(self.device),
-                                                                             torch.Tensor(dstb_actions).to(self.device), shuffle_keys=traj_ids)
+                                                                             torch.Tensor(dstb_actions).to(self.device), shuffle_keys=traj_ids, network_keys=[k])
 
                         # clipped surrogate loss
 
@@ -1066,7 +1068,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                         # d1f2_dstb = torch.hstack([u.flatten() for u in d1f2_dstb_batched])
                         # d1f2_dstb = d1f2_dstb.dot(dstb_log_prob)
                         # ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.value_optimizer.param_groups[0]['params'], torch.eye(d1f2_ctrl.shape[0], device=self.device), is_grads_batched=True, create_graph=True, retain_graph=True)
-                        dstb_imp = autograd.grad(d1f2_dstb, self.policy.ctrl_optimizer.param_groups[0]['params'], iHvp_dstb,
+                        dstb_imp = autograd.grad(d1f2_dstb, this_dstb_params, iHvp_dstb,
                                                  is_grads_batched=False, create_graph=True, retain_graph=True)
                         # dstb_imp = autograd.grad(d1f2_dstb, self.policy.dstb_optimizer.param_groups[0]['params'], iHvp_dstb,
                         #                         is_grads_batched=False, create_graph=True, retain_graph=True)
@@ -1108,9 +1110,8 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                     self.policy.value_optimizer.zero_grad()
                     loss.backward()
                     if self.warmstarted_cont_MAGICS is True:
-                        for i in range(len(self.policy.dstb_optimizer.param_groups[0]['params'])):
-                            self.policy.dstb_optimizer.param_groups[0]['params'][i].grad = \
-                                self.policy.dstb_optimizer.param_groups[0]['params'][i].grad - dstb_imp[i]
+                        for i in range(len(this_dstb_params)):
+                            this_dstb_params[i].grad = this_dstb_params[i].grad - dstb_imp[i]
                     # Clip grad norm
                     #th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                     #self.policy.ctrl_optimizer.step()
@@ -1126,7 +1127,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                         #    # _, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
                         #    vf[adversary_id == j] = values.squeeze()
 
-                        _, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
+                        _, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device), network_keys=[k])
                         last_values = vf.flatten()
                         last_gae_lam = th.zeros_like(last_values)
                         dones = torch.Tensor(buf.dones[-1]).to(self.device)
@@ -1145,7 +1146,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                                     # _, _, temp_values, _, _ = self.policy(torch.Tensor(buf.observations[step + 1]).to(self.device))
                                 #    next_values[adversary_id == j] = temp_values.flatten()
                                 _, _, next_values, _, _ = self.policy(
-                                    torch.Tensor(buf.observations[step + 1]).to(self.device))
+                                    torch.Tensor(buf.observations[step + 1]).to(self.device), network_keys=[k])
                             #value_query = torch.zeros_like(buf.values[-1])
                             # _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
                             adversary_id = buf.env_indices[step] // self.n_env_per_adv
@@ -1153,7 +1154,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                             #    _, _, temp_values, _, _ = self.policy(
                             #        torch.Tensor(buf.observations[step][adversary_id == j]).to(self.device))
                             #    value_query[adversary_id == j] = temp_values.squeeze()
-                            _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
+                            _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device), network_keys=[k])
 
                             delta = buf.rewards[step] + buf.gamma * next_values * next_non_terminal - value_query.squeeze()
                             last_gae_lam = delta + buf.gamma * buf.gae_lambda * next_non_terminal * last_gae_lam
@@ -1176,6 +1177,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
 
         self._n_updates += self.n_epochs
         explained_var = explained_variance(self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten())
+        self.rollout_buffer = ego_buffer
 
         # Logs
         self.logger.record(f"train/entropy_loss", np.mean(entropy_losses))
