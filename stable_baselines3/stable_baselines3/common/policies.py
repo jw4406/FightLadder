@@ -814,7 +814,7 @@ class ActorActorCriticPolicy(BasePolicy):
         features_extractor_kwargs: Optional[Dict[str, Any]] = None,
         share_features_extractor: bool = False,
         normalize_images: bool = True,
-        optimizer_class: Type[th.optim.Optimizer] = th.optim.SGD,
+        optimizer_class: Type[th.optim.Optimizer] = th.optim.AdamW,
         optimizer_kwargs: Optional[Dict[str, Any]] = None,
         adversarial=True,
         dstb_action_space: spaces.Space = None,
@@ -1283,7 +1283,7 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
         features_extractor_kwargs: Optional[Dict[str, Any]] = None,
         share_features_extractor: bool = False,
         normalize_images: bool = True,
-        optimizer_class: Type[th.optim.Optimizer] = th.optim.SGD,
+        optimizer_class: Type[th.optim.Optimizer] = th.optim.AdamW,
         optimizer_kwargs: Optional[Dict[str, Any]] = None,
         adversarial=True,
         dstb_action_space: spaces.Space = None,
@@ -1403,7 +1403,7 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
                 itertools.chain(self.vf_features_extractor.parameters(), self.value_net.parameters()),
                 joint_schedule[0](1), **self.optimizer_kwargs)
         else:
-            self.ctrl_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.policy_net.parameters(), self.pi_ctrl_features_extractor.parameters(),self.action_net.parameters()), joint_schedule[0](1),maximize=False)
+            self.ctrl_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.policy_net.parameters(), self.pi_ctrl_features_extractor.parameters(),self.action_net.parameters()), joint_schedule[0](1),maximize=True)
             self.dstb_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.dstb_net.parameters(), self.pi_dstb_features_extractor.parameters(), itertools.chain.from_iterable([self.dstb_action_net[i].parameters() for i in range(self.num_adversaries)])), joint_schedule[1](1), maximize=False)
             self.value_optimizer = self.optimizer_class(
                 itertools.chain(self.mlp_extractor.value_net.parameters(), self.vf_features_extractor.parameters(), itertools.chain.from_iterable([self.value_net[i].parameters() for i in range(self.num_adversaries)])),
@@ -1508,7 +1508,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             features_extractor_kwargs: Optional[Dict[str, Any]] = None,
             share_features_extractor: bool = False,
             normalize_images: bool = True,
-            optimizer_class: Type[th.optim.Optimizer] = th.optim.SGD,
+            optimizer_class: Type[th.optim.Optimizer] = th.optim.AdamW,
             optimizer_kwargs: Optional[Dict[str, Any]] = None,
             adversarial=True,
             dstb_action_space: spaces.Space = None,
@@ -1670,7 +1670,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             action_logits=mean_actions)
         return ctrl_distro, adv_distros
 
-    def _predict(self, observation, deterministic: bool = False) -> th.Tensor:
+    def _predict(self, observation, deterministic: bool = False, network_keys=None) -> th.Tensor:
         """
         Get the action according to the policy for a given observation.
 
@@ -1678,8 +1678,8 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         :param deterministic: Whether to use stochastic or deterministic actions
         :return: Taken action according to the policy
         """
-        ctrl_dstro, dstb_dstro = self.get_distribution(observation)
-        return ctrl_dstro.get_actions(deterministic=deterministic), dstb_dstro.get_actions(deterministic=deterministic)
+        ctrl_dstro, dstb_dstro = self.get_distribution(observation, network_keys=network_keys)
+        return ctrl_dstro.get_actions(deterministic=deterministic), [dstb_dstro[i].get_actions(deterministic=deterministic) for i in range(len(network_keys))]
 
     def evaluate_actions(self, obs, actions: th.Tensor, dstb_actions: th.Tensor, shuffle_keys=None, network_keys=None) -> Tuple[
         th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
@@ -1746,7 +1746,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         dstb_entropy = th.hstack(stacked_dstb_entropy)
         return values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy
 
-    def get_distribution(self, obs) -> Distribution:
+    def get_distribution(self, obs, network_keys=None) -> Distribution:
         """
         Get the current policy distribution given the observations.
 
@@ -1756,7 +1756,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         ctrl_features, dstb_features, _ = self.extract_features(obs, self.pi_ctrl_features_extractor)
         #dstb_features = self.extract_features(obs, self.pi_dstb_features_extractor)
         latent_pi, latent_pi_dstb = self.mlp_extractor.forward_actor(ctrl_features, dstb_features)
-        ctrl_dstro, dstb_distro = self._get_action_dist_from_latent(latent_pi, latent_pi_dstb)
+        ctrl_dstro, dstb_distro = self._get_action_dist_from_latent(latent_pi, latent_pi_dstb, network_keys=network_keys)
         return ctrl_dstro, dstb_distro
 
     def predict_values(self, obs) -> th.Tensor:
@@ -1784,6 +1784,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             state: Optional[Tuple[np.ndarray, ...]] = None,
             episode_start: Optional[np.ndarray] = None,
             deterministic: bool = False,
+            network_keys=None
     ) -> Tuple[np.ndarray, Optional[Tuple[np.ndarray, ...]]]:
         """
         Get the policy action from an observation (and optional hidden state).
@@ -1815,10 +1816,11 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         obs_tensor, vectorized_env = self.obs_to_tensor(observation)
 
         with th.no_grad():
-            actions, dstb_actions = self._predict(obs_tensor, deterministic=deterministic)
+            actions, dstb_actions = self._predict(obs_tensor, deterministic=deterministic, network_keys=network_keys)
         # Convert to numpy, and reshape to the original action shape
         actions = actions.cpu().numpy().reshape((-1, *self.action_space.shape))  # type: ignore[misc]
-        dstb_actions = dstb_actions.cpu().numpy().reshape((-1, *self.dstb_action_space.shape))
+        dstb_actions = [dstb_actions[i].reshape((-1, *self.dstb_action_space.shape)) for i in range(len(network_keys))]
+        dstb_actions = th.vstack(dstb_actions)
         if isinstance(self.action_space, spaces.Box):
             if self.squash_output:
                 # Rescale to proper domain when using squashing
