@@ -21,7 +21,7 @@ from common.justin.spar import Single_SPAR
 from common.justin.Generalist_SPAR import Generalist_SPAR
 from stable_baselines3 import MAGICS_AL
 from common.retro_wrappers import SFWrapper, Monitor2P
-
+import wandb
 PRETRAIN = True
 
 FINETUNE = False
@@ -326,6 +326,7 @@ def main(PLAYER):
         OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
+        #OPPONENT_LIST = ["Sagat"]
     SIDE = "left"  # "right"
     player_folder_name = PLAYER + '_' + SIDE
     if REMOVAL is not None:
@@ -363,7 +364,7 @@ def main(PLAYER):
                         help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
     parser.add_argument('--save-dir', help='The directory to save the trained models',
-                        default="trained_models/sa_cont_league_question_%s" % PLAYER)
+                        default="trained_models/smaller_lr_%s" % PLAYER)
 
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
     parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_%s" % PLAYER)
@@ -493,12 +494,12 @@ def main(PLAYER):
             finetune_env,
             device="cuda",
             verbose=2,
-            n_steps=192,  # 1408,
-            batch_size=768,  # 2816,  # 512,
-            n_epochs=5,
+            n_steps=768,  # 1408,
+            batch_size=1536,  # 2816,  # 512,
+            n_epochs=50,
             gamma=0.94,
-            v_learning_rate=1e-3, c_learning_rate=1e-4,
-            d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            v_learning_rate=5e-4, c_learning_rate=1e-5,
+            d_learning_rate=5e-5, v_learning_rate_decay=critic_decay_schedule(1e-3),
             c_learning_rate_decay=critic_decay_schedule(1e-4),
             d_learning_rate_decay=critic_decay_schedule(5e-4),
             clip_range=clip_range_schedule,
@@ -728,6 +729,10 @@ def main(PLAYER):
             #if hasattr(model, "num_adversaries"):
             #    for i in range(model.num_adversaries):
             #        model.adversaries[i]._setup_learn(model.adversaries[i].num_timesteps)
+            wandb.init(project="baseline_cheetah_20_dseeu",
+                       entity='jw4406',
+                       config={"eval_rew": 0,
+                               "epochs": 0})
             model.learn(
                 total_timesteps=args.total_steps,
                 callback=[checkpoint_callback]
@@ -749,6 +754,7 @@ def main(PLAYER):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    wandb.login(key='d95a51c4001b862123a34a3853fe0306906d2f07')
     parser.add_argument("--player", type=str, required=True)
     args = parser.parse_args()
 

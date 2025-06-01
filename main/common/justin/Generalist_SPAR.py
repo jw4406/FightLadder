@@ -343,7 +343,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             new_obs, rewards, rew_other, dones, infos = env.step(clipped_actions)
             # assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
             self.num_timesteps += env.num_envs
-
+            wandb.log({"epochs": self.num_timesteps})
             # Give access to local variables
             callback.update_locals(locals())
             if callback.on_step() is False:
@@ -409,7 +409,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                         self._last_obs[chunk],
                         actions[chunk],
                         adversary_actions[chunk],
-                        rewards[chunk],
+                        rew_other[chunk],
                         self._last_episode_starts[chunk],
                         all_adv_critic_values[chunk],
                         log_probs[chunk],
@@ -474,7 +474,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                 print("this model is warmstarted! now running magics_ppo training", flush=True)
             return super().train()
         '''
-        self.warmstarted_cont_MAGICS = True
+        self.warmstarted_cont_MAGICS = False
         self._update_learning_rate(
             [self.policy.ctrl_optimizer, self.policy.dstb_optimizer, self.policy.value_optimizer])
         # Compute current clip range
@@ -587,10 +587,10 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                 # clipped surrogate loss
                 policy_loss_1 = advantages * ctrl_ratio
                 policy_loss_2 = advantages * th.clamp(ctrl_ratio, 1 - clip_range, 1 + clip_range)
-                dstb_policy_loss_1 = advantages * dstb_ratio
-                dstb_policy_loss_2 = advantages * th.clamp(dstb_ratio, 1 - clip_range, 1 + clip_range)
-                ctrl_policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
-                dstb_policy_loss = th.min(dstb_policy_loss_1, dstb_policy_loss_2).mean()
+                #dstb_policy_loss_1 = advantages * dstb_ratio
+                #dstb_policy_loss_2 = advantages * th.clamp(dstb_ratio, 1 - clip_range, 1 + clip_range)
+                ctrl_policy_loss = th.min(policy_loss_1, policy_loss_2).mean()
+                #dstb_policy_loss = th.min(dstb_policy_loss_1, dstb_policy_loss_2).mean()
 
                 # Logging
                 pg_losses.append(ctrl_policy_loss.item())
@@ -715,7 +715,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
 
                 entropy_losses.append(ctrl_entropy_loss.item())
 
-                loss = ctrl_policy_loss + self.ent_coef * ctrl_entropy_loss + self.dstb_ent_coef * dstb_entropy_loss + self.vf_coef * value_loss + dstb_policy_loss
+                loss = ctrl_policy_loss# + self.ent_coef * ctrl_entropy_loss + self.vf_coef * value_loss# + dstb_policy_loss
 
                 # Calculate approximate form of reverse KL Divergence for early stopping
                 # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
@@ -748,7 +748,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.policy.ctrl_optimizer.step()
                 #self.policy.dstb_optimizer.step()
-                #self.policy.value_optimizer.step()
+                self.policy.value_optimizer.step()
                 if self.warmstarted_cont_MAGICS is True:
                     advantage_test = []
                     #vf = torch.zeros_like(buf.values[-1])
@@ -842,7 +842,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
         ego_buffer = self.rollout_buffer
         for k in range(self.num_adversaries):
             self.rollout_buffer = self.adversary_buffers[k]
-            self.warmstarted_cont_MAGICS = True
+            self.warmstarted_cont_MAGICS = False
             self._update_learning_rate(
                 [self.policy.ctrl_optimizer, self.policy.dstb_optimizer, self.policy.value_optimizer])
             # Compute current clip range
@@ -1084,7 +1084,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
 
                     entropy_losses.append(ctrl_entropy_loss.item())
 
-                    loss = ctrl_policy_loss + self.ent_coef * ctrl_entropy_loss + self.dstb_ent_coef * dstb_entropy_loss + self.vf_coef * value_loss + dstb_policy_loss
+                    loss = self.vf_coef * value_loss - dstb_policy_loss
 
                     # Calculate approximate form of reverse KL Divergence for early stopping
                     # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
@@ -1111,9 +1111,9 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                     loss.backward()
                     if self.warmstarted_cont_MAGICS is True:
                         for i in range(len(this_dstb_params)):
-                            this_dstb_params[i].grad = this_dstb_params[i].grad - dstb_imp[i]
+                            this_dstb_params[i].grad = this_dstb_params[i].grad + dstb_imp[i]
                     # Clip grad norm
-                    #th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                    th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                     #self.policy.ctrl_optimizer.step()
                     self.policy.dstb_optimizer.step()
                     self.policy.value_optimizer.step()
@@ -1203,6 +1203,6 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             (ego_action, state), (right_action, _) = self.policy.predict(obs, deterministic=deterministic)
             left_action = ego_action
         else:
-            (left_action, state), (_, _) = self.policy.predict(obs, deterministic=deterministic)
-            (_, _), (right_action, _) = self.adversaries[env_index].predict(obs, deterministic=deterministic)
+            (left_action, state), (right_action, _) = self.policy.predict(obs, deterministic=deterministic, network_keys=[env_index])
+            #(_, _), (right_action, _) = self.adversaries[env_index].predict(obs, deterministic=deterministic)
         return (left_action, state), (right_action, state)
