@@ -402,11 +402,12 @@ class SACheckpointCallback(CheckpointCallback):
     def _on_step(self) -> bool:
         #from FightLadder.main.common.algorithms import TSS_PPO
         if self.n_calls % self.save_freq == 0:
-            test_list = self.model.adversaries
+            #test_list = self.model.adversaries
             model_path = self._checkpoint_path(extension="zip")
-            for i in range(len(self.model.adversaries)):
-                self.model.adversaries[i].save(self.save_path + "/enemy_policy_%d_steps_%d.pt" % (self.n_calls,i))
-            self.model.adversaries = []
+            #for i in range(len(self.model.adversaries)):
+            #    self.model.adversaries[i].save(self.save_path + "/enemy_policy_%d_steps_%d.pt" % (self.n_calls,i))
+            #self.model.adversaries = []
+            #self.model.save(model_path)
             self.model.save(model_path)
             if self.verbose >= 2:
                 print(f"Saving model checkpoint to {model_path}")
@@ -417,7 +418,7 @@ class SACheckpointCallback(CheckpointCallback):
                 self.model.adversaries[i].rollout_buffer.n_envs = self.model.n_env_per_adv
                 self.model.env.num_envs = self.model.n_env_per_adv
             '''
-            self.model.adversaries = test_list
+            #self.model.adversaries = test_list
             if self.save_replay_buffer and hasattr(self.model, "replay_buffer") and self.model.replay_buffer is not None:
                 # If model has a replay buffer, save it too
                 replay_buffer_path = self._checkpoint_path("replay_buffer_", extension="pkl")

@@ -7,6 +7,9 @@ import numpy as np
 from PIL import Image
 import copy
 
+from torchvision.models.detection.generalized_rcnn import GeneralizedRCNN
+
+from FightLadder.main.common.justin.Generalist_SPAR import Generalist_SPAR
 from stable_baselines3.common.save_util import load_from_zip_file
 
 import wandb
@@ -217,7 +220,7 @@ def evaluate_sa(curr_state, args, model, exploiter_model, env_index, greedy=0, r
 
 
 def evaluate_single(curr_state, args, model, env_index, greedy=0, record=True):
-    assert isinstance(model, TSS_PPO) or isinstance(model, IPPO)
+    #assert isinstance(model, TSS_PPO) or isinstance(model, IPPO)
     # global STATE
     args.num_episodes = 50
     win_cnt = 0
@@ -241,7 +244,7 @@ def evaluate_single(curr_state, args, model, env_index, greedy=0, record=True):
             #action_other = exploit_action
 
 
-            obs, reward, reward_other, done, info = env.step(np.hstack([action, adv_action]))
+            obs, reward, reward_other, done, info = env.step(np.hstack([action, adv_action.to('cpu')]))
             if record:
                 video_log.append(Image.fromarray(env.render(mode="rgb_array")))
             # print(info)
@@ -292,7 +295,7 @@ def main(PLAYER):
     if use_mirror is True:
         OPPONENT_LIST = ["Sagat", "EHonda", "MBison"]
     else:
-        OPPONENT_LIST = [PLAYER]
+        OPPONENT_LIST = ["Sagat"]
     SIDE = "left"  # "right"
     player_folder_name = PLAYER + '_' + SIDE
     if REMOVAL is not None:
@@ -377,7 +380,7 @@ def main(PLAYER):
     # Set up the environment and model
     def env_generator():
         # STATE
-        each_env_count = 1
+        each_env_count = 4
         env = []
         for i in range(len(STATE)):
             for j in range(each_env_count):
@@ -555,7 +558,7 @@ def main(PLAYER):
     if args.left_model_file and args.right_model_file:
         print("load model from " + args.left_model_file + " and " + args.right_model_file)
         model.set_parameters_2p(args.left_model_file, args.right_model_file)
-
+    '''
     #model = IPPO.load("/home/jw4406/codebase/FightLadder/main/trained_models/single_ippo_Vega_Vega/ppo_Vega_18000000_steps.zip")
     model = TSS_PPO.load("/home/jw4406/codebase/FightLadder/main/trained_models/single_tss_Guile_Vega/ppo_Guile_45500000_steps.zip")
     model = TSS_PPO.load(
@@ -586,10 +589,39 @@ def main(PLAYER):
             update_left=bool(args.update_left),
             update_right=bool(args.update_right),
         )
-    model.warmstarted_cont_MAGICS=True
-    model.warmstart_setup(model.lr_schedule)
+    '''
+    data, params, pytorch_variables = load_from_zip_file(
+        "/home/jw4406/codebase/FightLadder/main/trained_models/sa_cont_league_question_Guile/ppo_Guile_236000_steps.zip")
+    #model = Generalist_SPAR.load("/home/jw4406/codebase/FightLadder/main/trained_models/sa_cont_league_question_Guile/ppo_Guile_236000_steps.zip", env=env_generator())
+    model = Generalist_SPAR("AACCnnPolicy",
+            env_generator(),
+            device="cuda",
+            verbose=2,
+            n_steps=768,  # 1408,
+            batch_size=1536,  # 2816,  # 512,
+            n_epochs=10,
+            gamma=0.94,
+            v_learning_rate=5e-3, c_learning_rate=1e-4,
+            d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            c_learning_rate_decay=critic_decay_schedule(1e-4),
+            d_learning_rate_decay=critic_decay_schedule(5e-4),
+            clip_range=clip_range_schedule,
+            tensorboard_log=args.log_dir,
+            seed=args.seed,
+            ent_coef=0,
+            dstb_ent_coef=0,
+            I_AM_LEFT=True,
+            I_AM_RIGHT=False,
+            num_adversary=1,
+            n_global_env=args.num_env,
+            n_env_per_adv=args.num_env // 1,
+            opp_list=OPPONENT_LIST,
+            use_mirror=False
+        )
+    #model.warmstarted_cont_MAGICS=True
+    #model.warmstart_setup(model.lr_schedule)
     model.set_parameters(params, exact_match=False, device=model.device)
-    state_list = ['two_player/Guile_left/Champion.Level1.GuileVsGuile.2Player.state']
+    state_list = ['two_player/Guile_left/Champion.Level1.GuileVsSagat.2Player.state']
     if not EVAL:
         if args.async_update:
             model.async_learn(
