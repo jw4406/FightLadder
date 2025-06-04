@@ -124,7 +124,7 @@ class Single_SPAR(OnPolicyAlgorithm):
             gae_lambda: float = 0.95,
             clip_range: Union[float, Schedule] = 0.2,
             clip_range_vf: Union[None, float, Schedule] = None,
-            normalize_advantage: bool = True,
+            normalize_advantage: bool = False,
             ent_coef: float = 0.0,
             dstb_ent_coef: float = 0.0,
             vf_coef: float = 0.5,
