@@ -1564,8 +1564,8 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         num_env_per_adv = latent_vf.shape[0] // num_adversaries
         values = th.zeros((latent_vf.shape[0],), device=self.device)
         for i in range(num_adversaries):
-            non_chunked = self.value_net[network_keys[i]](latent_vf)
-            values[i * num_env_per_adv : (i+1)*num_env_per_adv] = non_chunked[i * num_env_per_adv : (i+1)*num_env_per_adv, 0]
+            values[i * num_env_per_adv : (i+1)*num_env_per_adv] = self.value_net[network_keys[i]](latent_vf[i * num_env_per_adv: (i + 1) * num_env_per_adv, :])[:, 0]
+            #values[i * num_env_per_adv : (i+1)*num_env_per_adv] = non_chunked[i * num_env_per_adv : (i+1)*num_env_per_adv, 0]
         #values = self.value_net(latent_vf)
         ctrl_distribution, dstb_distribution = self._get_action_dist_from_latent(latent_pi, latent_pi_dstb, network_keys=network_keys)
         ctrl_actions = ctrl_distribution.get_actions(deterministic=deterministic)
@@ -1620,7 +1620,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         dstb_mean_actions = th.zeros_like(mean_actions)
         num_env_per_adv = mean_actions.shape[0] // num_adversaries
         for i in range(num_adversaries):
-            dstb_mean_actions[i * num_env_per_adv : (i+1) * num_env_per_adv, :] = self.dstb_action_net[network_keys[i]](latent_pi_dstb)[i * num_env_per_adv : (i+1) * num_env_per_adv, :]
+            dstb_mean_actions[i * num_env_per_adv : (i+1) * num_env_per_adv, :] = self.dstb_action_net[network_keys[i]](latent_pi_dstb[i * num_env_per_adv : (i+1) * num_env_per_adv, :])
         if isinstance(self.action_dist, DiagGaussianDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std)
         elif isinstance(self.action_dist, CategoricalDistribution):
@@ -1709,7 +1709,8 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         ctrl_distribution, dstb_distribution = self._get_action_dist_from_latent_nonuniform(latent_pi, latent_pi_dstb, shuffle_keys=shuffle_keys, network_keys=network_keys)
         ctrl_log_prob = ctrl_distribution.log_prob(actions)
         #dstb_log_prob = th.zeros_like(ctrl_log_prob)
-        num_global_env = np.max(shuffle_keys) + 1
+        #num_global_env = np.max(shuffle_keys) + 1 #TODO HACKY
+        num_global_env = self.num_global_env
         num_env_per_adv = num_global_env // num_adversaries
         full = [i for i in range(num_global_env)]
         concated_adv_log_probs = th.zeros_like(ctrl_log_prob)
@@ -1772,9 +1773,9 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         num_env_per_adv = latent_vf.shape[0] // self.num_adversaries
         values = th.zeros((latent_vf.shape[0],), device=self.device)
         for i in range(self.num_adversaries):
-            non_chunked = self.value_net[i](latent_vf)
-            values[i * num_env_per_adv: (i + 1) * num_env_per_adv] = non_chunked[
-                                                                     i * num_env_per_adv: (i + 1) * num_env_per_adv, 0]
+            values[i * num_env_per_adv: (i + 1) * num_env_per_adv] = self.value_net[i](latent_vf[i * num_env_per_adv: (i + 1) * num_env_per_adv, :])[:, 0]
+            #values[i * num_env_per_adv: (i + 1) * num_env_per_adv] = non_chunked[
+            #                                                         i * num_env_per_adv: (i + 1) * num_env_per_adv, 0]
 
         return values
 

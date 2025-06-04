@@ -326,7 +326,7 @@ def main(PLAYER):
         OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
-        #OPPONENT_LIST = ["Sagat"]
+        OPPONENT_LIST = ["Sagat"]
     SIDE = "left"  # "right"
     player_folder_name = PLAYER + '_' + SIDE
     if REMOVAL is not None:
@@ -364,7 +364,7 @@ def main(PLAYER):
                         help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
     parser.add_argument('--save-dir', help='The directory to save the trained models',
-                        default="trained_models/smaller_lr_%s" % PLAYER)
+                        default="trained_models/single_test_%s_%s" % (PLAYER, OPPONENT_LIST[0]))
 
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
     parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_%s" % PLAYER)
@@ -433,7 +433,7 @@ def main(PLAYER):
         return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
 
-    checkpoint_interval = 1000  # checkpoint_interval * num_envs = total_steps_per_checkpoint
+    checkpoint_interval = 10000  # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
                                  other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
@@ -445,8 +445,8 @@ def main(PLAYER):
             finetune_env,
             device="cuda",
             verbose=1,
-            n_steps=768,
-            batch_size=1536,  # 512,
+            n_steps=192,
+            batch_size=384,  # 512,
             n_epochs=5,
             gamma=0.94,
             learning_rate=lr_schedule,
@@ -496,10 +496,10 @@ def main(PLAYER):
             verbose=2,
             n_steps=768,  # 1408,
             batch_size=1536,  # 2816,  # 512,
-            n_epochs=50,
+            n_epochs=25,
             gamma=0.94,
-            v_learning_rate=5e-4, c_learning_rate=1e-5,
-            d_learning_rate=5e-5, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            v_learning_rate=5e-5, c_learning_rate=1e-6,
+            d_learning_rate=5e-6, v_learning_rate_decay=critic_decay_schedule(1e-3),
             c_learning_rate_decay=critic_decay_schedule(1e-4),
             d_learning_rate_decay=critic_decay_schedule(5e-4),
             clip_range=clip_range_schedule,
