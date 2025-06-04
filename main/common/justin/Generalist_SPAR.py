@@ -71,7 +71,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             ent_coef: float = 0.0,
             dstb_ent_coef: float = 0.0,
             vf_coef: float = 0.5,
-            max_grad_norm: float = 0.5,
+            max_grad_norm: float = 0.1,
             use_sde: bool = False,
             sde_sample_freq: int = -1,
             target_kl: Optional[float] = None,
@@ -116,6 +116,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             seed=seed,
             _init_setup_model=False,
             batch_size=batch_size,
+            normalize_advantage=normalize_advantage,
             warmstarted_cont_MAGICS=warmstarted_cont_MAGICS
         )
         self.update_left = I_AM_LEFT
@@ -287,6 +288,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             adversary_log_probs = s_dstb_log_probs
             actions = actions.cpu().numpy()
             adversary_actions = adversary_actions.cpu().numpy()
+            all_adv_critic_values = s_values
 
             if self.use_mirror is True:
                 mirror_master_copy_actions = deepcopy(actions)
@@ -341,6 +343,8 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                 clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
             new_obs, rewards, rew_other, dones, infos = env.step(clipped_actions)
+            if np.any(rewards > 0):
+                print("ooo")
             # assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
             self.num_timesteps += env.num_envs
             wandb.log({"epochs": self.num_timesteps})
@@ -642,7 +646,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                         L_ctrl_hessian = L_ctrl_hessian + 10
                     else:
                         L_ctrl_hessian = self.matrix_unbatch(grad_batched, n)
-                        L_ctrl_hessian.diag().add_(10)
+                        #L_ctrl_hessian.diag().add_(10)
                     d2f1_ctrl_batched = autograd.grad(ctrl_policy_loss, all_adv_val_params,
                                                       create_graph=True, retain_graph=True)
                     # d2f1_dstb_batched = autograd.grad(dstb_policy_loss,
@@ -715,7 +719,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
 
                 entropy_losses.append(ctrl_entropy_loss.item())
 
-                loss = ctrl_policy_loss# + self.ent_coef * ctrl_entropy_loss + self.vf_coef * value_loss# + dstb_policy_loss
+                loss = ctrl_policy_loss# + self.vf_coef * value_loss# + self.ent_coef * ctrl_entropy_loss + self.vf_coef * value_loss# + dstb_policy_loss
 
                 # Calculate approximate form of reverse KL Divergence for early stopping
                 # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
@@ -748,7 +752,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.policy.ctrl_optimizer.step()
                 #self.policy.dstb_optimizer.step()
-                self.policy.value_optimizer.step()
+                #self.policy.value_optimizer.step()
                 if self.warmstarted_cont_MAGICS is True:
                     advantage_test = []
                     #vf = torch.zeros_like(buf.values[-1])
@@ -811,18 +815,18 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
         explained_var = explained_variance(self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten())
 
         # Logs
-        self.logger.record(f"train/entropy_loss", np.mean(entropy_losses))
-        self.logger.record(f"train/policy_gradient_loss", np.mean(pg_losses))
-        self.logger.record(f"train/value_loss", np.mean(value_losses))
-        self.logger.record(f"train/approx_kl", np.mean(approx_kl_divs))
-        self.logger.record(f"train/clip_fraction", np.mean(clip_fractions))
-        self.logger.record(f"train/loss", loss.item())
-        self.logger.record(f"train/explained_variance", explained_var)
+        self.logger.record(f"train/ego_entropy_loss", np.mean(entropy_losses))
+        self.logger.record(f"train/ego_policy_gradient_loss", np.mean(pg_losses))
+        self.logger.record(f"train/ego_value_loss", np.mean(value_losses))
+        self.logger.record(f"train/ego_approx_kl", np.mean(approx_kl_divs))
+        self.logger.record(f"train/ego_clip_fraction", np.mean(clip_fractions))
+        self.logger.record(f"train/ego_loss", loss.item())
+        self.logger.record(f"train/ego_explained_variance", explained_var)
         if hasattr(self.policy, "log_std"):
             self.logger.record(f"train/std", th.exp(self.policy.log_std).mean().item())
 
-        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
-        self.logger.record("train/clip_range", clip_range)
+        self.logger.record("train/ego_n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record("train/ego_clip_range", clip_range)
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
 
@@ -961,8 +965,8 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                     dstb_policy_loss = th.min(dstb_policy_loss_1, dstb_policy_loss_2).mean()
 
                     # Logging
-                    pg_losses.append(ctrl_policy_loss.item())
-                    clip_fraction = th.mean((th.abs(ctrl_ratio - 1) > clip_range).float()).item()
+                    pg_losses.append(dstb_policy_loss.item())
+                    clip_fraction = th.mean((th.abs(dstb_ratio - 1) > clip_range).float()).item()
                     clip_fractions.append(clip_fraction)
 
                     if self.clip_range_vf is None:
@@ -1082,9 +1086,9 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                         ctrl_entropy_loss = -th.mean(ctrl_entropy)
                         dstb_entropy_loss = -th.mean(dstb_entropy)
 
-                    entropy_losses.append(ctrl_entropy_loss.item())
+                    entropy_losses.append(dstb_entropy_loss.item())
 
-                    loss = self.vf_coef * value_loss - dstb_policy_loss
+                    loss = self.vf_coef * value_loss - dstb_policy_loss# + 1e-6 * dstb_entropy_loss
 
                     # Calculate approximate form of reverse KL Divergence for early stopping
                     # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
@@ -1095,7 +1099,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                         ctrl_approx_kl_div = th.mean((th.exp(ctrl_log_ratio) - 1) - ctrl_log_ratio).cpu().numpy()
                         dstb_log_ratio = dstb_log_prob - torch.from_numpy(rollout_data.old_dstb_log_prob).to(self.device)
                         dstb_approx_kl_div = th.mean((th.exp(dstb_log_ratio) - 1) - dstb_log_ratio).cpu().numpy()
-                        approx_kl_divs.append(ctrl_approx_kl_div)
+                        approx_kl_divs.append(dstb_approx_kl_div)
 
                     if self.target_kl is not None and torch.max(ctrl_approx_kl_div,
                                                                 dstb_approx_kl_div) > 1.5 * self.target_kl:
@@ -1175,23 +1179,23 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                     if not continue_training:
                         break
 
-        self._n_updates += self.n_epochs
+        #self._n_updates += self.n_epochs
         explained_var = explained_variance(self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten())
         self.rollout_buffer = ego_buffer
 
         # Logs
-        self.logger.record(f"train/entropy_loss", np.mean(entropy_losses))
-        self.logger.record(f"train/policy_gradient_loss", np.mean(pg_losses))
-        self.logger.record(f"train/value_loss", np.mean(value_losses))
-        self.logger.record(f"train/approx_kl", np.mean(approx_kl_divs))
-        self.logger.record(f"train/clip_fraction", np.mean(clip_fractions))
-        self.logger.record(f"train/loss", loss.item())
-        self.logger.record(f"train/explained_variance", explained_var)
+        self.logger.record(f"train/adv_entropy_loss", np.mean(entropy_losses))
+        self.logger.record(f"train/adv_policy_gradient_loss", np.mean(pg_losses))
+        self.logger.record(f"train/adv_value_loss", np.mean(value_losses))
+        self.logger.record(f"train/adv_approx_kl", np.mean(approx_kl_divs))
+        self.logger.record(f"train/adv_clip_fraction", np.mean(clip_fractions))
+        self.logger.record(f"train/adv_loss", loss.item())
+        self.logger.record(f"train/adv_explained_variance", explained_var)
         if hasattr(self.policy, "log_std"):
             self.logger.record(f"train/std", th.exp(self.policy.log_std).mean().item())
 
-        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
-        self.logger.record("train/clip_range", clip_range)
+        self.logger.record("train/adv_n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record("train/adv_clip_range", clip_range)
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
 
