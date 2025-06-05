@@ -413,9 +413,9 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                         self._last_obs[chunk],
                         actions[chunk],
                         adversary_actions[chunk],
-                        rew_other[chunk],
+                        -rewards[chunk],
                         self._last_episode_starts[chunk],
-                        all_adv_critic_values[chunk],
+                        -all_adv_critic_values[chunk],
                         log_probs[chunk],
                         adversary_log_probs[chunk]  # not done
                     )
@@ -435,7 +435,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
 
         for i in range(self.num_adversaries):  # is this a bug?
             chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
-            self.adversary_buffers[i].compute_returns_and_advantage(last_values=values[chunk],
+            self.adversary_buffers[i].compute_returns_and_advantage(last_values=-values[chunk],
                                                                              dones=dones[chunk])
 
         callback.on_rollout_end()
@@ -961,7 +961,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                     policy_loss_2 = advantages * th.clamp(ctrl_ratio, 1 - clip_range, 1 + clip_range)
                     dstb_policy_loss_1 = advantages * dstb_ratio
                     dstb_policy_loss_2 = advantages * th.clamp(dstb_ratio, 1 - clip_range, 1 + clip_range)
-                    ctrl_policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
+                    #ctrl_policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
                     dstb_policy_loss = th.min(dstb_policy_loss_1, dstb_policy_loss_2).mean()
 
                     # Logging
@@ -979,7 +979,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                             values - rollout_data.old_values, -clip_range_vf, clip_range_vf
                         )
                     # Value loss using the TD(gae_lambda) target
-                    value_loss = F.mse_loss(torch.Tensor(rollout_data.returns).to(self.device), values_pred)
+                    value_loss = F.mse_loss(torch.Tensor(-rollout_data.returns).to(self.device), values_pred)
                     value_losses.append(value_loss.item())
                     all_adv_val_params = list(self.policy.value_net[k].parameters())
                     this_dstb_params = list(itertools.chain(list(self.policy.mlp_extractor.dstb_net.parameters()), self.policy.dstb_action_net[k].parameters()))
@@ -1088,7 +1088,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
 
                     entropy_losses.append(dstb_entropy_loss.item())
 
-                    loss = self.vf_coef * value_loss - dstb_policy_loss# + 1e-6 * dstb_entropy_loss
+                    loss = self.vf_coef * value_loss + dstb_policy_loss# + 1e-6 * dstb_entropy_loss
 
                     # Calculate approximate form of reverse KL Divergence for early stopping
                     # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
