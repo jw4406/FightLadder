@@ -326,7 +326,7 @@ def main(PLAYER):
         OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
-        OPPONENT_LIST = ["Sagat"]
+        OPPONENT_LIST = ["Guile"]
     SIDE = "left"  # "right"
     player_folder_name = PLAYER + '_' + SIDE
     if REMOVAL is not None:
