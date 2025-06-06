@@ -364,7 +364,7 @@ def main(PLAYER):
                         help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
     parser.add_argument('--save-dir', help='The directory to save the trained models',
-                        default="trained_models/single_test_%s_%s" % (PLAYER, OPPONENT_LIST[0]))
+                        default="trained_models/single_test_entropy_%s_%s" % (PLAYER, OPPONENT_LIST[0]))
 
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
     parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_%s" % PLAYER)
@@ -499,14 +499,14 @@ def main(PLAYER):
             n_epochs=25,
             gamma=0.99,
             v_learning_rate=5e-5, c_learning_rate=1e-6,
-            d_learning_rate=5e-6, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            d_learning_rate=1e-5, v_learning_rate_decay=critic_decay_schedule(1e-3),
             c_learning_rate_decay=critic_decay_schedule(1e-4),
             d_learning_rate_decay=critic_decay_schedule(5e-4),
             clip_range=clip_range_schedule,
             tensorboard_log=args.log_dir,
             seed=args.seed,
-            ent_coef=0,
-            dstb_ent_coef=0,
+            ent_coef=1e-7,
+            dstb_ent_coef=1e-5,
             I_AM_LEFT=True,
             I_AM_RIGHT=False,
             num_adversary=num_adversary,
