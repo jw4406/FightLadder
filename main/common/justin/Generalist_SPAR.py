@@ -71,7 +71,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             ent_coef: float = 0.0,
             dstb_ent_coef: float = 0.0,
             vf_coef: float = 0.5,
-            max_grad_norm: float = 0.1,
+            max_grad_norm: float = 0.5,
             use_sde: bool = False,
             sde_sample_freq: int = -1,
             target_kl: Optional[float] = None,
@@ -719,7 +719,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
 
                 entropy_losses.append(ctrl_entropy_loss.item())
 
-                loss = ctrl_policy_loss# + self.vf_coef * value_loss# + self.ent_coef * ctrl_entropy_loss + self.vf_coef * value_loss# + dstb_policy_loss
+                loss = ctrl_policy_loss - self.ent_coef * ctrl_entropy_loss # + self.vf_coef * value_loss# + self.ent_coef * ctrl_entropy_loss + self.vf_coef * value_loss# + dstb_policy_loss
 
                 # Calculate approximate form of reverse KL Divergence for early stopping
                 # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
@@ -874,7 +874,8 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                     #        torch.Tensor(buf.observations[i][adversary_id == j]).to(self.device))
                         # _, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
                     #    buf.values[i][adversary_id == j] = values.squeeze()
-                    _, _, buf.values[i], _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device), network_keys=[k])
+                    _, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device), network_keys=[k])
+                    buf.values[i] = -values
                 # _, _, last_values, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
                 buf.compute_returns_and_advantage_pt(buf.values[i], torch.Tensor(buf.dones[-1]).to(self.device))
                 rollout_advantages_copy = deepcopy(self.rollout_buffer.advantages)
@@ -1088,7 +1089,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
 
                     entropy_losses.append(dstb_entropy_loss.item())
 
-                    loss = self.vf_coef * value_loss + dstb_policy_loss# + 1e-6 * dstb_entropy_loss
+                    loss = self.vf_coef * value_loss + dstb_policy_loss - self.dstb_ent_coef * dstb_entropy_loss
 
                     # Calculate approximate form of reverse KL Divergence for early stopping
                     # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
@@ -1132,7 +1133,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                         #    vf[adversary_id == j] = values.squeeze()
 
                         _, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device), network_keys=[k])
-                        last_values = vf.flatten()
+                        last_values = -vf.flatten()
                         last_gae_lam = th.zeros_like(last_values)
                         dones = torch.Tensor(buf.dones[-1]).to(self.device)
                         for step in reversed(range(buf.buffer_size)):
@@ -1151,6 +1152,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                                 #    next_values[adversary_id == j] = temp_values.flatten()
                                 _, _, next_values, _, _ = self.policy(
                                     torch.Tensor(buf.observations[step + 1]).to(self.device), network_keys=[k])
+                            next_values = -next_values
                             #value_query = torch.zeros_like(buf.values[-1])
                             # _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
                             adversary_id = buf.env_indices[step] // self.n_env_per_adv
@@ -1159,7 +1161,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                             #        torch.Tensor(buf.observations[step][adversary_id == j]).to(self.device))
                             #    value_query[adversary_id == j] = temp_values.squeeze()
                             _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device), network_keys=[k])
-
+                            value_query = -value_query
                             delta = buf.rewards[step] + buf.gamma * next_values * next_non_terminal - value_query.squeeze()
                             last_gae_lam = delta + buf.gamma * buf.gae_lambda * next_non_terminal * last_gae_lam
                             advantage_test.append(last_gae_lam)
