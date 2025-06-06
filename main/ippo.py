@@ -497,7 +497,7 @@ def main(PLAYER):
             n_steps=768,  # 1408,
             batch_size=1536,  # 2816,  # 512,
             n_epochs=25,
-            gamma=0.94,
+            gamma=0.99,
             v_learning_rate=5e-5, c_learning_rate=1e-6,
             d_learning_rate=5e-6, v_learning_rate_decay=critic_decay_schedule(1e-3),
             c_learning_rate_decay=critic_decay_schedule(1e-4),
