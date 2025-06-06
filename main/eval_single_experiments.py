@@ -244,7 +244,7 @@ def evaluate_single(curr_state, args, model, env_index, greedy=0, record=True):
             #action_other = exploit_action
 
 
-            obs, reward, reward_other, done, info = env.step(np.hstack([action, adv_action.to('cpu')]))
+            obs, reward, reward_other, done, info = env.step(np.hstack([action, adv_action]))
             if record:
                 video_log.append(Image.fromarray(env.render(mode="rgb_array")))
             # print(info)
@@ -295,7 +295,7 @@ def main(PLAYER):
     if use_mirror is True:
         OPPONENT_LIST = ["Sagat", "EHonda", "MBison"]
     else:
-        OPPONENT_LIST = ["Sagat"]
+        OPPONENT_LIST = ["Guile"]
     SIDE = "left"  # "right"
     player_folder_name = PLAYER + '_' + SIDE
     if REMOVAL is not None:
@@ -591,7 +591,7 @@ def main(PLAYER):
         )
     '''
     data, params, pytorch_variables = load_from_zip_file(
-        "/home/jw4406/codebase/FightLadder/main/trained_models/single_test_Guile_Sagat/ppo_Guile_1080000_steps.zip")
+        "/home/jw4406/codebase/FightLadder/main/trained_models/single_test_Guile_Guile/ppo_Guile_3640000_steps.zip")
     #model = Generalist_SPAR.load("/home/jw4406/codebase/FightLadder/main/trained_models/sa_cont_league_question_Guile/ppo_Guile_236000_steps.zip", env=env_generator())
     model = Generalist_SPAR("AACCnnPolicy",
             env_generator(),
@@ -624,7 +624,7 @@ def main(PLAYER):
     del params['policy.value_optimizer']
     del params['policy.dstb_optimizer']
     model.set_parameters(params, exact_match=False, device=model.device)
-    state_list = ['two_player/Guile_left/Champion.Level1.GuileVsSagat.2Player.state']
+    state_list = ['two_player/Guile_left/Champion.Level1.GuileVsGuile.2Player.state']
     if not EVAL:
         if args.async_update:
             model.async_learn(

@@ -1820,8 +1820,8 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             actions, dstb_actions = self._predict(obs_tensor, deterministic=deterministic, network_keys=network_keys)
         # Convert to numpy, and reshape to the original action shape
         actions = actions.cpu().numpy().reshape((-1, *self.action_space.shape))  # type: ignore[misc]
-        dstb_actions = [dstb_actions[i].reshape((-1, *self.dstb_action_space.shape)) for i in range(len(network_keys))]
-        dstb_actions = th.vstack(dstb_actions)
+        dstb_actions = [dstb_actions[i].cpu().numpy().reshape((-1, *self.dstb_action_space.shape)) for i in range(len(network_keys))]
+        dstb_actions = np.vstack(dstb_actions)
         if isinstance(self.action_space, spaces.Box):
             if self.squash_output:
                 # Rescale to proper domain when using squashing
