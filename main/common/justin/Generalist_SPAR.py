@@ -460,7 +460,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
         #    self.adversaries[i].train_one_adversary(self.policy, ma_left=self.update_left, ma_right=self.update_right),
         # adversaries
         # test(self)
-        '''for i in range(self.num_adversaries):
+        '''for i in range(self.num_adversaries):    
             self.adversaries[i].train_one_adversary(self.policy, ma_left=self.update_left, ma_right=self.update_right)'''
 
         return
