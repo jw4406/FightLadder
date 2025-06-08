@@ -8,7 +8,7 @@ import wandb
 from common.justin.Generalist_SPAR import Generalist_SPAR
 from common.const import *
 from common.retro_wrappers import SFWrapper, Monitor2P
-from common.algorithms import Exploiter
+from FightLadder.main.common.algorithms import Exploiter
 from common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P
 from stable_baselines3.common.callbacks import CheckpointCallback, ExploiterCheckpointCallback
 from stable_baselines3.common.save_util import load_from_zip_file

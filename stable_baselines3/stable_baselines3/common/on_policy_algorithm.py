@@ -13,6 +13,8 @@ from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean
 from stable_baselines3.common.vec_env import VecEnv
+#from FightLadder.main.common.justin.Generalist_SPAR import Generalist_SPAR
+#from FightLadder.main.common.algorithms import Exploiter
 
 SelfOnPolicyAlgorithm = TypeVar("SelfOnPolicyAlgorithm", bound="OnPolicyAlgorithm")
 
@@ -246,7 +248,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         progress_bar: bool = False,
     ) -> SelfOnPolicyAlgorithm:
         iteration = 0
-
+        from FightLadder.main.common.algorithms import Exploiter
         total_timesteps, callback = self._setup_learn(
             total_timesteps,
             callback,
@@ -264,9 +266,10 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         while self.num_timesteps < total_timesteps:
 
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
-            if len(rews) > 2000:
-                if (max(rews[-window:]) - min(rews[-window:])) <= tolerance * 2:
-                    continue_training = False
+            if isinstance(self, Exploiter):
+                if len(rews) > 2000:
+                    if (max(rews[-window:]) - min(rews[-window:])) <= tolerance * 2:
+                        continue_training = False
             if continue_training is False:
                 break
 
