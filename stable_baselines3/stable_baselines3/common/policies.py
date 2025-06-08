@@ -852,7 +852,7 @@ class ActorActorCriticPolicy(BasePolicy):
         # Default network architecture, from stable-baselines
         if net_arch is None:
             if features_extractor_class == NatureCNN:
-                net_arch = dict(pi=[16,16], vf=[64,64])
+                net_arch = dict(pi=[256,256], vf=[256,256])
             else:
 
                 net_arch = dict(pi=[16,16], vf=[64,64])

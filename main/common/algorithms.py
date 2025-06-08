@@ -4893,7 +4893,8 @@ class Exploiter(PPO):
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 actions, values, log_probs, = self.policy(obs_tensor)
-                EXPLOITED_ACTIONS, _, _, _, _ = self.exploited.policy(obs_tensor)
+                ego_id = self.exploited.opp_list.index(self.exploited.player)
+                EXPLOITED_ACTIONS, _, _, _, _ = self.exploited.policy(obs_tensor, network_keys=[ego_id])
             actions = actions.cpu().numpy()
             EXPLOITED_ACTIONS = EXPLOITED_ACTIONS.cpu().numpy()
             #dstb_actions = dstb_actions.cpu().numpy()
