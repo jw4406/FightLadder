@@ -89,6 +89,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             n_env_per_adv=None,
             warmstarted_cont_MAGICS=False,
             opp_list=None,
+            player=None,
             use_mirror=False
     ):
         assert I_AM_LEFT != I_AM_RIGHT
@@ -124,6 +125,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
         self.dstb_action_space = dstb_action_space
         self.update_right = I_AM_RIGHT
         self.n_epochs = n_epochs
+        self.player=player
         # self.learning_rate = [v_learning_rate, c_learning_rate, d_learning_rate]
         # self.learning_rate_decay_phase = [v_learning_rate_decay, c_learning_rate_decay, d_learning_rate_decay]
         # Sanity check, otherwise it will lead to noisy gradient and NaN
@@ -204,6 +206,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
         # self._setup_learn(self._total_timesteps)
         self.vf_coef = 1
         self.use_mirror = use_mirror
+        self.opp_list=opp_list
 
     def _setup_model(self) -> None:
         super()._setup_model()
@@ -1116,7 +1119,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                     loss.backward()
                     if self.warmstarted_cont_MAGICS is True:
                         for i in range(len(this_dstb_params)):
-                            this_dstb_params[i].grad = this_dstb_params[i].grad + dstb_imp[i]
+                            this_dstb_params[i].grad = this_dstb_params[i].grad - dstb_imp[i]
                     # Clip grad norm
                     th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                     #self.policy.ctrl_optimizer.step()
