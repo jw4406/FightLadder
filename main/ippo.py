@@ -8,7 +8,7 @@ from PIL import Image
 import copy
 
 import retro
-from stable_baselines3.common.callbacks import CheckpointCallback, SACheckpointCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, SACheckpointCallback, FileQueueTriggerCallback
 from stable_baselines3.common.buffers import AdvRolloutBuffer
 from stable_baselines3.common.utils import get_schedule_fn
 from torch.backends.cudnn import deterministic
@@ -22,11 +22,15 @@ from common.justin.Generalist_SPAR import Generalist_SPAR
 from stable_baselines3 import MAGICS_AL
 from common.retro_wrappers import SFWrapper, Monitor2P
 import wandb
-PRETRAIN = True
+PRETRAIN = False
 
-FINETUNE = False
+FINETUNE = True
 EVAL = False
-
+SAVE_FREQ = 10_000  # Save a checkpoint every 10,000 steps
+TOTAL_TIMESTEPS = 100_000
+CHECKPOINT_DIR = "./main_checkpoints"
+TASK_DIR = "./trained_models/tasks"
+MODEL_NAME = "streetfighter_v1"
 
 if EVAL is False:
     assert PRETRAIN != FINETUNE
@@ -364,7 +368,7 @@ def main(PLAYER):
                         help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument('--model-file', help='The model to continue to learn from')
     parser.add_argument('--save-dir', help='The directory to save the trained models',
-                        default="trained_models/single_test_entropy_%s_%s" % (PLAYER, OPPONENT_LIST[0]))
+                        default="trained_models/single_test_large_%s_%s" % (PLAYER, OPPONENT_LIST[0]))
 
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
     parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_%s" % PLAYER)
@@ -496,23 +500,24 @@ def main(PLAYER):
             verbose=2,
             n_steps=768,  # 1408,
             batch_size=1536,  # 2816,  # 512,
-            n_epochs=25,
+            n_epochs=5,
             gamma=0.99,
             v_learning_rate=5e-5, c_learning_rate=1e-6,
-            d_learning_rate=1e-5, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            d_learning_rate=2e-6, v_learning_rate_decay=critic_decay_schedule(1e-3),
             c_learning_rate_decay=critic_decay_schedule(1e-4),
             d_learning_rate_decay=critic_decay_schedule(5e-4),
             clip_range=clip_range_schedule,
             tensorboard_log=args.log_dir,
             seed=args.seed,
-            ent_coef=1e-7,
-            dstb_ent_coef=1e-5,
+            ent_coef=.01,
+            dstb_ent_coef=.01,
             I_AM_LEFT=True,
             I_AM_RIGHT=False,
             num_adversary=num_adversary,
             n_global_env=args.num_env,
             n_env_per_adv=args.num_env // num_adversary,
             opp_list=OPPONENT_LIST,
+            player=PLAYER,
             use_mirror=False
         )
 
@@ -578,73 +583,19 @@ def main(PLAYER):
     if args.left_model_file and args.right_model_file:
         print("load model from " + args.left_model_file + " and " + args.right_model_file)
         model.set_parameters_2p(args.left_model_file, args.right_model_file)
-    """
-    #model.save(os.path.join(args.save_dir, args.model_name_prefix + f"_0_steps"))
-    tss = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/ppo_ryu_final_steps.zip', env=env_generator())
-    #tss = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/tss_baseline/ppo_ryu_final_steps.zip', env=env_generator())
-    #results = evaluate(args, tss, record=True)
-    n_envs = 2
-    tss.n_epochs = 2
-    buffer = tss.warmstart_buffer_setup(256, n_envs, 64)
-    #n_envs = 1
-    args.num_env = n_envs
-    env = env_generator()
-    tss.env = env
-    tss.rollout_buffer = buffer
-    tss.warmstarted_cont_MAGICS = True
-    tss.dstb_ent_coef = 0
-    tss.ent_coef = 0
-    c_learning_rate = 1e-5
-    tau_d_v = 5
-    tau_c_d = 2
-    tss.warmstart_setup([const_schedule(c_learning_rate * tau_c_d * tau_d_v), const_schedule(c_learning_rate),
-                         const_schedule(c_learning_rate * tau_c_d)])
-    #tss.warmstart_buffer_setup()
-    model = tss
-    model.v_learning_rate = const_schedule(c_learning_rate * tau_c_d * tau_d_v)
-    model.c_learning_rate = const_schedule(c_learning_rate)
-    model.d_learning_rate = const_schedule(c_learning_rate * tau_c_d)
-    model.lr_schedule = [const_schedule(c_learning_rate * tau_c_d * tau_d_v), const_schedule(c_learning_rate),
-                         const_schedule(c_learning_rate * tau_c_d)]
-    model.v_learning_rate_decay = critic_decay_schedule(c_learning_rate * tau_c_d * tau_d_v)
-    model.c_learning_rate_decay = actor_decay_schedule(c_learning_rate)
-    model.d_learning_rate_decay = actor_decay_schedule(c_learning_rate * tau_c_d)
-    model.lr_schedule_decay = [critic_decay_schedule(c_learning_rate * tau_c_d * tau_d_v),
-                               actor_decay_schedule(c_learning_rate),
-                               actor_decay_schedule(c_learning_rate * tau_c_d)]
-    """
-    '''
-
-
-
-    #rarl = RARL_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/rarl_test1/ppo_ryu_final_steps.zip', env=env_generator())
-    ippo = IPPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/ippo_test1_comp/ppo_ryu_8000000_steps.zip', env=env_generator())
-    args.video_dir = 'videos/tss_ippo_match'
-    tss_rarl_results = evaluate_cross(args, tss, ippo, record=True)
-    print(tss_rarl_results)
-    args.video_dir = 'videos/ippo_tss_match'
-    rarl_tss_results = evaluate_cross(args, ippo, tss, record=True)
-    print(rarl_tss_results)
-    #assert True == False
-    args.video_dir = 'videos/tss_tss_match'
-    tss_results = evaluate(args, tss, record=True)
-    args.video_dir = 'videos/rarl_rarl_match'
-    rarl_results = evaluate(args, ippo, record=True)
-    print(results)
-
-    '''
-
-    # ippo = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/tss_entropy/ppo_ryu_final_steps.zip', env=env_generator())
-    # args.video_dir = 'videos/tss_ppo_entropy_vid_dir'
-    # results = evaluate(args, ippo, record=True)
-    # assert False
-    '''
-    '''
 
     checkpoint_callback = SACheckpointCallback(save_freq=checkpoint_interval, save_path=args.save_dir,
                                                name_prefix=f"{args.model_name_prefix}") if hasattr(model,
                                                                                                    "num_adversaries") else CheckpointCallback(
         save_freq=checkpoint_interval, save_path=args.save_dir, name_prefix=f"{args.model_name_prefix}")
+
+    file_queue_callback = FileQueueTriggerCallback(
+        task_dir=TASK_DIR,
+        save_freq=SAVE_FREQ,
+        save_path=args.save_dir,
+        name_prefix=f"{args.model_name_prefix}"
+    )
+
     if (FINETUNE is True) or (EVAL is True):
         finetune_model = finetune_model_generator(args.model_file, lr_schedule=lr_schedule,
                                                   other_lr_schedule=other_lr_schedule,
@@ -660,9 +611,7 @@ def main(PLAYER):
         # finetune_model.warmstarted_cont_MAGICS = True
         # finetune_model.warmstart_setup(finetune_model.lr_schedule)
         data, params, pytorch_variables = load_from_zip_file(
-            "/home/jw4406/codebase/FightLadder/main/trained_models/ppo_%s_sa.zip" % (
-
-                PLAYER))
+            "/home/jw4406/codebase/FightLadder/main/trained_models/tasks/first_9mil/ppo_Guile_9880000_steps.task")
         '''
         data, params, pytorch_variables = load_from_zip_file(
 
@@ -693,6 +642,7 @@ def main(PLAYER):
         # for i in range(finetune_model.num_adversaries):
         #    if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
         #        finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
+        '''
         for i in range(finetune_model.num_adversaries):
             # data, params, pytorch_variables = load_from_zip_file(
             #    "/home/jw4406/codebase/FightLadder/main/trained_models/neuronic_ippo/enemy_policy_%d.pt" % i)
@@ -715,6 +665,7 @@ def main(PLAYER):
                 finetune_model.adversaries[i].warmstarted_cont_MAGICS = False
                 if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
                     finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
+        '''
         model = finetune_model
 
     if not EVAL:
@@ -735,7 +686,7 @@ def main(PLAYER):
                                "epochs": 0})
             model.learn(
                 total_timesteps=args.total_steps,
-                callback=[checkpoint_callback]
+                callback=[checkpoint_callback, file_queue_callback]
             )
         for i in range(len(model.adversaries)):
             model.adversaries[i].save("enemy_policy_%d.pt" % i)

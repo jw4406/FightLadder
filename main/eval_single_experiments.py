@@ -591,7 +591,7 @@ def main(PLAYER):
         )
     '''
     data, params, pytorch_variables = load_from_zip_file(
-        "/home/jw4406/codebase/FightLadder/main/trained_models/single_test_Guile_Guile/ppo_Guile_3640000_steps.zip")
+        "/home/jw4406/codebase/FightLadder/main/trained_models/tasks/first_9mil/ppo_Guile_9880000_steps.task")
     #model = Generalist_SPAR.load("/home/jw4406/codebase/FightLadder/main/trained_models/sa_cont_league_question_Guile/ppo_Guile_236000_steps.zip", env=env_generator())
     model = Generalist_SPAR("AACCnnPolicy",
             env_generator(),

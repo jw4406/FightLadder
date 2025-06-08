@@ -17,3 +17,5 @@ main/*.png
 main/ee.py
 main/wandb/*
 main/benchmark_models/*
+main/trained_models/tasks*
+main/*task

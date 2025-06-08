@@ -301,6 +301,39 @@ class CheckpointCallback(BaseCallback):
 
         return True
 
+class FileQueueTriggerCallback(CheckpointCallback):
+    """
+    A custom callback that creates a task file in a directory
+    after a new model checkpoint is saved.
+    """
+
+    def __init__(self, task_dir: str, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.task_dir_todo = os.path.join(task_dir, "todo")
+        # Ensure the directory exists
+        os.makedirs(self.task_dir_todo, exist_ok=True)
+        print(f"FileQueueTriggerCallback initialized. Task files will be created in: {self.task_dir_todo}")
+
+    def _on_step(self) -> None:
+        """
+        This method is called by the CheckpointCallback after a checkpoint is saved.
+        """
+        # The path to the checkpoint that was just saved
+        if self.n_calls % self.save_freq == 0:
+            checkpoint_path = os.path.join(self.save_path, f"{self.name_prefix}_{self.num_timesteps}_steps.zip")
+
+            # Define the task file. We'll write the checkpoint path inside it for robustness.
+            task_filename = f"{self.name_prefix}_{self.num_timesteps}_steps.task"
+            task_filepath = os.path.join(self.task_dir_todo, task_filename)
+
+            try:
+                os.rename(checkpoint_path, task_filepath)
+                #with open(task_filepath, 'w') as f:
+                #    f.write(checkpoint_path)
+                print(f"CALLBACK: Successfully created task file for {os.path.basename(checkpoint_path)}")
+            except Exception as e:
+                print(f"CALLBACK: Error creating task file {task_filepath}: {e}")
+
 class ExploiterCheckpointCallback(CheckpointCallback):
     """
     Callback for saving a model every ``save_freq`` calls
