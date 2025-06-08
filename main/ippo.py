@@ -22,9 +22,9 @@ from common.justin.Generalist_SPAR import Generalist_SPAR
 from stable_baselines3 import MAGICS_AL
 from common.retro_wrappers import SFWrapper, Monitor2P
 import wandb
-PRETRAIN = False
+PRETRAIN = True
 
-FINETUNE = True
+FINETUNE = False
 EVAL = False
 SAVE_FREQ = 10_000  # Save a checkpoint every 10,000 steps
 TOTAL_TIMESTEPS = 100_000
@@ -437,7 +437,7 @@ def main(PLAYER):
         return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
 
-    checkpoint_interval = 10000  # checkpoint_interval * num_envs = total_steps_per_checkpoint
+    checkpoint_interval = 1000  # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
                                  other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
@@ -591,7 +591,7 @@ def main(PLAYER):
 
     file_queue_callback = FileQueueTriggerCallback(
         task_dir=TASK_DIR,
-        save_freq=SAVE_FREQ,
+        save_freq=checkpoint_interval,
         save_path=args.save_dir,
         name_prefix=f"{args.model_name_prefix}"
     )
