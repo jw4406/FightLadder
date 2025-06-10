@@ -248,7 +248,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         progress_bar: bool = False,
     ) -> SelfOnPolicyAlgorithm:
         iteration = 0
-        from FightLadder.main.common.algorithms import Exploiter
+        from common.algorithms import Exploiter
         total_timesteps, callback = self._setup_learn(
             total_timesteps,
             callback,
