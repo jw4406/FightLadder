@@ -246,6 +246,10 @@ class Single_SPAR(OnPolicyAlgorithm):
         )
 
         self.policy = self.policy.to(self.device)
+        #for i in range(len(self.policy.value_targ) - 1):
+        #    self.policy.value_targ[i] = self.policy.value_targ[i].to(self.device)
+        #for i in range(len(self.policy.value_targ[-1])):
+        #    self.policy.value_targ[-1][i] = self.policy.value_targ[-1][i].to(self.device)
         if hasattr(self, "num_adversaries"):
             for i in range(self.num_adversaries):
                 self.policy.value_net[i] = self.policy.value_net[i].to(self.device)
