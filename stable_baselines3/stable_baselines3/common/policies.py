@@ -990,6 +990,7 @@ class ActorActorCriticPolicy(BasePolicy):
             raise NotImplementedError(f"Unsupported distribution '{self.action_dist}'.")
 
         self.value_net = nn.Linear(self.mlp_extractor.latent_dim_vf, 1)
+
         # Init weights: use orthogonal initialization
         # with small initial weight for the output
         if self.ortho_init:
@@ -1408,6 +1409,9 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
             self.value_optimizer = self.optimizer_class(
                 itertools.chain(self.mlp_extractor.value_net.parameters(), self.vf_features_extractor.parameters(), itertools.chain.from_iterable([self.value_net[i].parameters() for i in range(self.num_adversaries)])),
                 joint_schedule[2](1), **self.optimizer_kwargs)
+            self.value_targ = [copy.deepcopy(self.vf_features_extractor).requires_grad_(False).to('cuda'),
+                               copy.deepcopy(self.mlp_extractor.value_net).requires_grad_(False).to('cuda'),
+                               [copy.deepcopy(self.value_net)[i].requires_grad_(False).to('cuda') for i in range(len(self.value_net))]]
         '''
         if self.policy_memory_size is not None:
             for i in range(self.policy_memory_size):

@@ -4,6 +4,7 @@ import itertools
 from torch import autograd
 import sys
 import time
+from stable_baselines3.common.preprocessing import get_action_dim, is_image_space, maybe_transpose, preprocess_obs
 import random
 from venv import create
 import wandb
@@ -350,7 +351,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                 print("ooo")
             # assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
             self.num_timesteps += env.num_envs
-            wandb.log({"epochs": self.num_timesteps})
+            #wandb.log({"epochs": self.num_timesteps})
             # Give access to local variables
             callback.update_locals(locals())
             if callback.on_step() is False:
@@ -481,7 +482,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                 print("this model is warmstarted! now running magics_ppo training", flush=True)
             return super().train()
         '''
-        self.warmstarted_cont_MAGICS = False
+        self.warmstarted_cont_MAGICS = True
         self._update_learning_rate(
             [self.policy.ctrl_optimizer, self.policy.dstb_optimizer, self.policy.value_optimizer])
         # Compute current clip range
@@ -502,14 +503,10 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             buf.advantages = torch.from_numpy(buf.advantages).to(self.device)
             buf.episode_starts = torch.from_numpy(buf.episode_starts).to(self.device)
             for i in range(buf.buffer_size):
-                # location = np.nonzero(rollout_data.env_indices == i)
-                #adversary_id = buf.env_indices[i] // self.n_env_per_adv
-                #for j in range(self.num_adversaries):
-                #    _, _, values, _, _ = self.policy(
-                #        torch.Tensor(buf.observations[i][adversary_id == j]).to(self.device))
-                    # _, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
-                #    buf.values[i][adversary_id == j] = values.squeeze()
+                # use target network
                 _, _, buf.values[i], _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device), network_keys=[i for i in range(self.num_adversaries)])
+                #buf.values[i] = self.value_targ_forward(torch.Tensor(buf.observations[i]).to(self.device),
+                #                                      network_keys=[i for i in range(self.num_adversaries)])
             # _, _, last_values, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
             buf.compute_returns_and_advantage_pt(buf.values[i], torch.Tensor(buf.dones[-1]).to(self.device))
             rollout_advantages_copy = deepcopy(self.rollout_buffer.advantages)
@@ -767,6 +764,8 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                     #    vf[adversary_id == j] = values.squeeze()
 
                     _, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device), network_keys=[i for i in range(self.num_adversaries)])
+                    #vf = self.value_targ_forward(torch.Tensor(buf.observations[-1]).to(self.device),
+                    #                                      network_keys=[i for i in range(self.num_adversaries)])
                     last_values = vf.flatten()
                     last_gae_lam = th.zeros_like(last_values)
                     dones = torch.Tensor(buf.dones[-1]).to(self.device)
@@ -786,6 +785,8 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                             #    next_values[adversary_id == j] = temp_values.flatten()
                             _, _, next_values, _, _ = self.policy(
                                 torch.Tensor(buf.observations[step + 1]).to(self.device), network_keys=[i for i in range(self.num_adversaries)])
+                            #next_values = self.value_targ_forward(torch.Tensor(buf.observations[step+1]).to(self.device),
+                            #                                      network_keys=[i for i in range(self.num_adversaries)])
                         #value_query = torch.zeros_like(buf.values[-1])
                         # _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
                         adversary_id = buf.env_indices[step] // self.n_env_per_adv
@@ -794,6 +795,8 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                         #        torch.Tensor(buf.observations[step][adversary_id == j]).to(self.device))
                         #    value_query[adversary_id == j] = temp_values.squeeze()
                         _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device), network_keys=[i for i in range(self.num_adversaries)])
+                        #value_query = self.value_targ_forward(torch.Tensor(buf.observations[step]).to(self.device),
+                        #                                      network_keys=[i for i in range(self.num_adversaries)])
 
                         delta = buf.rewards[step] + buf.gamma * next_values * next_non_terminal - value_query.squeeze()
                         last_gae_lam = delta + buf.gamma * buf.gae_lambda * next_non_terminal * last_gae_lam
@@ -1215,3 +1218,15 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             (left_action, state), (right_action, _) = self.policy.predict(obs, deterministic=deterministic, network_keys=[env_index])
             #(_, _), (right_action, _) = self.adversaries[env_index].predict(obs, deterministic=deterministic)
         return (left_action, state), (right_action, state)
+
+    def value_targ_forward(self, obs, network_keys=None):
+        preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.policy.normalize_images)
+        vf_features = self.policy.value_targ[0](preprocessed_obs)
+        #vf_features
+        latent_vf = self.policy.value_targ[1](vf_features)
+        num_env_per_adv = latent_vf.shape[0] // self.num_adversaries
+        values = th.zeros((latent_vf.shape[0],), device=self.device)
+        for i in range(self.num_adversaries):
+            values[i * num_env_per_adv: (i + 1) * num_env_per_adv] = self.policy.value_targ[2][network_keys[i]](
+                latent_vf[i * num_env_per_adv: (i + 1) * num_env_per_adv, :])[:, 0]
+        return values
