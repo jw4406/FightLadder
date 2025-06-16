@@ -1173,6 +1173,9 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                             advantage_test.append(last_gae_lam)
                             # buf.advantages[step] = last_gae_lam
                         advantages = torch.stack(advantage_test, dim=0)
+
+                        self.compute_value_targets(buf, network_keys=[k])
+                        
                         # buf.returns = buf.advantages + buf.values
                         end = time.time()
                         print("batch complete, elapsed = %f" % (start - end))
@@ -1230,3 +1233,67 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             values[i * num_env_per_adv: (i + 1) * num_env_per_adv] = self.policy.value_targ[2][network_keys[i]](
                 latent_vf[i * num_env_per_adv: (i + 1) * num_env_per_adv, :])[:, 0]
         return values
+
+    def compute_value_targets(self, buf, network_keys=None):
+
+        advantage_test = []
+        # vf = torch.zeros_like(buf.values[-1])
+        adversary_id = buf.env_indices[-1] // self.n_env_per_adv
+        # for j in range(self.num_adversaries):
+        #    _, _, values, _, _ = self.policy(
+        #        torch.Tensor(buf.observations[-1][adversary_id == j]).to(self.device))
+        #    # _, _, values, _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device))
+        #    vf[adversary_id == j] = values.squeeze()
+
+        #_, _, vf, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device), network_keys=[k])
+        vf = self.value_targ_forward(torch.Tensor(buf.observations[-1]).to(self.device), network_keys=network_keys)
+        last_values = -vf.flatten()
+        last_gae_lam = th.zeros_like(last_values)
+        dones = torch.Tensor(buf.dones[-1]).to(self.device)
+        store_next_values = torch.zeros_like(buf.values)
+        for step in reversed(range(buf.buffer_size)):
+            # _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
+            if step == buf.buffer_size - 1:
+                next_non_terminal = 1.0 - dones.float()
+                next_values = last_values
+            else:
+                next_non_terminal = 1.0 - buf.episode_starts[step + 1].float()
+                # adversary_id = buf.env_indices[-1] // self.n_env_per_adv
+                # for j in range(self.num_adversaries):
+                #    _, _, temp_values, _, _ = self.policy(
+                #        torch.Tensor(buf.observations[step + 1][adversary_id == j]).to(self.device))
+                # _, _, temp_values, _, _ = self.policy(torch.Tensor(buf.observations[step + 1]).to(self.device))
+                #    next_values[adversary_id == j] = temp_values.flatten()
+                #_, _, next_values, _, _ = self.policy(
+                #    torch.Tensor(buf.observations[step + 1]).to(self.device), network_keys=network_keys)
+                next_values = self.value_targ_forward(torch.Tensor(buf.observations[step + 1]).to(self.device), network_keys=network_keys)
+            next_values = -next_values
+            store_next_values[step] = next_values
+            # value_query = torch.zeros_like(buf.values[-1])
+            # _, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device))
+            adversary_id = buf.env_indices[step] // self.n_env_per_adv
+            # for j in range(self.num_adversaries):
+            #    _, _, temp_values, _, _ = self.policy(
+            #        torch.Tensor(buf.observations[step][adversary_id == j]).to(self.device))
+            #    value_query[adversary_id == j] = temp_values.squeeze()
+            #_, _, value_query, _, _ = self.policy(torch.Tensor(buf.observations[step]).to(self.device),
+            #                                      network_keys=network_keys)
+            value_query = self.value_targ_forward(torch.Tensor(buf.observations[step]).to(self.device),
+                                                  network_keys=network_keys)
+            value_query = -value_query
+            delta = buf.rewards[step] + buf.gamma * next_values * next_non_terminal - value_query.squeeze()
+            last_gae_lam = delta + buf.gamma * buf.gae_lambda * next_non_terminal * last_gae_lam
+            advantage_test.append(last_gae_lam)
+            # buf.advantages[step] = last_gae_lam
+        advantages = torch.stack(advantage_test, dim=0)
+        returns = advantages + store_next_values
+        end = time.time()
+        #print("batch complete, elapsed = %f" % (start - end))
+        # TEST - DO NOT COMMIT
+
+        # buf.compute_returns_and_advantage_pt(values, torch.Tensor(buf.dones[-1]).to(self.device))
+        # self.rollout_buffer.advantages = torch.zeros_like(self.rollout_buffer.advantages)
+        # self.rollout_buffer.flat_advantages = buf.swap_and_flatten(buf.advantages)
+        #self.rollout_buffer.advantages = self.rollout_buffer.swap_and_flatten_pt(advantages)
+        self.rollout_buffer.returns = self.rollout_buffer.swap_and_flatten_pt(returns)
+        #count = count + 1
