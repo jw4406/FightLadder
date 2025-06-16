@@ -1,10 +1,11 @@
 # br_worker.py
 import os
-import time
+import time, av
 import random
 import retro
+from PIL import Image
 import wandb
-
+import torch
 from common.justin.Generalist_SPAR import Generalist_SPAR
 from common.const import *
 from common.retro_wrappers import SFWrapper, Monitor2P
@@ -24,6 +25,97 @@ SIDE = "left"
 player_folder_name = PLAYER + '_' + SIDE
 
 STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name, PLAYER, PLAYER)]
+
+@torch.no_grad()
+def evaluate_sa(curr_state, model, exploiter_model, env_index, greedy=0, record=False):
+    #assert isinstance(model, Specialized_Agent)
+    # global STATE
+    num_episodes = 50
+    win_cnt = 0
+    vic = np.zeros((50,))
+    # env = []
+    for j in range(1, num_episodes + 1):
+        env = make_env(sf_game, state=curr_state, side='both', reset_type='round', rendering=False,
+                 enable_combo=False, null_combo=False,
+                 transform_action=False, seed=0)().env
+        done = False
+
+        obs = env.reset()
+        if record:
+            video_log = [Image.fromarray(env.render(mode="rgb_array"))]
+
+        while not done:
+            if model.use_mirror is True:
+                '''
+                from stable_baselines3.common.save_util import load_from_zip_file
+                if model.use_mirror is True:
+                    data, params, pytorch_variables = load_from_zip_file(
+
+                        "/home/jw4406/codebase/FightLadder/main/trained_models/ippo_mirror_pre_%s/ppo_%s_27894000_steps.zip" % (
+
+                            PLAYER, PLAYER))
+                    del params['policy.ctrl_optimizer']
+                    del params['policy.value_optimizer']
+                    del params['policy.dstb_optimizer']
+                    not_ego = model
+                    not_ego.set_parameters(params, exact_match=False, device=model.device)
+                    '''
+                (action, _states), (_, _) = model.predict(obs, env_index, deterministic=False)
+                exploit_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
+
+                action_other = exploit_action
+
+            else:
+
+                if np.random.uniform() > greedy:
+                    (action, _states), (action_other, _states_other) = model.predict(obs, env_index,
+                                                                                     deterministic=False)
+                else:
+                    (action, _states), (action_other, _states_other) = model.predict(obs, env_index,
+                                                                                     deterministic=False)
+            br_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
+
+            action_other = br_action
+            obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
+            if record:
+                video_log.append(Image.fromarray(env.render(mode="rgb_array")))
+            # print(info)
+            # if done:
+            #     video_log[-1].save(f"{args.video_dir}/episode_{i}.png")
+
+            if done:
+                if record:
+                    try:
+                        name = curr_state.split("/")[1]
+                    except:
+                        name = curr_state
+                    height, width, layers = np.array(video_log[0]).shape
+                    container = av.open(f"{args.video_dir}/{name}_episode_{j}.mp4", mode='w')
+                    stream = container.add_stream('h264', rate=10)
+                    stream.width = width
+                    stream.height = height
+                    stream.pix_fmt = 'yuv420p'
+                    for img in video_log:
+                        frame = av.VideoFrame.from_image(img)
+                        for packet in stream.encode(frame):
+                            container.mux(packet)
+                    remain_packets = stream.encode(None)
+                    container.mux(remain_packets)
+                    container.close()
+
+        if info['enemy_hp'] < info['agent_hp']:
+            print("Victory!")
+            # vic[j-1] = 1
+            win_cnt += 1
+
+        # print("Total reward: {}\n".format(total_reward))
+        # episode_reward_sum += total_reward
+
+        env.close()
+
+    win_rate = win_cnt / num_episodes
+    print("Winning rate: {}".format(win_rate))
+    return win_rate
 
 def const_schedule(initial_value: float):
     def func(progress_remaining: float) -> float:
@@ -166,6 +258,10 @@ def train_best_response(task_file_path: str):
         br_model_name = f"br_to_{os.path.basename(task_file_path).replace('.zip', '')}.zip"
         exploiter_callback = ExploiterCheckpointCallback(save_freq=10000, save_path=BR_MODEL_DIR, name_prefix=br_model_name)
         br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
+
+        # eval BR against ego right here! both models are already in namespace.
+
+        wr = evaluate_sa(STATE, finetune_model, br_agent, 0, record=False) # do not change False to True
 
         # 5. Save the trained BR model
         br_agent.save(os.path.join(BR_MODEL_DIR, br_model_name))
