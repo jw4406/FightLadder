@@ -245,7 +245,8 @@ def train_best_response(task_file_path: str):
         wandb.init(project="exploiter",
                    entity='jw4406',
                    config={"eval_rew": 0,
-                           "epochs": 0})
+                           "epochs": 0,
+                           "br_wr": 0})
         # 2. Create your environment, passing the frozen opponent to it
         #    so the BR agent can play against it.
         # env = YourStreetFighterEnv(opponent_policy=fixed_opponent)
@@ -262,6 +263,7 @@ def train_best_response(task_file_path: str):
         # eval BR against ego right here! both models are already in namespace.
 
         wr = evaluate_sa(STATE, finetune_model, br_agent, 0, record=False) # do not change False to True
+        wandb.log({"wr": wr})
 
         # 5. Save the trained BR model
         br_agent.save(os.path.join(BR_MODEL_DIR, br_model_name))
