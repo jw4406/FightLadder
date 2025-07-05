@@ -310,7 +310,8 @@ class MlpExtractorAdv(nn.Module):
         net_arch: Union[List[int], Dict[str, List[int]]],
         activation_fn: Type[nn.Module],
         device: Union[th.device, str] = "auto",
-        adversarial:bool = False
+        adversarial:bool = False,
+        context_dim=None
     ) -> None:
         super().__init__()
         device = get_device(device)
@@ -328,12 +329,17 @@ class MlpExtractorAdv(nn.Module):
         else:
             pi_layers_dims = vf_layers_dims = net_arch
         # Iterate through the policy layers and build the policy net
+        count = 0
         for curr_layer_dim in pi_layers_dims:
             policy_net.append(nn.Linear(last_layer_dim_pi, curr_layer_dim))
-            dstb_net.append(nn.Linear(last_layer_dim_pi, curr_layer_dim))
+            if count == 0:
+                dstb_net.append(nn.Linear(last_layer_dim_pi + context_dim, curr_layer_dim))
+            else:
+                dstb_net.append(nn.Linear(last_layer_dim_pi, curr_layer_dim))
             policy_net.append(activation_fn())
             dstb_net.append(activation_fn())
             last_layer_dim_pi = curr_layer_dim
+            count = count + 1
         # Iterate through the value layers and build the value net
         for curr_layer_dim in vf_layers_dims:
             value_net.append(nn.Linear(last_layer_dim_vf, curr_layer_dim))

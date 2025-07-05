@@ -864,6 +864,8 @@ class ActorActorCriticPolicy(BasePolicy):
         self.num_adversaries = num_adversaries
         self.share_features_extractor = share_features_extractor
         self.features_extractor = self.make_features_extractor()
+        #self.features_extractor_class=
+        #self.context_extractor = self.m
         self.features_dim = self.features_extractor.features_dim
         if self.share_features_extractor:
             self.pi_ctrl_features_extractor = self.features_extractor
@@ -954,7 +956,8 @@ class ActorActorCriticPolicy(BasePolicy):
             net_arch=self.net_arch,
             activation_fn=self.activation_fn,
             device=self.device,
-            adversarial=True
+            adversarial=True,
+            context_dim=0
         )
 
     def _build(self, joint_schedule) -> None:
@@ -1610,6 +1613,13 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             pi_dstb_features = self.pi_dstb_features_extractor(preprocessed_obs)
             vf_features = self.vf_features_extractor(preprocessed_obs)
             return pi_ctrl_features, pi_dstb_features, vf_features
+
+    def extract_context_features(self, context):
+        #preprocessed_obs = preprocess_obs(context, self.observation_space, normalize_images=self.normalize_images)
+        pi_ctrl_features = self.pi_ctrl_features_extractor(context)
+
+
+        return context_features
 
     def _get_action_dist_from_latent(self, latent_pi: th.Tensor, latent_pi_dstb: th.Tensor, network_keys=None) -> [Distribution,
                                                                                                 Distribution]:
