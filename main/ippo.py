@@ -19,6 +19,7 @@ from common.game import get_next_level
 from common.algorithms import IPPO, MAGICS_PPO, RARL_PPO, TSS_PPO, Specialized_Agent, Specialized_Agent_IPPO, eepy
 from common.justin.spar import Single_SPAR
 from common.justin.Generalist_SPAR import Generalist_SPAR
+from common.justin.derivative_free_spar import Derivative_Free_SPAR
 from stable_baselines3 import MAGICS_AL
 from common.retro_wrappers import SFWrapper, Monitor2P
 import wandb
@@ -493,7 +494,7 @@ def main(PLAYER):
                 assert isinstance(REMOVAL, list)
                 num_adversary = 12 - len(REMOVAL)
 
-        finetune_model = Generalist_SPAR(
+        finetune_model = Derivative_Free_SPAR(
             "AACCnnPolicy",
             finetune_env,
             device="cuda",
@@ -503,7 +504,7 @@ def main(PLAYER):
             n_epochs=5,
             gamma=0.99,
             v_learning_rate=5e-5, c_learning_rate=1e-6,
-            d_learning_rate=2e-6, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            d_learning_rate=2e-5, v_learning_rate_decay=critic_decay_schedule(1e-3),
             c_learning_rate_decay=critic_decay_schedule(1e-4),
             d_learning_rate_decay=critic_decay_schedule(5e-4),
             clip_range=clip_range_schedule,
@@ -688,6 +689,7 @@ def main(PLAYER):
                 total_timesteps=args.total_steps,
                 callback=[checkpoint_callback, file_queue_callback]
             )
+            #model.learn(total_timesteps=args.total_steps, callback=None)
         for i in range(len(model.adversaries)):
             model.adversaries[i].save("enemy_policy_%d.pt" % i)
         model.adversaries = []

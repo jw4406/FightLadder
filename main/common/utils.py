@@ -254,6 +254,153 @@ class SubprocVecEnv2P(VecEnv):
         indices = self._get_indices(indices)
         return [self.remotes[i] for i in indices]
 
+from stable_baselines3.common.vec_env.util import copy_obs_dict, dict_to_obs, obs_space_info
+class DummyVecEnv2P(VecEnv):
+    """
+    Creates a simple, sequential vectorized wrapper for multiple environments,
+    running them one after another in the same process.
+    This is useful for debugging, environments that are not CPU-bound,
+    and for running environments within another multiprocessing context
+    (e.g., in a worker process from a multiprocessing.Pool).
+
+    This version is specifically adapted to handle 2-player environments
+    that return two separate rewards from the step function.
+
+    :param env_fns: a list of functions that will create the environments.
+    """
+
+    def __init__(self, env_fns: List[Callable[[], gym.Env]]):
+        # Create the environments by calling their creation functions
+        self.envs = [fn() for fn in env_fns]
+        self.num_envs = len(self.envs)
+
+        # Initialize the base VecEnv with properties from the first env
+        env = self.envs[0]
+        super().__init__(self.num_envs, env.observation_space, env.action_space)
+
+        obs_space = env.observation_space
+        self.keys, self.shapes, self.dtypes = obs_space_info(obs_space)
+
+        # Buffers for storing results
+        self.buf_obs = {k: np.zeros((self.num_envs,) + tuple(self.shapes[k]), dtype=self.dtypes[k]) for k in self.keys}
+        self.buf_dones = np.zeros((self.num_envs,), dtype=bool)
+        self.buf_rews = np.zeros((self.num_envs,), dtype=np.float32)
+        self.buf_rews_other = np.zeros((self.num_envs,), dtype=np.float32)  # Buffer for the second player's reward
+        self.buf_infos = [{} for _ in range(self.num_envs)]
+
+        self.actions = None
+        self.closed = False
+
+    def step_async(self, actions: np.ndarray) -> None:
+        """
+        Store the actions to be executed on the next call to step_wait().
+        """
+        self.actions = actions
+
+    def step_wait(self) -> VecEnvStepReturn2P:
+        """
+        Execute the stored actions in each environment sequentially.
+        This is the core method that handles the 2-player return signature.
+        """
+        for env_idx in range(self.num_envs):
+            # The key difference is here: we expect the environment to return
+            # obs, reward, reward_other, done, info
+            obs, self.buf_rews[env_idx], self.buf_rews_other[env_idx], self.buf_dones[env_idx], self.buf_infos[
+                env_idx] = self.envs[env_idx].step(
+                self.actions[env_idx]
+            )
+
+            # If an environment is done, reset it automatically
+            if self.buf_dones[env_idx]:
+                # save final observation where user can get it, then reset
+                self.buf_infos[env_idx]["terminal_observation"] = obs
+                obs = self.envs[env_idx].reset()
+
+            # Store the observation in the buffer
+            self._save_obs(env_idx, obs)
+
+        return (self._get_obs(), np.copy(self.buf_rews), np.copy(self.buf_rews_other), np.copy(self.buf_dones),
+                self.buf_infos.copy())
+
+    def seed(self, seed: Optional[int] = None) -> List[int]:
+        """
+        Seed the environments.
+        """
+        seeds = []
+        for idx, env in enumerate(self.envs):
+            seeds.append(env.seed(seed + idx if seed is not None else None))
+        return seeds
+
+    def reset(self) -> VecEnvObs:
+        """
+        Reset all environments.
+        """
+        for env_idx in range(self.num_envs):
+            obs = self.envs[env_idx].reset()
+            self._save_obs(env_idx, obs)
+        return self._get_obs()
+
+    def close(self) -> None:
+        """
+        Close all environments.
+        """
+        if self.closed:
+            return
+        for env in self.envs:
+            env.close()
+        self.closed = True
+
+    def get_images(self) -> Sequence[np.ndarray]:
+        """
+        Render all environments to get images.
+        """
+        return [env.render(mode="rgb_array") for env in self.envs]
+
+    def get_attr(self, attr_name: str, indices: VecEnvIndices = None) -> List[Any]:
+        """Return attribute from vectorized environment (see base class)."""
+        target_envs = self._get_target_envs(indices)
+        return [getattr(env, attr_name) for env in target_envs]
+
+    def set_attr(self, attr_name: str, value: Any, indices: VecEnvIndices = None) -> None:
+        """Set attribute inside vectorized environments (see base class)."""
+        target_envs = self._get_target_envs(indices)
+        for env in target_envs:
+            setattr(env, attr_name, value)
+
+    def env_method(self, method_name: str, *method_args, indices: VecEnvIndices = None, **method_kwargs) -> List[Any]:
+        """Call instance methods of vectorized environments."""
+        target_envs = self._get_target_envs(indices)
+        return [getattr(env, method_name)(*method_args, **method_kwargs) for env in target_envs]
+
+    def env_is_wrapped(self, wrapper_class: Type[gym.Wrapper], indices: VecEnvIndices = None) -> List[bool]:
+        """Check if worker environments are wrapped with a given wrapper"""
+        target_envs = self._get_target_envs(indices)
+        # Import here to avoid circular import
+        from stable_baselines3.common.env_util import is_wrapped
+        return [is_wrapped(env, wrapper_class) for env in target_envs]
+
+    def _get_target_envs(self, indices: VecEnvIndices) -> List[gym.Env]:
+        """
+        Get the Gym environments that are targeted by the indices.
+        """
+        indices = self._get_indices(indices)
+        return [self.envs[i] for i in indices]
+
+    def _save_obs(self, env_idx: int, obs: VecEnvObs) -> None:
+        """
+        Save the observation from a single environment into the buffer.
+        """
+        for key in self.keys:
+            if key is None:
+                self.buf_obs[key][env_idx] = obs
+            else:
+                self.buf_obs[key][env_idx] = obs[key]
+
+    def _get_obs(self) -> VecEnvObs:
+        """
+        Get the observations from the buffer and return them as they are stored.
+        """
+        return dict_to_obs(self.observation_space, self.buf_obs)
 
 def _flatten_obs(obs: Union[List[VecEnvObs], Tuple[VecEnvObs]], space: spaces.Space) -> VecEnvObs:
     """
