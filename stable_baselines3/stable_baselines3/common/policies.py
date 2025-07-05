@@ -819,7 +819,8 @@ class ActorActorCriticPolicy(BasePolicy):
         adversarial=True,
         dstb_action_space: spaces.Space = None,
         policy_memory_size: Optional[int] = None,
-        num_adversaries=None
+        num_adversaries=None,
+        device='auto'
     ):
         if optimizer_kwargs is None:
             optimizer_kwargs = {}
@@ -907,7 +908,7 @@ class ActorActorCriticPolicy(BasePolicy):
         else:
 
             self.dstb_action_dist = make_proba_distribution(dstb_action_space, use_sde=use_sde, dist_kwargs=dist_kwargs)
-
+        #self.device = device
         self._build(lr_schedule)
 
     def _get_constructor_parameters(self) -> Dict[str, Any]:
@@ -955,7 +956,7 @@ class ActorActorCriticPolicy(BasePolicy):
             self.features_dim,
             net_arch=self.net_arch,
             activation_fn=self.activation_fn,
-            device=self.device,
+            device='auto',
             adversarial=True,
             context_dim=0
         )
@@ -984,15 +985,15 @@ class ActorActorCriticPolicy(BasePolicy):
                 latent_dim=latent_dim_pi, latent_sde_dim=latent_dim_pi, log_std_init=self.log_std_init
             )
         elif isinstance(self.action_dist, (CategoricalDistribution, MultiCategoricalDistribution, BernoulliDistribution)):
-            self.action_net = self.action_dist.proba_distribution_net(latent_dim=latent_dim_pi)
+            self.action_net = self.action_dist.proba_distribution_net(latent_dim=latent_dim_pi).to('cuda')
             if self.adversarial: # we are doing adversarial!
 
                 self.dstb_action_net= self.dstb_action_dist.proba_distribution_net(
-                latent_dim=latent_dim_pi)
+                latent_dim=latent_dim_pi).to('cuda')
         else:
             raise NotImplementedError(f"Unsupported distribution '{self.action_dist}'.")
 
-        self.value_net = nn.Linear(self.mlp_extractor.latent_dim_vf, 1)
+        self.value_net = nn.Linear(self.mlp_extractor.latent_dim_vf, 1).to('cuda')
 
         # Init weights: use orthogonal initialization
         # with small initial weight for the output
@@ -1878,6 +1879,7 @@ class ActorActorCriticCnnPolicy(ActorActorCriticPolicy):
             adversarial=True,
             dstb_action_space: spaces.Space = None,
             policy_memory_size: Optional[int] = None,
+            device='auto'
     ):
         super().__init__(
             observation_space,
@@ -1897,7 +1899,9 @@ class ActorActorCriticCnnPolicy(ActorActorCriticPolicy):
             normalize_images,
             optimizer_class,
             optimizer_kwargs,
-            dstb_action_space=dstb_action_space
+            dstb_action_space=dstb_action_space,
+            device=device
+
         )
 
     def forward(self, obs: th.Tensor, deterministic: bool = False) -> Tuple[
