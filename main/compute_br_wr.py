@@ -359,9 +359,9 @@ def main(PLAYER):
             # STATE = state_list[i]
             results = evaluate_sa(state_list[j], args, ego, exploiter, j, record=True)
             wrs.append(results)
-        #print(results)
-        with open(f"{args.finetune_dir}/{args.model_name_prefix}_start_results.txt", 'w') as f:
-            f.write(str(results))
+            #print(results)
+            with open("/home/jw4406/codebase/FightLadder/main/trained_models/_start_results.txt", 'w') as f:
+                f.write(str(results))
     print("hello")
 
 if __name__ == "__main__":
