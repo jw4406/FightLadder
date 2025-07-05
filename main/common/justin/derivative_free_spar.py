@@ -1,6 +1,7 @@
 import torch
 import torch as th, time, sys
 import numpy as np
+from gym import spaces
 from copy import deepcopy
 from stable_baselines3.common.callbacks import ConvertCallback
 from torch.nn import functional as F
@@ -104,8 +105,19 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         from copy import deepcopy
 
         test = copy.copy(self)
+        test.policy = self.policy_class(self.observation_space,
+            self.action_space,
+            self.lr_schedule,
+            use_sde=self.use_sde,
+            **self.policy_kwargs)
         test.policy.load_state_dict(self.policy.state_dict())
-
+        if hasattr(self, "num_adversaries"):
+            for i in range(test.num_adversaries):
+                test.policy.value_net[i] = test.policy.value_net[i].to(test.device)
+                test.policy.dstb_action_net[i] = test.policy.dstb_action_net[i].to(test.device)
+        test.policy.ctrl_optimizer = self.policy.optimizer_class(test.policy.ctrl_optimizer.param_groups[0]['params'], maximize=True)
+        test.policy.dstb_optimizer = self.policy.optimizer_class(test.policy.dstb_optimizer.param_groups[0]['params'], maximize=True)
+        test.policy.value_optimizer = self.policy.optimizer_class(test.policy.value_optimizer.param_groups[0]['params'])
         test.adversary_buffers = deepcopy(self.adversary_buffers)
         test.rollout_buffer = deepcopy(self.rollout_buffer)
         if retain_callback is True:
@@ -113,6 +125,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         else:
             test.callback = ConvertCallback(None)
             test.callback.init_callback(test)
+        test.policy = test.policy.to(self.device)
         return test
 
     def train(self):
@@ -120,7 +133,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         Update policy using the currently gathered rollout buffer.
         """
         self.inner_loop()
-        self.leader_grads()
+        self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent.policy, ego=True)
         if self.warmstarted_cont_MAGICS is True:
             if self.warmstarted_cont_MAGICS is True:
                 print("this model is warmstarted! now running magics_ppo training", flush=True)
@@ -266,6 +279,9 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         delta = 999999
         select = torch.from_numpy(np.random.uniform(low=-1, high=1, size=count)).to(self.device)
         v = delta * select / torch.linalg.norm(select)
+        self.delta = delta
+        self.v = v
+        self.d = count
         count = 0
         with torch.no_grad():
             for p in param_list:
@@ -366,8 +382,8 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                     perturbed_agent.policy.value_optimizer.step()
         self.perturbed_agent = perturbed_agent
 
-    def leader_grads(self, ori_buf, perturbed_buf, ori_policy, perturbed_policy):
-        clip_range = self.clip_range
+    def leader_grads(self, ori_buf, perturbed_buf, ori_policy, perturbed_policy, ego=True):
+        clip_range = self.clip_range(self._current_progress_remaining)
         # F = d/delta * (f(x-hat, g(x-hat, y-hat)) - f(x, g(x,y))) * v
         # need ot run forward pass twice (one for normal network and one for perturbed network)
 
@@ -376,7 +392,9 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             # Do a complete pass on the rollout buffer
 
             # ego
-            for (ori_rollout_data, perturbed_rollout_data) in zip(self.rollout_buffer.get(self.batch_size), self.perturbed_buf.get(self.batch_size)):
+            for (ori_rollout_data, perturbed_rollout_data) in zip(ori_buf.get(self.batch_size), perturbed_buf.get(self.batch_size)):
+                if ego is False:
+                    ori_rollout_data.old_log_prob = ori_rollout_data.old_dstb_log_prob
                 ori_actions = torch.Tensor(ori_rollout_data.actions).to(self.device)
                 ori_dstb_actions = torch.Tensor(ori_rollout_data.dstb_actions).to(self.device)
                 if isinstance(self.action_space, spaces.Discrete):
@@ -387,8 +405,8 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 if self.use_sde:
                     self.policy.reset_noise(self.batch_size)
 
-                values, ctrl_log_prob, ctrl_entropy, _, _ = self.policy.evaluate_actions(
-                    torch.Tensor(ori_rollout_data.observations).to(self.device), ori_actions, ori_dstb_actions)
+                values, log_prob, ctrl_entropy, _, _ = ori_policy.evaluate_actions(
+                    torch.Tensor(ori_rollout_data.observations).to(self.device), ori_actions, ori_dstb_actions, shuffle_keys=ori_rollout_data.env_indices, network_keys=[i for i in range(self.num_adversaries)])
                 values = values.flatten()
                 # Normalize advantage
                 advantages = torch.from_numpy(ori_rollout_data.advantages).to(self.device)
@@ -397,15 +415,15 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
                 # ratio between old and new policy, should be one at the first iteration
-                ctrl_ratio = th.exp(ctrl_log_prob - torch.Tensor(ori_rollout_data.old_log_prob).to(self.device))
+                ratio = th.exp(log_prob - torch.Tensor(ori_rollout_data.old_log_prob).to(self.device))
                 #dstb_ratio = th.exp(dstb_log_prob - torch.Tensor(rollout_data.old_dstb_log_prob).to(self.device))
 
                 # clipped surrogate loss
-                policy_loss_1 = advantages * ctrl_ratio
-                policy_loss_2 = advantages * th.clamp(ctrl_ratio, 1 - clip_range, 1 + clip_range)
+                policy_loss_1 = advantages * ratio
+                policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
                 #dstb_policy_loss_1 = advantages * dstb_ratio
                 #dstb_policy_loss_2 = advantages * th.clamp(dstb_ratio, 1 - clip_range, 1 + clip_range)
-                ctrl_policy_loss = th.min(policy_loss_1, policy_loss_2).mean()
+                policy_loss = th.min(policy_loss_1, policy_loss_2).mean()
                 #dstb_policy_loss = th.min(dstb_policy_loss_1, dstb_policy_loss_2).mean()
 
                 perturbed_actions = torch.Tensor(perturbed_rollout_data.actions).to(self.device)
@@ -418,28 +436,28 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 if self.use_sde:
                     self.policy.reset_noise(self.batch_size)
 
-                values, ctrl_log_prob, ctrl_entropy, _, _ = self.perturbed_agent.evaluate_actions(
-                    torch.Tensor(perturbed_rollout_data.observations).to(self.device), perturbed_actions, perturbed_dstb_actions)
+                values, perturbed_log_prob, perturbed_entropy, _, _ = perturbed_policy.evaluate_actions(
+                    torch.Tensor(perturbed_rollout_data.observations).to(self.device), perturbed_actions, perturbed_dstb_actions, shuffle_keys=perturbed_rollout_data.env_indices, network_keys=[i for i in range(self.num_adversaries)])
                 values = values.flatten()
                 # Normalize advantage
-                advantages = torch.from_numpy(perturbed_rollout_data.advantages).to(self.device)
+                perturbed_advantages = torch.from_numpy(perturbed_rollout_data.advantages).to(self.device)
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
-                if self.normalize_advantage and len(advantages) > 1:
-                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                if self.normalize_advantage and len(perturbed_advantages) > 1:
+                    perturbed_advantages = (perturbed_advantages - perturbed_advantages.mean()) / (perturbed_advantages.std() + 1e-8)
 
                 # ratio between old and new policy, should be one at the first iteration
-                ctrl_ratio = th.exp(ctrl_log_prob - torch.Tensor(ori_rollout_data.old_log_prob).to(self.device))
+                perturbed_ratio = th.exp(perturbed_log_prob - torch.Tensor(perturbed_rollout_data.old_log_prob).to(self.device))
                 # dstb_ratio = th.exp(dstb_log_prob - torch.Tensor(rollout_data.old_dstb_log_prob).to(self.device))
 
                 # clipped surrogate loss
-                policy_loss_1 = advantages * ctrl_ratio
-                policy_loss_2 = advantages * th.clamp(ctrl_ratio, 1 - clip_range, 1 + clip_range)
+                perturbed_policy_loss_1 = perturbed_advantages * ratio
+                perturbed_policy_loss_2 = perturbed_advantages * th.clamp(perturbed_ratio, 1 - clip_range, 1 + clip_range)
                 # dstb_policy_loss_1 = advantages * dstb_ratio
                 # dstb_policy_loss_2 = advantages * th.clamp(dstb_ratio, 1 - clip_range, 1 + clip_range)
-                ctrl_policy_loss = th.min(policy_loss_1, policy_loss_2).mean()
+                perturbed_policy_loss = th.min(perturbed_policy_loss_1, perturbed_policy_loss_2).mean()
                 # dstb_policy_loss = th.min(dstb_policy_loss_1, dstb_policy_loss_2).mean()
 
-
+                F = self.d / self.delta * (perturbed_policy_loss - policy_loss) * self.v
 
 
                 # Logging
