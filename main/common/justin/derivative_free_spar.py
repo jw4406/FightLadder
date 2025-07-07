@@ -1,4 +1,5 @@
 import torch
+import gc
 import torch as th, time, sys
 import numpy as np
 from gym import spaces
@@ -136,150 +137,17 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         """
         self.inner_loop()
         self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent.policy, ego=True)
-        self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent.policy)
-        if self.warmstarted_cont_MAGICS is True:
-            if self.warmstarted_cont_MAGICS is True:
-                print("this model is warmstarted! now running magics_ppo training", flush=True)
-            return super().train()
-
-        self._update_learning_rate(
-            [self.policy.ctrl_optimizer, self.policy.dstb_optimizer, self.policy.value_optimizer])
-        # Compute current clip range
-        clip_range = self.clip_range(self._current_progress_remaining)
-        # Optional: clip range for the value function
-        if self.clip_range_vf is not None:
-            clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
-
-        entropy_losses = []
-        pg_losses, value_losses = [], []
-        clip_fractions = []
-
-        continue_training = True
-
-        # train for n_epochs epochs
-        for epoch in range(self.n_epochs):
-            approx_kl_divs = []
-            # Do a complete pass on the rollout buffer
-            for rollout_data in self.rollout_buffer.get(self.batch_size):
-                actions = torch.Tensor(rollout_data.actions).to(self.device)
-                dstb_actions = torch.Tensor(rollout_data.dstb_actions).to(self.device)
-                if isinstance(self.action_space, spaces.Discrete):
-                    # Convert discrete action from float to long
-                    actions = rollout_data.actions.long().flatten()
-
-                # Re-sample the noise matrix because the log_std has changed
-                if self.use_sde:
-                    self.policy.reset_noise(self.batch_size)
-
-                values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
-                    torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions)
-                values = values.flatten()
-                # Normalize advantage
-                advantages = torch.from_numpy(rollout_data.advantages).to(self.device)
-                # Normalization does not make sense if mini batchsize == 1, see GH issue #325
-                if self.normalize_advantage and len(advantages) > 1:
-                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
-                # ratio between old and new policy, should be one at the first iteration
-                ctrl_ratio = th.exp(ctrl_log_prob - torch.Tensor(rollout_data.old_log_prob).to(self.device))
-                dstb_ratio = th.exp(dstb_log_prob - torch.Tensor(rollout_data.old_dstb_log_prob).to(self.device))
-
-                # clipped surrogate loss
-                policy_loss_1 = advantages * ctrl_ratio
-                policy_loss_2 = advantages * th.clamp(ctrl_ratio, 1 - clip_range, 1 + clip_range)
-                dstb_policy_loss_1 = advantages * dstb_ratio
-                dstb_policy_loss_2 = advantages * th.clamp(dstb_ratio, 1 - clip_range, 1 + clip_range)
-                ctrl_policy_loss = th.min(policy_loss_1, policy_loss_2).mean()
-                dstb_policy_loss = th.min(dstb_policy_loss_1, dstb_policy_loss_2).mean()
-
-                # Logging
-                pg_losses.append(ctrl_policy_loss.item())
-                clip_fraction = th.mean((th.abs(ctrl_ratio - 1) > clip_range).float()).item()
-                clip_fractions.append(clip_fraction)
-
-                if self.clip_range_vf is None:
-                    # No clipping
-                    values_pred = values
-                else:
-                    # Clip the difference between old and new value
-                    # NOTE: this depends on the reward scaling
-                    values_pred = rollout_data.old_values + th.clamp(
-                        values - rollout_data.old_values, -clip_range_vf, clip_range_vf
-                    )
-                # Value loss using the TD(gae_lambda) target
-                value_loss = F.mse_loss(torch.Tensor(rollout_data.returns).to(self.device), values_pred)
-                value_losses.append(value_loss.item())
-
-                # Entropy loss favor exploration
-                if (ctrl_entropy is None) or (dstb_entropy is None):
-                    # Approximate entropy when no analytical form
-                    ctrl_entropy_loss = -th.mean(-ctrl_log_prob)
-                    dstb_entropy_loss = -th.mean(-dstb_log_prob)
-                else:
-                    ctrl_entropy_loss = -th.mean(ctrl_entropy)
-                    dstb_entropy_loss = -th.mean(dstb_entropy)
-
-                entropy_losses.append(ctrl_entropy_loss.item())
-
-                loss = ctrl_policy_loss - self.ent_coef * ctrl_entropy_loss - self.dstb_ent_coef * dstb_entropy_loss + self.vf_coef * value_loss + dstb_policy_loss
-
-                # Calculate approximate form of reverse KL Divergence for early stopping
-                # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
-                # and discussion in PR #419: https://github.com/DLR-RM/stable-baselines3/pull/419
-                # and Schulman blog: http://joschu.net/blog/kl-approx.html
-                with th.no_grad():
-                    ctrl_log_ratio = ctrl_log_prob - torch.from_numpy(rollout_data.old_log_prob).to(self.device)
-                    ctrl_approx_kl_div = th.mean((th.exp(ctrl_log_ratio) - 1) - ctrl_log_ratio).cpu().numpy()
-                    dstb_log_ratio = dstb_log_prob - torch.from_numpy(rollout_data.old_dstb_log_prob).to(self.device)
-                    dstb_approx_kl_div = th.mean((th.exp(dstb_log_ratio) - 1) - dstb_log_ratio).cpu().numpy()
-                    approx_kl_divs.append(ctrl_approx_kl_div)
-
-                if self.target_kl is not None and torch.max(ctrl_approx_kl_div,
-                                                            dstb_approx_kl_div) > 1.5 * self.target_kl:
-                    continue_training = False
-                    if self.verbose >= 1:
-                        print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
-                    break
-
-                # Optimization step
-                self.policy.ctrl_optimizer.zero_grad()
-                self.policy.dstb_optimizer.zero_grad()
-                self.policy.value_optimizer.zero_grad()
-                loss.backward()
-                # Clip grad norm
-                th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                self.policy.ctrl_optimizer.step()
-                self.policy.dstb_optimizer.step()
-                self.policy.value_optimizer.step()
-
-            if not continue_training:
-                break
-
-        self._n_updates += self.n_epochs
-        explained_var = explained_variance(self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten())
-
-        # Logs
-        self.logger.record(f"train/entropy_loss", np.mean(entropy_losses))
-        self.logger.record(f"train/policy_gradient_loss", np.mean(pg_losses))
-        self.logger.record(f"train/value_loss", np.mean(value_losses))
-        self.logger.record(f"train/approx_kl", np.mean(approx_kl_divs))
-        self.logger.record(f"train/clip_fraction", np.mean(clip_fractions))
-        self.logger.record(f"train/loss", loss.item())
-        self.logger.record(f"train/explained_variance", explained_var)
-        if hasattr(self.policy, "log_std"):
-            self.logger.record(f"train/std", th.exp(self.policy.log_std).mean().item())
-
-        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
-        self.logger.record("train/clip_range", clip_range)
-        if self.clip_range_vf is not None:
-            self.logger.record("train/clip_range_vf", clip_range_vf)
-        # self.update_ctrl = not self.update_ctrl
-
+        self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent.policy, ego=False)
+        del self.perturbed_agent
+        del self.perturbed_buf
+        del self.perturbed_adv_buf
+        gc.collect()
+        torch.cuda.empty_cache()
     def perturb_params(self, param_list):
         count = 0
         for i in range(len(param_list)):
             count = count + torch.numel(param_list[i])
-        delta = 999999
+        delta = .1
         select = torch.from_numpy(np.random.uniform(low=-1, high=1, size=count)).to(self.device)
         v = delta * select / torch.linalg.norm(select)
         self.delta = delta
@@ -292,10 +160,26 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 count = count + torch.numel(p)
         return
     def env_perturb_params(self):
-        buf = deepcopy(self.rollout_buffer)
-        buf.reset()
-        adv_buf = deepcopy(self.adversary_buffers)
-        [adv_buf[i].reset() for i in range(len(adv_buf))]
+        buf = self.rollout_buffer_class(self.n_steps,
+            self.observation_space,
+            self.action_space,
+            device=self.device,
+            gamma=self.gamma,
+            gae_lambda=self.gae_lambda,
+            n_envs=self.n_envs,
+            dstb_action_space=self.dstb_action_space)
+        #buf = deepcopy(self.rollout_buffer)
+        #buf.reset()
+        #adv_buf = deepcopy(self.adversary_buffers)
+        adv_buf = [self.rollout_buffer_class(self.n_steps,
+            self.observation_space,
+            self.action_space,
+            device=self.device,
+            gamma=self.gamma,
+            gae_lambda=self.gae_lambda,
+            n_envs= self.n_env_per_adv,
+            dstb_action_space=self.dstb_action_space) for i in range(self.num_adversaries)]
+        #[adv_buf[i].reset() for i in range(len(adv_buf))]
         self.collect_rollouts(self.env, self.callback, buf, adv_buf, n_rollout_steps=self.n_steps)
         return buf, adv_buf
 
@@ -402,16 +286,22 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         for i in range(num_runs_count):
             if ego is True:
                 network_keys = [k for k in range(self.num_adversaries)]
+                curr_buf = ori_buf
+                curr_perturbed_buf = perturbed_buf
             else:
                 network_keys = [i]
+                curr_buf = ori_buf[i]
+                curr_perturbed_buf = perturbed_buf[i]
             for epoch in range(self.n_epochs):
                 approx_kl_divs = []
                 # Do a complete pass on the rollout buffer
 
                 # ego
-                for (ori_rollout_data, perturbed_rollout_data) in zip(ori_buf.get(self.batch_size), perturbed_buf.get(self.batch_size)):
-                    if ego is False:
-                        ori_rollout_data.old_log_prob = ori_rollout_data.old_dstb_log_prob
+                for (ori_rollout_data, perturbed_rollout_data) in zip(curr_buf.get(self.batch_size), curr_perturbed_buf.get(self.batch_size)):
+                    if ego is True:
+                        old_log_prob = ori_rollout_data.old_log_prob
+                    else:
+                        old_log_prob = ori_rollout_data.old_dstb_log_prob
                     ori_actions = torch.Tensor(ori_rollout_data.actions).to(self.device)
                     ori_dstb_actions = torch.Tensor(ori_rollout_data.dstb_actions).to(self.device)
                     if isinstance(self.action_space, spaces.Discrete):
@@ -435,7 +325,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
                     # ratio between old and new policy, should be one at the first iteration
-                    ratio = th.exp(log_prob - torch.Tensor(ori_rollout_data.old_log_prob).to(self.device))
+                    ratio = th.exp(log_prob - torch.Tensor(old_log_prob).to(self.device))
                     #dstb_ratio = th.exp(dstb_log_prob - torch.Tensor(rollout_data.old_dstb_log_prob).to(self.device))
 
                     # clipped surrogate loss
@@ -444,6 +334,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                     #dstb_policy_loss_1 = advantages * dstb_ratio
                     #dstb_policy_loss_2 = advantages * th.clamp(dstb_ratio, 1 - clip_range, 1 + clip_range)
                     policy_loss = th.min(policy_loss_1, policy_loss_2).mean()
+                    pg_losses.append(policy_loss.to('cpu').detach().numpy())
                     #dstb_policy_loss = th.min(dstb_policy_loss_1, dstb_policy_loss_2).mean()
 
                     perturbed_actions = torch.Tensor(perturbed_rollout_data.actions).to(self.device)
@@ -482,7 +373,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                     # dstb_policy_loss = th.min(dstb_policy_loss_1, dstb_policy_loss_2).mean()
 
                     F = self.d / self.delta * (perturbed_policy_loss - policy_loss) * self.v
-
+                    entropy_losses.append(entropy.to('cpu').detach().numpy())
                     size_lists = [list(x.shape) for x in self.policy.ctrl_optimizer.param_groups[0]['params']] if ego else [list(x.shape) for x in self.policy.dstb_optimizer.param_groups[0]['params']]
                     #dstb_size_lists = [list(x.shape) for x in self.policy.dstb_optimizer.param_groups[0]['params']]
                     reshaped_grad, reshaped_dstb = [], []
@@ -498,14 +389,23 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                     #    count += numel
 
                     for i in range(len(size_lists)):
+                        detached_grad = reshaped_grad[i].float().detach()
                         if ego is True:
-                            self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad = reshaped_grad[i].float()
+                            self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad = detached_grad
                         else:
-                            self.policy.dstb_optimizer.param_groups[0]['params'][i].grad = reshaped_grad[i]
+                            self.policy.dstb_optimizer.param_groups[0]['params'][i].grad = detached_grad
                     if ego is True:
                         self.policy.ctrl_optimizer.step()
                     else:
                         self.policy.dstb_optimizer.step()
+
+                    with th.no_grad():
+                        log_ratio = log_prob - torch.from_numpy(ori_rollout_data.old_log_prob).to(self.device)
+                        approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
+                        #dstb_log_ratio = dstb_log_prob - torch.from_numpy(rollout_data.old_dstb_log_prob).to(
+                        #    self.device)
+                        #dstb_approx_kl_div = th.mean((th.exp(dstb_log_ratio) - 1) - dstb_log_ratio).cpu().numpy()
+                        approx_kl_divs.append(approx_kl_div)
                     '''
                     # Logging
                     pg_losses.append(ctrl_policy_loss.item())
@@ -576,18 +476,18 @@ class Derivative_Free_SPAR(Generalist_SPAR):
 
             self.logger.record(f"train/ego_entropy_loss", np.mean(entropy_losses))
             self.logger.record(f"train/ego_policy_gradient_loss", np.mean(pg_losses))
-            self.logger.record(f"train/ego_value_loss", np.mean(value_losses))
+            #self.logger.record(f"train/ego_value_loss", np.mean(value_losses))
             self.logger.record(f"train/ego_approx_kl", np.mean(approx_kl_divs))
-            self.logger.record(f"train/ego_clip_fraction", np.mean(clip_fractions))
-            self.logger.record(f"train/ego_loss", loss.item())
+            #self.logger.record(f"train/ego_clip_fraction", np.mean(clip_fractions))
+            #self.logger.record(f"train/ego_loss", loss.item())
             self.logger.record(f"train/ego_explained_variance", explained_var)
         else:
             self.logger.record(f"train/adv_entropy_loss", np.mean(entropy_losses))
             self.logger.record(f"train/adv_policy_gradient_loss", np.mean(pg_losses))
-            self.logger.record(f"train/adv_value_loss", np.mean(value_losses))
+            #self.logger.record(f"train/adv_value_loss", np.mean(value_losses))
             self.logger.record(f"train/adv_approx_kl", np.mean(approx_kl_divs))
-            self.logger.record(f"train/adv_clip_fraction", np.mean(clip_fractions))
-            self.logger.record(f"train/adv_loss", loss.item())
+            #self.logger.record(f"train/adv_clip_fraction", np.mean(clip_fractions))
+            #self.logger.record(f"train/adv_loss", loss.item())
             self.logger.record(f"train/adv_explained_variance", explained_var)
         if hasattr(self.policy, "log_std"):
             self.logger.record(f"train/std", th.exp(self.policy.log_std).mean().item())

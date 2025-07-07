@@ -223,6 +223,7 @@ class Single_SPAR(OnPolicyAlgorithm):
 
             self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
         buffer_cls = DictRolloutBuffer if isinstance(self.observation_space, spaces.Dict) else AdvRolloutBuffer
+        self.rollout_buffer_class = buffer_cls
         self.rollout_buffer = buffer_cls(
             self.n_steps,
             self.observation_space,
