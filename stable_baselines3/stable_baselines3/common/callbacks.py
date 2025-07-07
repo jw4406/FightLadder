@@ -441,7 +441,10 @@ class SACheckpointCallback(CheckpointCallback):
             #    self.model.adversaries[i].save(self.save_path + "/enemy_policy_%d_steps_%d.pt" % (self.n_calls,i))
             #self.model.adversaries = []
             #self.model.save(model_path)
-            self.model.save(model_path)
+            other = self.model
+            other.perturbed_agent = []
+            other.callback = []
+            other.save(model_path)
             if self.verbose >= 2:
                 print(f"Saving model checkpoint to {model_path}")
             '''
