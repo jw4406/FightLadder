@@ -888,8 +888,8 @@ class AdvRolloutBuffer(BaseBuffer):
             log_prob = log_prob.reshape(-1, 1)
             dstb_log_prob = dstb_log_prob.reshape(-1, 1)
         test = np.round(episode_start)
-        if any(episode_start!=0):
-            print("oo")
+        #if any(episode_start!=0):
+        #    print("oo")
         # Reshape needed when using multiple envs with discrete observations
         # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
         if isinstance(self.observation_space, spaces.Discrete):

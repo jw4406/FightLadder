@@ -27,10 +27,17 @@ PRETRAIN = True
 
 FINETUNE = False
 EVAL = False
-SAVE_FREQ = 10_000  # Save a checkpoint every 10,000 steps
+SAVE_FREQ = 100  # Save a checkpoint every 10,000 steps
 TOTAL_TIMESTEPS = 100_000
-CHECKPOINT_DIR = "./main_checkpoints"
-TASK_DIR = "./trained_models/tasks"
+
+
+current_dir = os.path.dirname(__file__)
+CHECKPOINT_DIR = current_dir + "/main_checkpoints"
+TASK_DIR = current_dir + "/trained_models/tasks"
+
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+os.makedirs(TASK_DIR, exist_ok=True)
+
 MODEL_NAME = "streetfighter_v1"
 
 if EVAL is False:
