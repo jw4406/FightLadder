@@ -1,0 +1,7 @@
+{"time":"2025-07-07T22:15:06.423412791-04:00","level":"INFO","msg":"stream: starting","core version":"0.19.11","symlink path":"/home/jw4406/codebase/FightLadder/wandb/run-20250707_221506-ithc8g77/logs/debug-core.log"}
+{"time":"2025-07-07T22:15:06.612760913-04:00","level":"INFO","msg":"created new stream","id":"ithc8g77"}
+{"time":"2025-07-07T22:15:06.612790389-04:00","level":"INFO","msg":"stream: started","id":"ithc8g77"}
+{"time":"2025-07-07T22:15:06.61282282-04:00","level":"INFO","msg":"writer: Do: started","stream_id":"ithc8g77"}
+{"time":"2025-07-07T22:15:06.612899985-04:00","level":"INFO","msg":"sender: started","stream_id":"ithc8g77"}
+{"time":"2025-07-07T22:15:06.613017136-04:00","level":"INFO","msg":"handler: started","stream_id":"ithc8g77"}
+{"time":"2025-07-07T22:15:06.792974038-04:00","level":"INFO","msg":"Starting system monitor"}
