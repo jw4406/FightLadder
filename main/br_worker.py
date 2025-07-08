@@ -16,7 +16,17 @@ from stable_baselines3.common.save_util import load_from_zip_file
 # --- Configuration ---
 current_dir = os.path.dirname(__file__)
 TASK_DIR = current_dir + "/trained_models/tasks"
+PROCESSING_DIR = current_dir + "/trained_models/processing"
+DONE_DIR = current_dir + "/trained_models/done"
 BR_MODEL_DIR = current_dir + "/trained_models/br_models"
+os.makedirs(BR_MODEL_DIR, exist_ok=True)
+os.makedirs(TASK_DIR, exist_ok=True)
+os.makedirs(PROCESSING_DIR, exist_ok=True)
+os.makedirs(DONE_DIR, exist_ok=True)
+
+if not os.listdir(TASK_DIR):
+    print("Warning: The TASK_DIR is empty. Please run ippo.py --player PLAYER to generate a task file.")
+
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
 BR_TRAINING_STEPS = 100
 
