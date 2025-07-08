@@ -14,11 +14,11 @@ from common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P
 from stable_baselines3.common.callbacks import CheckpointCallback, ExploiterCheckpointCallback
 from stable_baselines3.common.save_util import load_from_zip_file
 # --- Configuration ---
-current_dir = os.getcwd()
+current_dir = os.path.dirname(__file__)
 TASK_DIR = current_dir + "/trained_models/tasks"
 BR_MODEL_DIR = current_dir + "/trained_models/br_models"
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
-BR_TRAINING_STEPS = 50_000_000
+BR_TRAINING_STEPS = 100
 
 PLAYER = "Guile"
 SIDE = "left"
@@ -197,6 +197,18 @@ def train_best_response(task_file_path: str):
     print(f"WORKER [{worker_id}]: Processing task: {os.path.basename(task_file_path)}")
 
     try:
+        # The task file IS the model checkpoint file, just renamed.
+        checkpoint_path = task_file_path
+
+        # Extract timestep from the checkpoint filename for wandb logging
+        try:
+            basename = os.path.basename(checkpoint_path)
+            # Assumes format like '..._12345_steps.task'
+            timestep_str = basename.replace('.task', '').split('_')[-2]
+            ego_timestep = int(timestep_str)
+        except (IndexError, ValueError):
+            print(f"WORKER [{worker_id}]: Could not parse timestep from filename: {basename}. BR win rate will not be logged against a specific step.")
+            ego_timestep = None
 
         finetune_model = Generalist_SPAR(
             "AACCnnPolicy",
@@ -228,7 +240,7 @@ def train_best_response(task_file_path: str):
 
         # Read the path of the frozen policy from the task file
         data, params, pytorch_variables = load_from_zip_file(
-            task_file_path)
+            checkpoint_path)
 
         del params['policy.ctrl_optimizer']
         del params['policy.value_optimizer']
@@ -236,14 +248,15 @@ def train_best_response(task_file_path: str):
         # finetune_model.warmstarted_cont_MAGICS = True
         # finetune_model.warmstart_setup(finetune_model.lr_schedule)
         finetune_model.set_parameters(params, exact_match=False, device=finetune_model.device)
-        if not os.path.exists(task_file_path):
-            raise FileNotFoundError(f"Checkpoint file not found at {task_file_path}")
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
 
         # --- This is where your specific BR logic goes ---
         # 1. Load the frozen opponent
         # fixed_opponent = PPO.load(checkpoint_path)
         wandb.init(project="exploiter",
                    entity='jw4406',
+                   group="br_workers",
                    config={"eval_rew": 0,
                            "epochs": 0,
                            "br_wr": 0})
@@ -256,14 +269,17 @@ def train_best_response(task_file_path: str):
         br_agent = Exploiter('CnnPolicy', exploiter_env_generator(), device='cuda', exploited=finetune_model, n_steps=1024, batch_size=512, n_epochs=1)
 
         # 4. Train the BR agent
-        br_model_name = f"br_to_{os.path.basename(task_file_path).replace('.zip', '')}.zip"
-        exploiter_callback = ExploiterCheckpointCallback(save_freq=10000, save_path=BR_MODEL_DIR, name_prefix=br_model_name)
+        br_model_name = f"br_to_{os.path.splitext(os.path.basename(checkpoint_path))[0]}.zip"
+        exploiter_callback = ExploiterCheckpointCallback(save_freq=100, save_path=BR_MODEL_DIR, name_prefix=br_model_name)
         br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
 
         # eval BR against ego right here! both models are already in namespace.
 
         wr = evaluate_sa(STATE, finetune_model, br_agent, 0, record=False) # do not change False to True
-        wandb.log({"wr": wr})
+        if ego_timestep is not None:
+            wandb.log({"br_win_rate_vs_ego": wr, "global_step": ego_timestep})
+        else:
+            wandb.log({"br_win_rate_vs_ego": wr})
 
         # 5. Save the trained BR model
         br_agent.save(os.path.join(BR_MODEL_DIR, br_model_name))
