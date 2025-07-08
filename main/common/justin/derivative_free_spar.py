@@ -269,7 +269,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                     ori_rollout_data, ori_policy, ego, network_keys, clip_range
                 )
                 pg_losses.append(policy_loss.item())
-                entropy_losses.append(entropy.item())
+                entropy_losses.append(entropy.mean().item())
 
                 perturbed_policy_loss, _, _ = self._calculate_policy_loss(
                     perturbed_rollout_data, perturbed_policy, ego, network_keys, clip_range
