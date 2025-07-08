@@ -2,15 +2,31 @@
     // Use IntelliSense to learn about possible attributes.
     // Hover to view descriptions of existing attributes.
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    //
+    // FOR TRAIN.PY
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python Debugger: Current File with Arguments",
+            "name": "Python Debugger: Current File",
             "type": "debugpy",
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "args": "${command:pickArgs}"
+            "args": [
+                //side=left, state=1
+                // "--reset", "round",
+                // "--state", "stars/Champion.Level1.RyuVsRyu.left_star1", //"stars/Champion.Level1.RyuVsRyu.${side}_star${state}", // # difficulty level
+                // "--side", "left", //"${side}", // # left/right
+                // "--model-name-prefix", "ppo_ryu_left_star1", // "ppo_ryu_${side}_star${state}", 
+                // "--save-dir", "trained_models/ppo_ryu_left_star1", // "trained_models/ppo_ryu_${side}_star${state}", 
+                // "--log-dir", "logs/ppo_ryu_left_star1", // "logs/ppo_ryu_${side}_star${state}", 
+                // "--video-dir", "videos/ppo_ryu_left_star1", // "videos/ppo_ryu_${side}_star${state}",
+                // "--num-epoch", "50",
+                // "--enable-combo",
+                // "--null-combo",
+                // "--transform-action",
+                "--player", "Guile",
+            ],
         }
     ]
 }
