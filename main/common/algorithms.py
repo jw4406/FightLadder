@@ -4657,6 +4657,7 @@ class Exploiter(PPO):
 
         #assert exploited is not None
         assert exploiting == "ego" or exploiting == "adv"
+        self.exploiting = exploiting
         self.exploited = exploited
 
     def collect_rollouts(
