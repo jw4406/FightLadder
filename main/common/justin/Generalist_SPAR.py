@@ -354,8 +354,8 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                 clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
             new_obs, rewards, rew_other, dones, infos = env.step(clipped_actions)
-            if np.any(rewards > 0):
-                print("ooo")
+            #if np.any(rewards > 0):
+            #    print("ooo")
             # assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
             self.num_timesteps += env.num_envs
             #wandb.log({"epochs": self.num_timesteps})
