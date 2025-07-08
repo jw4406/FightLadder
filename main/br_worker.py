@@ -29,6 +29,7 @@ if not os.listdir(TASK_DIR):
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
 BR_TRAINING_STEPS = 100
+BR_TRAINING_STEPS = 100
 
 PLAYER = "Guile"
 SIDE = "left"
@@ -56,20 +57,6 @@ def evaluate_sa(curr_state, model, exploiter_model, env_index, greedy=0, record=
 
         while not done:
             if model.use_mirror is True:
-                '''
-                from stable_baselines3.common.save_util import load_from_zip_file
-                if model.use_mirror is True:
-                    data, params, pytorch_variables = load_from_zip_file(
-
-                        "/home/jw4406/codebase/FightLadder/main/trained_models/ippo_mirror_pre_%s/ppo_%s_27894000_steps.zip" % (
-
-                            PLAYER, PLAYER))
-                    del params['policy.ctrl_optimizer']
-                    del params['policy.value_optimizer']
-                    del params['policy.dstb_optimizer']
-                    not_ego = model
-                    not_ego.set_parameters(params, exact_match=False, device=model.device)
-                    '''
                 (action, _states), (_, _) = model.predict(obs, env_index, deterministic=False)
                 exploit_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
 
@@ -89,9 +76,6 @@ def evaluate_sa(curr_state, model, exploiter_model, env_index, greedy=0, record=
             obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
             if record:
                 video_log.append(Image.fromarray(env.render(mode="rgb_array")))
-            # print(info)
-            # if done:
-            #     video_log[-1].save(f"{args.video_dir}/episode_{i}.png")
 
             if done:
                 if record:
@@ -117,9 +101,6 @@ def evaluate_sa(curr_state, model, exploiter_model, env_index, greedy=0, record=
             print("Victory!")
             # vic[j-1] = 1
             win_cnt += 1
-
-        # print("Total reward: {}\n".format(total_reward))
-        # episode_reward_sum += total_reward
 
         env.close()
 
@@ -297,7 +278,7 @@ def train_best_response(task_file_path: str):
             wandb.log({"br_win_rate_vs_ego": wr})
 
         # 5. Save the trained BR model
-        br_agent.save(os.path.join(BR_MODEL_DIR, br_model_name))
+        # br_agent.save(os.path.join(BR_MODEL_DIR, br_model_name))
         # -------------------------------------------------
 
         print(f"WORKER [{worker_id}]: Successfully trained and saved {br_model_name}")
