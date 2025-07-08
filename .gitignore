@@ -1,5 +1,5 @@
-main/__pycache__/
-main/common/__pycache__
+__pycache__/
+**/__pycache__/
 venv/
 main/finetune/
 main/trained_models/
@@ -20,3 +20,5 @@ main/benchmark_models/*
 main/trained_models/tasks*
 main/*task
 wandb/*
+.vscode/
+*.pyc
