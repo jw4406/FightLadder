@@ -266,7 +266,7 @@ def train_best_response(task_file_path: str):
         env = exploiter_env_generator()
 
         # 3. Create a new agent to be the best response
-        br_agent = Exploiter('CnnPolicy', exploiter_env_generator(), device='cuda', exploited=finetune_model, n_steps=1024, batch_size=512, n_epochs=1)
+        br_agent = Exploiter('CnnPolicy', exploiter_env_generator(), device='cuda', exploited=finetune_model, n_steps=1024, batch_size=512, n_epochs=1, exploiting='ego')
 
         # 4. Train the BR agent
         br_model_name = f"br_to_{os.path.splitext(os.path.basename(checkpoint_path))[0]}.zip"
@@ -275,9 +275,14 @@ def train_best_response(task_file_path: str):
 
         # eval BR against ego right here! both models are already in namespace.
 
-        wr = evaluate_sa(STATE, finetune_model, br_agent, 0, record=False) # do not change False to True
+        wr = evaluate_sa(STATE[0], finetune_model, br_agent, 0, record=False) # do not change False to True
+        rew_arr = np.zeros(len(br_agent.ep_info_buffer))
+        for i in range(len(rew_arr)):
+            rew_arr[i] = br_agent.ep_info_buffer[i]['r']
+        mean_rew = np.mean(rew_arr)
         if ego_timestep is not None:
-            wandb.log({"br_win_rate_vs_ego": wr, "global_step": ego_timestep})
+            wandb.log({"br_win_rate_vs_%s" % (br_agent.exploiting): wr, "global_step": ego_timestep})
+            wandb.log({"br_mean_reward_vs_%s" % (br_agent.exploiting): mean_rew, "global_step": ego_timestep})
         else:
             wandb.log({"br_win_rate_vs_ego": wr})
 
