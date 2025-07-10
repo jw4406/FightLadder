@@ -1,18 +1,23 @@
 # br_worker.py
 import os
 import time, av
+import copy
 import random
 import retro
 from PIL import Image
 import wandb
 import torch
-from common.justin.Generalist_SPAR import Generalist_SPAR
+import torch.multiprocessing as mp
+from multiprocessing.managers import DictProxy
+from common.justin.Generalist_SPAR import Generalist_SPAR, generalist_SPAR_predict
 from common.const import *
 from common.retro_wrappers import SFWrapper, Monitor2P
 from common.algorithms import Exploiter
 from common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P
 from stable_baselines3.common.callbacks import CheckpointCallback, ExploiterCheckpointCallback
 from stable_baselines3.common.save_util import load_from_zip_file
+from utils import agent_win, select_device
+
 # --- Configuration ---
 current_dir = os.path.dirname(__file__)
 TASK_DIR = current_dir + "/trained_models/tasks"
@@ -37,8 +42,147 @@ player_folder_name = PLAYER + '_' + SIDE
 
 STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name, PLAYER, PLAYER)]
 
+def gen_dummy_policy(exploiter_model: Exploiter) -> torch.nn.Module:
+    """
+    This function creates a dummy copy of exploiter_model.
+    It is needed when we need to pass a copy of exploiter_model.policy (cannot use deepcopy).
+
+    Args: TODO: Complete the docstring
+
+    Returns:
+        A copy of exploiter_model.policy.
+    """
+
+    # Step 1: Get the class of the policy
+    policy_cls = type(exploiter_model.policy)
+    
+    # Step 2: Instantiate a new policy with the same architecture
+    # (This is the tricky part: SB3 policies require obs_space, act_space, net args, etc.)
+    # The easiest way is to pull those from the existing policy:
+    new_policy = policy_cls(
+                            observation_space=exploiter_model.policy.observation_space,
+                            action_space=exploiter_model.policy.action_space,
+                            lr_schedule=lambda _: 0.0,  # Doesn't matter for inference
+                            )
+    
+    # Step 3: Load weights
+    new_policy.load_state_dict(exploiter_model.policy.state_dict())
+
+    # Step 4: Move to CPU
+    return new_policy.cpu()
+    
+
 @torch.no_grad()
-def evaluate_sa(curr_state, model, exploiter_model, env_index, greedy=0, record=False):
+def evaluate_single_iter(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, greedy: int=0, record: bool=False) -> bool:
+        """
+        This function evaluates a single episode and returns win or loss.
+        
+        Args: TODO: Complete the docstring
+
+        Returns True if won and False otherwise.
+        """
+        
+        env = make_env(sf_game, state=curr_state, side='both', reset_type='round', rendering=False,
+                 enable_combo=False, null_combo=False,
+                 transform_action=False, seed=0)().env
+        done = False
+
+        obs = env.reset()
+        if record:
+            video_log = [Image.fromarray(env.render(mode="rgb_array"))]
+
+        while not done:
+            #TODO: This if is not very clean: can probably be replaced with a single call to predict.
+            if use_mirror is True:
+                (action, _states), (_, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs, env_index=env_index, deterministic=False)
+                exploit_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
+                action_other = exploit_action
+            else:
+                (action, _states), (action_other, _states_other) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs, env_index=env_index, deterministic=False)
+            br_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
+
+            action_other = br_action
+            obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
+            if record:
+                video_log.append(Image.fromarray(env.render(mode="rgb_array")))
+
+            if done:
+                if record:
+                    try:
+                        name = curr_state.split("/")[1]
+                    except:
+                        name = curr_state
+                    height, width, layers = np.array(video_log[0]).shape
+                    container = av.open(f"{args.video_dir}/{name}_episode_{j}.mp4", mode='w')
+                    stream = container.add_stream('h264', rate=10)
+                    stream.width = width
+                    stream.height = height
+                    stream.pix_fmt = 'yuv420p'
+                    for img in video_log:
+                        frame = av.VideoFrame.from_image(img)
+                        for packet in stream.encode(frame):
+                            container.mux(packet)
+                    remain_packets = stream.encode(None)
+                    container.mux(remain_packets)
+                    container.close()
+
+        env.close()
+        return agent_win(info)
+
+def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, return_list: DictProxy, pid: int, episodes: int, greedy: int=0, record: bool=False):
+    try:
+        device = select_device()
+        model.eval().to(device)
+        exploiter_model.eval().to(device)
+
+        win_count = 0
+        for _ in range(episodes):
+            win_count += evaluate_single_iter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
+        return_list[pid] = win_count
+    except Exception as e:
+        print(f"Worker {pid} failed with exception {e}")
+        raise
+
+def evaluate_sa_parallel(curr_state: str, model: Generalist_SPAR, exploiter_model: Exploiter, env_index: int, greedy: int=0, record: bool=False, num_episodes: int=50, num_workers: int=5) -> float:
+    #Set up multiprocessing
+    if __name__=="__main__":
+        mp.set_start_method("spawn", force=True)
+
+    manager = mp.Manager()
+    return_list = manager.dict()
+    processes = []
+
+    #Calculate episodes per worker
+    episodes = num_episodes//num_workers
+    if num_episodes % num_workers > 0:
+        print(f"Warning: The total number of episodes ({num_episodes}) is not divisible by the number of workers ({num_workers}).")
+
+    for pid in range(num_workers):
+        #Sharing the models across processes is not safe - create copies
+        #Create CPU versions of the models for deepcopy (safer than deepcopying GPU models)
+        policy_copy = copy.deepcopy(model.policy).cpu()
+        exploiter_policy_copy = gen_dummy_policy(exploiter_model)
+        
+        #The following line can be used for serial debugging
+        # evaluate_sa_worker(curr_state, model.use_mirror, policy_copy, exploiter_policy_copy, env_index, return_list, pid, episodes, greedy, record)
+        p = mp.Process(
+                target=evaluate_sa_worker,
+                args=(curr_state, model.use_mirror, policy_copy, exploiter_policy_copy, env_index, return_list, pid, episodes, greedy, record)
+                )
+        p.start()
+        processes.append(p)
+
+    for p in processes:
+        p.join()
+
+    total_wins = sum(return_list.values())
+    win_rate = total_wins / num_episodes
+    print(f"Winning rate: {win_rate:.2f}")
+    return win_rate    
+
+#TODO: Once we are satisfied with evaluate_sa_parallel, we can remove this function (to avoid code bloating).
+@torch.no_grad()
+def evaluate_sa(curr_state: str, model: Generalist_SPAR, exploiter_model: Exploiter, env_index: int, greedy: int=0, record: bool=False):
     #assert isinstance(model, Specialized_Agent)
     # global STATE
     num_episodes = 50
@@ -59,11 +203,9 @@ def evaluate_sa(curr_state, model, exploiter_model, env_index, greedy=0, record=
             if model.use_mirror is True:
                 (action, _states), (_, _) = model.predict(obs, env_index, deterministic=False)
                 exploit_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
-
                 action_other = exploit_action
 
             else:
-
                 if np.random.uniform() > greedy:
                     (action, _states), (action_other, _states_other) = model.predict(obs, env_index,
                                                                                      deterministic=False)
@@ -114,13 +256,11 @@ def const_schedule(initial_value: float):
 
     return func
 
-
 def critic_decay_schedule(initial_value: float):
     def func(curr_step: int) -> float:
         return initial_value / curr_step
 
     return func
-
 
 def actor_decay_schedule(initial_value: float):
     def func(curr_step: int) -> float:
@@ -266,6 +406,7 @@ def train_best_response(task_file_path: str):
 
         # eval BR against ego right here! both models are already in namespace.
 
+        wr = evaluate_sa_parallel(curr_state=STATE[0], model=finetune_model, exploiter_policy_copy=br_agent, env_index=0, record=False)
         wr = evaluate_sa(STATE[0], finetune_model, br_agent, 0, record=False) # do not change False to True
         rew_arr = np.zeros(len(br_agent.ep_info_buffer))
         for i in range(len(rew_arr)):
@@ -288,7 +429,6 @@ def train_best_response(task_file_path: str):
         print(f"WORKER [{worker_id}]: FAILED to process task {os.path.basename(task_file_path)}. Error: {e}")
         # Optionally, move the failed task to an "error" directory instead of "done"
         # to inspect it later.
-
 
 if __name__ == "__main__":
     wandb.login(key='d95a51c4001b862123a34a3853fe0306906d2f07')

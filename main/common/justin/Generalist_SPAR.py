@@ -1043,17 +1043,8 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
 
-    def predict(self, obs, env_index, deterministic=False):
-        if self.use_mirror is True:
-            # when mirror is true, ego is fighting ego
-            # we need to query the policy twice
-
-            (ego_action, state), (right_action, _) = self.policy.predict(obs, deterministic=deterministic)
-            left_action = ego_action
-        else:
-            (left_action, state), (right_action, _) = self.policy.predict(obs, deterministic=deterministic, network_keys=[env_index])
-            #(_, _), (right_action, _) = self.adversaries[env_index].predict(obs, deterministic=deterministic)
-        return (left_action, state), (right_action, state)
+    def predict(self, obs: np.ndarray, env_index: int, deterministic: bool=False) -> tuple:
+        return generalist_SPAR_predict(use_mirror=self.use_mirror, policy=self.policy, obs=obs, env_index=env_index, deterministic=deterministic)
 
     def value_targ_forward(self, obs, network_keys=None):
         preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.policy.normalize_images)
@@ -1130,3 +1121,19 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
         #self.rollout_buffer.advantages = self.rollout_buffer.swap_and_flatten_pt(advantages)
         buf.returns  = returns
         #count = count + 1
+    
+def generalist_SPAR_predict(use_mirror: bool, policy: torch.nn.Module, obs: np.ndarray, env_index: int, deterministic: bool=False) -> tuple:
+    """
+    This function implements the logic of Generalist_SPAR.predict.
+    It needs to happen outside of Generalist_SPAR so it can be called without having to copy a Generalist_SPAR object.
+    This is important so torch.multiprocessing can call this function without having to make a lot of unnecessary copies.
+
+    TODO: Need to add Args and Returns to the docstring.
+    """
+    if use_mirror is True:
+        # when mirror is true, ego is fighting ego
+        # we need to query the policy twice
+        (left_action, state), (right_action, _) = policy.predict(obs, deterministic=deterministic)
+    else:
+        (left_action, state), (right_action, _) = policy.predict(obs, deterministic=deterministic, network_keys=[env_index])
+    return (left_action, state), (right_action, state)
