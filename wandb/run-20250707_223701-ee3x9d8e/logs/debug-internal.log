@@ -1,7 +1,0 @@
-{"time":"2025-07-07T22:37:01.393202776-04:00","level":"INFO","msg":"stream: starting","core version":"0.19.11","symlink path":"/home/jw4406/codebase/FightLadder/wandb/run-20250707_223701-ee3x9d8e/logs/debug-core.log"}
-{"time":"2025-07-07T22:37:01.606877371-04:00","level":"INFO","msg":"created new stream","id":"ee3x9d8e"}
-{"time":"2025-07-07T22:37:01.606906396-04:00","level":"INFO","msg":"stream: started","id":"ee3x9d8e"}
-{"time":"2025-07-07T22:37:01.60692954-04:00","level":"INFO","msg":"writer: Do: started","stream_id":"ee3x9d8e"}
-{"time":"2025-07-07T22:37:01.606943346-04:00","level":"INFO","msg":"handler: started","stream_id":"ee3x9d8e"}
-{"time":"2025-07-07T22:37:01.606967301-04:00","level":"INFO","msg":"sender: started","stream_id":"ee3x9d8e"}
-{"time":"2025-07-07T22:37:01.798969448-04:00","level":"INFO","msg":"Starting system monitor"}
