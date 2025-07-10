@@ -143,7 +143,7 @@ def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module
         print(f"Worker {pid} failed with exception {e}")
         raise
 
-def evaluate_sa_parallel(curr_state: str, model: Generalist_SPAR, exploiter_model: Exploiter, env_index: int, greedy: int=0, record: bool=False, num_episodes: int=50, num_workers: int=5) -> float:
+def evaluate_sa_parallel(curr_state: str, model: Generalist_SPAR, exploiter_model: Exploiter, env_index: int, greedy: int=0, record: bool=False, num_episodes: int=50, num_workers: int=12) -> float:
     #Set up multiprocessing
     if __name__=="__main__":
         mp.set_start_method("spawn", force=True)
@@ -406,7 +406,7 @@ def train_best_response(task_file_path: str):
 
         # eval BR against ego right here! both models are already in namespace.
 
-        wr = evaluate_sa_parallel(curr_state=STATE[0], model=finetune_model, exploiter_policy=br_agent, env_index=0, record=False)
+        wr = evaluate_sa_parallel(curr_state=STATE[0], model=finetune_model, exploiter_model=br_agent, env_index=0, record=False)
         #TODO: Remove the following line once debugging is done
         # wr = evaluate_sa(STATE[0], finetune_model, br_agent, 0, record=False) # do not change False to True
         rew_arr = np.zeros(len(br_agent.ep_info_buffer))
