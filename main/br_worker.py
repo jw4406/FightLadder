@@ -406,8 +406,9 @@ def train_best_response(task_file_path: str):
 
         # eval BR against ego right here! both models are already in namespace.
 
-        wr = evaluate_sa_parallel(curr_state=STATE[0], model=finetune_model, exploiter_policy_copy=br_agent, env_index=0, record=False)
-        wr = evaluate_sa(STATE[0], finetune_model, br_agent, 0, record=False) # do not change False to True
+        wr = evaluate_sa_parallel(curr_state=STATE[0], model=finetune_model, exploiter_policy=br_agent, env_index=0, record=False)
+        #TODO: Remove the following line once debugging is done
+        # wr = evaluate_sa(STATE[0], finetune_model, br_agent, 0, record=False) # do not change False to True
         rew_arr = np.zeros(len(br_agent.ep_info_buffer))
         for i in range(len(rew_arr)):
             rew_arr[i] = br_agent.ep_info_buffer[i]['r']
