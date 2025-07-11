@@ -18,6 +18,13 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.policies import ActorCriticPolicy, ActorCriticCnnPolicy, MultiInputActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
+
+DEBUG = True
+
+def _print_gpu(tag=""):
+    if DEBUG:
+        print(f"[{tag}] Allocated: {torch.cuda.memory_allocated() / 1024**2:.1f} MB | Reserved: {torch.cuda.memory_reserved() / 1024**2:.1f} MB")
+
 class Derivative_Free_SPAR(Generalist_SPAR):
     def __init__(self,
             policy: Union[str, Type[ActorCriticPolicy]],
@@ -135,14 +142,26 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         """
         Update policy using the currently gathered rollout buffer.
         """
+        if DEBUG:
+            print("="*20)
+        _print_gpu("Before inner_loop")
         self.inner_loop()
-        self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent.policy, ego=True)
-        self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent.policy, ego=False)
-        del self.perturbed_agent
+        _print_gpu("Before leader_grads #1")
+        self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent_policy, ego=True)
+        _print_gpu("Before leader_grads #2")
+        self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
+        _print_gpu("Before del self.perturbed_agent")
+        del self.perturbed_agent_policy
+        _print_gpu("Before del self.perturbed_buf")
         del self.perturbed_buf
+        _print_gpu("Before del self.perturbed_adv_buf")
         del self.perturbed_adv_buf
+        _print_gpu("Before gc.collect()")
         gc.collect()
+        _print_gpu("Before torch.cuda.empty_cache()")
         torch.cuda.empty_cache()
+        _print_gpu("At the end of train")
+    
     def perturb_params(self, param_list):
         count = 0
         for i in range(len(param_list)):
@@ -159,6 +178,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 p.copy_(p + torch.reshape(v[count:count + torch.numel(p)], p.shape).to(self.device))
                 count = count + torch.numel(p)
         return
+    
     def env_perturb_params(self):
         buf = self.rollout_buffer_class(self.n_steps,
             self.observation_space,
@@ -195,7 +215,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         # 3. Update value functions for both original and perturbed agents
         self._update_value_functions(perturbed_agent, perturbed_adv_buf)
         
-        self.perturbed_agent = perturbed_agent
+        self.perturbed_agent_policy = perturbed_agent.policy
 
     def _create_perturbed_agent(self):
         # Deepcopy and perturb parameters for both ego and adversary policies
@@ -231,7 +251,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             policy.num_adv = 1
             
             values, _, _, _, _ = policy.evaluate_actions(
-                torch.Tensor(rollout_data.observations).to(device),
+                torch.from_numpy(rollout_data.observations).to(device), #Changed to torch.from_numpy, a bit safer. #Big memory spike here
                 actions,
                 dstb_actions,
                 shuffle_keys=rollout_data.env_indices,
@@ -310,18 +330,19 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         if self.use_sde:
             policy.reset_noise(self.batch_size)
 
-        if ego:
-            old_log_prob = rollout_data.old_log_prob
-            _, log_prob, entropy, _, _ = policy.evaluate_actions(
-                torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions,
-                shuffle_keys=rollout_data.env_indices, network_keys=network_keys
-            )
-        else:
-            old_log_prob = rollout_data.old_dstb_log_prob
-            _, _, _, log_prob, entropy = policy.evaluate_actions(
-                torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions,
-                shuffle_keys=rollout_data.env_indices, network_keys=network_keys
-            )
+        with torch.no_grad():
+            if ego:
+                old_log_prob = rollout_data.old_log_prob
+                _, log_prob, entropy, _, _ = policy.evaluate_actions(
+                    torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions,
+                    shuffle_keys=rollout_data.env_indices, network_keys=network_keys
+                )
+            else:
+                old_log_prob = rollout_data.old_dstb_log_prob
+                _, _, _, log_prob, entropy = policy.evaluate_actions(
+                    torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions,
+                    shuffle_keys=rollout_data.env_indices, network_keys=network_keys
+                )
         
         advantages = torch.from_numpy(rollout_data.advantages).to(self.device)
         if self.normalize_advantage and len(advantages) > 1:
