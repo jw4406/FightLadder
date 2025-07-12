@@ -205,16 +205,25 @@ class Derivative_Free_SPAR(Generalist_SPAR):
 
     def inner_loop(self):
         # 1. Create and configure the perturbed agent
+        start_time = time.time()
         perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
+        end_time = time.time()
+        print(f"Time for _create_perturbed_agent: {end_time - start_time:.4f}s")
         
         # 2. Collect rollouts using the perturbed agent
+        start_time = time.time()
         perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params()
+        end_time = time.time()
+        print(f"Time for env_perturb_params: {end_time - start_time:.4f}s")
         self.perturbed_buf = perturbed_buf
         self.perturbed_adv_buf = perturbed_adv_buf
 
         # 3. Update value functions for both original and perturbed agents
+        start_time = time.time()
         self._update_value_functions(perturbed_agent, perturbed_adv_buf)
-        
+        end_time = time.time()
+        print(f"Time for _update_value_functions: {end_time - start_time:.4f}s")
+
         self.perturbed_agent_policy = perturbed_agent.policy
 
     def _create_perturbed_agent(self):
@@ -237,19 +246,32 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         for i in range(len(self.adversary_buffers)):
             for epoch in range(self.n_epochs):
                 # Update value function for the original agent
-                self._update_single_value_function(self.policy, self.adversary_buffers[i], i, self.n_env_per_adv, self.device)
+                self._update_single_value_function(self.policy, self.adversary_buffers[i], i, self.n_env_per_adv, self.device, "original")
                 
                 # Update value function for the perturbed agent
-                self._update_single_value_function(perturbed_agent.policy, perturbed_adv_buf[i], i, perturbed_agent.n_env_per_adv, perturbed_agent.device)
+                self._update_single_value_function(perturbed_agent.policy, perturbed_adv_buf[i], i, perturbed_agent.n_env_per_adv, perturbed_agent.device, "perturbed")
 
-    def _update_single_value_function(self, policy, buffer, adversary_index, num_envs, device):
-        for rollout_data in buffer.get(self.batch_size):
+    def _update_single_value_function(self, policy, buffer, adversary_index, num_envs, device, tag=""):
+        total_start_time = time.time()
+
+        get_start_time = time.time()
+        rollout_data_list = list(buffer.get(self.batch_size))
+        get_end_time = time.time()
+        print(f"  Time for buffer.get() ({tag}): {get_end_time - get_start_time:.4f}s")
+
+        for rollout_data in rollout_data_list:
+            loop_start_time = time.time()
+
+            start_time = time.time()
             actions = torch.Tensor(rollout_data.actions).to(device)
             dstb_actions = torch.Tensor(rollout_data.dstb_actions).to(device)
+            end_time = time.time()
+            print(f"    Time for tensor conversion ({tag}): {end_time - start_time:.4f}s")
 
             policy.num_global_env = num_envs
             policy.num_adv = 1
             
+            start_time = time.time()
             values, _, _, _, _ = policy.evaluate_actions(
                 torch.from_numpy(rollout_data.observations).to(device), #Changed to torch.from_numpy, a bit safer. #Big memory spike here
                 actions,
@@ -258,19 +280,42 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 network_keys=[adversary_index]
             )
             values = values.flatten()
+            end_time = time.time()
+            print(f"    Time for policy.evaluate_actions ({tag}): {end_time - start_time:.4f}s")
 
+            start_time = time.time()
             value_loss = F.mse_loss(torch.Tensor(-rollout_data.returns).to(device), values)
+            end_time = time.time()
+            print(f"    Time for F.mse_loss ({tag}): {end_time - start_time:.4f}s")
 
+            start_time = time.time()
             policy.value_optimizer.zero_grad()
             if hasattr(policy, 'ctrl_optimizer') and policy.ctrl_optimizer:
                 policy.ctrl_optimizer.zero_grad()
             if hasattr(policy, 'dstb_optimizer') and policy.dstb_optimizer:
                 policy.dstb_optimizer.zero_grad()
+            end_time = time.time()
+            print(f"    Time for optimizers.zero_grad ({tag}): {end_time - start_time:.4f}s")
             
+            start_time = time.time()
             value_loss.backward()
+            end_time = time.time()
+            print(f"    Time for value_loss.backward ({tag}): {end_time - start_time:.4f}s")
             
+            start_time = time.time()
             th.nn.utils.clip_grad_norm_(policy.parameters(), self.max_grad_norm)
+            end_time = time.time()
+            print(f"    Time for clip_grad_norm_ ({tag}): {end_time - start_time:.4f}s")
+
+            start_time = time.time()
             policy.value_optimizer.step()
+            end_time = time.time()
+            print(f"    Time for value_optimizer.step ({tag}): {end_time - start_time:.4f}s")
+
+            loop_end_time = time.time()
+            print(f"  Time for one loop iteration ({tag}): {loop_end_time - loop_start_time:.4f}s")
+        total_end_time = time.time()
+        print(f"Time for _update_single_value_function ({tag}): {total_end_time - total_start_time:.4f}s")
 
     def leader_grads(self, ori_buf, perturbed_buf, ori_policy, perturbed_policy, ego=True):
         clip_range = self.clip_range(self._current_progress_remaining)
