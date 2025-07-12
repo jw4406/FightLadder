@@ -804,27 +804,32 @@ class AdvRolloutBuffer(BaseBuffer):
         """
         Compute lambda-return (TD(lambda) estimate) and GAE(lambda) advantage
         with full PyTorch gradient tracking.
-
         :param last_values: Tensor of state value estimations for the last step (one per env)
         :param dones: Tensor indicating if the last step was terminal (one bool per env)
         """
         last_values = last_values.flatten()
         last_gae_lam = th.zeros_like(last_values)
 
+        # Convert numpy arrays to tensors
+        rewards_pt = self.to_torch(self.rewards, copy=False)
+        values_pt = self.to_torch(self.values, copy=False)
+        episode_starts_pt = self.to_torch(self.episode_starts, copy=False)
+        advantages_pt = th.zeros_like(rewards_pt)
+
         for step in reversed(range(self.buffer_size)):
             if step == self.buffer_size - 1:
                 next_non_terminal = 1.0 - dones.float()
                 next_values = last_values
             else:
-                next_non_terminal = 1.0 - self.episode_starts[step + 1].float()
-                next_values = self.values[step + 1]
+                next_non_terminal = 1.0 - episode_starts_pt[step + 1].float()
+                next_values = values_pt[step + 1]
 
-            delta = self.rewards[step] + self.gamma * next_values * next_non_terminal - self.values[step]
+            delta = rewards_pt[step] + self.gamma * next_values * next_non_terminal - values_pt[step]
             last_gae_lam = delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam
-            self.advantages[step] = last_gae_lam
+            advantages_pt[step] = last_gae_lam
 
-        self.returns = self.advantages + self.values
-        print("")
+        self.advantages = advantages_pt.clone().cpu().numpy()
+        self.returns = self.advantages + self.values.clone().cpu().numpy()
 
     def compute_returns_and_advantage_pt_test(self, last_values: th.Tensor, dones: th.Tensor) -> None:
         """
