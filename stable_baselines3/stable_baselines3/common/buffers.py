@@ -2,7 +2,7 @@ import warnings
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from typing import Any, Dict, Generator, List, Optional, Union
-
+import time
 import numpy as np
 import torch as th
 from gym import spaces
@@ -733,6 +733,10 @@ class AdvRolloutBuffer(BaseBuffer):
         super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
         self.gae_lambda = gae_lambda
         self.gamma = gamma
+        self.dstb_action_space = dstb_action_space
+        self.observations, self.actions, self.rewards, self.advantages = None, None, None, None
+        self.returns, self.episode_starts, self.values, self.log_probs = None, None, None, None
+        self.dstb_actions, self.dstb_log_probs = None, None
         self.generator_ready = False
 
         if dstb_action_space is not None:
@@ -745,7 +749,11 @@ class AdvRolloutBuffer(BaseBuffer):
         print("")
 
     def reset(self) -> None:
-        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=np.float32)
+        print("--- AdvRolloutBuffer RESET ---")
+        self.pos = 0
+        self.full = False
+        obs_shape = (self.buffer_size, self.n_envs) + self.obs_shape
+        self.observations = np.zeros(obs_shape, dtype=np.float32)
         self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
         self.dstb_actions = np.zeros((self.buffer_size, self.n_envs, self.dstb_action_dim), dtype=np.float32)
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
@@ -948,14 +956,12 @@ class AdvRolloutBuffer(BaseBuffer):
     def sample(self, batch_inds):
         return self._get_samples(batch_inds)
 
-
-
-
-    def get(self, batch_size: Optional[int] = None) -> Generator[RolloutBufferSamples, None, None]:
-        assert self.full, ""
-        indices = np.random.permutation(self.buffer_size * self.n_envs)
-        self.indices = indices
-        # Prepare the data
+    def prepare_data_for_training(self) -> None:
+        """
+        Prepares the buffer for training by swapping and flattening the data.
+        This is a one-time operation that should be called after collecting rollouts.
+        """
+        print("--- AdvRolloutBuffer PREPARED ---")
         if not self.generator_ready:
             _tensor_names = [
                 "observations",
@@ -968,27 +974,34 @@ class AdvRolloutBuffer(BaseBuffer):
                 "returns",
                 "env_indices"
             ]
-            '''_flat_tensor_names = [
-                "flat_observations",
-                "flat_actions",
-                "flat_dstb_actions",
-                "flat_values",
-                "flat_log_probs",
-                "flat_dstb_log_probs",
-                "flat_advantages",
-                "flat_returns",
-                "flat_env_indices"
-            ]'''
-
-            len_count = self.swap_and_flatten(self.returns)
-            self.flat_obs = th.zeros(len(len_count.squeeze())).to(self.device)
-            self.flat_advantages = th.zeros_like(self.flat_obs)
-            self.flat_values = th.zeros_like(self.flat_obs)
 
             for tensor in _tensor_names:
                 self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
+
+            # Convert numpy arrays to torch tensors
+            _torch_tensor_names = [
+                "observations",
+                "actions",
+                "dstb_actions",
+                "values",
+                "log_probs",
+                "dstb_log_probs",
+                "advantages",
+                "returns",
+            ]
+            for tensor in _torch_tensor_names:
+                self.__dict__[tensor] = self.to_torch(self.__dict__[tensor])
+            
             self.generator_ready = True
 
+
+    def get(self, batch_size: Optional[int] = None) -> Generator[AdvRolloutBufferSamples, None, None]:
+        assert self.full, ""
+        assert self.generator_ready, "You must call .prepare_data_for_training() before getting data from the buffer."
+        indices = np.random.permutation(self.buffer_size * self.n_envs)
+        self.indices = indices
+        # Prepare the data - MOVED TO prepare_data_for_training()
+        
         # Return everything, don't create minibatches
         if batch_size is None:
             batch_size = self.buffer_size * self.n_envs
@@ -1015,7 +1028,7 @@ class AdvRolloutBuffer(BaseBuffer):
             self.returns[batch_inds].flatten(),
             self.env_indices[batch_inds].flatten()
         )
-        return AdvRolloutBufferSamples(*tuple(data))
+        return AdvRolloutBufferSamples(*data)
 
 class DictReplayBuffer(ReplayBuffer):
     """
