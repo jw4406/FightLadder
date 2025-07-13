@@ -238,7 +238,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
         n_steps = 0
         rollout_buffer.reset()
         for i in range(self.num_adversaries):
-            self.adversary_buffers[i].reset()
+            adversary_buffers[i].reset()
         # Sample new weights for the state dependent exploration
         if self.use_sde:
             self.policy.reset_noise(env.num_envs)
@@ -458,6 +458,10 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                                                                              dones=torch.Tensor(dones[chunk]).to(self.device))
 
         callback.on_rollout_end()
+
+        rollout_buffer.prepare_data_for_training()
+        for buf in adversary_buffers:
+            buf.prepare_data_for_training()
 
         return True
 

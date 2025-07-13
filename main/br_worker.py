@@ -19,11 +19,12 @@ from stable_baselines3.common.save_util import load_from_zip_file
 from utils import agent_win, select_device
 
 # --- Configuration ---
-current_dir = os.path.dirname(__file__)
-TASK_DIR = current_dir + "/trained_models/tasks"
-PROCESSING_DIR = current_dir + "/trained_models/processing"
-DONE_DIR = current_dir + "/trained_models/done"
-BR_MODEL_DIR = current_dir + "/trained_models/br_models"
+current_dir = os.path.dirname(os.path.abspath(__file__))
+print(current_dir)
+TASK_DIR = os.path.join(current_dir, "trained_models/tasks")
+PROCESSING_DIR = os.path.join(current_dir, "trained_models/processing")
+DONE_DIR = os.path.join(current_dir, "trained_models/done")
+BR_MODEL_DIR = os.path.join(current_dir, "trained_models/br_models")
 os.makedirs(BR_MODEL_DIR, exist_ok=True)
 os.makedirs(TASK_DIR, exist_ok=True)
 os.makedirs(PROCESSING_DIR, exist_ok=True)
@@ -34,7 +35,7 @@ if not os.listdir(TASK_DIR):
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
 BR_TRAINING_STEPS = 100
-BR_TRAINING_STEPS = 100
+BR_TRAINING_STEPS = 10000000
 
 PLAYER = "Guile"
 SIDE = "left"
@@ -397,7 +398,7 @@ def train_best_response(task_file_path: str):
         env = exploiter_env_generator()
 
         # 3. Create a new agent to be the best response
-        br_agent = Exploiter('CnnPolicy', exploiter_env_generator(), device='cuda', exploited=finetune_model, n_steps=1024, batch_size=512, n_epochs=1, exploiting='ego')
+        br_agent = Exploiter('CnnPolicy', exploiter_env_generator(), device='cuda', exploited=finetune_model, n_steps=1024, batch_size=512, n_epochs=10, exploiting='ego')
 
         # 4. Train the BR agent
         br_model_name = f"br_to_{os.path.splitext(os.path.basename(checkpoint_path))[0]}.zip"
