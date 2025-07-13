@@ -201,6 +201,11 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             dstb_action_space=self.dstb_action_space) for i in range(self.num_adversaries)]
         #[adv_buf[i].reset() for i in range(len(adv_buf))]
         self.collect_rollouts(self.env, self.callback, buf, adv_buf, n_rollout_steps=self.n_steps)
+        
+        buf.prepare_data_for_training()
+        for i in range(len(adv_buf)):
+            adv_buf[i].prepare_data_for_training()
+            
         return buf, adv_buf
 
     def inner_loop(self):
@@ -273,7 +278,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             
             start_time = time.time()
             values, _, _, _, _ = policy.evaluate_actions(
-                torch.from_numpy(rollout_data.observations).to(device), #Changed to torch.from_numpy, a bit safer. #Big memory spike here
+                rollout_data.observations, #Changed to torch.from_numpy, a bit safer. #Big memory spike here
                 actions,
                 dstb_actions,
                 shuffle_keys=rollout_data.env_indices,
@@ -343,7 +348,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 self._compute_and_apply_grads(policy_loss, perturbed_policy_loss, ego)
                 
                 with th.no_grad():
-                    old_log_prob_tensor = torch.from_numpy(ori_rollout_data.old_log_prob if ego else ori_rollout_data.old_dstb_log_prob).to(self.device)
+                    old_log_prob_tensor = ori_rollout_data.old_log_prob if ego else ori_rollout_data.old_dstb_log_prob
                     log_ratio = log_prob - old_log_prob_tensor
                     approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
                     approx_kl_divs_epoch.append(approx_kl_div)
@@ -352,7 +357,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
 
         self._n_updates += self.n_epochs
         if hasattr(self.rollout_buffer, 'values') and self.rollout_buffer.values is not None and self.rollout_buffer.returns is not None:
-             explained_var = explained_variance(self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten())
+             explained_var = explained_variance(self.rollout_buffer.values.flatten().cpu().numpy(), self.rollout_buffer.returns.flatten().cpu().numpy())
         else:
             explained_var = np.nan
         self._log_leader_metrics(ego, entropy_losses, pg_losses, approx_kl_divs_all, explained_var, clip_range)
@@ -389,7 +394,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                     shuffle_keys=rollout_data.env_indices, network_keys=network_keys
                 )
         
-        advantages = torch.from_numpy(rollout_data.advantages).to(self.device)
+        advantages = rollout_data.advantages
         if self.normalize_advantage and len(advantages) > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 

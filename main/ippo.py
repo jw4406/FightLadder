@@ -27,14 +27,14 @@ PRETRAIN = True
 
 FINETUNE = False
 EVAL = False
-SAVE_FREQ = 100  # Save a checkpoint every 10,000 steps
+SAVE_FREQ = 10000  # Save a checkpoint every 10,000 steps
 TOTAL_TIMESTEPS = 100_000
 
 
-current_dir = os.path.dirname(__file__)
-CHECKPOINT_DIR = current_dir + "/main_checkpoints"
-TASK_DIR = current_dir + "/trained_models/tasks"
-
+current_dir = os.path.dirname(os.path.abspath(__file__))
+CHECKPOINT_DIR = os.path.join(current_dir, "main_checkpoints")
+TASK_DIR = os.path.join(current_dir, "trained_models/tasks")
+print("#$%^&*()*&^%$#@$%^&*(&^%$#@"+ current_dir)
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 os.makedirs(TASK_DIR, exist_ok=True)
 
@@ -445,7 +445,7 @@ def main(PLAYER):
         return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
 
-    checkpoint_interval = 1000  # checkpoint_interval * num_envs = total_steps_per_checkpoint
+    checkpoint_interval = 10000  # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
                                  other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
