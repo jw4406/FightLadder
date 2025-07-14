@@ -446,15 +446,21 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
         rollout_buffer.rewards = torch.from_numpy(rollout_buffer.rewards).to(self.device)
         rollout_buffer.advantages = torch.from_numpy(rollout_buffer.advantages).to(self.device)
         rollout_buffer.episode_starts = torch.from_numpy(rollout_buffer.episode_starts).to(self.device)
-        rollout_buffer.compute_returns_and_advantage_pt(last_values=values, dones=torch.Tensor(dones).to(self.device))
-
+        rollout_buffer.vectorized_compute_returns_and_advantages(last_values=values, dones=torch.Tensor(dones).to(self.device))
+        #test = deepcopy(rollout_buffer)
+        #test.compute_returns_and_advantage_pt(last_values=values, dones=torch.Tensor(dones).to(self.device))
+        #assert torch.allclose(torch.from_numpy(test.advantages).to(self.device), rollout_buffer.advantages)
+        #assert torch.allclose(torch.from_numpy(test.returns).to(self.device), rollout_buffer.returns)   
+        #assert torch.allclose(test.values, torch.from_numpy(rollout_buffer.values).to(self.device))
+        #assert torch.allclose(test.rewards, torch.from_numpy(rollout_buffer.rewards).to(self.device))
+        #assert torch.allclose(test.episode_starts, torch.from_numpy(rollout_buffer.episode_starts).to(self.device).to(self.device))
         for i in range(self.num_adversaries):  # is this a bug?
             chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
             adversary_buffers[i].values = torch.from_numpy(adversary_buffers[i].values).to(self.device)
             adversary_buffers[i].rewards = torch.from_numpy(adversary_buffers[i].rewards).to(self.device)
             adversary_buffers[i].advantages = torch.from_numpy(adversary_buffers[i].advantages).to(self.device)
             adversary_buffers[i].episode_starts = torch.from_numpy(adversary_buffers[i].episode_starts).to(self.device)
-            adversary_buffers[i].compute_returns_and_advantage_pt(last_values=-values[chunk],
+            adversary_buffers[i].vectorized_compute_returns_and_advantages(last_values=-values[chunk],
                                                                              dones=torch.Tensor(dones[chunk]).to(self.device))
 
         callback.on_rollout_end()

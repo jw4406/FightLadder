@@ -860,6 +860,59 @@ class AdvRolloutBuffer(BaseBuffer):
             last_gae_lam = advantages[step]  # Update for next iteration
 
         print("GAE computed")
+
+    def vectorized_compute_returns_and_advantages(self, last_values: th.Tensor, dones: np.ndarray) -> None:
+        """
+        Post-processing step: compute the lambda-return (TD(lambda) estimate)
+        and GAE(lambda) advantage using a vectorized PyTorch implementation.
+
+        :param last_values: state value estimation for the last step (one for each env)
+        :param dones: if the last step was a terminal step (one bool for each env).
+        """
+        # Convert final dones to a tensor
+        dones = self.to_torch(dones)
+        last_values = last_values.flatten() # Shape: (n_envs,)
+
+        # --- Vectorized Delta Calculation ---
+        # The first step is to calculate the TD-residuals (deltas) for all steps at once.
+        # To do this, we need the value of the next state (v(s_t+1)) for each state.
+
+        # self.values is shape (buffer_size, n_envs)
+        # We append last_values to create a tensor of V(s_t+1) for each s_t.
+        next_values = th.cat(
+            [self.to_torch(self.values)[1:], last_values.unsqueeze(0)], dim=0
+        )
+
+        # We also need to know if the next state is a terminal state.
+        # self.episode_starts is shape (buffer_size, n_envs)
+        next_non_terminal = 1.0 - th.cat(
+            [self.to_torch(self.episode_starts)[1:], dones.unsqueeze(0).float()], dim=0
+        )
+
+        # Now calculate deltas for all steps in a single vectorized operation.
+        deltas = self.to_torch(self.rewards) + self.gamma * next_values * next_non_terminal - self.to_torch(self.values)
+
+        # --- Advantage Calculation ---
+        # The GAE calculation has a recursive dependency: A_t depends on A_{t+1}.
+        # A_t = delta_t + (gamma * gae_lambda * next_non_terminal_t) * A_{t+1}
+        # While this part is difficult to fully vectorize without complex operations,
+        # running a small Python loop over pre-computed tensors on a GPU is still very fast.
+
+        advantages_pt = th.zeros_like(deltas)
+        last_gae_lam = th.zeros_like(last_values) # Shape: (n_envs,)
+        discount_factor = self.gamma * self.gae_lambda
+
+        for t in reversed(range(self.buffer_size)):
+            # Advantage at the next step is `last_gae_lam`.
+            # The non-terminal condition is for the transition from t to t+1.
+            last_gae_lam = deltas[t] + discount_factor * next_non_terminal[t] * last_gae_lam
+            advantages_pt[t] = last_gae_lam
+
+        # --- Finalization ---
+        # Store the results back as numpy arrays in the buffer.
+        self.advantages = advantages_pt#.clone().cpu().numpy()
+        self.returns = self.advantages + self.values # self.values is already a numpy array
+
     def swap_and_flatten_pt(self, arr: th.Tensor) -> th.Tensor:
         """
         Swap and then flatten axes 0 (buffer_size) and 1 (n_envs)
@@ -963,22 +1016,6 @@ class AdvRolloutBuffer(BaseBuffer):
         """
         print("--- AdvRolloutBuffer PREPARED ---")
         if not self.generator_ready:
-            _tensor_names = [
-                "observations",
-                "actions",
-                "dstb_actions",
-                "values",
-                "log_probs",
-                "dstb_log_probs",
-                "advantages",
-                "returns",
-                "env_indices"
-            ]
-
-            for tensor in _tensor_names:
-                self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
-
-            # Convert numpy arrays to torch tensors
             _torch_tensor_names = [
                 "observations",
                 "actions",
@@ -989,9 +1026,19 @@ class AdvRolloutBuffer(BaseBuffer):
                 "advantages",
                 "returns",
             ]
-            for tensor in _torch_tensor_names:
-                self.__dict__[tensor] = self.to_torch(self.__dict__[tensor])
-            
+
+            for tensor_name in _torch_tensor_names:
+                tensor = self.__dict__[tensor_name]
+                # th.as_tensor avoids a copy if the numpy array is on the CPU and writable
+                # which should be the case here
+                th_tensor = th.as_tensor(tensor, device=self.device)
+                shape = th_tensor.shape
+                # .contiguous().view() is more efficient than reshape for non-contiguous tensors
+                self.__dict__[tensor_name] = th_tensor.transpose(0, 1).contiguous().view(shape[0] * shape[1], *shape[2:])
+
+            # Handle env_indices separately as it remains a numpy array
+            self.env_indices = self.swap_and_flatten(self.env_indices)
+
             self.generator_ready = True
 
 
