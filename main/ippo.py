@@ -34,7 +34,7 @@ TOTAL_TIMESTEPS = 100_000
 current_dir = os.path.dirname(os.path.abspath(__file__))
 CHECKPOINT_DIR = os.path.join(current_dir, "main_checkpoints")
 TASK_DIR = os.path.join(current_dir, "trained_models/tasks")
-print("#$%^&*()*&^%$#@$%^&*(&^%$#@"+ current_dir)
+#print("#$%^&*()*&^%$#@$%^&*(&^%$#@"+ current_dir)
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 os.makedirs(TASK_DIR, exist_ok=True)
 
@@ -337,8 +337,8 @@ def main(PLAYER):
     if use_mirror is True:
         OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
-        OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
-        OPPONENT_LIST = ["Guile", "EHonda", "ChunLi"]
+        #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
+        OPPONENT_LIST = ["Guile", "EHonda", "ChunLi", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief"]
     SIDE = "left"  # "right"
     player_folder_name = [PLAYER[i] + '_' + SIDE for i in range(len(PLAYER))]
     if REMOVAL is not None:
@@ -505,10 +505,10 @@ def main(PLAYER):
         finetune_model = Derivative_Free_SPAR(
             "AACCnnPolicy",
             finetune_env,
-            device="cpu",
+            device="cuda",
             verbose=2,
-            n_steps=1536,  # 1408,
-            batch_size=768,  # 2816,  # 512,
+            n_steps=768,  # 1408,
+            batch_size=1536,  # 2816,  # 512,
             n_epochs=20,
             gamma=0.94,
             v_learning_rate=5e-5, c_learning_rate=1e-6,
