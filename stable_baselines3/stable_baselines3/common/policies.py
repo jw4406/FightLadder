@@ -1729,9 +1729,13 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             num_global_env = self.num_global_env
             num_env_per_adv = num_global_env // num_adversaries
             full = [i for i in range(num_global_env)]
-            concated_adv_log_probs = th.zeros_like(ctrl_log_prob)
+            concated_adv_log_probs = th.empty_like(ctrl_log_prob) #empty_like is a bit faster than zeros_like
             for i in range(num_adversaries):
                 chunk = full[i * num_env_per_adv : (i+1)*num_env_per_adv]
+                #Try not to move stuff to CPU if can be avoided
+                chunk_tensor = th.tensor(chunk, device=shuffle_keys.device if th.is_tensor(shuffle_keys) else 'cpu')
+                shuffle_keys = shuffle_keys if th.is_tensor(shuffle_keys) else th.tensor(shuffle_keys, device=chunk_tensor.device)
+                indices = th.isin(shuffle_keys, chunk_tensor)
                 indices = np.isin(shuffle_keys, chunk) # is a bool array can be directly be used as keys
 
                 concated_adv_log_probs[indices] = dstb_distribution[i].log_prob(dstb_actions[indices])
@@ -1740,12 +1744,12 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
 
         #dstb_log_prob = [dstb_distribution[i].log_prob(dstb_actions[i]) for i in range(self.num_adversaries)]
         #test = th.zeros((actions.shape[0],))
-        chunk_size = actions.shape[0] // num_adversaries
+        # chunk_size = actions.shape[0] // num_adversaries
         #for i in range(self.num_adversaries):
         #    test[i * (chunk_size): (i + 1) * chunk_size] = dstb_log_prob[i][:]
         #dstb_log_prob = test
-        values = th.zeros((latent_vf.shape[0],), device=self.device)
-        num_global_env = np.max(shuffle_keys) + 1 #latent_vf.shape[0] // self.num_adversaries
+        values = th.empty((latent_vf.shape[0],), device=self.device) #empty is a bit faster than zeros
+        num_global_env = th.max(shuffle_keys) + 1 #latent_vf.shape[0] // self.num_adversaries
         num_env_per_adv = num_global_env // num_adversaries
         for i in range(num_adversaries):
             chunk = full[i * num_env_per_adv: (i + 1) * num_env_per_adv]
