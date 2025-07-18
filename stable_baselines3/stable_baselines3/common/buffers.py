@@ -753,17 +753,17 @@ class AdvRolloutBuffer(BaseBuffer):
         self.pos = 0
         self.full = False
         obs_shape = (self.buffer_size, self.n_envs) + self.obs_shape
-        self.observations = np.zeros(obs_shape, dtype=np.float32)
-        self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
-        self.dstb_actions = np.zeros((self.buffer_size, self.n_envs, self.dstb_action_dim), dtype=np.float32)
-        self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.observations = np.zeros(obs_shape, dtype=np.uint8)
+        self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float16)
+        self.dstb_actions = np.zeros((self.buffer_size, self.n_envs, self.dstb_action_dim), dtype=np.float16)
+        self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
+        self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
         self.episode_starts = np.zeros((self.buffer_size, self.n_envs), dtype=bool)
-        self.values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.dstb_log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.dones = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
+        self.log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
+        self.dstb_log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
+        self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
+        self.dones = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
         self.generator_ready = False
         self.env_indices = np.tile(np.arange(self.n_envs), (self.buffer_size, 1))  # Shape: (buffer_size, n_envs)
         super().reset()
