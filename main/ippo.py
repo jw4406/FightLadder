@@ -338,9 +338,9 @@ def main(PLAYER):
         OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
-        OPPONENT_LIST = ["Guile"]
+        OPPONENT_LIST = ["Guile", "EHonda", "ChunLi"]
     SIDE = "left"  # "right"
-    player_folder_name = PLAYER + '_' + SIDE
+    player_folder_name = [PLAYER[i] + '_' + SIDE for i in range(len(PLAYER))]
     if REMOVAL is not None:
         OPPONENT_LIST.remove(REMOVAL)
 
@@ -367,9 +367,9 @@ def main(PLAYER):
 
     else:
 
-        STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name, PLAYER, OPPONENT_LIST[i])
-                 for i
-                 in range(len(OPPONENT_LIST))]
+        STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name[i], PLAYER[i], OPPONENT_LIST[j])
+                 for i in range(len(PLAYER))
+                 for j in range(len(OPPONENT_LIST))]
     state_list = STATE
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'],
@@ -407,7 +407,8 @@ def main(PLAYER):
     parser.add_argument('--fsp', action='store_true', help='Fictitious self-play')
     parser.add_argument('--fsp-threshold', type=float, help='Fictitious self-play threshold', default=0.5)
     parser.add_argument('--async-update', action='store_true', help='Update left and right asynchronously')
-    parser.add_argument("--player", type=str, required=True)
+    #parser.add_argument("--player", type=str, required=True)
+    parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
     args = parser.parse_args()
 
     # PLAYER = args.player
@@ -473,7 +474,7 @@ def main(PLAYER):
         finetune_model = TSS_PPO(
             "AACCnnPolicy",
             finetune_env,
-            device="cuda",
+            device="cpu",
             verbose=2,
             n_steps=48,
             batch_size=24,  # 512,
@@ -493,7 +494,7 @@ def main(PLAYER):
         )
 
         if REMOVAL is None:
-            num_adversary = len(OPPONENT_LIST)
+            num_adversary = len(OPPONENT_LIST) * len(PLAYER)
         else:
             if isinstance(REMOVAL, str):
                 num_adversary = 11
@@ -504,7 +505,7 @@ def main(PLAYER):
         finetune_model = Derivative_Free_SPAR(
             "AACCnnPolicy",
             finetune_env,
-            device="cuda",
+            device="cpu",
             verbose=2,
             n_steps=1536,  # 1408,
             batch_size=768,  # 2816,  # 512,
@@ -715,7 +716,8 @@ def main(PLAYER):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     wandb.login(key='d95a51c4001b862123a34a3853fe0306906d2f07')
-    parser.add_argument("--player", type=str, required=True)
+    #parser.add_argument("--player", type=str, required=True)
+    parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
     args = parser.parse_args()
 
     PLAYER = args.player

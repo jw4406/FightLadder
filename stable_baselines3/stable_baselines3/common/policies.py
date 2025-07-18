@@ -1675,7 +1675,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             which_envs = range(i * num_env_per_adv, (i + 1) * num_env_per_adv)
             indices = np.isin(shuffle_keys, which_envs)
             this_env_latent_pi_dstb = latent_pi_dstb[indices]
-            self.dstb_action_net[network_keys[i]] = self.dstb_action_net[network_keys[i]].to('cuda')
+            self.dstb_action_net[network_keys[i]] = self.dstb_action_net[network_keys[i]].to(self.device)
             # chunk = full[i * num_per : (i+1) * num_per]
             this_adv_dstb_mean_actions = self.dstb_action_net[network_keys[i]](this_env_latent_pi_dstb)
 
@@ -1709,33 +1709,34 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             and entropy of the action distribution.
         """
         # Preprocess the observation if needed
-        num_adversaries = len(network_keys)
-        features = self.extract_features(obs)
-        if self.share_features_extractor:
-            latent_both, latent_vf = self.mlp_extractor(features)
-            latent_pi = latent_both[0]
-            latent_pi_dstb = latent_both[1]
-        else:
-            pi_ctrl_features, pi_dstb_features, vf_features = features
-            latent_both = self.mlp_extractor.forward_actor(pi_ctrl_features, pi_dstb_features)
-            latent_pi = latent_both[0]
-            latent_pi_dstb = latent_both[1]
-            latent_vf = self.mlp_extractor.forward_critic(vf_features)
-        ctrl_distribution, dstb_distribution = self._get_action_dist_from_latent_nonuniform(latent_pi, latent_pi_dstb, shuffle_keys=shuffle_keys, network_keys=network_keys)
-        ctrl_log_prob = ctrl_distribution.log_prob(actions)
-        #dstb_log_prob = th.zeros_like(ctrl_log_prob)
-        #num_global_env = np.max(shuffle_keys) + 1 #TODO HACKY
-        num_global_env = self.num_global_env
-        num_env_per_adv = num_global_env // num_adversaries
-        full = [i for i in range(num_global_env)]
-        concated_adv_log_probs = th.zeros_like(ctrl_log_prob)
-        for i in range(num_adversaries):
-            chunk = full[i * num_env_per_adv : (i+1)*num_env_per_adv]
-            indices = np.isin(shuffle_keys, chunk) # is a bool array can be directly be used as keys
+        with th.no_grad():
+            num_adversaries = len(network_keys)
+            features = self.extract_features(obs)
+            if self.share_features_extractor:
+                latent_both, latent_vf = self.mlp_extractor(features)
+                latent_pi = latent_both[0]
+                latent_pi_dstb = latent_both[1]
+            else:
+                pi_ctrl_features, pi_dstb_features, vf_features = features
+                latent_both = self.mlp_extractor.forward_actor(pi_ctrl_features, pi_dstb_features)
+                latent_pi = latent_both[0]
+                latent_pi_dstb = latent_both[1]
+                latent_vf = self.mlp_extractor.forward_critic(vf_features)
+            ctrl_distribution, dstb_distribution = self._get_action_dist_from_latent_nonuniform(latent_pi, latent_pi_dstb, shuffle_keys=shuffle_keys, network_keys=network_keys)
+            ctrl_log_prob = ctrl_distribution.log_prob(actions)
+            #dstb_log_prob = th.zeros_like(ctrl_log_prob)
+            #num_global_env = np.max(shuffle_keys) + 1 #TODO HACKY
+            num_global_env = self.num_global_env
+            num_env_per_adv = num_global_env // num_adversaries
+            full = [i for i in range(num_global_env)]
+            concated_adv_log_probs = th.zeros_like(ctrl_log_prob)
+            for i in range(num_adversaries):
+                chunk = full[i * num_env_per_adv : (i+1)*num_env_per_adv]
+                indices = np.isin(shuffle_keys, chunk) # is a bool array can be directly be used as keys
 
-            concated_adv_log_probs[indices] = dstb_distribution[i].log_prob(dstb_actions[indices])
+                concated_adv_log_probs[indices] = dstb_distribution[i].log_prob(dstb_actions[indices])
 
-        dstb_log_prob = concated_adv_log_probs
+            dstb_log_prob = concated_adv_log_probs
 
         #dstb_log_prob = [dstb_distribution[i].log_prob(dstb_actions[i]) for i in range(self.num_adversaries)]
         #test = th.zeros((actions.shape[0],))
