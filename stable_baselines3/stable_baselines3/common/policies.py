@@ -1735,8 +1735,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
                 #Try not to move stuff to CPU if can be avoided
                 chunk_tensor = th.tensor(chunk, device=shuffle_keys.device if th.is_tensor(shuffle_keys) else 'cpu')
                 shuffle_keys = shuffle_keys if th.is_tensor(shuffle_keys) else th.tensor(shuffle_keys, device=chunk_tensor.device)
-                indices = th.isin(shuffle_keys, chunk_tensor)
-                indices = np.isin(shuffle_keys, chunk) # is a bool array can be directly be used as keys
+                indices = th.isin(shuffle_keys, chunk_tensor) # is a bool array can be directly be used as keys
 
                 concated_adv_log_probs[indices] = dstb_distribution[i].log_prob(dstb_actions[indices])
 
