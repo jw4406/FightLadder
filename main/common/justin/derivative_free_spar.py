@@ -246,9 +246,10 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         perturbed_agent = self.copy_constructor()
         with torch.no_grad():
             for i in range(len(perturbed_agent.policy.dstb_optimizer.param_groups[0]['params'])):
-                perturbed_agent.policy.ctrl_optimizer.param_groups[0]['params'][i].copy_(other_ego[i])
+                #perturbed_agent.policy.ctrl_optimizer.param_groups[0]['params'][i].copy_(other_ego[i])
                 perturbed_agent.policy.dstb_optimizer.param_groups[0]['params'][i].copy_(other_adv[i])
-                
+            for i in range(len(perturbed_agent.policy.ctrl_optimizer.param_groups[0]['params'])):
+                perturbed_agent.policy.ctrl_optimizer.param_groups[0]['params'][i].copy_(other_ego[i])
         return perturbed_agent, other_ego, other_adv
 
     def _update_value_functions(self, perturbed_agent, perturbed_adv_buf):
