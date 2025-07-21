@@ -338,7 +338,7 @@ def main(PLAYER):
         OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
-        OPPONENT_LIST = ["Guile", "EHonda", "ChunLi", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief"]
+        OPPONENT_LIST = ["Guile", "EHonda", "Sagat","ChunLi", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
     SIDE = "left"  # "right"
     player_folder_name = [PLAYER[i] + '_' + SIDE for i in range(len(PLAYER))]
     if REMOVAL is not None:
@@ -507,8 +507,8 @@ def main(PLAYER):
             finetune_env,
             device="cuda",
             verbose=2,
-            n_steps=768,  # 1408,
-            batch_size=1536,  # 2816,  # 512,
+            n_steps=200,  # 1408,
+            batch_size=2880,  # 2816,  # 512,
             n_epochs=20,
             gamma=0.94,
             v_learning_rate=5e-5, c_learning_rate=1e-6,
