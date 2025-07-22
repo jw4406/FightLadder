@@ -396,6 +396,7 @@ def main(PLAYER):
                         help='Initial level to load from. By default 0, starting from pretrain', default=0)
     parser.add_argument('--resume-epoch', type=int, help='Resume epoch. By default 0, starting from pretrain',
                         default=0)
+    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=1)
     parser.add_argument('--enable-combo', action='store_true', help='Enable special move action space for environment')
     parser.add_argument('--null-combo', action='store_true', help='Null action space for special move')
     parser.add_argument('--transform-action', action='store_true', help='Transform action space to MultiDiscrete')
@@ -425,7 +426,7 @@ def main(PLAYER):
     # Set up the environment and model
     def env_generator():
         # STATE
-        each_env_count = 4
+        each_env_count = args.envs_per_matchup
         env = []
         for i in range(len(STATE)):
             for j in range(each_env_count):
@@ -508,8 +509,8 @@ def main(PLAYER):
             finetune_env,
             device="cuda",
             verbose=2,
-            n_steps=200,  # 1408,
-            batch_size=2880,  # 2816,  # 512,
+            n_steps=600,  # 1408,
+            batch_size=1200,  # 2816,  # 512,
             n_epochs=20,
             gamma=0.94,
             v_learning_rate=5e-5, c_learning_rate=1e-6,
@@ -571,6 +572,7 @@ def main(PLAYER):
             if model_file.endswith(".pt"):
                 model_file = torch.load(model_file, map_location=torch.device('cpu'))["kwargs"]["agent_dict"]
             finetune_model.set_parameters(model_file)
+        print("model generated")
         return finetune_model
 
     finetune_epoch_model_path = os.path.join(args.save_dir, args.model_name_prefix + f"_final_steps")
