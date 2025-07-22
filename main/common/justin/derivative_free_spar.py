@@ -1,8 +1,11 @@
 import torch
+from torch.multiprocessing import Process
 import gc
 import torch as th, time, sys
 import numpy as np
 from gym import spaces
+import math
+from typing import List
 from copy import deepcopy
 from stable_baselines3.common.callbacks import ConvertCallback
 from torch.nn import functional as F
@@ -21,7 +24,14 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.vec_env import VecEnv
 
 DEBUG = True
-TIMING = False
+TIMING = True
+
+class DummyCallback(BaseCallback):
+    def __init__(self):
+        super().__init__()
+
+    def _on_step(self) -> bool:
+        return True
 
 class DummyCallback(BaseCallback):
     def __init__(self):
@@ -33,6 +43,117 @@ class DummyCallback(BaseCallback):
 def _print_gpu(tag=""):
     if DEBUG:
         print(f"[{tag}] Allocated: {torch.cuda.memory_allocated() / 1024**2:.1f} MB | Reserved: {torch.cuda.memory_reserved() / 1024**2:.1f} MB")
+
+def shard_indices(n_items: int, n_gpus: int) -> List[List[int]]:
+    """
+    Splits a range of indices [0, n_items) into n_gpus nearly equal-sized chunks.
+
+    This is needed to distribute adversary buffer updates across multiple GPUs.
+
+    Args:
+        n_items (int):
+            Total number of items to divide (e.g., adversary indices).
+        n_gpus (int):
+            Number of available GPUs to divide the work among.
+
+    Returns:
+        List[List[int]]: A list of `n_gpus` sublists, each containing integer indices.
+
+    Raises:
+        ValueError: If n_items < 0 or n_gpus <= 0.
+    """
+    if n_items < 0 or n_gpus <= 0:
+        raise ValueError("n_items must be >= 0 and n_gpus must be > 0.")
+    size = math.ceil(n_items / n_gpus)
+    return [list(range(i * size, min((i + 1) * size, n_items))) for i in range(n_gpus)]
+
+def worker_update_batch(
+    batch_size: int,
+    max_grad_norm: float,
+    i_list: List[int],
+    adversary_buffers: list,
+    derivative_free_SPAR_policy: torch.nn.Module,
+    perturbed_agent_policy: torch.nn.Module,
+    perturbed_adv_buf,
+    n_epochs: int,
+    n_envs: int,
+    n_env_per_adv: int,
+    device_id: int
+) -> None:
+    """
+    Updates value functions for a shard of adversary indices using a specific GPU.
+
+    Runs inside its own subprocess. Moves the policies and data to the designated GPU,
+    and loops over the assigned adversary buffers to update both original and perturbed agents.
+
+    Args: TODO: Complete docstring
+
+    Returns:
+        None
+    """
+
+    device = torch.device(f"cuda:{device_id}")
+    derivative_free_SPAR_policy.to(device)
+    perturbed_agent_policy.to(device)
+
+    for i in i_list:
+        for epoch in range(n_epochs):
+            _update_single_value_function(
+                batch_size,
+                max_grad_norm,
+                derivative_free_SPAR_policy,
+                adversary_buffers[i],
+                i,
+                n_envs,
+                device
+            )
+            _update_single_value_function(
+                batch_size,
+                max_grad_norm,
+                perturbed_agent_policy,
+                perturbed_adv_buf[i],
+                i,
+                n_env_per_adv,
+                device
+            )
+
+def _update_single_value_function(batch_size: int, max_grad_norm: float, policy, buffer, adversary_index: int, num_envs: int, device: torch.device, tag: str=""):
+    """
+    This function has to be placed outside of the object to enable parallel calls.
+    TODO: Complete the docstring.
+    TODO: Complete static types
+    """
+    total_start_time = time.time()
+
+    get_start_time = time.time()
+    rollout_data_list = list(buffer.get(batch_size))
+    get_end_time = time.time()
+    if TIMING:
+        print(f"  Time for buffer.get() ({tag}): {get_end_time - get_start_time:.4f}s")
+
+    for rollout_data in rollout_data_list:
+        actions = torch.Tensor(rollout_data.actions).to(device)
+        dstb_actions = torch.Tensor(rollout_data.dstb_actions).to(device)
+
+        policy.num_global_env = num_envs
+        policy.num_adv = 1
+        values, _, _, _, _ = policy.evaluate_actions(
+            rollout_data.observations, #Changed to torch.from_numpy, a bit safer. #Big memory spike here
+            actions,
+            dstb_actions,
+            shuffle_keys=rollout_data.env_indices,
+            network_keys=[adversary_index]
+        )
+        values = values.flatten()
+        value_loss = F.mse_loss(torch.Tensor(-rollout_data.returns).to(device), values)
+        policy.value_optimizer.zero_grad()
+        if hasattr(policy, 'ctrl_optimizer') and policy.ctrl_optimizer:
+            policy.ctrl_optimizer.zero_grad()
+        if hasattr(policy, 'dstb_optimizer') and policy.dstb_optimizer:
+            policy.dstb_optimizer.zero_grad()
+        value_loss.backward()
+        th.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
+        policy.value_optimizer.step()
 
 class Derivative_Free_SPAR(Generalist_SPAR):
     def __init__(self,
@@ -151,25 +272,14 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         """
         Update policy using the currently gathered rollout buffer.
         """
-        if DEBUG:
-            print("="*20)
-        _print_gpu("Before inner_loop")
         self.inner_loop()
-        _print_gpu("Before leader_grads #1")
         self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent_policy, ego=True)
-        _print_gpu("Before leader_grads #2")
         self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
-        _print_gpu("Before del self.perturbed_agent")
         del self.perturbed_agent_policy
-        _print_gpu("Before del self.perturbed_buf")
         del self.perturbed_buf
-        _print_gpu("Before del self.perturbed_adv_buf")
         del self.perturbed_adv_buf
-        _print_gpu("Before gc.collect()")
         gc.collect()
-        _print_gpu("Before torch.cuda.empty_cache()")
         torch.cuda.empty_cache()
-        _print_gpu("At the end of train")
     
     def perturb_params(self, param_list):
         count = 0
@@ -260,90 +370,75 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 perturbed_agent.policy.ctrl_optimizer.param_groups[0]['params'][i].copy_(other_ego[i])
         return perturbed_agent, other_ego, other_adv
 
-    def _update_value_functions(self, perturbed_agent, perturbed_adv_buf):
-        for i in range(len(self.adversary_buffers)):
-            for epoch in range(self.n_epochs):
-                # Update value function for the original agent
-                self._update_single_value_function(self.policy, self.adversary_buffers[i], i, self.n_env_per_adv, self.device, "original")
-                
-                # Update value function for the perturbed agent
-                self._update_single_value_function(perturbed_agent.policy, perturbed_adv_buf[i], i, perturbed_agent.n_env_per_adv, perturbed_agent.device, "perturbed")
+    def _update_value_functions(self, perturbed_agent, perturbed_adv_buf) -> None:
+        """
+        Updates value functions either serially (CPU or 1 GPU) or in parallel across multiple GPUs.
 
-    def _update_single_value_function(self, policy, buffer, adversary_index, num_envs, device, tag=""):
-        total_start_time = time.time()
+        Args:
+            perturbed_agent:
+                The agent with perturbed policy and its own buffer (`perturbed_adv_buf`).
+            perturbed_adv_buf:
+                Perturbed adversarial buffer.
 
-        get_start_time = time.time()
-        rollout_data_list = list(buffer.get(self.batch_size))
-        get_end_time = time.time()
-        if TIMING:
-            print(f"  Time for buffer.get() ({tag}): {get_end_time - get_start_time:.4f}s")
+        Returns:
+            None
+        """
+        import torch
 
-        for rollout_data in rollout_data_list:
-            loop_start_time = time.time()
+        n_gpus = torch.cuda.device_count()
+        all_indices = list(range(len(self.adversary_buffers)))
+        print(f"n_gpus={n_gpus}")
 
-            start_time = time.time()
-            actions = torch.Tensor(rollout_data.actions).to(device)
-            dstb_actions = torch.Tensor(rollout_data.dstb_actions).to(device)
-            end_time = time.time()
-            if TIMING:
-                print(f"    Time for tensor conversion ({tag}): {end_time - start_time:.4f}s")
+        if n_gpus <= 1:
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            self.device = device
+            self.policy.to(device)
+            perturbed_agent.device = device
+            perturbed_agent.policy.to(device)
 
-            policy.num_global_env = num_envs
-            policy.num_adv = 1
-            
-            start_time = time.time()
-            values, _, _, _, _ = policy.evaluate_actions(
-                rollout_data.observations, #Changed to torch.from_numpy, a bit safer. #Big memory spike here
-                actions,
-                dstb_actions,
-                shuffle_keys=rollout_data.env_indices,
-                network_keys=[adversary_index]
-            )
-            values = values.flatten()
-            end_time = time.time()
-            if TIMING:
-                print(f"    Time for policy.evaluate_actions ({tag}): {end_time - start_time:.4f}s")
+            for i in all_indices:
+                for epoch in range(self.n_epochs):
+                    _update_single_value_function(
+                        self.batch_size,
+                        self.max_grad_norm,
+                        self.policy,
+                        self.adversary_buffers[i],
+                        i,
+                        self.n_env_per_adv,
+                        device,
+                        "original"
+                    )
+                    _update_single_value_function(
+                        self.batch_size,
+                        self.max_grad_norm,
+                        perturbed_agent.policy,
+                        perturbed_adv_buf[i],
+                        i,
+                        perturbed_agent.n_env_per_adv,
+                        device,
+                        "perturbed"
+                    )
+        else:
+            # Parallel execution across multiple GPUs
+            shards = shard_indices(len(all_indices), n_gpus)
+            procs = []
 
-            start_time = time.time()
-            value_loss = F.mse_loss(torch.Tensor(-rollout_data.returns).to(device), values)
-            end_time = time.time()
-            if TIMING:
-                print(f"    Time for F.mse_loss ({tag}): {end_time - start_time:.4f}s")
+            for device_id, i_list in enumerate(shards):
+                if not i_list:
+                    continue
+                # worker_update_batch(self.batch_size, self.max_grad_norm, i_list, self.adversary_buffers, self.policy, perturbed_agent.policy, perturbed_adv_buf, self.n_epochs, self.n_env_per_adv, perturbed_agent.n_env_per_adv, device_id) #TODO: Debug only, remove this when done
+                p = Process(
+                    target=worker_update_batch,
+                    args=(self.batch_size, self.max_grad_norm, i_list, self.adversary_buffers,
+                            self.policy, perturbed_agent.policy, perturbed_adv_buf,
+                            self.n_epochs, self.n_env_per_adv, perturbed_agent.n_env_per_adv, device_id)
+                )
+                p.start()
+                procs.append(p)
 
-            start_time = time.time()
-            policy.value_optimizer.zero_grad()
-            if hasattr(policy, 'ctrl_optimizer') and policy.ctrl_optimizer:
-                policy.ctrl_optimizer.zero_grad()
-            if hasattr(policy, 'dstb_optimizer') and policy.dstb_optimizer:
-                policy.dstb_optimizer.zero_grad()
-            end_time = time.time()
-            if TIMING:
-                print(f"    Time for optimizers.zero_grad ({tag}): {end_time - start_time:.4f}s")
-            
-            start_time = time.time()
-            value_loss.backward()
-            end_time = time.time()
-            if TIMING:
-                print(f"    Time for value_loss.backward ({tag}): {end_time - start_time:.4f}s")
-            
-            start_time = time.time()
-            th.nn.utils.clip_grad_norm_(policy.parameters(), self.max_grad_norm)
-            end_time = time.time()
-            if TIMING:
-                print(f"    Time for clip_grad_norm_ ({tag}): {end_time - start_time:.4f}s")
+            for p in procs:
+                p.join()
 
-            start_time = time.time()
-            policy.value_optimizer.step()
-            end_time = time.time()
-            if TIMING:
-                print(f"    Time for value_optimizer.step ({tag}): {end_time - start_time:.4f}s")
-
-            loop_end_time = time.time()
-            if TIMING:
-                print(f"  Time for one loop iteration ({tag}): {loop_end_time - loop_start_time:.4f}s")
-        total_end_time = time.time()
-        if TIMING:
-            print(f"Time for _update_single_value_function ({tag}): {total_end_time - total_start_time:.4f}s")
 
     def leader_grads(self, ori_buf, perturbed_buf, ori_policy, perturbed_policy, ego=True):
         clip_range = self.clip_range(self._current_progress_remaining)

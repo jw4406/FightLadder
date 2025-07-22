@@ -2,6 +2,7 @@ import os
 import av
 import sys
 import torch
+import multiprocessing as mp
 import argparse
 import numpy as np
 from PIL import Image
@@ -23,8 +24,8 @@ from common.justin.derivative_free_spar import Derivative_Free_SPAR
 from stable_baselines3 import MAGICS_AL
 from common.retro_wrappers import SFWrapper, Monitor2P
 import wandb
-PRETRAIN = True
 
+PRETRAIN = True
 FINETUNE = False
 EVAL = False
 SAVE_FREQ = 10000  # Save a checkpoint every 10,000 steps
@@ -721,4 +722,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     PLAYER = args.player
+    mp.set_start_method("spawn", force=True) #A lot of stable_baseline3 objects dont' support the default "fork".
     main(PLAYER)
