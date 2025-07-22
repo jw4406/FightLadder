@@ -138,7 +138,7 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
         policy.num_global_env = num_envs
         policy.num_adv = 1
         values, _, _, _, _ = policy.evaluate_actions(
-            rollout_data.observations, #Changed to torch.from_numpy, a bit safer. #Big memory spike here
+            rollout_data.observations.to(device), #Changed to torch.from_numpy, a bit safer. #Big memory spike here
             actions,
             dstb_actions,
             shuffle_keys=rollout_data.env_indices,
