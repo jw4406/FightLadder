@@ -17,7 +17,6 @@ from common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P
 from stable_baselines3.common.callbacks import CheckpointCallback, ExploiterCheckpointCallback
 from stable_baselines3.common.save_util import load_from_zip_file
 from utils import agent_win, select_device
-
 # --- Configuration ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 print(current_dir)
