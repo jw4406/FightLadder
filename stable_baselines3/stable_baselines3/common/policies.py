@@ -2194,7 +2194,6 @@ class MultiInputActorCriticPolicy(ActorCriticPolicy):
             optimizer_kwargs,
         )
 
-
 class ContinuousCritic(BaseModel):
     """
     Critic network(s) for DDPG/SAC/TD3.
@@ -2269,6 +2268,7 @@ class ContinuousCritic(BaseModel):
         with th.no_grad():
             features = self.extract_features(obs, self.features_extractor)
         return self.q_networks[0](th.cat([features, actions], dim=1))
+
 class ContinuousCriticAdv(BaseModel):
     """
     Critic network(s) for SMART-ISAAC.
