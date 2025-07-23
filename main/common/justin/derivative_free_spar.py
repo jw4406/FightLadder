@@ -1,3 +1,4 @@
+import copy
 import torch
 from torch.multiprocessing import Process
 import gc
@@ -22,16 +23,10 @@ from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.policies import ActorCriticPolicy, ActorCriticCnnPolicy, MultiInputActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.vec_env import VecEnv
+from utils import move_policy, select_device
 
 DEBUG = True
 TIMING = True
-
-class DummyCallback(BaseCallback):
-    def __init__(self):
-        super().__init__()
-
-    def _on_step(self) -> bool:
-        return True
 
 class DummyCallback(BaseCallback):
     def __init__(self):
@@ -92,9 +87,11 @@ def worker_update_batch(
         None
     """
 
-    device = torch.device(f"cuda:{device_id}")
-    derivative_free_SPAR_policy.to(device)
-    perturbed_agent_policy.to(device)
+    device = select_device(device_id)
+    perturbed_agent_policy = copy.deepcopy(perturbed_agent_policy)
+    move_policy(perturbed_agent_policy, device)
+    derivative_free_SPAR_policy = copy.deepcopy(derivative_free_SPAR_policy)
+    move_policy(derivative_free_SPAR_policy, device)
 
     for i in i_list:
         for epoch in range(n_epochs):
@@ -389,56 +386,32 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         all_indices = list(range(len(self.adversary_buffers)))
         print(f"n_gpus={n_gpus}")
 
-        if n_gpus <= 1:
-            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-            self.device = device
-            self.policy.to(device)
-            perturbed_agent.device = device
-            perturbed_agent.policy.to(device)
+        # Parallel execution across multiple GPUs
+        n_workers = max(1, n_gpus)
+        shards = shard_indices(len(all_indices), n_workers)
+        procs = []
 
-            for i in all_indices:
-                for epoch in range(self.n_epochs):
-                    _update_single_value_function(
-                        self.batch_size,
-                        self.max_grad_norm,
-                        self.policy,
-                        self.adversary_buffers[i],
-                        i,
-                        self.n_env_per_adv,
-                        device,
-                        "original"
-                    )
-                    _update_single_value_function(
-                        self.batch_size,
-                        self.max_grad_norm,
-                        perturbed_agent.policy,
-                        perturbed_adv_buf[i],
-                        i,
-                        perturbed_agent.n_env_per_adv,
-                        device,
-                        "perturbed"
-                    )
-        else:
-            # Parallel execution across multiple GPUs
-            shards = shard_indices(len(all_indices), n_gpus)
-            procs = []
+        #The policies will be deeopcopied and so they won't have num_global_env, so these values need to be populated here
+        self.policy.num_global_env = self.n_env_per_adv
+        perturbed_agent.policy.num_global_env = perturbed_agent.n_env_per_adv
 
-            for device_id, i_list in enumerate(shards):
-                if not i_list:
-                    continue
-                # worker_update_batch(self.batch_size, self.max_grad_norm, i_list, self.adversary_buffers, self.policy, perturbed_agent.policy, perturbed_adv_buf, self.n_epochs, self.n_env_per_adv, perturbed_agent.n_env_per_adv, device_id) #TODO: Debug only, remove this when done
-                p = Process(
-                    target=worker_update_batch,
-                    args=(self.batch_size, self.max_grad_norm, i_list, self.adversary_buffers,
-                            self.policy, perturbed_agent.policy, perturbed_adv_buf,
-                            self.n_epochs, self.n_env_per_adv, perturbed_agent.n_env_per_adv, device_id)
-                )
-                p.start()
-                procs.append(p)
 
-            for p in procs:
-                p.join()
+        for device_id, i_list in enumerate(shards):
+            if not i_list:
+                continue
+            actual_device_id = device_id % max(1, n_gpus) if n_gpus > 0 else 0
+            # worker_update_batch(self.batch_size, self.max_grad_norm, i_list, self.adversary_buffers, self.policy, perturbed_agent.policy, perturbed_adv_buf, self.n_epochs, self.n_env_per_adv, perturbed_agent.n_env_per_adv, device_id) #TODO: Debug only, remove this when done
+            p = Process(
+                target=worker_update_batch,
+                args=(self.batch_size, self.max_grad_norm, i_list, self.adversary_buffers,
+                        self.policy, perturbed_agent.policy, perturbed_adv_buf,
+                        self.n_epochs, self.n_env_per_adv, perturbed_agent.n_env_per_adv, actual_device_id)
+            )
+            p.start()
+            procs.append(p)
 
+        for p in procs:
+            p.join()
 
     def leader_grads(self, ori_buf, perturbed_buf, ori_policy, perturbed_policy, ego=True):
         clip_range = self.clip_range(self._current_progress_remaining)
