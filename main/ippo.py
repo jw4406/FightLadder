@@ -724,5 +724,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     PLAYER = args.player
-    mp.set_start_method("spawn", force=True) #A lot of stable_baseline3 objects dont' support the default "fork".
+    mp.set_start_method("spawn", force=True) #A lot of stable_baseline3 objects don't support the default "fork".
     main(PLAYER)
