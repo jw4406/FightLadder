@@ -472,7 +472,18 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         """
         Update policy using the currently gathered rollout buffer.
         """
-        self.inner_loop()
+        #self.inner_loop()
+        #self.perturbed_buf = perturbed_buf
+        #self.perturbed_adv_buf = perturbed_adv_buf
+
+        # 3. Update value functions for both original and perturbed agents
+        start_time = time.time()
+        self._update_value_functions(perturbed_agent, perturbed_adv_buf)
+        end_time = time.time()
+        if TIMING:
+            print(f"Time for _update_value_functions: {end_time - start_time:.4f}s")
+
+        self.perturbed_agent_policy = perturbed_agent.policy
         self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent_policy, ego=True)
         self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
         del self.perturbed_agent_policy
@@ -754,8 +765,15 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             callback.on_training_start(locals(), globals())
 
             while self.num_timesteps < total_timesteps:
-
+                perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
+                print("perturbed agent created!", flush=True) 
+                perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params()
+                self.perturbed_buf = perturbed_buf
+                self.perturbed_adv_buf = perturbed_adv_buf
+                self.perturbed_agent_policy = perturbed_agent.policy
+                print("perturbed agent rollout done!", flush=True)
                 continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, n_rollout_steps=self.n_steps)
+                print("main agent rollout done!", flush=True)
                 #if isinstance(self, Exploiter):
                 #    if len(rews) > 2000:
                 #        if (max(rews[-window:]) - min(rews[-window:])) <= tolerance * 2:

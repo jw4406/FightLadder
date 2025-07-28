@@ -21,6 +21,7 @@ from common.algorithms import IPPO, MAGICS_PPO, RARL_PPO, TSS_PPO, Specialized_A
 from common.justin.spar import Single_SPAR
 from common.justin.Generalist_SPAR import Generalist_SPAR
 from common.justin.derivative_free_spar import Derivative_Free_SPAR
+#from common.justin.derivative_free_spar_parallel import Derivative_Free_SPAR
 from stable_baselines3 import MAGICS_AL
 from common.retro_wrappers import SFWrapper, Monitor2P
 import wandb
@@ -448,7 +449,7 @@ def main(PLAYER):
         return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
 
-    checkpoint_interval = 10000  # checkpoint_interval * num_envs = total_steps_per_checkpoint
+    checkpoint_interval = 10000 # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
                                  other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
