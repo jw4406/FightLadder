@@ -422,6 +422,14 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         self.parallel_updater = None
         self.first_run = False
 
+    def _excluded_save_params(self) -> List[str]:
+        """
+        Returns the names of the parameters that should be excluded from save.
+        """
+        excluded = super()._excluded_save_params()
+        excluded.extend(["parallel_updater"])
+        return excluded
+    
     def cleanup(self):
         """
         Manually shutdown parallel workers when done.
