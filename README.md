@@ -109,7 +109,7 @@ Play with trained policies:
 
 ```bash
 python play_with_ai.py # change the model path in play_with_ai.py, the key mapping is in common/interactive.py
-```
+``` 
 
 Stay tuned for supports on more fighting games! You could also integrate your own games via implementing a wrapper environment similar in `main/common/retro_wrappers.py`.
 
