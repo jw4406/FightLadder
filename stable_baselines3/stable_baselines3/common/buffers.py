@@ -749,7 +749,7 @@ class AdvRolloutBuffer(BaseBuffer):
         print("")
 
     def reset(self) -> None:
-        print("--- AdvRolloutBuffer RESET ---")
+        #print("--- AdvRolloutBuffer RESET ---")
         self.pos = 0
         self.full = False
         obs_shape = (self.buffer_size, self.n_envs) + self.obs_shape
@@ -1014,7 +1014,7 @@ class AdvRolloutBuffer(BaseBuffer):
         Prepares the buffer for training by swapping and flattening the data.
         This is a one-time operation that should be called after collecting rollouts.
         """
-        print("--- AdvRolloutBuffer PREPARED ---")
+        #print("--- AdvRolloutBuffer PREPARED ---")
         if not self.generator_ready:
             _torch_tensor_names = [
                 "observations",

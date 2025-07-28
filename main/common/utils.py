@@ -146,6 +146,7 @@ class SubprocVecEnv2P(VecEnv):
     def __init__(self, env_fns: List[Callable[[], gym.Env]], start_method: Optional[str] = None):
         self.waiting = False
         self.closed = False
+        self.env_fns = env_fns
         n_envs = len(env_fns)
 
         if start_method is None:
