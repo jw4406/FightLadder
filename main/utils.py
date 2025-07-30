@@ -50,3 +50,19 @@ def move_policy(policy: torch.nn.Module, device: torch.device) -> None:
     _move_if_exists(policy, device, "features_extractor")
     _move_if_exists(policy, device, "action_net")
     _move_if_exists(policy, device, "value_net")
+
+def get_n_workers() -> tuple:
+    """
+    This function returns the number of workers available.
+
+    Returns:
+        n_gpus (int):
+            Number of available GPUs.
+        n_workers (int):
+            Number of available workers (n_gpus if CUDA is available, 1 otherwise).
+
+    """
+    n_gpus = torch.cuda.device_count()
+    n_workers = max(1, n_gpus)
+
+    return n_gpus, n_workers
