@@ -129,14 +129,15 @@ class ParallelUpdater:
         for device_id in range(self.n_workers):
             input_queue = Queue()
             # Create a custom worker that uses our generic function
-            worker = Process(target=self._generic_worker_function, 
+            worker = Process(target=ParallelUpdater._generic_worker_function, 
                             args=(input_queue, self.done_queue, device_id))
             worker.daemon = False
             worker.start()
             self.processes.append(worker)
             self.input_queues.append(input_queue)
 
-    def _generic_worker_function(self, input_queue: Queue, done_queue: Queue, device_id: int) -> None:
+    @staticmethod
+    def _generic_worker_function(input_queue: Queue, done_queue: Queue, device_id: int) -> None:
         """Generic worker that can handle different job types."""
         device = select_device(device_id)
         if torch.cuda.is_available():
@@ -624,13 +625,15 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         self._initialize_parallel_updater()
 
         #The policies will be deeopcopied and so they won't have num_global_env, so these values need to be populated here
-        self.policy.num_global_env = self.n_env_per_adv
-        perturbed_agent.policy.num_global_env = perturbed_agent.n_env_per_adv
+        self.policy.num_global_env = self.n_global_env
+        perturbed_agent.policy.num_global_env = perturbed_agent.n_global_env
         self.parallel_updater.update_value_functions(
                                                     self.policy, perturbed_agent, perturbed_adv_buf, 
                                                     self.adversary_buffers, self.batch_size, self.max_grad_norm,
                                                     self.n_epochs, self.n_env_per_adv, self.first_run
                                                     )
+        self.policy.num_global_env = self.n_global_env
+        perturbed_agent.policy.num_global_env = perturbed_agent.n_global_env
         self.first_run = False
 
     def leader_grads(self, ori_buf, perturbed_buf, ori_policy, perturbed_policy, ego=True):
@@ -660,10 +663,17 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 
                 with th.no_grad():
                     old_log_prob_tensor = ori_rollout_data.old_log_prob if ego else ori_rollout_data.old_dstb_log_prob
+                    #run forward pass to get the log_prob
+                    _, log_prob, entropy, _, _ = ori_policy.evaluate_actions(
+                        torch.Tensor(ori_rollout_data.observations).to(self.device), torch.Tensor(ori_rollout_data.actions).to(self.device), torch.Tensor(ori_rollout_data.dstb_actions).to(self.device),
+                        shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys
+                    )
+                    #run forward pass to get the log_prob
+                    #_, log_prob, entropy, _, _ = perturbed_policy.evaluate_actions(
                     log_ratio = log_prob - old_log_prob_tensor
                     approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
                     approx_kl_divs_epoch.append(approx_kl_div)
-            
+           
             approx_kl_divs_all.extend(approx_kl_divs_epoch)
 
         self._n_updates += self.n_epochs
@@ -782,6 +792,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
 
             while self.num_timesteps < total_timesteps:
                 perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
+<<<<<<< HEAD
                 print("perturbed agent created!", flush=True)
                 self._initialize_parallel_updater()                
                 # perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
@@ -794,6 +805,11 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                     
                     perturbed_buf, perturbed_adv_buf = future_perturbed.result()
                     continue_training = future_collect.result()
+=======
+                print("perturbed agent created!", flush=True) 
+                perturbed_agent.signal = "IM PERTURBED"
+                perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params()
+>>>>>>> lstm_derivative_free
                 self.perturbed_agent = perturbed_agent
                 self.perturbed_buf = perturbed_buf
                 self.perturbed_adv_buf = perturbed_adv_buf
