@@ -397,7 +397,7 @@ def main(PLAYER):
                         help='Initial level to load from. By default 0, starting from pretrain', default=0)
     parser.add_argument('--resume-epoch', type=int, help='Resume epoch. By default 0, starting from pretrain',
                         default=0)
-    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=1)
+    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=4)
     parser.add_argument('--enable-combo', action='store_true', help='Enable special move action space for environment')
     parser.add_argument('--null-combo', action='store_true', help='Null action space for special move')
     parser.add_argument('--transform-action', action='store_true', help='Transform action space to MultiDiscrete')
@@ -514,8 +514,8 @@ def main(PLAYER):
             batch_size=1200,  # 2816,  # 512,
             n_epochs=20,
             gamma=0.94,
-            v_learning_rate=5e-5, c_learning_rate=1e-6,
-            d_learning_rate=2e-5, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            v_learning_rate=4e-2, c_learning_rate=5e-3,
+            d_learning_rate=1e-2, v_learning_rate_decay=critic_decay_schedule(1e-3),
             c_learning_rate_decay=critic_decay_schedule(1e-4),
             d_learning_rate_decay=critic_decay_schedule(5e-4),
             clip_range=clip_range_schedule,
