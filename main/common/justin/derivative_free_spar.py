@@ -1,5 +1,6 @@
 import torch
 from torch.multiprocessing import Process, Queue
+from concurrent.futures import ThreadPoolExecutor
 from queue import Empty
 import gc
 import torch as th, time, sys
@@ -24,7 +25,7 @@ from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.policies import ActorCriticPolicy, ActorCriticCnnPolicy, MultiInputActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.vec_env import VecEnv
-from utils import move_policy, select_device
+from utils import move_policy, select_device, get_n_workers
 
 DEBUG = True
 TIMING = True
@@ -101,105 +102,10 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
         th.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
         policy.value_optimizer.step()
 
-class WorkerProcess(Process):
-    """
-    A persistent multiprocessing worker that handles value function updates on a specific GPU.
-    
-    The worker initializes once with full model data, then accepts subsequent jobs with only 
-    state dictionaries for efficiency.
-    """
-    
-    def __init__(self, fn: callable, input_queue: Queue, done_queue: Queue, device_id: int = 0) -> None:
-        """
-        Initialize a persistent worker process.
-        
-        Args:
-            fn: The function to execute for each job (e.g., _update_single_value_function)
-            input_queue: Queue to receive job data from main process
-            done_queue: Queue to signal job completion back to main process
-            device_id: GPU device ID this worker should use
-        """
-        super().__init__()
-        self.fn: callable = fn
-        self.device_id: int = device_id
-        self.input_queue: Queue = input_queue
-        self.done_queue: Queue = done_queue
-        self.daemon: bool = False  # Auto-kill with main process - DO NOT DELETE!
-        self.derivative_free_SPAR_policy: Optional[Any] = None
-        self.perturbed_agent_policy: Optional[Any] = None
-
-    def run(self) -> None:
-        """
-        Main worker loop. Processes jobs until receiving STOP signal.
-        """
-        device = select_device(self.device_id)
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            gc.collect()
-            torch.cuda.set_device(self.device_id)
-
-        while True:
-            try:
-                job = self.input_queue.get(timeout=1)
-            except Empty:
-                continue
-            if job == "STOP":
-                print(f"Worker {self.device_id}: Received STOP signal, exiting")
-                break
-
-            (
-                derivative_free_SPAR_policy_data,
-                perturbed_agent_policy_data,
-                batch_size,
-                max_grad_norm,
-                i_list,
-                adversary_buffers,
-                perturbed_adv_buf,
-                n_epochs,
-                n_env_per_adv,
-                n_env_per_pert,
-                job_id,
-            ) = job
-
-            try:
-                # Initialize models once (first run)
-                if self.derivative_free_SPAR_policy is None:
-                    self.derivative_free_SPAR_policy = pickle.loads(derivative_free_SPAR_policy_data)
-                    self.perturbed_agent_policy = pickle.loads(perturbed_agent_policy_data)
-                    move_policy(self.derivative_free_SPAR_policy, device)
-                    move_policy(self.perturbed_agent_policy, device)
-                else:
-                    # Update weights (subsequent runs)
-                    self.derivative_free_SPAR_policy.load_state_dict(derivative_free_SPAR_policy_data)
-                    self.perturbed_agent_policy.load_state_dict(perturbed_agent_policy_data)
-
-                # Do the actual work
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()  # Clear cache before starting work
-                for i in i_list:
-                    for epoch in range(n_epochs):
-                        self.fn(
-                            batch_size, max_grad_norm, self.derivative_free_SPAR_policy, 
-                            adversary_buffers[i], i, n_env_per_adv, device
-                        )
-                        self.fn(
-                            batch_size, max_grad_norm, self.perturbed_agent_policy, 
-                            perturbed_adv_buf[i], i, n_env_per_pert, device
-                        )
-                
-                # Signal completion
-                self.done_queue.put(job_id)
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()  # Clear unused memory
-                
-            except Exception as e:
-                print(f"Worker {self.device_id} error: {e}")
-                self.done_queue.put(f"ERROR_{job_id}")
 
 class ParallelUpdater:
     """
-    Manages persistent worker processes for parallel value function updates across multiple GPUs.
+    Manages persistent worker processes for parallel value function updates on multiple GPUs.
     
     Creates worker processes once and reuses them for subsequent calls, avoiding the overhead
     of process creation. Uses proper synchronization to wait for job completion.
@@ -210,10 +116,10 @@ class ParallelUpdater:
         Initialize the parallel updater with persistent worker processes.
         
         Args:
-            n_gpus: Number of GPUs/workers to create
+            n_workers: Number of GPUs/workers to create
         """
         self.n_workers: int = n_workers
-        self.processes: List[WorkerProcess] = []
+        self.processes: List[Process] = []
         self.input_queues: List[Queue] = []
         self.done_queue: Queue = Queue()  # Shared queue for completion signals
         self._initialize_processes()
@@ -222,17 +128,112 @@ class ParallelUpdater:
         """Initialize persistent worker processes once."""
         for device_id in range(self.n_workers):
             input_queue = Queue()
-            worker = WorkerProcess(_update_single_value_function, input_queue, self.done_queue, device_id)
+            # Create a custom worker that uses our generic function
+            worker = Process(target=self._generic_worker_function, 
+                            args=(input_queue, self.done_queue, device_id))
+            worker.daemon = False
             worker.start()
             self.processes.append(worker)
             self.input_queues.append(input_queue)
 
-    def _create_job(self, policy: Any, perturbed_policy: Any, i_list: List[int], 
+    def _generic_worker_function(self, input_queue: Queue, done_queue: Queue, device_id: int) -> None:
+        """Generic worker that can handle different job types."""
+        device = select_device(device_id)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            gc.collect()
+            torch.cuda.set_device(device_id)
+
+        derivative_free_SPAR_policy = None
+        perturbed_agent_policy = None
+
+        while True:
+            try:
+                job = input_queue.get(timeout=1)
+            except Empty:
+                continue
+            if job == "STOP":
+                print(f"Worker {device_id}: Received STOP signal, exiting")
+                break
+
+            if not isinstance(job, tuple) or len(job) < 2:
+                done_queue.put(f"ERROR_INVALID_JOB_FORMAT")
+                continue
+                
+            job_type = job[0]
+            
+            if job_type == "UPDATE_VALUE_FUNCTIONS":
+                # Unpack the original job format for value function updates
+                (
+                    derivative_free_SPAR_policy_data,
+                    perturbed_agent_policy_data,
+                    batch_size,
+                    max_grad_norm,
+                    i_list,
+                    adversary_buffers,
+                    perturbed_adv_buf,
+                    n_epochs,
+                    n_env_per_adv,
+                    n_env_per_pert,
+                    job_id,
+                ) = job[1]
+
+                try:
+                    # Initialize models once (first run)
+                    if derivative_free_SPAR_policy is None:
+                        if isinstance(derivative_free_SPAR_policy_data, bytes):
+                            derivative_free_SPAR_policy = pickle.loads(derivative_free_SPAR_policy_data)
+                            perturbed_agent_policy = pickle.loads(perturbed_agent_policy_data)
+                        else:
+                            # Handle case where first run sends state dict instead of pickled model
+                            raise RuntimeError("First run should send pickled models, not state dicts")
+                        move_policy(derivative_free_SPAR_policy, device)
+                        move_policy(perturbed_agent_policy, device)
+                    else:
+                        # Update weights (subsequent runs)
+                        if isinstance(derivative_free_SPAR_policy_data, bytes):
+                            derivative_free_SPAR_policy = pickle.loads(derivative_free_SPAR_policy_data)
+                            perturbed_agent_policy = pickle.loads(perturbed_agent_policy_data)
+                            move_policy(derivative_free_SPAR_policy, device)
+                            move_policy(perturbed_agent_policy, device)
+                        else:
+                            derivative_free_SPAR_policy.load_state_dict(derivative_free_SPAR_policy_data)
+                            perturbed_agent_policy.load_state_dict(perturbed_agent_policy_data)
+
+                    # Do the actual work
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    for i in i_list:
+                        for epoch in range(n_epochs):
+                            _update_single_value_function(
+                                batch_size, max_grad_norm, derivative_free_SPAR_policy, 
+                                adversary_buffers[i], i, n_env_per_adv, device
+                            )
+                            _update_single_value_function(
+                                batch_size, max_grad_norm, perturbed_agent_policy, 
+                                perturbed_adv_buf[i], i, n_env_per_pert, device
+                            )
+                    
+                    # Signal completion
+                    done_queue.put(job_id)
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    
+                except Exception as e:
+                    print(f"Worker {device_id} error: {e}")
+                    done_queue.put(f"ERROR_{job_id}")
+
+            else:
+                print(f"Worker {device_id}: Unknown job type: {job_type}")
+                done_queue.put(f"ERROR_UNKNOWN_JOB_TYPE_{job_type}")
+
+    def _create_update_values_function_job(self, policy: Any, perturbed_policy: Any, i_list: List[int], 
                    adversary_buffers: List[Any], perturbed_adv_buf: List[Any], 
                    batch_size: int, max_grad_norm: float, n_epochs: int, 
                    n_env_per_adv: int, n_env_per_pert: int, first_run: bool, job_id: int) -> tuple:
         """
-        Create job data for worker process.
+        Create job data for worker process - update_values_function.
         
         Args:
             policy: Main policy model
@@ -307,12 +308,13 @@ class ParallelUpdater:
                 continue
             
             job_id = f"job_{device_id}_{int(time.time() * 1000000)}"  # Unique job ID
-            job = self._create_job(
+            job = self._create_update_values_function_job(
                 policy, perturbed_agent.policy, i_list, adversary_buffers,
                 perturbed_adv_buf, batch_size, max_grad_norm, n_epochs,
                 n_env_per_adv, perturbed_agent.n_env_per_adv, first_run, job_id
             )
-            self.input_queues[device_id].put(job)
+            # self.input_queues[device_id].put(job)
+            self.input_queues[device_id].put(("UPDATE_VALUE_FUNCTIONS", job))
             active_jobs.append(job_id)
 
         # Wait for all jobs to complete
@@ -376,7 +378,8 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             warmstarted_cont_MAGICS=False,
             opp_list=None,
             player=None,
-            use_mirror=False
+            use_mirror=False,
+            env_generator_func=None, #The function is used to create a copy of the environment
     ):
         super().__init__(
             policy=policy,
@@ -421,6 +424,15 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         )
         self.parallel_updater = None
         self.first_run = False
+        self.env_generator_func = env_generator_func
+
+    def _create_separate_env(self):
+        """Create a new environment instance using the stored generator function"""
+        if self.env_generator_func is None:
+            raise ValueError("No environment generator function provided")
+        new_env = self.env_generator_func()
+        new_env.reset()
+        return new_env
 
     def _excluded_save_params(self) -> List[str]:
         """
@@ -438,6 +450,13 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         if hasattr(self, 'parallel_updater') and self.parallel_updater is not None:
             self.parallel_updater.shutdown()
             self.parallel_updater = None
+
+    def _initialize_parallel_updater(self) -> None:
+        """This function initializes the ParallelUpdater"""
+        if self.parallel_updater is None:
+            _, n_workers = get_n_workers()
+            self.parallel_updater = ParallelUpdater(n_workers)
+            self.first_run = True
 
     def copy_constructor(self, retain_callback=False):
 
@@ -466,6 +485,9 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             test.callback = ConvertCallback(None)
             test.callback.init_callback(test)
         test.policy = test.policy.to(self.device)
+        # Copy observation states
+        test._last_obs = self._last_obs.copy() if self._last_obs is not None else None
+        test._last_episode_starts = self._last_episode_starts.copy() if self._last_episode_starts is not None else None
         return test
 
     def train(self):
@@ -579,6 +601,10 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 perturbed_agent.policy.dstb_optimizer.param_groups[0]['params'][i].copy_(other_adv[i])
             for i in range(len(perturbed_agent.policy.ctrl_optimizer.param_groups[0]['params'])):
                 perturbed_agent.policy.ctrl_optimizer.param_groups[0]['params'][i].copy_(other_ego[i])
+        perturbed_agent.env = self._create_separate_env()
+        # Since we have a new environment, we need new initial observations
+        perturbed_agent._last_obs = perturbed_agent.env.reset()
+        perturbed_agent._last_episode_starts = np.ones((perturbed_agent.env.num_envs,), dtype=bool)        
         return perturbed_agent, other_ego, other_adv
         
     def _update_value_functions(self, perturbed_agent, perturbed_adv_buf) -> None:
@@ -594,18 +620,8 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         Returns:
             None
         """
-        import torch
-
-        n_gpus = torch.cuda.device_count()
-        print(f"n_gpus={n_gpus}")
-
-        # Parallel execution across multiple GPUs
-        n_workers = max(1, n_gpus)
-
         # Create updaters
-        if self.parallel_updater is None:
-            self.parallel_updater = ParallelUpdater(n_workers)
-            self.first_run = True
+        self._initialize_parallel_updater()
 
         #The policies will be deeopcopied and so they won't have num_global_env, so these values need to be populated here
         self.policy.num_global_env = self.n_env_per_adv
@@ -766,15 +782,24 @@ class Derivative_Free_SPAR(Generalist_SPAR):
 
             while self.num_timesteps < total_timesteps:
                 perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
-                print("perturbed agent created!", flush=True) 
-                perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params()
+                print("perturbed agent created!", flush=True)
+                self._initialize_parallel_updater()                
+                # perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
+                # continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, n_rollout_steps=self.n_steps) #TODO: This is sequential - remove when done.
+
+                # Run env_perturb_params and collect_rollouts in different threads (cannot be done in different processes because they contain unpickleable objects)
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    future_perturbed = executor.submit(perturbed_agent.env_perturb_params)
+                    future_collect = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps)
+                    
+                    perturbed_buf, perturbed_adv_buf = future_perturbed.result()
+                    continue_training = future_collect.result()
                 self.perturbed_agent = perturbed_agent
                 self.perturbed_buf = perturbed_buf
                 self.perturbed_adv_buf = perturbed_adv_buf
                 self.perturbed_agent_policy = perturbed_agent.policy
-                print("perturbed agent rollout done!", flush=True)
-                continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, n_rollout_steps=self.n_steps)
-                print("main agent rollout done!", flush=True)
+                print("main agent and perturbed agent rollout done!", flush=True)
+                
                 #if isinstance(self, Exploiter):
                 #    if len(rews) > 2000:
                 #        if (max(rews[-window:]) - min(rews[-window:])) <= tolerance * 2:
