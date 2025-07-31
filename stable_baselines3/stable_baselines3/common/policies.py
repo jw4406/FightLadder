@@ -1270,6 +1270,17 @@ class ActorActorCriticPolicy(BasePolicy):
             dstb_actions = dstb_actions.squeeze(axis=0)
 
         return (actions, state), (dstb_actions, state)  # type: ignore[return-value]
+class SelectLastLSTMOutput(nn.Module):
+    """
+    A helper module to select the last output from an LSTM layer.
+    LSTMs return (output, (hidden, cell)), and this module extracts
+    the `output` tensor and returns the last time step's output,
+    which has a shape of (batch_size, hidden_size).
+    """
+
+    def forward(self, x: Tuple[th.Tensor, Tuple[th.Tensor, th.Tensor]]) -> th.Tensor:
+        output, _ = x
+        return output
 
 class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
     def __init__(self,
@@ -1327,7 +1338,7 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
         self._build_mlp_extractor()
 
         latent_dim_pi = self.mlp_extractor.latent_dim_pi
-
+        lstm_hidden_size = 256
         if isinstance(self.action_dist, DiagGaussianDistribution):
             self.action_net, self.log_std = self.action_dist.proba_distribution_net(
                 latent_dim=latent_dim_pi, log_std_init=self.log_std_init
@@ -1341,17 +1352,45 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
                 latent_dim=latent_dim_pi, latent_sde_dim=latent_dim_pi, log_std_init=self.log_std_init
             )
         elif isinstance(self.action_dist, (CategoricalDistribution, MultiCategoricalDistribution, BernoulliDistribution)):
-            self.action_net = self.action_dist.proba_distribution_net(latent_dim=latent_dim_pi)
+            #self.action_net = self.action_dist.proba_distribution_net(latent_dim=latent_dim_pi)
+
+            self.action_net = nn.Sequential(
+                nn.LSTM(input_size=latent_dim_pi, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
+                SelectLastLSTMOutput(),
+                nn.Linear(lstm_hidden_size, lstm_hidden_size),
+                self.activation_fn(),
+                nn.Linear(lstm_hidden_size, latent_dim_pi),
+                self.activation_fn(),
+                self.action_dist.proba_distribution_net(latent_dim=latent_dim_pi)
+            )
+
             if self.adversarial: # we are doing adversarial!
                 self.dstb_action_net = []
                 for i in range(self.num_adversaries):
-                    self.dstb_action_net.append(self.dstb_action_dist[i].proba_distribution_net(
-                    latent_dim=latent_dim_pi))
+                    self.dstb_action_net.append(nn.Sequential(
+                        nn.LSTM(input_size=latent_dim_pi, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
+                        SelectLastLSTMOutput(),
+                        nn.Linear(lstm_hidden_size, lstm_hidden_size),
+                        self.activation_fn(),
+                        nn.Linear(lstm_hidden_size, latent_dim_pi),
+                        self.activation_fn(),
+                        self.dstb_action_dist[i].proba_distribution_net(latent_dim=latent_dim_pi))
+                    ) 
+                    #self.dstb_action_net.append(self.dstb_action_dist[i].proba_distribution_net(latent_dim=latent_dim_pi))
         else:
             raise NotImplementedError(f"Unsupported distribution '{self.action_dist}'.")
         self.value_net = []
         for i in range(self.num_adversaries):
-            self.value_net.append(nn.Linear(self.mlp_extractor.latent_dim_vf, 1))
+            self.value_net.append(nn.Sequential(
+                nn.LSTM(input_size=self.mlp_extractor.latent_dim_vf, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
+                SelectLastLSTMOutput(),
+                nn.Linear(lstm_hidden_size, lstm_hidden_size),
+                self.activation_fn(),
+                nn.Linear(lstm_hidden_size, lstm_hidden_size),
+                self.activation_fn(),
+                nn.Linear(lstm_hidden_size, 1))
+            )
+            #self.value_net.append(nn.Linear(self.mlp_extractor.latent_dim_vf, 1))
         # Init weights: use orthogonal initialization
         # with small initial weight for the output
         if self.ortho_init:
@@ -1413,9 +1452,9 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
             self.value_optimizer = self.optimizer_class(
                 itertools.chain(self.mlp_extractor.value_net.parameters(), self.vf_features_extractor.parameters(), itertools.chain.from_iterable([self.value_net[i].parameters() for i in range(self.num_adversaries)])),
                 joint_schedule[2](1), **self.optimizer_kwargs)
-            self.value_targ = [copy.deepcopy(self.vf_features_extractor).requires_grad_(False).to('cuda'),
-                               copy.deepcopy(self.mlp_extractor.value_net).requires_grad_(False).to('cuda'),
-                               [copy.deepcopy(self.value_net)[i].requires_grad_(False).to('cuda') for i in range(len(self.value_net))]]
+            #self.value_targ = [copy.deepcopy(self.vf_features_extractor).requires_grad_(False).to('cuda'),
+            #                   copy.deepcopy(self.mlp_extractor.value_net).requires_grad_(False).to('cuda'),
+            #                   [copy.deepcopy(self.value_net)[i].requires_grad_(False).to('cuda') for i in range(len(self.value_net))]]
         '''
         if self.policy_memory_size is not None:
             for i in range(self.policy_memory_size):
@@ -1665,8 +1704,8 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         :return: Action distribution
         """
         num_adversaries = len(network_keys)
-        mean_actions = self.action_net(latent_pi)
-        num_env_per_adv = self.num_global_env // num_adversaries
+        mean_actions = self.action_net(latent_pi)#[:, 0, :] # remove middle dim from lstm
+        num_env_per_adv = self.num_global_env // num_adversaries # WHY IS SELF.NUM_GLOBAL_ENV 1?
         dstb_mean_actions = th.zeros_like(mean_actions)
         num_per = mean_actions.shape[0] // num_adversaries
         full = [i for i in range(self.num_global_env)]
@@ -1722,6 +1761,9 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
                 latent_pi = latent_both[0]
                 latent_pi_dstb = latent_both[1]
                 latent_vf = self.mlp_extractor.forward_critic(vf_features)
+            #latent_pi = latent_pi.unsqueeze(1)
+            #latent_pi_dstb = latent_pi_dstb.unsqueeze(1)
+            #latent_vf = latent_vf.unsqueeze(1)
             ctrl_distribution, dstb_distribution = self._get_action_dist_from_latent_nonuniform(latent_pi, latent_pi_dstb, shuffle_keys=shuffle_keys, network_keys=network_keys)
             ctrl_log_prob = ctrl_distribution.log_prob(actions)
             #dstb_log_prob = th.zeros_like(ctrl_log_prob)
