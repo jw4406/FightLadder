@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 import copy
 import gym
 import numpy as np
-from torch.distributed.pipeline.sync.checkpoint import Checkpoint
+#from torch.distributed.pipeline.sync.checkpoint import Checkpoint
 
 try:
     from tqdm import TqdmExperimentalWarning
