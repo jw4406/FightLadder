@@ -530,7 +530,8 @@ def main(PLAYER):
             n_env_per_adv=args.num_env // num_adversary,
             opp_list=OPPONENT_LIST,
             player=PLAYER,
-            use_mirror=False
+            use_mirror=False,
+            env_generator_func=env_generator
         )
 
         ''' 
