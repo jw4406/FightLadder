@@ -728,12 +728,14 @@ class AdvRolloutBuffer(BaseBuffer):
             gae_lambda: float = 1,
             gamma: float = 0.99,
             n_envs: int = 1,
-            dstb_action_space=None
+            dstb_action_space=None,
+            pin_memory: bool = True,
     ):
         super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
         self.gae_lambda = gae_lambda
         self.gamma = gamma
         self.dstb_action_space = dstb_action_space
+        self.pin_memory = pin_memory
         self.observations, self.actions, self.rewards, self.advantages = None, None, None, None
         self.returns, self.episode_starts, self.values, self.log_probs = None, None, None, None
         self.dstb_actions, self.dstb_log_probs = None, None
@@ -753,17 +755,33 @@ class AdvRolloutBuffer(BaseBuffer):
         self.pos = 0
         self.full = False
         obs_shape = (self.buffer_size, self.n_envs) + self.obs_shape
-        self.observations = np.zeros(obs_shape, dtype=np.uint8)
-        self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float16)
-        self.dstb_actions = np.zeros((self.buffer_size, self.n_envs, self.dstb_action_dim), dtype=np.float16)
-        self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
-        self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
-        self.episode_starts = np.zeros((self.buffer_size, self.n_envs), dtype=bool)
-        self.values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
-        self.log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
-        self.dstb_log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
-        self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
-        self.dones = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
+
+        if self.pin_memory:
+            # Create tensors directly on pinned CPU memory
+            self.observations = th.zeros(obs_shape, dtype=th.uint8).pin_memory()
+            self.actions = th.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=th.float16).pin_memory()
+            self.dstb_actions = th.zeros((self.buffer_size, self.n_envs, self.dstb_action_dim), dtype=th.float16).pin_memory()
+            self.rewards = th.zeros((self.buffer_size, self.n_envs), dtype=th.float16).pin_memory()
+            self.returns = th.zeros((self.buffer_size, self.n_envs), dtype=th.float16).pin_memory()
+            self.episode_starts = th.zeros((self.buffer_size, self.n_envs), dtype=th.bool).pin_memory()
+            self.values = th.zeros((self.buffer_size, self.n_envs), dtype=th.float16).pin_memory()
+            self.log_probs = th.zeros((self.buffer_size, self.n_envs), dtype=th.float16).pin_memory()
+            self.dstb_log_probs = th.zeros((self.buffer_size, self.n_envs), dtype=th.float16).pin_memory()
+            self.advantages = th.zeros((self.buffer_size, self.n_envs), dtype=th.float16).pin_memory()
+            self.dones = th.zeros((self.buffer_size, self.n_envs), dtype=th.float16).pin_memory()
+        else:
+            self.observations = np.zeros(obs_shape, dtype=np.uint8)
+            self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float16)
+            self.dstb_actions = np.zeros((self.buffer_size, self.n_envs, self.dstb_action_dim), dtype=np.float16)
+            self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
+            self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
+            self.episode_starts = np.zeros((self.buffer_size, self.n_envs), dtype=bool)
+            self.values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
+            self.log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
+            self.dstb_log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
+            self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
+            self.dones = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
+
         self.generator_ready = False
         self.env_indices = np.tile(np.arange(self.n_envs), (self.buffer_size, 1))  # Shape: (buffer_size, n_envs)
         super().reset()
@@ -969,16 +987,30 @@ class AdvRolloutBuffer(BaseBuffer):
         if len(new_episode_indices) > 0:
             self.X0_VALUES_MASTER[new_episode_indices] = obs[new_episode_indices]
 
-        self.observations[self.pos] = np.array(obs)
-        self.actions[self.pos] = np.array(action)
-        self.dstb_actions[self.pos] = np.array(dstb_action)
-        self.rewards[self.pos] = np.array(reward)
-        self.episode_starts[self.pos] = np.round(episode_start)
-        self.values[self.pos] = value.clone().cpu().numpy().flatten()
-        self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
-        self.dstb_log_probs[self.pos] = dstb_log_prob.clone().cpu().numpy()
-        if dones is not None:
-            self.dones[self.pos] = dones.clone().cpu().numpy()
+        if self.pin_memory:
+            # Copy new data to the pinned memory tensors
+            self.observations[self.pos].copy_(th.from_numpy(obs))
+            self.actions[self.pos].copy_(th.from_numpy(action))
+            self.dstb_actions[self.pos].copy_(th.from_numpy(dstb_action))
+            self.rewards[self.pos].copy_(th.from_numpy(reward))
+            self.episode_starts[self.pos].copy_(th.from_numpy(np.round(episode_start).astype(bool)))
+            self.values[self.pos].copy_(value.cpu().flatten())
+            self.log_probs[self.pos].copy_(log_prob.cpu())
+            self.dstb_log_probs[self.pos].copy_(dstb_log_prob.cpu())
+            if dones is not None:
+                self.dones[self.pos].copy_(dones.cpu())
+        else:
+            self.observations[self.pos] = np.array(obs)
+            self.actions[self.pos] = np.array(action)
+            self.dstb_actions[self.pos] = np.array(dstb_action)
+            self.rewards[self.pos] = np.array(reward)
+            self.episode_starts[self.pos] = np.round(episode_start)
+            self.values[self.pos] = value.clone().cpu().numpy().flatten()
+            self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
+            self.dstb_log_probs[self.pos] = dstb_log_prob.clone().cpu().numpy()
+            if dones is not None:
+                self.dones[self.pos] = dones.clone().cpu().numpy()
+
         self.pos += 1
         if self.pos == self.buffer_size:
             self.full = True
@@ -1029,9 +1061,14 @@ class AdvRolloutBuffer(BaseBuffer):
 
             for tensor_name in _torch_tensor_names:
                 tensor = self.__dict__[tensor_name]
-                # th.as_tensor avoids a copy if the numpy array is on the CPU and writable
-                # which should be the case here
-                th_tensor = th.as_tensor(tensor, device=self.device)
+                if self.pin_memory:
+                    # Data is already a tensor, just move to the correct device
+                    th_tensor = tensor.to(self.device, non_blocking=True)
+                else:
+                    # th.as_tensor avoids a copy if the numpy array is on the CPU and writable
+                    # which should be the case here
+                    th_tensor = th.as_tensor(tensor, device=self.device)
+                
                 shape = th_tensor.shape
                 # .contiguous().view() is more efficient than reshape for non-contiguous tensors
                 self.__dict__[tensor_name] = th_tensor.transpose(0, 1).contiguous().view(shape[0] * shape[1], *shape[2:])
