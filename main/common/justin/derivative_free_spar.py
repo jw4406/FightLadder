@@ -72,35 +72,81 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
     """
     total_start_time = time.time()
 
-    get_start_time = time.time()
+    #get_start_time = time.time()
     rollout_data_list = list(buffer.get(batch_size))
-    get_end_time = time.time()
-    if TIMING:
-        print(f"  Time for buffer.get() ({tag}): {get_end_time - get_start_time:.4f}s")
+    #get_end_time = time.time()
+    #if TIMING:
+    #    print(f"        [Timing] ({tag}) buffer.get(): {get_end_time - get_start_time:.4f}s")
 
-    for rollout_data in rollout_data_list:
+    for rollout_data in buffer.get(batch_size):
+        loop_start_time = time.time()
+
+        prep_start_time = time.time()
         actions = torch.Tensor(rollout_data.actions).to(device)
         dstb_actions = torch.Tensor(rollout_data.dstb_actions).to(device)
+        observations_tensor = rollout_data.observations.to(device) 
+        returns_tensor = torch.Tensor(-rollout_data.returns).to(device)
+        prep_end_time = time.time()
+        if TIMING:
+            print(f"          [Timing] ({tag}) Data prep & to(device): {prep_end_time - prep_start_time:.4f}s")
 
         policy.num_global_env = num_envs
         policy.num_adv = 1
+        
+        eval_start_time = time.time()
         values, _, _, _, _ = policy.evaluate_actions(
-            rollout_data.observations.to(device), #Changed to torch.from_numpy, a bit safer. #Big memory spike here
+            observations_tensor,
             actions,
             dstb_actions,
             shuffle_keys=rollout_data.env_indices,
             network_keys=[adversary_index]
         )
         values = values.flatten()
-        value_loss = F.mse_loss(torch.Tensor(-rollout_data.returns).to(device), values)
+        eval_end_time = time.time()
+        if TIMING:
+            print(f"          [Timing] ({tag}) evaluate_actions: {eval_end_time - eval_start_time:.4f}s")
+
+        loss_start_time = time.time()
+        value_loss = F.mse_loss(returns_tensor, values)
+        loss_end_time = time.time()
+        if TIMING:
+            print(f"          [Timing] ({tag}) loss_calculation: {loss_end_time - loss_start_time:.4f}s")
+
+        zero_grad_start_time = time.time()
         policy.value_optimizer.zero_grad()
         if hasattr(policy, 'ctrl_optimizer') and policy.ctrl_optimizer:
             policy.ctrl_optimizer.zero_grad()
         if hasattr(policy, 'dstb_optimizer') and policy.dstb_optimizer:
             policy.dstb_optimizer.zero_grad()
+        zero_grad_end_time = time.time()
+        if TIMING:
+            print(f"          [Timing] ({tag}) zero_grad: {zero_grad_end_time - zero_grad_start_time:.4f}s")
+
+        backward_start_time = time.time()
         value_loss.backward()
+        backward_end_time = time.time()
+        if TIMING:
+            print(f"          [Timing] ({tag}) backward: {backward_end_time - backward_start_time:.4f}s")
+
+        clip_grad_start_time = time.time()
         th.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
+        clip_grad_end_time = time.time()
+        if TIMING:
+            print(f"          [Timing] ({tag}) clip_grad_norm: {clip_grad_end_time - clip_grad_start_time:.4f}s")
+
+        step_start_time = time.time()
         policy.value_optimizer.step()
+        step_end_time = time.time()
+        if TIMING:
+            print(f"          [Timing] ({tag}) optimizer.step: {step_end_time - step_start_time:.4f}s")
+        
+        loop_end_time = time.time()
+        if TIMING:
+            print(f"        [Timing] ({tag}) Total loop iteration: {loop_end_time - loop_start_time:.4f}s")
+
+    total_end_time = time.time()
+    if TIMING:
+        print(f"      [Timing] Total _update_single_value_function ({tag}): {total_end_time - total_start_time:.4f}s")
 
 
 class ParallelUpdater:
@@ -293,16 +339,22 @@ class ParallelUpdater:
             n_env_per_adv: Number of environments per adversary
             first_run: Whether this is the first run (affects data serialization)
         """
+        total_start_time = time.time()
 
         # Set required attributes
         policy.num_global_env = n_env_per_adv
         perturbed_agent.policy.num_global_env = perturbed_agent.n_env_per_adv
 
         # Shard work across GPUs
+        shard_start_time = time.time()
         all_indices = list(range(len(adversary_buffers)))
         shards = shard_indices(len(all_indices), self.n_workers)
+        shard_end_time = time.time()
+        if TIMING:
+            print(f"      [Timing] Sharding work: {shard_end_time - shard_start_time:.4f}s")
 
         # Submit jobs to worker processes
+        submit_start_time = time.time()
         active_jobs = []
         for device_id, i_list in enumerate(shards):
             if not i_list:
@@ -317,8 +369,12 @@ class ParallelUpdater:
             # self.input_queues[device_id].put(job)
             self.input_queues[device_id].put(("UPDATE_VALUE_FUNCTIONS", job))
             active_jobs.append(job_id)
+        submit_end_time = time.time()
+        if TIMING:
+            print(f"      [Timing] Submitting jobs: {submit_end_time - submit_start_time:.4f}s")
 
         # Wait for all jobs to complete
+        wait_start_time = time.time()
         completed_jobs = 0
         while completed_jobs < len(active_jobs):
             try:
@@ -329,6 +385,13 @@ class ParallelUpdater:
             except Empty:
                 print("Warning: Timeout waiting for job completion")
                 break
+        wait_end_time = time.time()
+        if TIMING:
+            print(f"      [Timing] Waiting for jobs to complete: {wait_end_time - wait_start_time:.4f}s")
+            
+        total_end_time = time.time()
+        if TIMING:
+            print(f"    [Timing] Total ParallelUpdater.update_value_functions: {total_end_time - total_start_time:.4f}s")
             
     def shutdown(self) -> None:
         """Clean shutdown of worker processes."""
@@ -621,20 +684,35 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         Returns:
             None
         """
+        total_start_time = time.time()
         # Create updaters
+        init_start_time = time.time()
         self._initialize_parallel_updater()
+        init_end_time = time.time()
+        if TIMING:
+            print(f"    [Timing] _initialize_parallel_updater: {init_end_time - init_start_time:.4f}s")
 
         #The policies will be deeopcopied and so they won't have num_global_env, so these values need to be populated here
         self.policy.num_global_env = self.n_global_env
         perturbed_agent.policy.num_global_env = perturbed_agent.n_global_env
+        
+        update_start_time = time.time()
         self.parallel_updater.update_value_functions(
                                                     self.policy, perturbed_agent, perturbed_adv_buf, 
                                                     self.adversary_buffers, self.batch_size, self.max_grad_norm,
                                                     self.n_epochs, self.n_env_per_adv, self.first_run
                                                     )
+        update_end_time = time.time()
+        if TIMING:
+            print(f"    [Timing] parallel_updater.update_value_functions: {update_end_time - update_start_time:.4f}s")
+
         self.policy.num_global_env = self.n_global_env
         perturbed_agent.policy.num_global_env = perturbed_agent.n_global_env
         self.first_run = False
+        
+        total_end_time = time.time()
+        if TIMING:
+            print(f"  [Timing] Total _update_value_functions: {total_end_time - total_start_time:.4f}s")
 
     def leader_grads(self, ori_buf, perturbed_buf, ori_policy, perturbed_policy, ego=True):
         clip_range = self.clip_range(self._current_progress_remaining)
