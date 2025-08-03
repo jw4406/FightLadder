@@ -792,7 +792,6 @@ class Derivative_Free_SPAR(Generalist_SPAR):
 
             while self.num_timesteps < total_timesteps:
                 perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
-<<<<<<< HEAD
                 print("perturbed agent created!", flush=True)
                 self._initialize_parallel_updater()                
                 # perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
@@ -805,11 +804,6 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                     
                     perturbed_buf, perturbed_adv_buf = future_perturbed.result()
                     continue_training = future_collect.result()
-=======
-                print("perturbed agent created!", flush=True) 
-                perturbed_agent.signal = "IM PERTURBED"
-                perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params()
->>>>>>> lstm_derivative_free
                 self.perturbed_agent = perturbed_agent
                 self.perturbed_buf = perturbed_buf
                 self.perturbed_adv_buf = perturbed_adv_buf
