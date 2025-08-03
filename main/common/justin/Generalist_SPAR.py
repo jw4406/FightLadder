@@ -409,13 +409,13 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             for i in range(self.num_adversaries):
                 chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
                 if self.use_mirror is True:
-                    self.adversaries[i].rollout_buffer.add(
+                    adversary_buffers[i].add(
                         self._last_obs[chunk],
                         mirror_master_copy_actions[chunk],
                         mirror_master_copy_adv_actions[chunk],
-                        rewards[chunk],
+                        -rewards[chunk],
                         self._last_episode_starts[chunk],
-                        all_adv_critic_values[chunk],
+                        -all_adv_critic_values[chunk],
                         log_probs[chunk],
                         adversary_log_probs[chunk]  # not done
                     )

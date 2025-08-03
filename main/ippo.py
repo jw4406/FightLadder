@@ -333,14 +333,14 @@ def main(PLAYER):
     # global REMOVAL
     # PLAYER = "Blanka"  # "Blanka
     global REMOVAL
-    use_mirror = False
+    use_mirror = True
     REMOVAL = None
 
     if use_mirror is True:
-        OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
+        OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
-        OPPONENT_LIST = ["Guile", "EHonda", "Sagat","ChunLi", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
+        OPPONENT_LIST = ["Guile", "EHonda", "Sagat","ChunLi"]#, "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
     SIDE = "left"  # "right"
     player_folder_name = [PLAYER[i] + '_' + SIDE for i in range(len(PLAYER))]
     if REMOVAL is not None:
@@ -350,21 +350,20 @@ def main(PLAYER):
 
     if use_mirror is True:
         STATE_prot_left = [
-            "two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name, PLAYER, OPPONENT_LIST[i]) for i
-            in range(len(OPPONENT_LIST))]
+            "two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name[i], PLAYER[i], OPPONENT_LIST[j]) for i in range(len(PLAYER)) for j in range(len(OPPONENT_LIST))]
 
         opp_left_folder_name = []
         for i in range(len(OPPONENT_LIST)):
             opp_left_folder_name.append(OPPONENT_LIST[i] + "_" + SIDE)
         STATE_prot_right = [
-            "two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (opp_left_folder_name[i], OPPONENT_LIST[i], PLAYER)
-            for i in range(len(OPPONENT_LIST))]
+            "two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (opp_left_folder_name[i], OPPONENT_LIST[i], PLAYER[j])
+            for i in range(len(OPPONENT_LIST)) for j in range(len(PLAYER))]
         # STATE = STATE_prot_left + STATE_prot_right
 
         # chunking requires same adversaries to be next to each other
 
         # interleave
-        STATE = [val for pair in zip(STATE_prot_left, STATE_prot_right) for val in pair]
+        STATE = STATE_prot_left + STATE_prot_right
         #STATE = STATE_prot_right
 
     else:
@@ -498,6 +497,8 @@ def main(PLAYER):
 
         if REMOVAL is None:
             num_adversary = len(OPPONENT_LIST) * len(PLAYER)
+            if use_mirror is True:
+                num_adversary = num_adversary * 2
         else:
             if isinstance(REMOVAL, str):
                 num_adversary = 11
@@ -530,7 +531,7 @@ def main(PLAYER):
             n_env_per_adv=args.num_env // num_adversary,
             opp_list=OPPONENT_LIST,
             player=PLAYER,
-            use_mirror=False,
+            use_mirror=use_mirror,
             env_generator_func=env_generator
         )
 

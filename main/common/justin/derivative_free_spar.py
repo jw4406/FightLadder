@@ -322,7 +322,7 @@ class ParallelUpdater:
         completed_jobs = 0
         while completed_jobs < len(active_jobs):
             try:
-                result = self.done_queue.get(timeout=30)  # 30 second timeout
+                result = self.done_queue.get(timeout=60)  # 30 second timeout
                 if isinstance(result, str) and result.startswith("ERROR_"):
                     print(f"Job failed: {result}")
                 completed_jobs += 1
