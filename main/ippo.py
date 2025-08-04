@@ -409,15 +409,17 @@ def main(PLAYER):
     parser.add_argument('--fsp', action='store_true', help='Fictitious self-play')
     parser.add_argument('--fsp-threshold', type=float, help='Fictitious self-play threshold', default=0.5)
     parser.add_argument('--async-update', action='store_true', help='Update left and right asynchronously')
+    parser.add_argument('--num_env_steps', type=int, help='Number of env steps to run', default=600)
     #parser.add_argument("--player", type=str, required=True)
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
+    parser.add_argument("--num_env_to_load", type=int, required=True, help="Number of envs to load", default=1)
     args = parser.parse_args()
 
     # PLAYER = args.player
 
     args = parser.parse_args()
     print("command line args:" + str(args))
-
+    num_steps = args.num_env_steps
     os.makedirs(args.save_dir, exist_ok=True)
     os.makedirs(args.log_dir, exist_ok=True)
     os.makedirs(args.video_dir, exist_ok=True)
@@ -448,7 +450,7 @@ def main(PLAYER):
         return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
 
-    checkpoint_interval = 10000 # checkpoint_interval * num_envs = total_steps_per_checkpoint
+    checkpoint_interval = 1000 # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
                                  other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
@@ -511,9 +513,9 @@ def main(PLAYER):
             finetune_env,
             device="cuda",
             verbose=2,
-            n_steps=600,  # 1408,
-            batch_size=1200,  # 2816,  # 512,
-            n_epochs=20,
+            n_steps=num_steps,  # 1408,
+            batch_size=int(num_steps * len(state_list) / 10),  # 2816,  # 512,
+            n_epochs=1,
             gamma=0.94,
             v_learning_rate=4e-2, c_learning_rate=5e-3,
             d_learning_rate=1e-2, v_learning_rate_decay=critic_decay_schedule(1e-3),
@@ -530,7 +532,7 @@ def main(PLAYER):
             n_global_env=args.num_env,
             n_env_per_adv=args.num_env // num_adversary,
             opp_list=OPPONENT_LIST,
-            player=PLAYER,
+            player='_'.join(PLAYER),
             use_mirror=use_mirror,
             env_generator_func=env_generator
         )
