@@ -1750,17 +1750,19 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         # Preprocess the observation if needed
         with th.no_grad():
             num_adversaries = len(network_keys)
-            features = self.extract_features(obs)
+            #features = self.extract_features(obs)
+            preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
+            features = (self.pi_ctrl_features_extractor(preprocessed_obs), self.pi_dstb_features_extractor(preprocessed_obs))
             if self.share_features_extractor:
                 latent_both, latent_vf = self.mlp_extractor(features)
                 latent_pi = latent_both[0]
                 latent_pi_dstb = latent_both[1]
             else:
-                pi_ctrl_features, pi_dstb_features, vf_features = features
+                pi_ctrl_features, pi_dstb_features = features
                 latent_both = self.mlp_extractor.forward_actor(pi_ctrl_features, pi_dstb_features)
                 latent_pi = latent_both[0]
                 latent_pi_dstb = latent_both[1]
-                latent_vf = self.mlp_extractor.forward_critic(vf_features)
+                #latent_vf = self.mlp_extractor.forward_critic(vf_features)
             #latent_pi = latent_pi.unsqueeze(1)
             #latent_pi_dstb = latent_pi_dstb.unsqueeze(1)
             #latent_vf = latent_vf.unsqueeze(1)
@@ -1789,6 +1791,8 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         #for i in range(self.num_adversaries):
         #    test[i * (chunk_size): (i + 1) * chunk_size] = dstb_log_prob[i][:]
         #dstb_log_prob = test
+        vf_features = self.vf_features_extractor(preprocessed_obs)
+        latent_vf = self.mlp_extractor.forward_critic(vf_features)
         values = th.empty((latent_vf.shape[0],), device=self.device) #empty is a bit faster than zeros
         num_global_env = th.max(shuffle_keys) + 1 #latent_vf.shape[0] // self.num_adversaries
         num_env_per_adv = num_global_env // num_adversaries
