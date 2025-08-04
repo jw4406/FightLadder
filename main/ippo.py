@@ -726,6 +726,7 @@ if __name__ == "__main__":
     wandb.login(key='d95a51c4001b862123a34a3853fe0306906d2f07')
     #parser.add_argument("--player", type=str, required=True)
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
+    parser.add_argument("--num_env_to_load", type=int, required=True, help="Number of envs to load", default=1)
     args = parser.parse_args()
 
     PLAYER = args.player
