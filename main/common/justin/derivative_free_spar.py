@@ -70,79 +70,53 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
     TODO: Complete the docstring.
     TODO: Complete static types
     """
+    def _prep_rollout_data_actions(batch_size: int, buffer) -> tuple:
+        """
+        This is a helper function that gets all the rollout data and actions once instead of batch by batch.
+        """
+        all_rollout_data = list(buffer.get(batch_size))
+        all_actions = []
+        all_dstb_actions = []
+        all_observations = []
+        all_returns = []
+        all_env_indices = []
+
+        for rollout_data in all_rollout_data:
+            all_actions.append(torch.Tensor(rollout_data.actions))
+            all_dstb_actions.append(torch.Tensor(rollout_data.dstb_actions))
+            all_observations.append(rollout_data.observations)
+            all_returns.append(torch.Tensor(-rollout_data.returns))
+            all_env_indices.extend(rollout_data.env_indices)
+        
+        actions_batch = torch.cat(all_actions).to(device)
+        dstb_actions_batch = torch.cat(all_dstb_actions).to(device)
+        observations_batch = torch.cat(all_observations).to(device)
+        returns_batch = torch.cat(all_returns).to(device)
+
+        return actions_batch, dstb_actions_batch, observations_batch, returns_batch, all_env_indices
+    
     total_start_time = time.time()
 
-    #get_start_time = time.time()
-    rollout_data_list = list(buffer.get(batch_size))
-    #get_end_time = time.time()
-    #if TIMING:
-    #    print(f"        [Timing] ({tag}) buffer.get(): {get_end_time - get_start_time:.4f}s")
 
-    for rollout_data in buffer.get(batch_size):
-        loop_start_time = time.time()
-
-        prep_start_time = time.time()
-        actions = torch.Tensor(rollout_data.actions).to(device)
-        dstb_actions = torch.Tensor(rollout_data.dstb_actions).to(device)
-        observations_tensor = rollout_data.observations.to(device) 
-        returns_tensor = torch.Tensor(-rollout_data.returns).to(device)
-        prep_end_time = time.time()
-        if TIMING:
-            print(f"          [Timing] ({tag}) Data prep & to(device): {prep_end_time - prep_start_time:.4f}s")
-
-        policy.num_global_env = num_envs
-        policy.num_adv = 1
-        
-        eval_start_time = time.time()
-        values, _, _, _, _ = policy.evaluate_actions(
-            observations_tensor,
-            actions,
-            dstb_actions,
-            shuffle_keys=rollout_data.env_indices,
-            network_keys=[adversary_index]
+    #Process all rollout data and actions at once instead of batch by batch.
+    actions_batch, dstb_actions_batch, observations_batch, returns_batch, all_env_indices = _prep_rollout_data_actions(batch_size, buffer)
+    policy.num_global_env = num_envs
+    policy.num_adv = 1
+    values, _, _, _, _ = policy.evaluate_actions(
+        observations_batch,
+        actions_batch,
+        dstb_actions_batch,
+        shuffle_keys=all_env_indices,
+        network_keys=[adversary_index]
         )
-        values = values.flatten()
-        eval_end_time = time.time()
-        if TIMING:
-            print(f"          [Timing] ({tag}) evaluate_actions: {eval_end_time - eval_start_time:.4f}s")
+    values = values.flatten()
+    # Single loss calculation and optimization step
+    value_loss = F.mse_loss(returns_batch, values)
 
-        loss_start_time = time.time()
-        value_loss = F.mse_loss(returns_tensor, values)
-        loss_end_time = time.time()
-        if TIMING:
-            print(f"          [Timing] ({tag}) loss_calculation: {loss_end_time - loss_start_time:.4f}s")
-
-        zero_grad_start_time = time.time()
-        policy.value_optimizer.zero_grad()
-        if hasattr(policy, 'ctrl_optimizer') and policy.ctrl_optimizer:
-            policy.ctrl_optimizer.zero_grad()
-        if hasattr(policy, 'dstb_optimizer') and policy.dstb_optimizer:
-            policy.dstb_optimizer.zero_grad()
-        zero_grad_end_time = time.time()
-        if TIMING:
-            print(f"          [Timing] ({tag}) zero_grad: {zero_grad_end_time - zero_grad_start_time:.4f}s")
-
-        backward_start_time = time.time()
-        value_loss.backward()
-        backward_end_time = time.time()
-        if TIMING:
-            print(f"          [Timing] ({tag}) backward: {backward_end_time - backward_start_time:.4f}s")
-
-        clip_grad_start_time = time.time()
-        th.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
-        clip_grad_end_time = time.time()
-        if TIMING:
-            print(f"          [Timing] ({tag}) clip_grad_norm: {clip_grad_end_time - clip_grad_start_time:.4f}s")
-
-        step_start_time = time.time()
-        policy.value_optimizer.step()
-        step_end_time = time.time()
-        if TIMING:
-            print(f"          [Timing] ({tag}) optimizer.step: {step_end_time - step_start_time:.4f}s")
-        
-        loop_end_time = time.time()
-        if TIMING:
-            print(f"        [Timing] ({tag}) Total loop iteration: {loop_end_time - loop_start_time:.4f}s")
+    policy.value_optimizer.zero_grad()
+    value_loss.backward()
+    th.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
+    policy.value_optimizer.step()
 
     total_end_time = time.time()
     if TIMING:
@@ -920,5 +894,6 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         finally:
             #IMPORTANT! Persistent workers must be cleaned up.
             self.cleanup()
+            torch.cuda.empty_cache()
 
         return self
