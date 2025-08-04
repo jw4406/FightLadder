@@ -102,21 +102,28 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
     actions_batch, dstb_actions_batch, observations_batch, returns_batch, all_env_indices = _prep_rollout_data_actions(batch_size, buffer)
     policy.num_global_env = num_envs
     policy.num_adv = 1
-    values, _, _, _, _ = policy.evaluate_actions(
-        observations_batch,
-        actions_batch,
-        dstb_actions_batch,
-        shuffle_keys=all_env_indices,
-        network_keys=[adversary_index]
-        )
-    values = values.flatten()
-    # Single loss calculation and optimization step
-    value_loss = F.mse_loss(returns_batch, values)
-
-    policy.value_optimizer.zero_grad()
-    value_loss.backward()
-    th.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
-    policy.value_optimizer.step()
+    for i in range(len(returns_batch) // batch_size):
+        values, _, _, _, _ = policy.evaluate_actions(
+            observations_batch,
+            actions_batch,
+            dstb_actions_batch,
+            shuffle_keys=all_env_indices,
+            network_keys=[adversary_index]
+            )
+        values = values.flatten()
+        #test = F.mse_loss(returns_batch, values)
+        #value_grads = th.autograd.grad(test, policy.value_optimizer.param_groups[0]['params'][adversary_index], create_graph=True)
+        # Single loss calculation and optimization step
+        #value_losses = []
+        value_loss = F.mse_loss(returns_batch, values)
+        #value_grads = th.autograd.grad(value_loss, policy.value_optimizer.param_groups[0]['params'], create_graph=True)
+        #value_grads = th.cat([grad.view(-1) for grad in value_grads])
+        policy.value_optimizer.zero_grad()
+        #for i in range(len(policy.value_optimizer.param_groups[0]['params'])):
+        #    policy.value_optimizer.param_groups[0]['params'][i].grad = value_grads[i]
+        value_loss.backward()
+        th.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
+        policy.value_optimizer.step()
 
     total_end_time = time.time()
     if TIMING:
