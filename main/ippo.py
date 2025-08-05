@@ -415,6 +415,7 @@ def main(PLAYER):
     #parser.add_argument("--player", type=str, required=True)
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
     parser.add_argument("--num_env_to_load", type=int, required=True, help="Number of envs to load", default=1)
+    parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=32)
     args = parser.parse_args()
 
     # PLAYER = args.player
@@ -513,6 +514,9 @@ def main(PLAYER):
         finetune_model = Derivative_Free_SPAR(
             "AACCnnPolicy",
             finetune_env,
+            env_batch_size=args.env_batch_size,
+            envs_per_matchup=args.envs_per_matchup,
+            state_len=len(STATE),
             device="cuda",
             verbose=2,
             n_steps=num_steps,  # 1408,
@@ -739,6 +743,7 @@ if __name__ == "__main__":
     #parser.add_argument("--player", type=str, required=True)
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
     parser.add_argument("--num_env_to_load", type=int, required=True, help="Number of envs to load", default=1)
+    parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=32)
     args = parser.parse_args()
 
     PLAYER = args.player
