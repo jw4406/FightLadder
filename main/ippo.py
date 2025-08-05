@@ -335,6 +335,7 @@ def main(PLAYER):
     # PLAYER = "Blanka"  # "Blanka
     global REMOVAL
     use_mirror = True
+    
     REMOVAL = None
 
     if use_mirror is True:
@@ -537,6 +538,16 @@ def main(PLAYER):
             use_mirror=use_mirror,
             env_generator_func=env_generator
         )
+        # if use_mirror is True:
+        #     with open(current_dir + "miror_indicator.txt", "w") as f:
+        #         f.write("1")
+        # else:
+        #     with open(current_dir + "miror_indicator.txt", "w") as f:
+        #         f.write("0")
+        props = finetune_model.dump_properties()
+        with open(current_dir + 'myfile.txt', 'w') as f:
+            print(props, file=f)
+
 
         ''' 
         finetune_model = eepy(
