@@ -404,6 +404,9 @@ class Derivative_Free_SPAR(Generalist_SPAR):
     def __init__(self,
             policy: Union[str, Type[ActorCriticPolicy]],
             env: Union[GymEnv, str],
+            envs_per_matchup: int,
+            state_len: int,
+            env_batch_size: int = 32,
             c_learning_rate: Union[float, Schedule] = 1e-4,
             d_learning_rate: Union[float, Schedule] = 7e-4,
             v_learning_rate: Union[float, Schedule] = 7e-4,
@@ -487,6 +490,9 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         self.parallel_updater = None
         self.first_run = False
         self.env_generator_func = env_generator_func
+        self.envs_per_matchup = envs_per_matchup
+        self.state_len = state_len
+        self.env_batch_size = env_batch_size
 
     def _create_separate_env(self):
         """Create a new environment instance using the stored generator function"""
@@ -519,6 +525,60 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             _, n_workers = get_n_workers()
             self.parallel_updater = ParallelUpdater(n_workers)
             self.first_run = True
+
+    def _create_rollout_env_batch(self, batch_size: int) -> VecEnv:
+        """Create a batch of environments for rollouts using the stored generator function"""
+        # Temporarily modify the generator to create only batch_size environments
+        original_envs_per_matchup = self.envs_per_matchup
+        
+        # Calculate how to distribute batch_size across STATE
+        envs_per_state = max(1, batch_size // self.state_len)
+        
+        # Temporarily set envs_per_matchup to create the right batch size
+        self.envs_per_matchup = envs_per_state
+        
+        # Generate the batch
+        batch_env = self.env_generator_func()
+        
+        # Restore original value
+        self.envs_per_matchup = original_envs_per_matchup
+        
+        batch_env.reset()
+
+        return batch_env    
+
+    def collect_rollouts(
+                        self,
+                        env: VecEnv,
+                        callback: BaseCallback,
+                        rollout_buffer: RolloutBuffer,
+                        adversary_buffers,
+                        n_rollout_steps: int,
+                        ) -> bool:
+        """Override to use batched environments for memory management"""
+        # Create rollout environments in batches using the stored generator function
+        total_envs_needed = self.state_len * self.envs_per_matchup
+        total_batches = (total_envs_needed + self.env_batch_size - 1) // self.env_batch_size
+
+        for batch_idx in range(total_batches):
+            rollout_env = self._create_rollout_env_batch(self.env_batch_size)
+            self._last_obs = rollout_env.reset()  # Set initial observations for this batch
+            
+            # Call the parent's collect_rollouts with our batched environment
+            result = super().collect_rollouts(
+                rollout_env,
+                callback,
+                rollout_buffer,
+                adversary_buffers,
+                n_rollout_steps
+            )
+            
+            rollout_env.close()  # Clean up this batch
+            
+            if not result:  # If parent method returned False, propagate it
+                return False
+        
+        return True
 
     def copy_constructor(self, retain_callback=False):
 
