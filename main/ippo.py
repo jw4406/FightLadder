@@ -50,6 +50,7 @@ else:
 # STATE = "Champion.RyuVsRyu.2Player.align"
 global REMOVAL
 global STATE
+#torch.backends.cudnn.enabled = False
 '''
 PLAYER = "Blanka" # "Blanka
 global REMOVAL
@@ -380,7 +381,7 @@ def main(PLAYER):
                         default="trained_models/single_test_large_%s_%s" % (PLAYER, OPPONENT_LIST[0]))
 
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
-    parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_%s" % PLAYER)
+    parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_%s" % '_'.join(PLAYER))
     parser.add_argument('--state', help='The state file to load. By default Champion.Level1.RyuVsGuile',
                         default=SF_DEFAULT_STATE)
     parser.add_argument('--side', help='The side for AI to control. By default both', default='both',
@@ -390,7 +391,7 @@ def main(PLAYER):
     parser.add_argument('--num-episodes', type=int, help='In evaluation, play how many episodes', default=20)
     parser.add_argument('--num-epoch', type=int, help='Finetune how many epochs', default=50)
     parser.add_argument('--total-steps', type=int, help='How many total steps to train', default=int(10e8))
-    parser.add_argument('--video-dir', help='The path to save videos', default='videos/spar_spar_%s' % PLAYER)
+    parser.add_argument('--video-dir', help='The path to save videos', default='videos/spar_spar_%s' % '_'.join(PLAYER))
     parser.add_argument('--finetune-dir', help='The path to save finetune results', default='finetune')
     parser.add_argument('--init-level', type=int,
                         help='Initial level to load from. By default 0, starting from pretrain', default=0)
@@ -424,7 +425,7 @@ def main(PLAYER):
     os.makedirs(args.log_dir, exist_ok=True)
     os.makedirs(args.video_dir, exist_ok=True)
     os.makedirs(args.finetune_dir, exist_ok=True)
-
+    #args.model_name_prefix = 
     # Set up the environment and model
     def env_generator():
         # STATE

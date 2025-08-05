@@ -1,5 +1,6 @@
 # br_worker.py
 import os
+from annotated_types import Ge
 import time, av
 import copy
 import random
@@ -10,6 +11,7 @@ import torch
 import torch.multiprocessing as mp
 from multiprocessing.managers import DictProxy
 from common.justin.Generalist_SPAR import Generalist_SPAR, generalist_SPAR_predict
+from common.justin.derivative_free_spar import Derivative_Free_SPAR
 from common.const import *
 from common.retro_wrappers import SFWrapper, Monitor2P
 from common.algorithms import Exploiter
@@ -327,109 +329,111 @@ def train_best_response(task_file_path: str):
     worker_id = os.getpid()
     print(f"WORKER [{worker_id}]: Processing task: {os.path.basename(task_file_path)}")
 
+    #try:
+    # The task file IS the model checkpoint file, just renamed.
+    checkpoint_path = task_file_path
+
+    # Extract timestep from the checkpoint filename for wandb logging
     try:
-        # The task file IS the model checkpoint file, just renamed.
-        checkpoint_path = task_file_path
+        basename = os.path.basename(checkpoint_path)
+        # Assumes format like '..._12345_steps.task'
+        timestep_str = basename.replace('.task', '').split('_')[-2]
+        ego_timestep = int(timestep_str)
+    except (IndexError, ValueError):
+        print(f"WORKER [{worker_id}]: Could not parse timestep from filename: {basename}. BR win rate will not be logged against a specific step.")
+        ego_timestep = None
 
-        # Extract timestep from the checkpoint filename for wandb logging
-        try:
-            basename = os.path.basename(checkpoint_path)
-            # Assumes format like '..._12345_steps.task'
-            timestep_str = basename.replace('.task', '').split('_')[-2]
-            ego_timestep = int(timestep_str)
-        except (IndexError, ValueError):
-            print(f"WORKER [{worker_id}]: Could not parse timestep from filename: {basename}. BR win rate will not be logged against a specific step.")
-            ego_timestep = None
+    finetune_model = Generalist_SPAR(
+        "AACCnnPolicy",
+        env_generator(),
+        device="cuda",
+        verbose=2,
+        n_steps=96,  # 1408,
+        batch_size=192,  # 2816,  # 512,
+        n_epochs=5,
+        gamma=0.99,
+        v_learning_rate=5e-5, c_learning_rate=1e-6,
+        d_learning_rate=2e-6, v_learning_rate_decay=critic_decay_schedule(1e-3),
+        c_learning_rate_decay=critic_decay_schedule(1e-4),
+        d_learning_rate_decay=critic_decay_schedule(5e-4),
+        clip_range=linear_schedule(0.075, 0.025),
+        tensorboard_log='logs',
+        seed=0,
+        ent_coef=.01,
+        dstb_ent_coef=.01,
+        I_AM_LEFT=True,
+        I_AM_RIGHT=False,
+        num_adversary=1,
+        n_global_env=4,
+        n_env_per_adv=4,
+        opp_list=[PLAYER],
+        player=PLAYER,
+        use_mirror=False
+    )
+    env = env_generator()
+    env.num_envs = 1 # HACKY FOR NOW!
+    ftm = Derivative_Free_SPAR.load(checkpoint_path, env=env)
+    # Read the path of the frozen policy from the task file
+    data, params, pytorch_variables = load_from_zip_file(
+        checkpoint_path)
 
-        finetune_model = Generalist_SPAR(
-            "AACCnnPolicy",
-            env_generator(),
-            device="cuda",
-            verbose=2,
-            n_steps=96,  # 1408,
-            batch_size=192,  # 2816,  # 512,
-            n_epochs=5,
-            gamma=0.99,
-            v_learning_rate=5e-5, c_learning_rate=1e-6,
-            d_learning_rate=2e-6, v_learning_rate_decay=critic_decay_schedule(1e-3),
-            c_learning_rate_decay=critic_decay_schedule(1e-4),
-            d_learning_rate_decay=critic_decay_schedule(5e-4),
-            clip_range=linear_schedule(0.075, 0.025),
-            tensorboard_log='logs',
-            seed=0,
-            ent_coef=.01,
-            dstb_ent_coef=.01,
-            I_AM_LEFT=True,
-            I_AM_RIGHT=False,
-            num_adversary=1,
-            n_global_env=4,
-            n_env_per_adv=4,
-            opp_list=[PLAYER],
-            player=PLAYER,
-            use_mirror=False
-        )
+    del params['policy.ctrl_optimizer']
+    del params['policy.value_optimizer']
+    del params['policy.dstb_optimizer']
+    # finetune_model.warmstarted_cont_MAGICS = True
+    # finetune_model.warmstart_setup(finetune_model.lr_schedule)
+    finetune_model.set_parameters(params, exact_match=False, device=finetune_model.device)
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
 
-        # Read the path of the frozen policy from the task file
-        data, params, pytorch_variables = load_from_zip_file(
-            checkpoint_path)
+    # --- This is where your specific BR logic goes ---
+    # 1. Load the frozen opponent
+    # fixed_opponent = PPO.load(checkpoint_path)
+    wandb.init(project="exploiter",
+                entity='jw4406',
+                group="br_workers",
+                config={"eval_rew": 0,
+                        "epochs": 0,
+                        "br_wr": 0})
+    # 2. Create your environment, passing the frozen opponent to it
+    #    so the BR agent can play against it.
+    # env = YourStreetFighterEnv(opponent_policy=fixed_opponent)
+    env = exploiter_env_generator()
 
-        del params['policy.ctrl_optimizer']
-        del params['policy.value_optimizer']
-        del params['policy.dstb_optimizer']
-        # finetune_model.warmstarted_cont_MAGICS = True
-        # finetune_model.warmstart_setup(finetune_model.lr_schedule)
-        finetune_model.set_parameters(params, exact_match=False, device=finetune_model.device)
-        if not os.path.exists(checkpoint_path):
-            raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
+    # 3. Create a new agent to be the best response
+    br_agent = Exploiter('CnnPolicy', exploiter_env_generator(), device='cuda', exploited=finetune_model, n_steps=1024, batch_size=512, n_epochs=10, exploiting='ego')
 
-        # --- This is where your specific BR logic goes ---
-        # 1. Load the frozen opponent
-        # fixed_opponent = PPO.load(checkpoint_path)
-        wandb.init(project="exploiter",
-                   entity='jw4406',
-                   group="br_workers",
-                   config={"eval_rew": 0,
-                           "epochs": 0,
-                           "br_wr": 0})
-        # 2. Create your environment, passing the frozen opponent to it
-        #    so the BR agent can play against it.
-        # env = YourStreetFighterEnv(opponent_policy=fixed_opponent)
-        env = exploiter_env_generator()
+    # 4. Train the BR agent
+    br_model_name = f"br_to_{os.path.splitext(os.path.basename(checkpoint_path))[0]}.zip"
+    exploiter_callback = ExploiterCheckpointCallback(save_freq=100, save_path=BR_MODEL_DIR, name_prefix=br_model_name)
+    br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
 
-        # 3. Create a new agent to be the best response
-        br_agent = Exploiter('CnnPolicy', exploiter_env_generator(), device='cuda', exploited=finetune_model, n_steps=1024, batch_size=512, n_epochs=10, exploiting='ego')
+    # eval BR against ego right here! both models are already in namespace.
 
-        # 4. Train the BR agent
-        br_model_name = f"br_to_{os.path.splitext(os.path.basename(checkpoint_path))[0]}.zip"
-        exploiter_callback = ExploiterCheckpointCallback(save_freq=100, save_path=BR_MODEL_DIR, name_prefix=br_model_name)
-        br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
+    wr = evaluate_sa_parallel(curr_state=STATE[0], model=finetune_model, exploiter_model=br_agent, env_index=0, record=False)
+    #TODO: Remove the following line once debugging is done
+    # wr = evaluate_sa(STATE[0], finetune_model, br_agent, 0, record=False) # do not change False to True
+    rew_arr = np.zeros(len(br_agent.ep_info_buffer))
+    for i in range(len(rew_arr)):
+        rew_arr[i] = br_agent.ep_info_buffer[i]['r']
+    mean_rew = np.mean(rew_arr)
+    if ego_timestep is not None:
+        wandb.log({"br_win_rate_vs_%s" % (br_agent.exploiting): wr, "global_step": ego_timestep})
+        wandb.log({"br_mean_reward_vs_%s" % (br_agent.exploiting): mean_rew, "global_step": ego_timestep})
+    else:
+        wandb.log({"br_win_rate_vs_ego": wr})
 
-        # eval BR against ego right here! both models are already in namespace.
+    # 5. Save the trained BR model
+    # br_agent.save(os.path.join(BR_MODEL_DIR, br_model_name))
+    # -------------------------------------------------
 
-        wr = evaluate_sa_parallel(curr_state=STATE[0], model=finetune_model, exploiter_model=br_agent, env_index=0, record=False)
-        #TODO: Remove the following line once debugging is done
-        # wr = evaluate_sa(STATE[0], finetune_model, br_agent, 0, record=False) # do not change False to True
-        rew_arr = np.zeros(len(br_agent.ep_info_buffer))
-        for i in range(len(rew_arr)):
-            rew_arr[i] = br_agent.ep_info_buffer[i]['r']
-        mean_rew = np.mean(rew_arr)
-        if ego_timestep is not None:
-            wandb.log({"br_win_rate_vs_%s" % (br_agent.exploiting): wr, "global_step": ego_timestep})
-            wandb.log({"br_mean_reward_vs_%s" % (br_agent.exploiting): mean_rew, "global_step": ego_timestep})
-        else:
-            wandb.log({"br_win_rate_vs_ego": wr})
+    print(f"WORKER [{worker_id}]: Successfully trained and saved {br_model_name}")
+    wandb.finish()
 
-        # 5. Save the trained BR model
-        # br_agent.save(os.path.join(BR_MODEL_DIR, br_model_name))
-        # -------------------------------------------------
-
-        print(f"WORKER [{worker_id}]: Successfully trained and saved {br_model_name}")
-        wandb.finish()
-
-    except Exception as e:
-        print(f"WORKER [{worker_id}]: FAILED to process task {os.path.basename(task_file_path)}. Error: {e}")
-        # Optionally, move the failed task to an "error" directory instead of "done"
-        # to inspect it later.
+    # except Exception as e:
+    #     print(f"WORKER [{worker_id}]: FAILED to process task {os.path.basename(task_file_path)}. Error: {e}")
+    #     # Optionally, move the failed task to an "error" directory instead of "done"
+    #     # to inspect it later.
 
 if __name__ == "__main__":
     wandb.login(key='d95a51c4001b862123a34a3853fe0306906d2f07')
