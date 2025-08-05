@@ -123,6 +123,8 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
         shuffle_keys=all_env_indices[i * batch_size:(i + 1) * batch_size],
         network_keys=[adversary_index]
         )
+        #policy.train(True)
+        #torch.backends.cudnn.enabled = False
         values = values.flatten()
         offset = 12 # vf extractor and shared trunk are 12
         num_per_head = 10 # lstm = 6, 2 linear layers = 2 + 2, total 10
@@ -434,7 +436,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             dstb_action_space=None,
             num_adversary=4,
             n_global_env=None,
-            n_env_per_adv=None,
+            n_env_per_adv=1,
             warmstarted_cont_MAGICS=False,
             opp_list=None,
             player=None,
@@ -559,6 +561,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         #self.perturbed_adv_buf = perturbed_adv_buf
 
         # 3. Update value functions for both original and perturbed agents
+        #self.policy.set_training_mode(False)
         start_time = time.time()
         self._update_value_functions(self.perturbed_agent, self.perturbed_adv_buf)
         end_time = time.time()
