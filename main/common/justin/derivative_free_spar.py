@@ -922,3 +922,33 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             torch.cuda.empty_cache()
 
         return self
+    
+    def dump_properties(self):
+        
+        PRIMITIVE_TYPES = (int, float, bool, str, type(None))
+        
+        primitive_attrs = {}
+
+        for attr_name in dir(self):
+            if attr_name.startswith('__'):
+                continue
+                
+            try:
+                attr_value = getattr(self, attr_name)
+            except AttributeError:
+                continue
+
+            if callable(attr_value):
+                continue
+
+            if isinstance(attr_value, PRIMITIVE_TYPES):
+                primitive_attrs[attr_name] = attr_value
+                continue
+            
+            if isinstance(attr_value, (list, tuple)):
+                if all(isinstance(item, PRIMITIVE_TYPES) for item in attr_value):
+                    primitive_attrs[attr_name] = attr_value
+
+
+
+        return primitive_attrs
