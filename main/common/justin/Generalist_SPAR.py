@@ -87,7 +87,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             dstb_action_space=None,
             num_adversary=4,
             n_global_env=None,
-            n_env_per_adv=None,
+            n_env_per_adv=1,
             warmstarted_cont_MAGICS=False,
             opp_list=None,
             player=None,
@@ -233,7 +233,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
         # self._setup_learn()
         assert self._last_obs is not None, "No previous observation was provided"
         # Switch to eval mode (this affects batch norm / dropout)
-        self.policy.set_training_mode(False)
+        self.policy.set_training_mode(True)
 
         n_steps = 0
         rollout_buffer.reset()
@@ -382,6 +382,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                     terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
                     with th.no_grad():
                         terminal_value = self.policy.predict_values(terminal_obs)[0]
+                        print("YUIOERHGBDIOJEAHRKBFGKHFJIOAHFKBDIOASKF", flush=True)
                     rewards[idx] += self.gamma * terminal_value
             if self.use_mirror is True:
                 rollout_buffer.add(

@@ -1365,7 +1365,7 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
             )
 
             if self.adversarial: # we are doing adversarial!
-                self.dstb_action_net = []
+                self.dstb_action_net = nn.ModuleList()
                 for i in range(self.num_adversaries):
                     self.dstb_action_net.append(nn.Sequential(
                         nn.LSTM(input_size=latent_dim_pi, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
@@ -1379,7 +1379,7 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
                     #self.dstb_action_net.append(self.dstb_action_dist[i].proba_distribution_net(latent_dim=latent_dim_pi))
         else:
             raise NotImplementedError(f"Unsupported distribution '{self.action_dist}'.")
-        self.value_net = []
+        self.value_net = nn.ModuleList()
         for i in range(self.num_adversaries):
             self.value_net.append(nn.Sequential(
                 nn.LSTM(input_size=self.mlp_extractor.latent_dim_vf, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
@@ -1449,8 +1449,11 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
         else:
             self.ctrl_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.policy_net.parameters(), self.pi_ctrl_features_extractor.parameters(),self.action_net.parameters()), joint_schedule[0](1),maximize=True)
             self.dstb_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.dstb_net.parameters(), self.pi_dstb_features_extractor.parameters(), itertools.chain.from_iterable([self.dstb_action_net[i].parameters() for i in range(self.num_adversaries)])), joint_schedule[1](1), maximize=True)
+            #self.value_optimizer = self.optimizer_class(
+            #    itertools.chain(self.mlp_extractor.value_net.parameters(), self.vf_features_extractor.parameters(), itertools.chain.from_iterable([self.value_net[i].parameters() for i in range(self.num_adversaries)])),
+            #    joint_schedule[2](1), **self.optimizer_kwargs)
             self.value_optimizer = self.optimizer_class(
-                itertools.chain(self.mlp_extractor.value_net.parameters(), self.vf_features_extractor.parameters(), itertools.chain.from_iterable([self.value_net[i].parameters() for i in range(self.num_adversaries)])),
+                itertools.chain(self.mlp_extractor.value_net.parameters(), self.vf_features_extractor.parameters(), self.value_net.parameters()),
                 joint_schedule[2](1), **self.optimizer_kwargs)
             #self.value_targ = [copy.deepcopy(self.vf_features_extractor).requires_grad_(False).to('cuda'),
             #                   copy.deepcopy(self.mlp_extractor.value_net).requires_grad_(False).to('cuda'),
@@ -1465,6 +1468,7 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
         #for i in range(self.policy_memory_size):
         #    self.policy_memory_optimizers[i] = self.optimizer_class(itertools.chain([self.policy_memory[i].dstb_log_std], self.policy_memory[i].mlp_extractor.dstb_net.parameters(), self.policy_memory[i].dstb_action_net.parameters()), joint_schedule[2](1), maximize=False)
         #TODO: ReduceLROnPlateau
+        self.train()
 class ActorCriticCnnPolicy(ActorCriticPolicy):
     """
     CNN policy class for actor-critic algorithms (has both policy and value prediction).
