@@ -374,15 +374,15 @@ def train_best_response(task_file_path: str):
     env.num_envs = 1 # HACKY FOR NOW!
     ftm = Derivative_Free_SPAR.load(checkpoint_path, env=env)
     # Read the path of the frozen policy from the task file
-    data, params, pytorch_variables = load_from_zip_file(
-        checkpoint_path)
+    #data, params, pytorch_variables = load_from_zip_file(
+    #    checkpoint_path)
 
-    del params['policy.ctrl_optimizer']
-    del params['policy.value_optimizer']
-    del params['policy.dstb_optimizer']
+    #del params['policy.ctrl_optimizer']
+    #del params['policy.value_optimizer']
+    #del params['policy.dstb_optimizer']
     # finetune_model.warmstarted_cont_MAGICS = True
     # finetune_model.warmstart_setup(finetune_model.lr_schedule)
-    finetune_model.set_parameters(params, exact_match=False, device=finetune_model.device)
+    #finetune_model.set_parameters(params, exact_match=False, device=finetune_model.device)
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
 
