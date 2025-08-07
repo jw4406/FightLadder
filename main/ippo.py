@@ -429,16 +429,37 @@ def main(PLAYER):
     os.makedirs(args.finetune_dir, exist_ok=True)
     #args.model_name_prefix = 
     # Set up the environment and model
-    def env_generator():
+    def env_generator(max_envs: int = 0):
+        """
+        TODO: Complete the docstring
+
+        Args:
+            max_envs (int):
+                Maximum environments to generator. If 0, unbounded.
+        """
+        def exceed_max_envs(env_count: int, max_envs: int) -> bool:
+            """
+            This is a helper function that returns True if max_envs is active (not 0) and count exceeds it.
+            """
+            if max_envs == 0:
+                return False
+            return env_count >= max_envs
+        
         # STATE
         each_env_count = args.envs_per_matchup
         env = []
+        env_count = 0
         for i in range(len(STATE)):
             for j in range(each_env_count):
+                if exceed_max_envs(env_count, max_envs):
+                    break
                 env.append(
                     make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render,
                              enable_combo=args.enable_combo, null_combo=args.null_combo,
                              transform_action=args.transform_action, seed=0))
+                env_count += 1
+            if exceed_max_envs(env_count, max_envs):
+                break
         # env = [make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=0) for i in range(args.num_env)]
         # env = make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render,
         #         enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action,
