@@ -524,28 +524,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         if self.parallel_updater is None:
             _, n_workers = get_n_workers()
             self.parallel_updater = ParallelUpdater(n_workers)
-            self.first_run = True
-
-    def _create_rollout_env_batch(self, batch_size: int) -> VecEnv:
-        """Create a batch of environments for rollouts using the stored generator function"""
-        # Temporarily modify the generator to create only batch_size environments
-        original_envs_per_matchup = self.envs_per_matchup
-        
-        # Calculate how to distribute batch_size across STATE
-        envs_per_state = max(1, batch_size // self.state_len)
-        
-        # Temporarily set envs_per_matchup to create the right batch size
-        self.envs_per_matchup = envs_per_state
-        
-        # Generate the batch
-        batch_env = self.env_generator_func()
-        
-        # Restore original value
-        self.envs_per_matchup = original_envs_per_matchup
-        
-        batch_env.reset()
-
-        return batch_env    
+            self.first_run = True  
 
     def collect_rollouts(
                         self,
@@ -561,7 +540,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         total_batches = (total_envs_needed + self.env_batch_size - 1) // self.env_batch_size
 
         for batch_idx in range(total_batches):
-            rollout_env = self._create_rollout_env_batch(self.env_batch_size)
+            rollout_env = self.env_generator_func(max_envs=self.env_batch_size)
             self._last_obs = rollout_env.reset()  # Set initial observations for this batch
             
             # Call the parent's collect_rollouts with our batched environment
