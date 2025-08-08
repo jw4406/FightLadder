@@ -128,7 +128,7 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
         values = values.flatten()
         offset = 12 # vf extractor and shared trunk are 12
         num_per_head = 10 # lstm = 6, 2 linear layers = 2 + 2, total 10
-        value_loss = F.mse_loss(returns_batch[i * batch_size:(i + 1) * batch_size], values)
+        value_loss = F.mse_loss(values, returns_batch[i * batch_size:(i + 1) * batch_size])
         indices = list(range(0, offset)) + list(range(offset + adversary_index * num_per_head, offset + (adversary_index + 1) * num_per_head))
         value_grads = th.autograd.grad(value_loss, [policy.value_optimizer.param_groups[0]['params'][j] for j in indices], create_graph=True)
         #value_grads = th.cat([grad.view(-1) for grad in value_grads])
@@ -566,21 +566,21 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             env_cnt += rollout_env.num_envs
             self._last_obs = rollout_env.reset()  # Set initial observations for this batch
             
-            # Call the parent's collect_rollouts with our batched environment
-            result = super().collect_rollouts(
-                rollout_env,
-                callback,
-                rollout_buffer,
-                adversary_buffers,
-                n_rollout_steps
-            )
+    #         # Call the parent's collect_rollouts with our batched environment
+    #         result = super().collect_rollouts(
+    #             rollout_env,
+    #             callback,
+    #             rollout_buffer,
+    #             adversary_buffers,
+    #             n_rollout_steps
+    #         )
             
-            rollout_env.close()  # Clean up this batch
+    #         rollout_env.close()  # Clean up this batch
             
-            if not result:  # If parent method returned False, propagate it
-                return False
+    #         if not result:  # If parent method returned False, propagate it
+    #             return False
         
-        return True
+    #     return True 
 
     def copy_constructor(self, retain_callback=False):
 
@@ -639,15 +639,20 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         gc.collect()
         torch.cuda.empty_cache()
     
-    def perturb_params(self, param_list):
+    def perturb_params(self, param_list, ego=True):
         count = 0
         for i in range(len(param_list)):
             count = count + torch.numel(param_list[i])
-        delta = .1
+        delta = .2
         select = torch.from_numpy(np.random.uniform(low=-1, high=1, size=count)).to(self.device)
         v = delta * select / torch.linalg.norm(select)
         self.delta = delta
-        self.v = v
+        if ego:
+            self.ego_v = v
+        else:
+            self.adv_v = v
+        # this works because we call leader_grads TWICE, once for ego and once for adv, so 
+        # each time, we use a diff v and update each param list, so no need to double d here.
         self.d = count
         count = 0
         with torch.no_grad():
@@ -715,8 +720,8 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         # Deepcopy and perturb parameters for both ego and adversary policies
         other_ego = deepcopy(self.policy.ctrl_optimizer.param_groups[0]['params'])
         other_adv = deepcopy(self.policy.dstb_optimizer.param_groups[0]['params'])
-        self.perturb_params(other_ego)
-        self.perturb_params(other_adv)
+        self.perturb_params(other_ego, ego=True)
+        self.perturb_params(other_adv, ego=False)
         
         # Create a new agent instance with the perturbed parameters
         perturbed_agent = self.copy_constructor()
@@ -776,44 +781,73 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             print(f"  [Timing] Total _update_value_functions: {total_end_time - total_start_time:.4f}s")
 
     def leader_grads(self, ori_buf, perturbed_buf, ori_policy, perturbed_policy, ego=True):
+        total_start_time = time.time()
         clip_range = self.clip_range(self._current_progress_remaining)
         entropy_losses, pg_losses, approx_kl_divs_all = [], [], []
 
         num_runs_count = 1 if ego else self.num_adversaries
-
-        for i in range(num_runs_count):
-            network_keys, curr_buf, curr_perturbed_buf = self._get_buffers_and_keys(ori_buf, perturbed_buf, ego, i)
-            
-            approx_kl_divs_epoch = []
-            
-            for ori_rollout_data, perturbed_rollout_data in zip(curr_buf.get(self.batch_size), curr_perturbed_buf.get(self.batch_size)):
+        for j in range(self.n_epochs):
+            epoch_start_time = time.time()
+            for i in range(num_runs_count):
+                run_start_time = time.time()
+                network_keys, curr_buf, curr_perturbed_buf = self._get_buffers_and_keys(ori_buf, perturbed_buf, ego, i)
                 
-                policy_loss, log_prob, entropy = self._calculate_policy_loss(
-                    ori_rollout_data, ori_policy, ego, network_keys, clip_range
-                )
-                pg_losses.append(policy_loss.item())
-                entropy_losses.append(entropy.mean().item())
-
-                perturbed_policy_loss, _, _ = self._calculate_policy_loss(
-                    perturbed_rollout_data, perturbed_policy, ego, network_keys, clip_range
-                )
+                approx_kl_divs_epoch = []
                 
-                self._compute_and_apply_grads(policy_loss, perturbed_policy_loss, ego)
-                
-                with th.no_grad():
-                    old_log_prob_tensor = ori_rollout_data.old_log_prob if ego else ori_rollout_data.old_dstb_log_prob
-                    #run forward pass to get the log_prob
-                    _, log_prob, entropy, _, _ = ori_policy.evaluate_actions(
-                        torch.Tensor(ori_rollout_data.observations).to(self.device), torch.Tensor(ori_rollout_data.actions).to(self.device), torch.Tensor(ori_rollout_data.dstb_actions).to(self.device),
-                        shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys
+                batch_loop_start_time = time.time()
+                for ori_rollout_data, perturbed_rollout_data in zip(curr_buf.get(self.batch_size), curr_perturbed_buf.get(self.batch_size)):
+                    
+                    calc_loss_start_time = time.time()
+                    policy_loss, log_prob, entropy = self._calculate_policy_loss(
+                        ori_rollout_data, ori_policy, ego, network_keys, clip_range
                     )
-                    #run forward pass to get the log_prob
-                    #_, log_prob, entropy, _, _ = perturbed_policy.evaluate_actions(
-                    log_ratio = log_prob - old_log_prob_tensor
-                    approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
-                    approx_kl_divs_epoch.append(approx_kl_div)
-           
-            approx_kl_divs_all.extend(approx_kl_divs_epoch)
+                    pg_losses.append(policy_loss.item())
+                    entropy_losses.append(entropy.mean().item())
+
+                    perturbed_policy_loss, _, _ = self._calculate_policy_loss(
+                        perturbed_rollout_data, perturbed_policy, ego, network_keys, clip_range
+                    )
+                    calc_loss_end_time = time.time()
+                    if TIMING:
+                        print(f"            [Timing] _calculate_policy_loss (ori+pert): {calc_loss_end_time - calc_loss_start_time:.4f}s")
+                    
+                    compute_grads_start_time = time.time()
+                    self._compute_and_apply_grads(policy_loss, perturbed_policy_loss, ego)
+                    compute_grads_end_time = time.time()
+                    if TIMING:
+                        print(f"            [Timing] _compute_and_apply_grads: {compute_grads_end_time - compute_grads_start_time:.4f}s")
+
+                    kl_div_start_time = time.time()
+                    with th.no_grad():
+                        old_log_prob_tensor = ori_rollout_data.old_log_prob if ego else ori_rollout_data.old_dstb_log_prob
+                        #run forward pass to get the log_prob
+                        _, log_prob, entropy, _, _ = ori_policy.evaluate_actions(
+                            torch.Tensor(ori_rollout_data.observations).to(self.device), torch.Tensor(ori_rollout_data.actions).to(self.device), torch.Tensor(ori_rollout_data.dstb_actions).to(self.device),
+                            shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys
+                        )
+                        #run forward pass to get the log_prob
+                        #_, log_prob, entropy, _, _ = perturbed_policy.evaluate_actions(
+                        log_ratio = log_prob - old_log_prob_tensor
+                        approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
+                        approx_kl_divs_epoch.append(approx_kl_div)
+                        #gc.collect()
+                        #torch.cuda.empty_cache()
+                    kl_div_end_time = time.time()
+                    if TIMING:
+                        print(f"            [Timing] KL-div calculation: {kl_div_end_time - kl_div_start_time:.4f}s")
+                
+                batch_loop_end_time = time.time()
+                if TIMING:
+                    print(f"          [Timing] Batch processing loop ({'ego' if ego else 'adv'} run {i}): {batch_loop_end_time - batch_loop_start_time:.4f}s")
+                approx_kl_divs_all.extend(approx_kl_divs_epoch)
+                run_end_time = time.time()
+                if TIMING:
+                    print(f"        [Timing] Adversary/Ego run {i}: {run_end_time - run_start_time:.4f}s")
+
+            epoch_end_time = time.time()
+            if TIMING:
+                print(f"      [Timing] Epoch {j}: {epoch_end_time - epoch_start_time:.4f}s")
+
 
         self._n_updates += self.n_epochs
         if hasattr(self.rollout_buffer, 'values') and self.rollout_buffer.values is not None and self.rollout_buffer.returns is not None:
@@ -821,6 +855,10 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         else:
             explained_var = np.nan
         self._log_leader_metrics(ego, entropy_losses, pg_losses, approx_kl_divs_all, explained_var, clip_range)
+
+        total_end_time = time.time()
+        if TIMING:
+            print(f"    [Timing] Total leader_grads ({'ego' if ego else 'adv'}): {total_end_time - total_start_time:.4f}s")
 
     def _get_buffers_and_keys(self, ori_buf, perturbed_buf, ego, index):
         if ego:
@@ -867,7 +905,10 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         return policy_loss, log_prob, entropy
 
     def _compute_and_apply_grads(self, policy_loss, perturbed_policy_loss, ego):
-        F = self.d / self.delta * (perturbed_policy_loss - policy_loss) * self.v
+        if ego:
+            F = self.d / self.delta * (perturbed_policy_loss - policy_loss) * self.ego_v
+        else:
+            F = self.d / self.delta * (perturbed_policy_loss - policy_loss) * self.adv_v
         
         param_list = self.policy.ctrl_optimizer.param_groups[0]['params'] if ego else self.policy.dstb_optimizer.param_groups[0]['params']
         size_lists = [list(x.shape) for x in param_list]
