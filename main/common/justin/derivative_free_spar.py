@@ -559,28 +559,170 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         total_envs_needed = self.state_len * self.envs_per_matchup
         total_batches = (total_envs_needed + self.env_batch_size - 1) // self.env_batch_size
         env_cnt = 0 #how many environments were created
+        if total_batches != 1:
+            flat_elements = []
+            for item in (rollout_buffer.buffer_size,total_envs_needed, rollout_buffer.obs_shape):
+                if isinstance(item, tuple):
+                    flat_elements.extend(item)  # Recursively flatten nested tuples
+                else:
+                    flat_elements.append(item)  # Add integers directly
+            #shape = np.flatten((rollout_buffer.buffer_size,total_envs_needed, rollout_buffer.obs_shape))
+            vertical_batch_obs = np.empty(flat_elements)
+            vertical_batch_rewards = np.empty(np.shape(rollout_buffer.rewards))
+            vertical_batch_rewards_other = np.empty(np.shape(rollout_buffer.rewards_other))
+            vertical_batch_dones = np.empty(np.shape(rollout_buffer.dones))
+            vertical_batch_infos = np.empty(np.shape(rollout_buffer.infos))
 
         for batch_idx in range(total_batches):
+            # if total_batches != 1:
+            #     flat_elements = []
+            #     for item in (rollout_buffer.buffer_size,total_envs_needed, rollout_buffer.obs_shape):
+            #         if isinstance(item, tuple):
+            #             flat_elements.extend(item)  # Recursively flatten nested tuples
+            #         else:
+            #             flat_elements.append(item)  # Add integers directly
+            #     #shape = np.flatten((rollout_buffer.buffer_size,total_envs_needed, rollout_buffer.obs_shape))
+            #     vertical_batch_obs = np.empty(flat_elements)
             i_start, j_start = _calc_i_start_j_start(env_cnt, self.envs_per_matchup)
             rollout_env = self.env_generator_func(max_envs=self.env_batch_size, i_start=i_start, j_start=j_start)
             env_cnt += rollout_env.num_envs
             self._last_obs = rollout_env.reset()  # Set initial observations for this batch
             
             # Call the parent's collect_rollouts with our batched environment
-            result = super().collect_rollouts(
-                rollout_env,
-                callback,
-                rollout_buffer,
-                adversary_buffers,
-                n_rollout_steps
-            )
-            
+            if total_batches == 1:
+                result = super().collect_rollouts(
+                    rollout_env,
+                    callback,
+                    rollout_buffer,
+                    adversary_buffers,
+                    n_rollout_steps
+                )
+                if not result:  # If parent method returned False, propagate it
+                    return False
+        
+                return True
+            else:
+                env = rollout_env
+                assert self._last_obs is not None, "No previous observation was provided"
+                # Switch to eval mode (this affects batch norm / dropout)
+                self.policy.set_training_mode(True)
+
+                n_steps = 0
+                rollout_buffer.reset()
+                for i in range(self.num_adversaries):
+                    adversary_buffers[i].reset()
+                # Sample new weights for the state dependent exploration
+                if self.use_sde:
+                    self.policy.reset_noise(env.num_envs)
+
+                # need to sample leader policy here
+                #for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params'])):
+                #    self.policy.ctrl_optimizer.param_groups[0]['params'][i] = torch.nn.init.uniform_(self.policy.ctrl_optimizer.param_groups[0]['params'][i], a=-1., b=1.)
+
+                callback.on_rollout_start()
+                count = 0
+                while n_steps < n_rollout_steps:
+                    if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+                        # Sample a new noise matrix
+                        self.policy.reset_noise(env.num_envs)
+
+                    with th.no_grad():
+                        # Convert to pytorch tensor or to TensorDict
+
+                        # PROBLEM HERE:
+                        # we need to only call the right heads here cause adversary list may not be the 
+                        # full thing since we're chunking/cycling the envs!
+
+
+                        obs_tensor = obs_as_tensor(self._last_obs, self.device)
+                        s_actions, s_log_probs, s_values, s_dstb_actions, s_dstb_log_probs = self.policy(obs_tensor, network_keys=[i for i in range(self.num_adversaries)])
+                        all_adv_left_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
+                        all_adv_right_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
+                        all_adv_critic_values = torch.zeros((self.n_global_env, 1), device=self.device)
+                        all_adv_log_probs = torch.zeros((self.n_global_env,), device=self.device)
+                        all_adv_dstb_log_probs = torch.zeros((self.n_global_env,), device=self.device)
+                    actions = s_actions
+                    adversary_actions = s_dstb_actions
+                    log_probs = s_log_probs
+                    adversary_log_probs = s_dstb_log_probs
+                    actions = actions.cpu().numpy()
+                    adversary_actions = adversary_actions.cpu().numpy()
+                    all_adv_critic_values = s_values
+
+                    if self.use_mirror is True:
+                        mirror_master_copy_actions = deepcopy(actions)
+                        mirror_master_copy_adv_actions = deepcopy(adversary_actions)
+
+                    # upper half, lower half
+
+                    if self.use_mirror is True:
+                        # print("SINGLE TRAIN EXTRACTOR MIRROR")
+
+                        '''
+                        assume wlog Ehonda is the prot.
+
+                        action right now is:                  adv_action right now is:
+                        EHonda left                                              Sagat    right
+                        EHonda left                                              Sagat    right
+                        EHonda left                                             MBison    right
+                        EHonda left                                             MBison    right
+
+                        EHonda v Sagat       0
+                        Sagat v. EHonda      1
+                        EHonda v. MBison     2
+                        MBison v. EHonda     3
+
+                        action[odds] needs to go to the other side because our design makes prot actions left
+
+                        same with adversary[odds] -- adversary is on the right so adv[ods] is backwards
+
+                        '''
+
+                        prot_left = actions[0::2, :]  # actions for the prot when he is on the left
+                        prot_reversed = actions[1::2,
+                                        :]  # actions for prot when he is on the right... but its backwards right now!
+
+                        adv_right = adversary_actions[0::2, :]
+                        adv_reversed = adversary_actions[1::2, :]
+
+                        temp = np.zeros((self.num_adversaries, self.action_space.shape[0]))
+                        temp = prot_reversed
+
+                        actions[1::2, :] = adversary_actions[1::2, :]
+                        adversary_actions[1::2, :] = temp
+
+                    # Rescale and perform action
+                    if self.update_left is True:
+                        # MESSY
+                        clipped_actions = np.hstack([actions, adversary_actions])
+                    else:
+                        clipped_actions = np.hstack([adversary_actions, actions])
+                    # Clip the actions to avoid out of bound error
+                    if isinstance(self.action_space, spaces.Box):
+                        clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
+
+                    new_obs, rewards, rew_other, dones, infos = env.step(clipped_actions)
+                    vertical_batch_obs[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches)), :, :, :] = th.unsqueeze(th.from_numpy(new_obs), 0)
+                    self.num_timesteps += env.num_envs
+                    #wandb.log({"epochs": self.num_timesteps})
+                    # Give access to local variables
+                    callback.update_locals(locals())
+                    if callback.on_step() is False:
+                        return False
+
+                    self._update_info_buffer(infos)
+                    n_steps += 1
+
+                    if isinstance(self.action_space, spaces.Discrete):
+                        # Reshape in case of discrete action
+                        actions = actions.reshape(-1, 1)
+                    count += 1
             rollout_env.close()  # Clean up this batch
             
-            if not result:  # If parent method returned False, propagate it
-                return False
+            #if not result:  # If parent method returned False, propagate it
+            #    return False
         
-    #     return True 
+        return True 
 
     def copy_constructor(self, retain_callback=False):
 

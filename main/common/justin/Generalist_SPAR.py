@@ -256,6 +256,12 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
 
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
+
+                # PROBLEM HERE:
+                # we need to only call the right heads here cause adversary list may not be the 
+                # full thing since we're chunking/cycling the envs!
+
+
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 s_actions, s_log_probs, s_values, s_dstb_actions, s_dstb_log_probs = self.policy(obs_tensor, network_keys=[i for i in range(self.num_adversaries)])
                 all_adv_left_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)

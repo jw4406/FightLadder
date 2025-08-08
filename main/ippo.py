@@ -626,7 +626,8 @@ def main(PLAYER):
     other_lr_schedule = 1e-4  # if args.async_update else linear_schedule(2.5e-4/args.other_timescale, 2.5e-6/args.other_timescale)
     clip_range_schedule = 0.1  # if args.async_update else linear_schedule(0.15, 0.025)
     if REMOVAL is None:
-        args.num_env = env_generator().num_envs
+        #args.num_env = env_generator().num_envs
+        args.num_env = len(state_list) * args.envs_per_matchup
     else:
 
         if isinstance(REMOVAL, str):
