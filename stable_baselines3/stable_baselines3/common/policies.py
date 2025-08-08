@@ -1448,7 +1448,7 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
                 joint_schedule[0](1), **self.optimizer_kwargs)
         else:
             self.ctrl_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.policy_net.parameters(), self.pi_ctrl_features_extractor.parameters(),self.action_net.parameters()), joint_schedule[0](1),maximize=True)
-            self.dstb_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.dstb_net.parameters(), self.pi_dstb_features_extractor.parameters(), itertools.chain.from_iterable([self.dstb_action_net[i].parameters() for i in range(self.num_adversaries)])), joint_schedule[1](1), maximize=True)
+            self.dstb_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.dstb_net.parameters(), self.pi_dstb_features_extractor.parameters(), self.dstb_action_net.parameters()), joint_schedule[1](1), maximize=True)
             #self.value_optimizer = self.optimizer_class(
             #    itertools.chain(self.mlp_extractor.value_net.parameters(), self.vf_features_extractor.parameters(), itertools.chain.from_iterable([self.value_net[i].parameters() for i in range(self.num_adversaries)])),
             #    joint_schedule[2](1), **self.optimizer_kwargs)

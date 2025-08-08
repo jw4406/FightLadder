@@ -75,7 +75,121 @@ def gen_dummy_policy(exploiter_model: Exploiter) -> torch.nn.Module:
     
 
 @torch.no_grad()
-def evaluate_single_iter(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, greedy: int=0, record: bool=False) -> bool:
+def evaluate_single_iter_prot_prot(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, greedy: int=0, record: bool=False) -> bool:
+        """
+        This function evaluates a single episode and returns win or loss.
+        
+        Args: TODO: Complete the docstring
+
+        Returns True if won and False otherwise.
+        """
+        
+        env = make_env(sf_game, state=curr_state, side='both', reset_type='round', rendering=False,
+                 enable_combo=False, null_combo=False,
+                 transform_action=False, seed=0)().env
+        done = False
+
+        obs = env.reset()
+        if record:
+            video_log = [Image.fromarray(env.render(mode="rgb_array"))]
+
+        while not done:
+            #TODO: This if is not very clean: can probably be replaced with a single call to predict.
+            if use_mirror is True:
+                (action, _states), (_, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs, env_index=env_index, deterministic=False)
+                (_, _), (action_other, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs, env_index=env_index, deterministic=False)
+                #exploit_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
+                #action_other = exploit_action
+            else:
+                (action, _states), (action_other, _states_other) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs, env_index=env_index, deterministic=False)
+            #br_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
+
+            #action_other = br_action
+            obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
+            if record:
+                video_log.append(Image.fromarray(env.render(mode="rgb_array")))
+
+            if done:
+                if record:
+                    try:
+                        name = curr_state.split("/")[1]
+                    except:
+                        name = curr_state
+                    height, width, layers = np.array(video_log[0]).shape
+                    container = av.open(f"{args.video_dir}/{name}_episode_{j}.mp4", mode='w')
+                    stream = container.add_stream('h264', rate=10)
+                    stream.width = width
+                    stream.height = height
+                    stream.pix_fmt = 'yuv420p'
+                    for img in video_log:
+                        frame = av.VideoFrame.from_image(img)
+                        for packet in stream.encode(frame):
+                            container.mux(packet)
+                    remain_packets = stream.encode(None)
+                    container.mux(remain_packets)
+                    container.close()
+
+        env.close()
+        return agent_win(info)
+@torch.no_grad()
+def evaluate_single_iter_prot_adv(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, greedy: int=0, record: bool=False) -> bool:
+        """
+        This function evaluates a single episode and returns win or loss.
+        
+        Args: TODO: Complete the docstring
+
+        Returns True if won and False otherwise.
+        """
+        
+        env = make_env(sf_game, state=curr_state, side='both', reset_type='round', rendering=False,
+                 enable_combo=False, null_combo=False,
+                 transform_action=False, seed=0)().env
+        done = False
+
+        obs = env.reset()
+        if record:
+            video_log = [Image.fromarray(env.render(mode="rgb_array"))]
+
+        while not done:
+            #TODO: This if is not very clean: can probably be replaced with a single call to predict.
+            if use_mirror is True:
+                (action, _states), (action_other, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs, env_index=env_index, deterministic=False)
+                #exploit_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
+                #action_other = exploit_action
+            else:
+                (action, _states), (action_other, _states_other) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs, env_index=env_index, deterministic=False)
+            #br_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
+
+            #action_other = br_action
+            obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
+            if record:
+                video_log.append(Image.fromarray(env.render(mode="rgb_array")))
+
+            if done:
+                if record:
+                    try:
+                        name = curr_state.split("/")[1]
+                    except:
+                        name = curr_state
+                    height, width, layers = np.array(video_log[0]).shape
+                    container = av.open(f"{args.video_dir}/{name}_episode_{j}.mp4", mode='w')
+                    stream = container.add_stream('h264', rate=10)
+                    stream.width = width
+                    stream.height = height
+                    stream.pix_fmt = 'yuv420p'
+                    for img in video_log:
+                        frame = av.VideoFrame.from_image(img)
+                        for packet in stream.encode(frame):
+                            container.mux(packet)
+                    remain_packets = stream.encode(None)
+                    container.mux(remain_packets)
+                    container.close()
+
+        env.close()
+        return agent_win(info)
+
+@torch.no_grad()
+def evaluate_single_iter_exploiter(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, greedy: int=0, record: bool=False) -> bool:
         """
         This function evaluates a single episode and returns win or loss.
         
@@ -139,7 +253,10 @@ def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module
 
         win_count = 0
         for _ in range(episodes):
-            win_count += evaluate_single_iter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
+            if type(model) is type(exploiter_model):
+                win_count += evaluate_single_iter_exploiter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
+            else:
+                win_count += evaluate_single_iter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
         return_list[pid] = win_count
     except Exception as e:
         print(f"Worker {pid} failed with exception {e}")
@@ -343,7 +460,7 @@ def train_best_response(task_file_path: str):
         print(f"WORKER [{worker_id}]: Could not parse timestep from filename: {basename}. BR win rate will not be logged against a specific step.")
         ego_timestep = None
 
-    finetune_model = Generalist_SPAR(
+    """ finetune_model = Generalist_SPAR(
         "AACCnnPolicy",
         env_generator(),
         device="cuda",
@@ -369,7 +486,7 @@ def train_best_response(task_file_path: str):
         opp_list=[PLAYER],
         player=PLAYER,
         use_mirror=False
-    )
+    ) """
     env = env_generator()
     env.num_envs = 1 # HACKY FOR NOW!
     ftm = Derivative_Free_SPAR.load(checkpoint_path, env=env)
@@ -441,6 +558,14 @@ if __name__ == "__main__":
     processing_dir = os.path.join(TASK_DIR, "processing")
     done_dir = os.path.join(TASK_DIR, "done")
     stop_file = os.path.join(TASK_DIR, "STOP")
+    curr_dir = os.path.dirname(os.path.abspath(__file__))
+
+    if os.path.isfile(curr_dir + "/myfile.txt"):
+        import json
+        test = json.load(open(curr_dir + "/myfile.txt"))
+        print(test)
+    else:
+        print("myfile.txt does not exist")
 
     print(f"WORKER [{os.getpid()}]: Starting. Watching {todo_dir} for tasks.")
 
