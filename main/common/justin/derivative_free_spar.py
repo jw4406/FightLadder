@@ -535,12 +535,35 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                         n_rollout_steps: int,
                         ) -> bool:
         """Override to use batched environments for memory management"""
+        def _calc_i_start_j_start(env_cnt: int, envs_per_matchup: int) -> tuple:
+            """
+            This helper functino calcaultes the start of i and j to be used in env_generator_func.
+
+            Args:
+                env_cnt (int):
+                    How many environments were created.
+                envs_per_matchup (int):
+                    Environments to create per matchup.
+            
+            Returns:
+                i_start (int):
+                    i to start env_generator_func.
+                j_start (int):
+                    j to start env_generator_func.
+            """
+            i_start = env_cnt // envs_per_matchup
+            j_start = env_cnt  % envs_per_matchup
+            return i_start, j_start
+
         # Create rollout environments in batches using the stored generator function
         total_envs_needed = self.state_len * self.envs_per_matchup
         total_batches = (total_envs_needed + self.env_batch_size - 1) // self.env_batch_size
+        env_cnt = 0 #how many environments were created
 
         for batch_idx in range(total_batches):
-            rollout_env = self.env_generator_func(max_envs=self.env_batch_size)
+            i_start, j_start = _calc_i_start_j_start(env_cnt, self.envs_per_matchup)
+            rollout_env = self.env_generator_func(max_envs=self.env_batch_size, i_start=i_start, j_start=j_start)
+            env_cnt += rollout_env.num_envs
             self._last_obs = rollout_env.reset()  # Set initial observations for this batch
             
             # Call the parent's collect_rollouts with our batched environment
