@@ -566,19 +566,19 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             env_cnt += rollout_env.num_envs
             self._last_obs = rollout_env.reset()  # Set initial observations for this batch
             
-    #         # Call the parent's collect_rollouts with our batched environment
-    #         result = super().collect_rollouts(
-    #             rollout_env,
-    #             callback,
-    #             rollout_buffer,
-    #             adversary_buffers,
-    #             n_rollout_steps
-    #         )
+            # Call the parent's collect_rollouts with our batched environment
+            result = super().collect_rollouts(
+                rollout_env,
+                callback,
+                rollout_buffer,
+                adversary_buffers,
+                n_rollout_steps
+            )
             
-    #         rollout_env.close()  # Clean up this batch
+            rollout_env.close()  # Clean up this batch
             
-    #         if not result:  # If parent method returned False, propagate it
-    #             return False
+            if not result:  # If parent method returned False, propagate it
+                return False
         
     #     return True 
 
