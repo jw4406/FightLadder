@@ -429,13 +429,17 @@ def main(PLAYER):
     os.makedirs(args.finetune_dir, exist_ok=True)
     #args.model_name_prefix = 
     # Set up the environment and model
-    def env_generator(max_envs: int = 0):
+    def env_generator(max_envs: int = 0, i_start: int = 0, j_start: int = 0):
         """
         TODO: Complete the docstring
 
         Args:
             max_envs (int):
                 Maximum environments to generator. If 0, unbounded.
+            i_start (int):
+                Index of state to start at.
+            j_start (int):
+                index of env_count to start at.
         """
         def exceed_max_envs(env_count: int, max_envs: int) -> bool:
             """
@@ -449,8 +453,8 @@ def main(PLAYER):
         each_env_count = args.envs_per_matchup
         env = []
         env_count = 0
-        for i in range(len(STATE)):
-            for j in range(each_env_count):
+        for i in range(i_start, len(STATE)):
+            for j in range(j_start, each_env_count):
                 if exceed_max_envs(env_count, max_envs):
                     break
                 env.append(
