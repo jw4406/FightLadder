@@ -339,7 +339,7 @@ def main(PLAYER):
     REMOVAL = None
 
     if use_mirror is True:
-        OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
+        OPPONENT_LIST = ["Sagat", "EHonda"]# "MBison", "Blanka"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
         OPPONENT_LIST = ["Guile", "EHonda", "Sagat","ChunLi"]#, "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
@@ -411,7 +411,7 @@ def main(PLAYER):
     parser.add_argument('--fsp', action='store_true', help='Fictitious self-play')
     parser.add_argument('--fsp-threshold', type=float, help='Fictitious self-play threshold', default=0.5)
     parser.add_argument('--async-update', action='store_true', help='Update left and right asynchronously')
-    parser.add_argument('--num_env_steps', type=int, help='Number of env steps to run', default=600)
+    parser.add_argument('--num_env_steps', type=int, help='Number of env steps to run', default=300)
     #parser.add_argument("--player", type=str, required=True)
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
     parser.add_argument("--num_env_to_load", type=int, required=True, help="Number of envs to load", default=1)
@@ -546,10 +546,10 @@ def main(PLAYER):
             verbose=2,
             n_steps=num_steps,  # 1408,
             batch_size=int(num_steps * len(state_list) / 10),  # 2816,  # 512,
-            n_epochs=1,
+            n_epochs=5,
             gamma=0.94,
-            v_learning_rate=4e-2, c_learning_rate=5e-3,
-            d_learning_rate=1e-2, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            v_learning_rate=5e-4, c_learning_rate=5e-5,
+            d_learning_rate=1e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
             c_learning_rate_decay=critic_decay_schedule(1e-4),
             d_learning_rate_decay=critic_decay_schedule(5e-4),
             clip_range=clip_range_schedule,
@@ -574,7 +574,7 @@ def main(PLAYER):
         #     with open(current_dir + "miror_indicator.txt", "w") as f:
         #         f.write("0")
         props = finetune_model.dump_properties()
-        with open(current_dir + 'myfile.txt', 'w') as f:
+        with open(current_dir + '/myfile.txt', 'w') as f:
             print(props, file=f)
 
 
