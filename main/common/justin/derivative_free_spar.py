@@ -8,6 +8,7 @@ import numpy as np
 import pickle
 from gym import spaces
 import math
+import random
 from typing import List
 from copy import deepcopy
 from stable_baselines3.common.callbacks import ConvertCallback
@@ -153,6 +154,14 @@ class ParallelUpdater:
     
     Creates worker processes once and reuses them for subsequent calls, avoiding the overhead
     of process creation. Uses proper synchronization to wait for job completion.
+
+
+    To add a new job type:
+    1. Add job handler static method: _handle_your_job_type(job, device_id, done_queue, ...) -> Any
+    2. Add elif case in _generic_worker_function: elif job_type == "YOUR_JOB_TYPE": ...
+    3. Add necessary persistent state variables to persistent_state in _generic_worker_function.
+    4. Add job creation method: _create_your_job_type_job(...) -> tuple (NOTE: This might not be necessary for every job)
+    5. Add public method: your_job_type(...) -> None (uses _submit_job and _wait_for_jobs)
     """
     
     def __init__(self, n_workers: int) -> None:
@@ -183,15 +192,14 @@ class ParallelUpdater:
     @staticmethod
     def _generic_worker_function(input_queue: Queue, done_queue: Queue, device_id: int) -> None:
         """Generic worker that can handle different job types."""
-        device = select_device(device_id)
+
+        persistent_state = {}  # Worker-local persistent state - 
+
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
             gc.collect()
             torch.cuda.set_device(device_id)
-
-        derivative_free_SPAR_policy = None
-        perturbed_agent_policy = None
 
         while True:
             try:
@@ -208,75 +216,129 @@ class ParallelUpdater:
                 
             job_type = job[0]
             
+            #NOTE: Add if statements here to be able to handle new jobs.
             if job_type == "UPDATE_VALUE_FUNCTIONS":
-                # Unpack the original job format for value function updates
-                (
-                    derivative_free_SPAR_policy_data,
-                    perturbed_agent_policy_data,
-                    batch_size,
-                    max_grad_norm,
-                    i_list,
-                    adversary_buffers,
-                    perturbed_adv_buf,
-                    n_epochs,
-                    n_env_per_adv,
-                    n_env_per_pert,
-                    job_id,
-                ) = job[1]
-
-                try:
-                    # Initialize models once (first run)
-                    if derivative_free_SPAR_policy is None:
-                        if isinstance(derivative_free_SPAR_policy_data, bytes):
-                            derivative_free_SPAR_policy = pickle.loads(derivative_free_SPAR_policy_data)
-                            perturbed_agent_policy = pickle.loads(perturbed_agent_policy_data)
-                        else:
-                            # Handle case where first run sends state dict instead of pickled model
-                            raise RuntimeError("First run should send pickled models, not state dicts")
-                        move_policy(derivative_free_SPAR_policy, device)
-                        move_policy(perturbed_agent_policy, device)
-                    else:
-                        # Update weights (subsequent runs)
-                        if isinstance(derivative_free_SPAR_policy_data, bytes):
-                            derivative_free_SPAR_policy = pickle.loads(derivative_free_SPAR_policy_data)
-                            perturbed_agent_policy = pickle.loads(perturbed_agent_policy_data)
-                            move_policy(derivative_free_SPAR_policy, device)
-                            move_policy(perturbed_agent_policy, device)
-                        else:
-                            derivative_free_SPAR_policy.load_state_dict(derivative_free_SPAR_policy_data)
-                            perturbed_agent_policy.load_state_dict(perturbed_agent_policy_data)
-
-                    # Do the actual work
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                    for i in i_list:
-                        for epoch in range(n_epochs):
-                            _update_single_value_function(
-                                batch_size, max_grad_norm, derivative_free_SPAR_policy, 
-                                adversary_buffers[i], i, n_env_per_adv, device
-                            )
-                            _update_single_value_function(
-                                batch_size, max_grad_norm, perturbed_agent_policy, 
-                                perturbed_adv_buf[i], i, n_env_per_pert, device
-                            )
-                    
-                    # Signal completion
-                    done_queue.put(job_id)
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                    
-                except Exception as e:
-                    print(f"Worker {device_id} error: {e}")
-                    done_queue.put(f"ERROR_{job_id}")
+                ParallelUpdater._handle_update_value_functions(job, device_id, done_queue, persistent_state)
 
             else:
                 print(f"Worker {device_id}: Unknown job type: {job_type}")
                 done_queue.put(f"ERROR_UNKNOWN_JOB_TYPE_{job_type}")
+    
+    @staticmethod
+    def _handle_update_value_functions(job: tuple, device_id: int, done_queue: Queue, persistent_state: dict):
+        """
+        Handle UPDATE_VALUE_FUNCTIONS job type.
 
+        Processes value function updates for both main and perturbed policies on a specific device.
+        Manages model loading/updating, moves models to appropriate device, and executes training loops.
+
+        Args:
+            job: (tuple) 
+                A tuple containing (job_type, job_data) where job_data contains all training parameters
+            device_id (int):
+                GPU device ID for this worker
+            done_queue: (Queue)
+                A queue for signaling job completion or errors
+            persistent_state: (dict)
+                A dictionary storing worker-local persistent state (models, device, etc.)
+
+        Returns:
+            None: Updates persistent_state in-place and signals completion via done_queue
+        """
+        derivative_free_SPAR_policy = persistent_state.get('derivative_free_SPAR_policy')
+        perturbed_agent_policy = persistent_state.get('perturbed_agent_policy')
+        device = select_device(device_id)
+        # Unpack the original job format for value function updates
+        (
+            derivative_free_SPAR_policy_data,
+            perturbed_agent_policy_data,
+            batch_size,
+            max_grad_norm,
+            i_list,
+            adversary_buffers,
+            perturbed_adv_buf,
+            n_epochs,
+            n_env_per_adv,
+            n_env_per_pert,
+            job_id,
+        ) = job[1]
+
+        try:
+            # Initialize models once (first run)
+            if derivative_free_SPAR_policy is None:
+                if isinstance(derivative_free_SPAR_policy_data, bytes):
+                    derivative_free_SPAR_policy = pickle.loads(derivative_free_SPAR_policy_data)
+                    perturbed_agent_policy = pickle.loads(perturbed_agent_policy_data)
+                    persistent_state['derivative_free_SPAR_policy'] = derivative_free_SPAR_policy
+                    persistent_state['perturbed_agent_policy'] = perturbed_agent_policy
+                else:
+                    # Handle case where first run sends state dict instead of pickled model
+                    raise RuntimeError("First run should send pickled models, not state dicts")
+                move_policy(derivative_free_SPAR_policy, device)
+                move_policy(perturbed_agent_policy, device)
+            else:
+                # Update weights (subsequent runs)
+                if isinstance(derivative_free_SPAR_policy_data, bytes):
+                    derivative_free_SPAR_policy = pickle.loads(derivative_free_SPAR_policy_data)
+                    perturbed_agent_policy = pickle.loads(perturbed_agent_policy_data)
+                    move_policy(derivative_free_SPAR_policy, device)
+                    move_policy(perturbed_agent_policy, device)
+                else:
+                    derivative_free_SPAR_policy.load_state_dict(derivative_free_SPAR_policy_data)
+                    perturbed_agent_policy.load_state_dict(perturbed_agent_policy_data)
+            persistent_state['derivative_free_SPAR_policy'] = derivative_free_SPAR_policy
+            persistent_state['perturbed_agent_policy'] = perturbed_agent_policy
+
+            # Do the actual work
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            for i in i_list:
+                for epoch in range(n_epochs):
+                    _update_single_value_function(
+                        batch_size, max_grad_norm, derivative_free_SPAR_policy, 
+                        adversary_buffers[i], i, n_env_per_adv, device
+                    )
+                    _update_single_value_function(
+                        batch_size, max_grad_norm, perturbed_agent_policy, 
+                        perturbed_adv_buf[i], i, n_env_per_pert, device
+                    )
+            
+            # Signal completion
+            done_queue.put(job_id)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+        except Exception as e:
+            print(f"Worker {device_id} error: {e}")
+            done_queue.put(f"ERROR_{job_id}")
+
+
+    def _submit_job(self, job: str, device_id: int, active_jobs: List[int], *args) -> None:
+        """
+        This function is used to submit job to the ParallelUpdater.
+
+        Args:
+            job (str):
+                The job to submit.
+            device_id (int):
+                Device ID to submit the job to.
+            active_jobs (list):
+                A list of all the active jobs to wait for. The submitted job will be appended to this list.
+        """
+        def _gen_job_id(device_id: int=0) -> str:
+            """
+            This helper function generates a random job ID.
+            """
+            return f"job_{device_id}_{int(time.time() * 1000000 + random.randint(0, 10000))}"
+        
+        job_id = _gen_job_id(device_id=device_id)
+        self.input_queues[device_id].put((job, args + (job_id,)))
+        active_jobs.append(job_id)
+    
     def _create_update_values_function_job(self, policy: Any, perturbed_policy: Any, i_list: List[int], 
                    adversary_buffers: List[Any], perturbed_adv_buf: List[Any], 
                    batch_size: int, max_grad_norm: float, n_epochs: int, 
-                   n_env_per_adv: int, n_env_per_pert: int, first_run: bool, job_id: int) -> tuple:
+                   n_env_per_adv: int, n_env_per_pert: int, first_run: bool) -> tuple:
         """
         Create job data for worker process - update_values_function.
         
@@ -317,8 +379,26 @@ class ParallelUpdater:
             n_epochs,
             n_env_per_adv,
             n_env_per_pert,
-            job_id,
         )
+    
+    def _wait_for_jobs(self, active_jobs: List[str]) -> None:
+        """
+        This function waits for all the jobs submitted to active_jobs.
+
+        Args:
+            active_jobs (list[str]):
+                List of active jobs.
+        """
+        completed_jobs = 0
+        while completed_jobs < len(active_jobs):
+            try:
+                result = self.done_queue.get(timeout=60)  # 60 second timeout
+                if isinstance(result, str) and result.startswith("ERROR_"):
+                    print(f"Job failed: {result}")
+                completed_jobs += 1
+            except Empty:
+                print("Warning: Timeout waiting for job completion")
+                break
     
     def update_value_functions(self, policy: Any, perturbed_agent: Any, perturbed_adv_buf: List[Any], 
                              adversary_buffers: List[Any], batch_size: int, max_grad_norm: float, 
@@ -337,60 +417,31 @@ class ParallelUpdater:
             n_env_per_adv: Number of environments per adversary
             first_run: Whether this is the first run (affects data serialization)
         """
-        total_start_time = time.time()
-
         # Set required attributes
         policy.num_global_env = n_env_per_adv
         perturbed_agent.policy.num_global_env = perturbed_agent.n_env_per_adv
 
         # Shard work across GPUs
-        shard_start_time = time.time()
         all_indices = list(range(len(adversary_buffers)))
         shards = shard_indices(len(all_indices), self.n_workers)
-        shard_end_time = time.time()
-        if TIMING:
-            print(f"      [Timing] Sharding work: {shard_end_time - shard_start_time:.4f}s")
 
         # Submit jobs to worker processes
-        submit_start_time = time.time()
         active_jobs = []
         for device_id, i_list in enumerate(shards):
             if not i_list:
                 continue
             
-            job_id = f"job_{device_id}_{int(time.time() * 1000000)}"  # Unique job ID
             job = self._create_update_values_function_job(
                 policy, perturbed_agent.policy, i_list, adversary_buffers,
                 perturbed_adv_buf, batch_size, max_grad_norm, n_epochs,
-                n_env_per_adv, perturbed_agent.n_env_per_adv, first_run, job_id
+                n_env_per_adv, perturbed_agent.n_env_per_adv, first_run
             )
-            # self.input_queues[device_id].put(job)
-            self.input_queues[device_id].put(("UPDATE_VALUE_FUNCTIONS", job))
-            active_jobs.append(job_id)
-        submit_end_time = time.time()
-        if TIMING:
-            print(f"      [Timing] Submitting jobs: {submit_end_time - submit_start_time:.4f}s")
+            
+            self._submit_job("UPDATE_VALUE_FUNCTIONS", device_id, active_jobs, *job)
 
         # Wait for all jobs to complete
-        wait_start_time = time.time()
-        completed_jobs = 0
-        while completed_jobs < len(active_jobs):
-            try:
-                result = self.done_queue.get(timeout=60)  # 30 second timeout
-                if isinstance(result, str) and result.startswith("ERROR_"):
-                    print(f"Job failed: {result}")
-                completed_jobs += 1
-            except Empty:
-                print("Warning: Timeout waiting for job completion")
-                break
-        wait_end_time = time.time()
-        if TIMING:
-            print(f"      [Timing] Waiting for jobs to complete: {wait_end_time - wait_start_time:.4f}s")
-            
-        total_end_time = time.time()
-        if TIMING:
-            print(f"    [Timing] Total ParallelUpdater.update_value_functions: {total_end_time - total_start_time:.4f}s")
-            
+        self._wait_for_jobs(active_jobs)
+                   
     def shutdown(self) -> None:
         """Clean shutdown of worker processes."""
         for queue in self.input_queues:
@@ -575,13 +626,15 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 n_rollout_steps
             )
             
-            rollout_env.close()  # Clean up this batch
+            # Clean up this batch
+            rollout_env.close()
+            del rollout_env
+            gc.collect()
             
             if not result:  # If parent method returned False, propagate it
                 return False
+        return True
         
-    #     return True 
-
     def copy_constructor(self, retain_callback=False):
 
         import copy
