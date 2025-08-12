@@ -12,7 +12,7 @@ from anyio import value
 from gym import spaces
 from copy import deepcopy
 from collections import deque
-from functorch import vmap as eepy
+from torch import vmap as eepy
 from retro.examples.brute import rollout
 from torch.nn import functional as F
 from typing import Any, Dict, Mapping, Optional, Tuple, Union, Type, List, TypeVar
@@ -24,7 +24,7 @@ from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer, ReplayBuffer, AdvRolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.noise import ActionNoise
-from stable_baselines3.common.policies import ActorCriticPolicy, ActorCriticCnnPolicy, MultiInputActorCriticPolicy
+from stable_baselines3.common.policies import ActorCriticPolicy, ActorCriticCnnPolicy, MultiInputActorCriticPolicy, ActorActorCriticCnnGeneralistPolicy
 from stable_baselines3.common.torch_layers import (
     BaseFeaturesExtractor,
     CombinedExtractor,
@@ -48,6 +48,7 @@ import itertools
 SelfIPPO = TypeVar("SelfIPPO", bound="IPPO")
 SelfLeaguePPO = TypeVar("SelfLeaguePPO", bound="LeaguePPO")
 MAGICS_PPO = TypeVar("MAGICS_PPO", bound="MAGICS_PPO")
+SelfMultiHeadLeaguePPO = TypeVar("SelfMultiHeadLeaguePPO", bound="MultiHeadLeaguePPO")
 
 
 class IPPO(PPO):
@@ -2048,7 +2049,6 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 if ma_left is True:
                     # main player is the left player
                     # adversaries are "dstb" role
-                    # right now we need to update adversaries
                     '''
                     values = torch.zeros((self.batch_size, 1), device=self.device)
                     dstb_log_prob = torch.zeros((self.batch_size,), device=self.device)
@@ -2221,8 +2221,8 @@ class MAGICS_PPO(OnPolicyAlgorithm):
                 d1f2_dstb = torch.hstack([u.flatten() for u in d1f2_dstb_batched])
                 # d1f2_dstb = d1f2_dstb.dot(dstb_log_prob)
                 # ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.value_optimizer.param_groups[0]['params'], torch.eye(d1f2_ctrl.shape[0], device=self.device), is_grads_batched=True, create_graph=True, retain_graph=True)
-                # ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.ctrl_optimizer.param_groups[0]['params'], iHvp_ctrl,
-                #                         is_grads_batched=False, create_graph=True, retain_graph=True)
+                ctrl_imp = autograd.grad(d1f2_ctrl, self.policy.ctrl_optimizer.param_groups[0]['params'], iHvp_ctrl,
+                                         is_grads_batched=False, create_graph=True, retain_graph=True)
                 dstb_imp = autograd.grad(d1f2_dstb, self.policy.dstb_optimizer.param_groups[0]['params'], iHvp_dstb,
                                          is_grads_batched=False, create_graph=True, retain_graph=True)
 

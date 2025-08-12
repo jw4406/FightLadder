@@ -11,6 +11,7 @@ from stable_baselines3.common.type_aliases import MaybeCallback
 from .const import *
 from .algorithms import LeaguePPO
 from .nash import NashEquilibriumECOSSolver
+from .multi_head_ppo import PPO_From_SPAR
 
 
 PER_HISTORICAL_STEPS = 1e7 # 5e3
@@ -238,6 +239,18 @@ def get_player_config(player):
             "agent_dict": deepcopy(player.get_parameters()),
             "checkpoint_step": player._checkpoint_step,
         }
+    elif isinstance(player, GeneralistMainPlayer):
+        cls_name = "GeneralistMainPlayer"
+        kwargs = {
+            "name": player.name,
+            "side": player.side,
+            "constructor": player.constructor,
+            "args": player.args,
+            "agent": None,
+            "payoff": None,
+            "agent_dict": deepcopy(player.get_parameters()),
+            "checkpoint_step": player._checkpoint_step,
+        }
     elif isinstance(player, FSPPlayer):
         cls_name = "FSPPlayer"
         kwargs = {
@@ -300,13 +313,15 @@ def get_player_config(player):
             "checkpoint_step": player._checkpoint_step,
         }
     else:
-        raise ValueError("player must be either MainPlayer, MainExploiter, LeagueExploiter, or Historical")
+        raise ValueError("player must be either MainPlayer, GeneralistMainPlayer, MainExploiter, LeagueExploiter, or Historical")
     return cls_name, kwargs
 
 
 def construct_player(cls_name, kwargs, construct_agent=False):
     if cls_name == "MainPlayer":
         player = MainPlayer(**kwargs)
+    elif cls_name == "GeneralistMainPlayer":
+        player = GeneralistMainPlayer(**kwargs)
     elif cls_name == "FSPPlayer":
         player = FSPPlayer(**kwargs)
     elif cls_name == "PSROPlayer":
@@ -318,7 +333,7 @@ def construct_player(cls_name, kwargs, construct_agent=False):
     elif cls_name == "Historical":
         player = Historical(**kwargs)
     else:
-        raise ValueError("cls_name must be either MainPlayer, MainExploiter, LeagueExploiter, or Historical")
+        raise ValueError("cls_name must be either MainPlayer, GeneralistMainPlayer, MainExploiter, LeagueExploiter, or Historical")
     if construct_agent:
         player.construct_agent()
     return player
@@ -331,24 +346,22 @@ class Player(object):
         self.side = side
         self.constructor = constructor
         self.args = args
-        self.agent = None
-        if agent_dict is not None:
-            self._initial_weights = agent_dict
-        else:
-            self._initial_weights = agent.get_parameters()
+        self.agent = agent
         self._payoff = payoff
+        self.agent_dict = agent_dict
         self._checkpoint_step = checkpoint_step
-    
-    def construct_agent(self):
-        self.agent = self.constructor(self.args, self.side, log_name=self.name)
-        self.agent.set_parameters(self._initial_weights)
-        self.agent.set_steps(self._checkpoint_step)
-    
-    def get_parameters(self):
-        return self._initial_weights if self.agent is None else self.agent.get_parameters()
+        self.historical_players = []
 
-    def get_match(self) -> 'Player':
-        pass
+    def _create_agent(self):
+        if self.agent is None:
+            # This constructor signature is for the standard LeaguePPO exploiters
+            self.agent = self.constructor(self.args, side=self.side, log_name=self.name)
+            if self.agent_dict:
+                self.agent.set_parameters(self.agent_dict)
+            self.agent.set_steps(self._checkpoint_step)
+
+    def get_match(self) -> "Player":
+        raise NotImplementedError
 
     def ready_to_checkpoint(self):
         return False
@@ -356,9 +369,14 @@ class Player(object):
     def _create_checkpoint(self):
         return Historical(f"{self.name}_historical_step_{self._checkpoint_step}", self.side, self.constructor, self.args, None, None, self.name, agent_dict=self.get_parameters(), checkpoint_step=0)
 
-    @property
-    def payoff(self):
-        return self._payoff
+    def get_parameters(self):
+        """
+        Returns the parameters of the agent.
+        If the agent is not fully instantiated, it returns the initial parameters from agent_dict.
+        """
+        if self.agent is not None:
+            return self.agent.get_parameters()
+        return self.agent_dict
 
     def checkpoint(self):
         raise NotImplementedError
@@ -797,4 +815,126 @@ class Learner:
             return kwargs
         
         self.player.agent.learn(total_timesteps, rollout_opponent_num, callback, log_interval, tb_log_name, reset_num_timesteps, progress_bar, get_kwargs)
+
+
+class GeneralistMainPlayer(Player):
+    """
+    A Player class for a multi-headed main agent.
+    Instead of single opponents, it defines its curriculum by requesting a 
+    set of opponents to train against simultaneously.
+    """
+    def __init__(self, name, side, constructor, args, agent: LeaguePPO, payoff: Payoff, agent_dict=None, checkpoint_step=0):
+        super().__init__(name, side, constructor, args, agent, payoff, agent_dict, checkpoint_step)
+
+    def _create_agent(self):
+        """
+        Overrides the base agent creation method to handle the specific
+        constructor signature of the generalist agent.
+        """
+        if self.agent is None:
+            # The constructor expects the full args namespace, side, and log_name
+            self.agent = self.constructor(self.args, self.side, self.name)
+            if self.agent_dict:
+                self.agent.set_parameters(self.agent_dict)
+            self.agent.set_steps(self._checkpoint_step)
+
+    def get_match_set(self):
+        """
+        Returns a list of all opponents the generalist agent should train against.
+        This defines the training curriculum for the upcoming generation.
+        """
+        # For simplicity, we'll grab all main and league exploiters.
+        # This can be made more sophisticated (e.g., sampling, PFSP over exploiters).
+        main_exploiters = self._payoff.get_names("right", MainExploiter) if self.side == "left" else self._payoff.get_names("left", MainExploiter)
+        league_exploiters = self._payoff.get_names("right", LeagueExploiter) if self.side == "left" else self._payoff.get_names("left", LeagueExploiter)
+        
+        opponent_names = main_exploiters + league_exploiters
+        
+        # We need to construct the actual player objects to get their policies
+        opponent_players = [self.get_player_by_name(name) for name in opponent_names]
+        return opponent_players
+    
+    def get_match(self):
+        """
+        This method is part of the old one-on-one paradigm and should not be used
+        by the GeneralistMainPlayer.
+        """
+        raise NotImplementedError("GeneralistMainPlayer uses get_match_set, not get_match.")
+
+    def ready_to_checkpoint(self):
+        """
+        Define checkpointing logic for the generalist agent.
+        e.g., checkpoint if it has a high win-rate against all historical players.
+        """
+        steps_passed = self.agent.get_steps() - self._checkpoint_step
+        if steps_passed < PER_HISTORICAL_STEPS:
+            return False
+
+        historical_opponents = self._payoff.get_names("right", Historical) if self.side == "left" else self._payoff.get_names("left", Historical)
+        if not historical_opponents:
+            return True # Checkpoint if no historical opponents exist yet
+
+        win_rates = self._payoff.get_item(self.name, historical_opponents, self.side)
+        return win_rates.min() > 0.7 or steps_passed > PER_HISTORICAL_STEPS * 2
+
+    def checkpoint(self):
+        if self.agent is not None:
+            self._checkpoint_step = self.agent.get_steps()
+        return self._create_checkpoint()
+
+
+class GeneralistLearner:
+    """
+    Orchestrates the training of a GeneralistMainPlayer.
+    It fetches the set of opponents and kicks off the agent's internal
+    one-vs-many training loop.
+    """
+    def __init__(self, player: GeneralistMainPlayer):
+        if not isinstance(player, GeneralistMainPlayer):
+            raise TypeError("GeneralistLearner must be initialized with a GeneralistMainPlayer.")
+        if not isinstance(player.agent, PPO_From_SPAR):
+             raise TypeError("GeneralistMainPlayer for GeneralistLearner must have a PPO_From_SPAR agent.")
+        self.player = player
+
+    def run(
+        self,
+        total_timesteps: int,
+        callback: MaybeCallback = None,
+        log_interval: int = 1,
+        tb_log_name: str = "GeneralistLearner",
+        reset_num_timesteps: bool = True,
+        progress_bar: bool = False,
+    ):
+        print(f"[GeneralistLearner] Starting training for {self.player.name}")
+        
+        # 1. Get the set of opponent players for this generation
+        opponent_players = self.player.get_match_set()
+        if not opponent_players:
+            print(f"[GeneralistLearner] Warning: No opponents found for {self.player.name}. Skipping training generation.")
+            return
+
+        print(f"[GeneralistLearner] Matched {self.player.name} against {len(opponent_players)} opponents: {[p.name for p in opponent_players]}")
+
+        # 2. Extract their policies
+        opponent_policies = [p.agent.policy for p in opponent_players]
+
+        # 3. Provide the opponent policies to our multi-headed agent
+        self.player.agent.set_active_opponents(opponent_policies)
+        
+        # 4. Call the agent's self-contained learn method
+        self.player.agent.learn(
+            total_timesteps=total_timesteps,
+            callback=callback,
+            log_interval=log_interval,
+            tb_log_name=tb_log_name,
+            reset_num_timesteps=reset_num_timesteps,
+            progress_bar=progress_bar,
+        )
+
+        # 5. Sync the updated player model back to the payoff matrix
+        self.player.sync()
+
+        # 6. Check if the player is ready to be checkpointed as a historical version
+        if self.player.ready_to_checkpoint():
+            self.player.add_player(self.player.checkpoint())
 
