@@ -1,7 +1,7 @@
 import os
 import warnings
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union, TYPE_CHECKING
 import copy
 import gym
 import numpy as np
@@ -18,7 +18,9 @@ except ImportError:
     # if the progress bar is used
     tqdm = None
 
-from stable_baselines3.common import base_class  # pytype: disable=pyi-error
+if TYPE_CHECKING:
+    from stable_baselines3.common import base_class
+
 from stable_baselines3.common.evaluation import evaluate_policy, exploiter_evaluate_policy, sa_evaluate_policy
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, sync_envs_normalization
 
