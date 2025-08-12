@@ -334,7 +334,7 @@ def main(PLAYER):
     # global REMOVAL
     # PLAYER = "Blanka"  # "Blanka
     global REMOVAL
-    use_mirror = True
+    use_mirror = False
     
     REMOVAL = None
 
@@ -398,7 +398,7 @@ def main(PLAYER):
                         help='Initial level to load from. By default 0, starting from pretrain', default=0)
     parser.add_argument('--resume-epoch', type=int, help='Resume epoch. By default 0, starting from pretrain',
                         default=0)
-    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=4)
+    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=1)
     parser.add_argument('--enable-combo', action='store_true', help='Enable special move action space for environment')
     parser.add_argument('--null-combo', action='store_true', help='Null action space for special move')
     parser.add_argument('--transform-action', action='store_true', help='Transform action space to MultiDiscrete')
@@ -451,6 +451,7 @@ def main(PLAYER):
         
         # STATE
         each_env_count = args.envs_per_matchup
+        print("Generating %d envs per character matchup:" % each_env_count)
         env = []
         env_count = 0
         for i in range(i_start, len(STATE)):
@@ -626,7 +627,9 @@ def main(PLAYER):
     other_lr_schedule = 1e-4  # if args.async_update else linear_schedule(2.5e-4/args.other_timescale, 2.5e-6/args.other_timescale)
     clip_range_schedule = 0.1  # if args.async_update else linear_schedule(0.15, 0.025)
     if REMOVAL is None:
-        args.num_env = env_generator().num_envs
+        temp_env = env_generator()
+        args.num_env = temp_env.num_envs
+        temp_env.close()
     else:
 
         if isinstance(REMOVAL, str):
