@@ -908,7 +908,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
 
         self._n_updates += self.n_epochs
         if hasattr(self.rollout_buffer, 'values') and self.rollout_buffer.values is not None and self.rollout_buffer.returns is not None:
-             explained_var = explained_variance(self.rollout_buffer.values.flatten().cpu().numpy(), self.rollout_buffer.returns.flatten().cpu().numpy())
+             explained_var = explained_variance(self.rollout_buffer.values.flatten().cpu().numpy(), -self.rollout_buffer.returns.flatten().cpu().numpy())
         else:
             explained_var = np.nan
         self._log_leader_metrics(ego, entropy_losses, pg_losses, approx_kl_divs_all, explained_var, clip_range)
