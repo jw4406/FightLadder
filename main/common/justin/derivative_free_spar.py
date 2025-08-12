@@ -29,7 +29,7 @@ from stable_baselines3.common.vec_env import VecEnv
 from utils import move_policy, select_device, get_n_workers
 
 DEBUG = True
-TIMING = True
+TIMING = False
 
 class DummyCallback(BaseCallback):
     def __init__(self):
@@ -131,7 +131,7 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
         num_per_head = 10 # lstm = 6, 2 linear layers = 2 + 2, total 10
         value_loss = F.mse_loss(values, returns_batch[i * batch_size:(i + 1) * batch_size])
         indices = list(range(0, offset)) + list(range(offset + adversary_index * num_per_head, offset + (adversary_index + 1) * num_per_head))
-        value_grads = th.autograd.grad(value_loss, [policy.value_optimizer.param_groups[0]['params'][j] for j in indices], create_graph=True)
+        value_grads = th.autograd.grad(value_loss, [policy.value_optimizer.param_groups[0]['params'][j] for j in indices])
         #value_grads = th.cat([grad.view(-1) for grad in value_grads])
         policy.value_optimizer.zero_grad()
         for i in range(len(value_grads)):
@@ -635,6 +635,9 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 return False
         return True
         
+        return True 
+    
+
     def copy_constructor(self, retain_callback=False):
 
         import copy
@@ -689,6 +692,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         del self.perturbed_agent_policy
         del self.perturbed_buf
         del self.perturbed_adv_buf
+        #del self.perturbed_agent
         gc.collect()
         torch.cuda.empty_cache()
     
@@ -1069,6 +1073,8 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                     self.logger.dump(step=self.num_timesteps)
 
                 self.train()
+                self.perturbed_agent.env.close()
+                del self.perturbed_agent
 
             callback.on_training_end()
         
