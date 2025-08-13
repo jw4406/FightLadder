@@ -141,25 +141,27 @@ class Payoff:
     
     def get_names(self, side, filter_class=None, filter_parent=None):
         if side == "left":
-            if filter_parent is None:
-                names = [name for name, player in self._players.items() if isinstance(player, filter_class)] if filter_class is not None else list(self._players.keys())
-            else:
-                assert filter_class is not None, "filter_class must be specified if filter_parent is specified"
-                if isinstance(filter_parent, str):
-                    filter_parent = [filter_parent]
-                names = [name for name, player in self._players.items() if isinstance(player, filter_class) and player.parent in filter_parent]
+            players_to_check = self._players
         elif side == "right":
-            if filter_parent is None:
-                names = [name for name, player in self._players_other.items() if isinstance(player, filter_class)] if filter_class is not None else list(self._players_other.keys())
-            else:
-                assert filter_class is not None, "filter_class must be specified if filter_parent is specified"
-                if isinstance(filter_parent, str):
-                    filter_parent = [filter_parent]
-                names = [name for name, player in self._players_other.items() if isinstance(player, filter_class) and player.parent in filter_parent]
+            players_to_check = self._players_other
         else:
             raise ValueError("side must be either 'left' or 'right'")
-        
-        # print(f"names: {names}")
+
+        names = []
+        for name, player in players_to_check.items():
+            class_match = True
+            if filter_class and not isinstance(player, filter_class):
+                class_match = False
+
+            parent_match = True
+            if filter_parent:
+                if isinstance(filter_parent, str):
+                    filter_parent = [filter_parent]
+                if not hasattr(player, 'parent') or player.parent not in filter_parent:
+                    parent_match = False
+            
+            if class_match and parent_match:
+                names.append(name)
 
         return names
     
@@ -388,7 +390,7 @@ class Player(object):
 
     def get_player_by_name(self, name):
         cls_name, kwargs = self._payoff.get_player_by_name(name)
-        return construct_player(cls_name, kwargs, construct_agent=True)
+        return construct_player(cls_name, kwargs, construct_agent=False)
 
     def send_outcome(self, opponent_name, outcome):
         # print(f"[Player] send_outcome: {self.name} vs {opponent_name} = {outcome}")
@@ -472,7 +474,11 @@ class MainPlayer(Player):
         if coin_toss < 0.5:
             return self._pfsp_branch()
 
-        main_opponents = self._payoff.get_names("right", MainPlayer) if self.side == "left" else self._payoff.get_names("left", MainPlayer)
+        main_opponents = self._payoff.get_names("right", (MainPlayer, GeneralistMainPlayer)) if self.side == "left" else self._payoff.get_names("left", (MainPlayer, GeneralistMainPlayer))
+        if not main_opponents:
+            # Fallback to PFSP if no main opponents are found
+            return self._pfsp_branch()
+        
         opponent = np.random.choice(main_opponents)
 
         # Verify if there are some rare players we omitted
@@ -506,14 +512,23 @@ class MainExploiter(Player):
     def get_match(self):
         coin_toss = np.random.random()
 
-        main_opponents = self._payoff.get_names("right", MainPlayer) if self.side == "left" else self._payoff.get_names("left", MainPlayer)
-        opponent = np.random.choice(main_opponents)
+        main_opponents = self._payoff.get_names("right", (MainPlayer, GeneralistMainPlayer)) if self.side == "left" else self._payoff.get_names("left", (MainPlayer, GeneralistMainPlayer))
 
-        win_rate = self._payoff.get_item(self.name, opponent, "left") if self.side == "left" else self._payoff.get_item(opponent, self.name, "right")
-        if coin_toss < 0.5 or win_rate > 0.1:
-            return self.get_player_by_name(opponent), True
+        # If main opponents exist, and coin toss passes, target them.
+        if main_opponents and coin_toss < 0.5:
+            opponent_name = np.random.choice(main_opponents)
+            win_rate = self._payoff.get_item(self.name, opponent_name, "left") if self.side == "left" else self._payoff.get_item(opponent_name, self.name, "right")
+            if win_rate > 0.1: # if we are not getting completely crushed
+                return self.get_player_by_name(opponent_name), True
 
-        historical_opponents = self._payoff.get_names("right", Historical, opponent) if self.side == "left" else self._payoff.get_names("left", Historical, opponent)
+        # Fallback: play against historical players of main players
+        # If main_opponents is empty, this will search against all historical players.
+        historical_opponents = self._payoff.get_names("right", Historical, main_opponents) if self.side == "left" else self._payoff.get_names("left", Historical, main_opponents)
+        
+        # If still no opponents, this is a league setup issue
+        if not historical_opponents:
+            raise RuntimeError(f"Exploiter {self.name} has no historical opponents to play against.")
+
         win_rates = self._payoff.get_item(self.name, historical_opponents, "left") if self.side == "left" else self._payoff.get_item(historical_opponents, self.name, "right")
 
         return self.get_player_by_name(np.random.choice(
@@ -530,7 +545,10 @@ class MainExploiter(Player):
         if steps_passed < PER_HISTORICAL_STEPS:
             return False
 
-        main_opponents = self._payoff.get_names("right", MainPlayer) if self.side == "left" else self._payoff.get_names("left", MainPlayer)
+        main_opponents = self._payoff.get_names("right", (MainPlayer, GeneralistMainPlayer)) if self.side == "left" else self._payoff.get_names("left", (MainPlayer, GeneralistMainPlayer))
+        if not main_opponents:
+            return False # Cannot determine readiness without main opponents
+            
         win_rates = self._payoff.get_item(self.name, main_opponents, "left") if self.side == "left" else self._payoff.get_item(main_opponents, self.name, "right")
         return win_rates.min() > 0.7 or steps_passed > PER_HISTORICAL_STEPS * 2
 
@@ -803,15 +821,31 @@ class Learner:
         def get_kwargs():
             opponent, _ = self.player.get_match()
             print(f"[Learner] Self({self.player.name}) vs Opponent({opponent.name})")
-            kwargs = {
-                "policy_other": opponent.agent.policy_other,
+            
+            # Construct opponent agent just-in-time if it doesn't exist.
+            # This is crucial for Historical opponents.
+            if opponent.agent is None:
+                opponent._create_agent()
+
+            # Handle getting policy from different opponent agent types
+            if isinstance(opponent.agent, PPO_From_SPAR):
+                # The Generalist agent has a single unified policy.
+                opponent_policy = opponent.agent.policy
+                if self.player.side == "left":
+                    kwargs = {"policy_other": opponent_policy}
+                else:  # player is right
+                    kwargs = {"policy": opponent_policy}
+            else:
+                # Standard 1v1 agent (e.g. LeaguePPO)
+                if self.player.side == "left":
+                    kwargs = {"policy_other": opponent.agent.policy_other}
+                else:  # player is right
+                    kwargs = {"policy": opponent.agent.policy}
+
+            kwargs.update({
                 "coordinate_fn": partial(self.player.send_outcome, opponent.name),
                 "sync_fn": self.player.sync,
-            } if self.player.side == "left" else {
-                "policy": opponent.agent.policy,
-                "coordinate_fn": partial(self.player.send_outcome, opponent.name),
-                "sync_fn": self.player.sync,
-            }
+            })
             return kwargs
         
         self.player.agent.learn(total_timesteps, rollout_opponent_num, callback, log_interval, tb_log_name, reset_num_timesteps, progress_bar, get_kwargs)
@@ -907,7 +941,8 @@ class GeneralistLearner:
     ):
         print(f"[GeneralistLearner] Starting training for {self.player.name}")
         
-        # 1. Get the set of opponent players for this generation
+        # 1. Get the set of opponent players for this generation.
+        # Note: The player objects returned do not have their agents constructed yet.
         opponent_players = self.player.get_match_set()
         if not opponent_players:
             print(f"[GeneralistLearner] Warning: No opponents found for {self.player.name}. Skipping training generation.")
@@ -915,13 +950,18 @@ class GeneralistLearner:
 
         print(f"[GeneralistLearner] Matched {self.player.name} against {len(opponent_players)} opponents: {[p.name for p in opponent_players]}")
 
-        # 2. Extract their policies
+        # 2. Construct the agents for the opponents just-in-time inside the worker.
+        # This is safe because we are in the correct process with the correct CUDA context.
+        for p in opponent_players:
+            p._create_agent()
+
+        # 3. Extract their policies
         opponent_policies = [p.agent.policy for p in opponent_players]
 
-        # 3. Provide the opponent policies to our multi-headed agent
+        # 4. Provide the opponent policies to our multi-headed agent
         self.player.agent.set_active_opponents(opponent_policies)
         
-        # 4. Call the agent's self-contained learn method
+        # 5. Call the agent's self-contained learn method
         self.player.agent.learn(
             total_timesteps=total_timesteps,
             callback=callback,
@@ -931,10 +971,10 @@ class GeneralistLearner:
             progress_bar=progress_bar,
         )
 
-        # 5. Sync the updated player model back to the payoff matrix
+        # 6. Sync the updated player model back to the payoff matrix
         self.player.sync()
 
-        # 6. Check if the player is ready to be checkpointed as a historical version
+        # 7. Check if the player is ready to be checkpointed as a historical version
         if self.player.ready_to_checkpoint():
             self.player.add_player(self.player.checkpoint())
 
