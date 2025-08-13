@@ -127,7 +127,7 @@ def exploiter_constructor(constructor_args, side, log_name, state_list):
         tensorboard_log=None if log_name is None else os.path.join(constructor_args.log_dir, log_name),
     )
 
-def worker(idx, player, total_steps, rollout_opponent_num):
+def worker(idx, player, shared_payoff, total_steps, rollout_opponent_num):
     """
     Generic worker function that initializes and runs a learner for a given player.
     """
@@ -135,6 +135,10 @@ def worker(idx, player, total_steps, rollout_opponent_num):
     with torch.cuda.device(idx % torch.cuda.device_count()):
         # The agent must be created inside the worker process to avoid pickling issues.
         player._create_agent()
+
+        # The player from the main process doesn't have a reference to the shared payoff
+        # object, so we must set it here.
+        player._payoff = shared_payoff
 
         # Choose the correct learner for the player type
         if isinstance(player, GeneralistMainPlayer):
@@ -153,7 +157,7 @@ def main():
     # --- Argument Parsing (from ippo.py) ---
     parser = argparse.ArgumentParser(description='Train a multi-character agent in a league.')
     parser.add_argument('--player', type=str, nargs='+', required=True, help="Protagonist player(s).")
-    parser.add_argument('--opponent-list', type=str, nargs='+', default=["Guile", "EHonda", "Sagat", "ChunLi"], help="List of opponent characters.")
+    parser.add_argument('--opponent-list', type=str, nargs='+', default=["Guile", "EHonda"], help="List of opponent characters.")
     parser.add_argument('--side', help='The side for AI to control', default='left', choices=['left', 'right'])
     parser.add_argument('--num-env', type=int, help='Total number of environments to run in parallel', default=64)
     parser.add_argument('--envs-per-matchup', type=int, help='How many parallel environments for each matchup', default=1)
@@ -222,7 +226,7 @@ def main():
             
             # The player object is passed to the worker, which will then
             # create the agent and the appropriate learner. This avoids pickling the agent/env.
-            process = Process(target=worker, args=(idx, player, args.total_steps, args.rollout_opponent_num))
+            process = Process(target=worker, args=(idx, player, shared_payoff, args.total_steps, args.rollout_opponent_num))
             processes.append(process)
 
         for p in processes:

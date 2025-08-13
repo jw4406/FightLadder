@@ -357,6 +357,9 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             #if np.any(rewards > 0):
             #    print("ooo")
             # assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
+            if self.use_mirror is True:
+                half_envs = len(rewards) // 2
+                rewards[half_envs:] = -rewards[half_envs:]
             self.num_timesteps += env.num_envs
             #wandb.log({"epochs": self.num_timesteps})
             # Give access to local variables
