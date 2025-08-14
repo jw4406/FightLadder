@@ -543,7 +543,7 @@ def main(PLAYER):
             env_batch_size=args.env_batch_size,
             envs_per_matchup=args.envs_per_matchup,
             state_len=len(STATE),
-            device="cpu",
+            device="cuda",
             verbose=2,
             n_steps=num_steps,  # 1408,
             batch_size=int(num_steps * len(state_list) / 10),  # 2816,  # 512,
