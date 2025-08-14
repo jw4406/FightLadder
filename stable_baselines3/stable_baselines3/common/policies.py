@@ -1599,6 +1599,8 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         :return: action, value and log probability of the action
         """
         # Preprocess the observation if needed
+        if network_keys is None:
+            network_keys = self.network_keys
         num_adversaries = len(network_keys)
         features = self.extract_features(obs)
         if self.share_features_extractor:
@@ -1673,6 +1675,8 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         :param latent_pi: Latent code for the actor
         :return: Action distribution
         """
+        if network_keys is None:
+            network_keys = self.network_keys
         num_adversaries = len(network_keys)
         mean_actions = self.action_net(latent_pi)
         dstb_mean_actions = th.zeros_like(mean_actions)
@@ -1707,6 +1711,8 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         :param latent_pi: Latent code for the actor
         :return: Action distribution
         """
+        if network_keys is None:
+            network_keys = self.network_keys
         num_adversaries = len(network_keys)
         mean_actions = self.action_net(latent_pi)#[:, 0, :] # remove middle dim from lstm
         num_env_per_adv = self.num_global_env // num_adversaries # WHY IS SELF.NUM_GLOBAL_ENV 1?
@@ -1736,6 +1742,8 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         :param deterministic: Whether to use stochastic or deterministic actions
         :return: Taken action according to the policy
         """
+        if network_keys is None:
+            network_keys = self.network_keys
         ctrl_dstro, dstb_dstro = self.get_distribution(observation, network_keys=network_keys)
         return ctrl_dstro.get_actions(deterministic=deterministic), [dstb_dstro[i].get_actions(deterministic=deterministic) for i in range(len(network_keys))]
 
@@ -1751,6 +1759,8 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         :return: estimated value, log likelihood of taking those actions
             and entropy of the action distribution.
         """
+        if network_keys is None:
+            network_keys = self.network_keys
         # Preprocess the observation if needed
         with th.no_grad():
             num_adversaries = len(network_keys)
@@ -1823,6 +1833,8 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         :param obs:
         :return: the action distribution.
         """
+        if network_keys is None:
+            network_keys = self.network_keys
         ctrl_features, dstb_features, _ = self.extract_features(obs, self.pi_ctrl_features_extractor)
         #dstb_features = self.extract_features(obs, self.pi_dstb_features_extractor)
         latent_pi, latent_pi_dstb = self.mlp_extractor.forward_actor(ctrl_features, dstb_features)
@@ -1869,6 +1881,8 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         :return: the model's action and the next hidden state
             (used in recurrent policies)
         """
+        if network_keys is None:
+            network_keys = self.network_keys
         # Switch to eval mode (this affects batch norm / dropout)
         self.set_training_mode(False)
 

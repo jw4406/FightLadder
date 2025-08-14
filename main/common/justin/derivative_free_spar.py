@@ -670,29 +670,31 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         test._last_episode_starts = self._last_episode_starts.copy() if self._last_episode_starts is not None else None
         return test
 
-    def train(self):
+    def train(self, update_ego: bool = True, update_adversary: bool = True):
         """
         Update policy using the currently gathered rollout buffer.
         """
-        #self.inner_loop()
-        #self.perturbed_buf = perturbed_buf
-        #self.perturbed_adv_buf = perturbed_adv_buf
-
         # 3. Update value functions for both original and perturbed agents
-        #self.policy.set_training_mode(False)
+        # This is called for all agents as the values are needed for advantage calculation.
         start_time = time.time()
         self._update_value_functions(self.perturbed_agent, self.perturbed_adv_buf)
         end_time = time.time()
         if TIMING:
             print(f"Time for _update_value_functions: {end_time - start_time:.4f}s")
 
-        #self.perturbed_agent_policy = perturbed_agent.policy
-        self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent_policy, ego=True)
-        self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
+        self.perturbed_agent_policy = self.perturbed_agent.policy
+        
+        # Selectively update the ego (actor) policy
+        if update_ego:
+            self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent_policy, ego=True)
+        
+        # Selectively update the adversary (disturber) policy
+        if update_adversary:
+            self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
+        
         del self.perturbed_agent_policy
         del self.perturbed_buf
         del self.perturbed_adv_buf
-        #del self.perturbed_agent
         gc.collect()
         torch.cuda.empty_cache()
     
@@ -1008,6 +1010,8 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         tb_log_name: str = "OnPolicyAlgorithm",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
+        update_ego: bool = True,
+        update_adversary: bool = True,
     ):
         try:
             iteration = 0
@@ -1072,7 +1076,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                     self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
                     self.logger.dump(step=self.num_timesteps)
 
-                self.train()
+                self.train(update_ego=update_ego, update_adversary=update_adversary)
                 self.perturbed_agent.env.close()
                 del self.perturbed_agent
 
@@ -1114,3 +1118,6 @@ class Derivative_Free_SPAR(Generalist_SPAR):
 
 
         return primitive_attrs
+
+    def set_steps(self, steps: int) -> None:
+        self.num_timesteps = steps

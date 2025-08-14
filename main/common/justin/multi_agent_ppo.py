@@ -132,14 +132,17 @@ class TwoSidedMultiAgentPPO(Generalist_SPAR):
         for epoch in range(self.n_epochs):
             approx_kl_divs = []
             for rollout_data in self.rollout_buffer.get(self.batch_size):
-                # Standard PPO update logic...
                 actions = rollout_data.actions
                 if isinstance(self.action_space, spaces.Discrete):
                     actions = actions.long().flatten()
 
+                # Use the network_keys from the buffer to route to the correct head
+                network_keys = rollout_data.network_keys
+
                 values, log_prob, entropy = self.policy.evaluate_actions(
                     rollout_data.observations, 
-                    actions
+                    actions,
+                    network_keys=network_keys
                 )
                 values = values.flatten()
                 
