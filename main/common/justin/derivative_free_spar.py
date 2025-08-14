@@ -662,8 +662,10 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         test.policy.ctrl_optimizer = self.policy.optimizer_class(test.policy.ctrl_optimizer.param_groups[0]['params'], maximize=True)
         test.policy.dstb_optimizer = self.policy.optimizer_class(test.policy.dstb_optimizer.param_groups[0]['params'], maximize=True)
         test.policy.value_optimizer = self.policy.optimizer_class(test.policy.value_optimizer.param_groups[0]['params'])
+        for i in range(len(self.adversary_buffers)):
+            self.adversary_buffers[i].reset()
         test.adversary_buffers = deepcopy(self.adversary_buffers)
-        test.rollout_buffer = deepcopy(self.rollout_buffer)
+        test.rollout_buffer = deepcopy(self.rollout_buffer.reset())
         if retain_callback is True:
             pass
         else:
@@ -686,32 +688,34 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         end_time = time.time()
         if TIMING:
             print(f"Time for _update_value_functions: {end_time - start_time:.4f}s")
-        shuffle_keys = np.tile([i for i in range(self.num_adversaries * self.envs_per_matchup)], self.rollout_buffer.buffer_size) # becuase these track raw envs
-        network_keys = [i for i in range(self.num_adversaries)]
-        values, _, _, _, _ = self.policy.evaluate_actions(torch.Tensor(self.rollout_buffer.observations).to(self.device), torch.Tensor(self.rollout_buffer.actions).to(self.device), torch.Tensor(self.rollout_buffer.dstb_actions).to(self.device),
-                                     shuffle_keys=shuffle_keys, network_keys=network_keys)
-        #self.rollout_buffer.values = values.reshape(self.rollout_buffer.buffer_size, self.num_adversaries)
-        #grabs_per_rep = len(shuffle_keys) // len(network_keys)
-        grabs_per_rep = self.envs_per_matchup
-        #skip = len(shuffle_keys) - grabs_per_rep
-        for i in range(len(self.adversary_buffers)):
-            pointer = i * grabs_per_rep
-            for j in range(self.rollout_buffer.buffer_size):
-                len_chunk_to_scan = len(values) // self.rollout_buffer.buffer_size
-                #self.adversary_buffers[i].values[] = values[j * pointer : j * (pointer + grabs_per_rep)]
-                curr_chunk = values[len_chunk_to_scan * j : len_chunk_to_scan * (j + 1)]
-                self.adversary_buffers[i].values[j * grabs_per_rep : (j+1) * grabs_per_rep] = curr_chunk[pointer : pointer + grabs_per_rep]
+        # shuffle_keys = np.tile([i for i in range(self.num_adversaries * self.envs_per_matchup)], self.rollout_buffer.buffer_size) # becuase these track raw envs
+        # network_keys = [i for i in range(self.num_adversaries)]
+        # values, _, _, _, _ = self.policy.evaluate_actions(torch.Tensor(self.rollout_buffer.observations).to(self.device), torch.Tensor(self.rollout_buffer.actions).to(self.device), torch.Tensor(self.rollout_buffer.dstb_actions).to(self.device),
+        #                              shuffle_keys=shuffle_keys, network_keys=network_keys)
+        # #self.rollout_buffer.values = values.reshape(self.rollout_buffer.buffer_size, self.num_adversaries)
+        # #grabs_per_rep = len(shuffle_keys) // len(network_keys)
+        # grabs_per_rep = self.envs_per_matchup
+        # #skip = len(shuffle_keys) - grabs_per_rep
+        # for i in range(len(self.adversary_buffers)):
+        #     pointer = i * grabs_per_rep
+        #     for j in range(self.rollout_buffer.buffer_size):
+        #         len_chunk_to_scan = len(values) // self.rollout_buffer.buffer_size
+        #         #self.adversary_buffers[i].values[] = values[j * pointer : j * (pointer + grabs_per_rep)]
+        #         curr_chunk = values[len_chunk_to_scan * j : len_chunk_to_scan * (j + 1)]
+        #         self.adversary_buffers[i].values[j * grabs_per_rep : (j+1) * grabs_per_rep] = curr_chunk[pointer : pointer + grabs_per_rep]
             
-            self.adversary_buffers[i].values =self.adversary_buffers[i].values.reshape(self.adversary_buffers[i].buffer_size, grabs_per_rep)
-            self.adversary_buffers[i].dones = self.adversary_buffers[i].dones.reshape(self.adversary_buffers[i].buffer_size, grabs_per_rep)
-            self.adversary_buffers[i].vectorized_compute_returns_and_advantages(self.adversary_buffers[i].values[-1, :], self.adversary_buffers[i].dones[-1, :])
+        #     self.adversary_buffers[i].values =self.adversary_buffers[i].values.reshape(self.adversary_buffers[i].buffer_size, grabs_per_rep)
+        #     self.adversary_buffers[i].dones = self.adversary_buffers[i].dones.reshape(self.adversary_buffers[i].buffer_size, grabs_per_rep)
+        #     self.adversary_buffers[i].vectorized_compute_returns_and_advantages(self.adversary_buffers[i].values[-1, :], self.adversary_buffers[i].dones[-1, :])
         
-        self.rollout_buffer.values = values.reshape(self.rollout_buffer.buffer_size, self.num_adversaries * self.envs_per_matchup)
-        self.rollout_buffer.dones = self.rollout_buffer.dones.reshape(self.rollout_buffer.buffer_size, self.num_adversaries * self.envs_per_matchup)
+        # self.rollout_buffer.values = values.reshape(self.rollout_buffer.buffer_size, self.num_adversaries * self.envs_per_matchup)
+        # self.rollout_buffer.dones = self.rollout_buffer.dones.reshape(self.rollout_buffer.buffer_size, self.num_adversaries * self.envs_per_matchup)
 
-        self.rollout_buffer.vectorized_compute_returns_and_advantages(self.rollout_buffer.values[-1, :], self.rollout_buffer.dones[-1, :])
-
+        # self.rollout_buffer.vectorized_compute_returns_and_advantages(self.rollout_buffer.values[-1, :], self.rollout_buffer.dones[-1, :])
+        # self.rollout_buffer.advantages = self.rollout_buffer.swap_and_flatten_pt(self.rollout_buffer.advantages)
         #need to swap and flatten here 
+        self.update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
+        self.update_advantages(self.perturbed_agent.policy, self.perturbed_buf, self.perturbed_adv_buf)
         self.perturbed_agent_policy = self.perturbed_agent.policy
         
         # Selectively update the ego (actor) policy
@@ -940,7 +944,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
 
         self._n_updates += self.n_epochs
         if hasattr(self.rollout_buffer, 'values') and self.rollout_buffer.values is not None and self.rollout_buffer.returns is not None:
-             explained_var = explained_variance(self.rollout_buffer.values.flatten().cpu().numpy(), self.rollout_buffer.returns.flatten().cpu().numpy())
+             explained_var = explained_variance(self.rollout_buffer.values.flatten().detach().cpu().numpy(), self.rollout_buffer.returns.flatten().detach().cpu().numpy())
         else:
             explained_var = np.nan
         self._log_leader_metrics(ego, entropy_losses, pg_losses, approx_kl_divs_all, explained_var, clip_range)
@@ -1148,6 +1152,39 @@ class Derivative_Free_SPAR(Generalist_SPAR):
 
 
         return primitive_attrs
+
+    def update_advantages(self, policy, ego_buf, adv_bufs):
+        # always pass ego and adv, do not pass regular and perturbed. 
+        shuffle_keys = np.tile([i for i in range(self.num_adversaries * self.envs_per_matchup)], ego_buf.buffer_size) # becuase these track raw envs
+        network_keys = [i for i in range(self.num_adversaries)]
+        values, _, _, _, _ = policy.evaluate_actions(torch.Tensor(ego_buf.observations).to(self.device), torch.Tensor(ego_buf.actions).to(self.device), torch.Tensor(ego_buf.dstb_actions).to(self.device),
+                                     shuffle_keys=shuffle_keys, network_keys=network_keys)
+        #self.rollout_buffer.values = values.reshape(self.rollout_buffer.buffer_size, self.num_adversaries)
+        #grabs_per_rep = len(shuffle_keys) // len(network_keys)
+        grabs_per_rep = self.envs_per_matchup
+        #skip = len(shuffle_keys) - grabs_per_rep
+        for i in range(len(adv_bufs)):
+            pointer = i * grabs_per_rep
+            for j in range(ego_buf.buffer_size):
+                len_chunk_to_scan = len(values) // self.rollout_buffer.buffer_size
+                #self.adversary_buffers[i].values[] = values[j * pointer : j * (pointer + grabs_per_rep)]
+                curr_chunk = values[len_chunk_to_scan * j : len_chunk_to_scan * (j + 1)]
+                adv_bufs[i].values[j * grabs_per_rep : (j+1) * grabs_per_rep] = curr_chunk[pointer : pointer + grabs_per_rep]
+            
+            adv_bufs[i].values =adv_bufs[i].values.reshape(self.adversary_buffers[i].buffer_size, grabs_per_rep)
+            adv_bufs[i].dones = adv_bufs[i].dones.reshape(self.adversary_buffers[i].buffer_size, grabs_per_rep)
+            adv_bufs[i].vectorized_compute_returns_and_advantages(adv_bufs[i].values[-1, :], adv_bufs[i].dones[-1, :])
+            adv_bufs[i].advantages = adv_bufs[i].swap_and_flatten_pt(adv_bufs[i].advantages)
+            adv_bufs[i].values = adv_bufs[i].swap_and_flatten_pt(adv_bufs[i].values)
+            adv_bufs[i].returns = adv_bufs[i].swap_and_flatten_pt(adv_bufs[i].returns)
+        
+        ego_buf.values = values.reshape(self.rollout_buffer.buffer_size, self.num_adversaries * self.envs_per_matchup)
+        ego_buf.dones = ego_buf.dones.reshape(self.rollout_buffer.buffer_size, self.num_adversaries * self.envs_per_matchup)
+
+        ego_buf.vectorized_compute_returns_and_advantages(ego_buf.values[-1, :], ego_buf.dones[-1, :])
+        ego_buf.advantages = ego_buf.swap_and_flatten_pt(ego_buf.advantages)
+        ego_buf.values = ego_buf.swap_and_flatten_pt(ego_buf.values)
+        ego_buf.returns = ego_buf.swap_and_flatten_pt(ego_buf.returns)
 
     def set_steps(self, steps: int) -> None:
         self.num_timesteps = steps
