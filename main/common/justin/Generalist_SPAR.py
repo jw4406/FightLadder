@@ -42,7 +42,7 @@ from stable_baselines3.common.save_util import load_from_zip_file, recursive_get
     save_to_zip_file
 from stable_baselines3.common.vec_env import VecEnv
 from .Doubly_TSS_SPAR import Doubly_TSS_SPAR
-
+DEBUG = True
 class Generalist_SPAR(Doubly_TSS_SPAR):
     policy_aliases: Dict[str, Type[BasePolicy]] = {
         "MlpPolicy": ActorCriticPolicy,
@@ -234,7 +234,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
         assert self._last_obs is not None, "No previous observation was provided"
         # Switch to eval mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
-        print("HI FROM THE CHILD")
+
         n_steps = 0
         rollout_buffer.reset()
         for i in range(self.num_adversaries):
@@ -329,19 +329,71 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                 same with adversary[odds] -- adversary is on the right so adv[ods] is backwards
 
                 '''
+                halfway = actions.shape[0] // 2 #halfway split between upper & lower + left & right
+                
+                if DEBUG:
+                    #test = np.zeros_like(actions)
+                    #other_test = np.ones_like(actions)
+                    #test_left = test[halfway:, :]
+                    #test_right = other_test[:halfway, :]
+                    #temp = np.zeros((self.num_adversaries, self.action_space.shape[0]))
+                    #temp[:halfway, :] = test_left
+                    #temp[halfway:, :] = test_right
 
-                prot_left = actions[0::2, :]  # actions for the prot when he is on the left
-                prot_reversed = actions[1::2,
-                                :]  # actions for prot when he is on the right... but its backwards right now!
+                    test2 = np.zeros_like(actions)
+                    count = 0
+                    for i in range(test2.shape[0]):
+                        for j in range(test2.shape[1]):
+                            test2[i, j] = count
+                            count += 1
+                    other_test2 = np.zeros_like(actions)
+                    count = other_test2.size - 1
+                    for i in range(other_test2.shape[0]):
+                        for j in range(other_test2.shape[1]):
+                            other_test2[i, j] = count
+                            count -= 1
+                    prot_left = test2[:halfway, :]  # actions for the prot when he is on the left
+                    prot_left_pre = test2[halfway:, :]  
 
-                adv_right = adversary_actions[0::2, :]
-                adv_reversed = adversary_actions[1::2, :]
+                    adv_right = other_test2[:halfway, :]
+                    adv_right_pre = other_test2[halfway:, :]
 
-                temp = np.zeros((self.num_adversaries, self.action_space.shape[0]))
-                temp = prot_reversed
+                    prot_actions = np.empty_like(actions)
+                    prot_actions[:halfway, :] = prot_left
+                    prot_actions[halfway:, :] = adv_right_pre
 
-                actions[1::2, :] = adversary_actions[1::2, :]
-                adversary_actions[1::2, :] = temp
+                    adv_actions = np.empty_like(actions)
+                    adv_actions[:halfway, :] = adv_right
+                    adv_actions[halfway:, :] = prot_left_pre
+
+                    #print("temp2", temp2)
+                    #print("other_test2", other_test2)
+                    #print("test2_left", test2_left)
+                    #print("test2_right", test2_right)
+                    #print("actions", actions)
+                    #print("temp", temp)
+                    #print("other_test", other_test)
+                    #print("test_left", test_left)
+                    #print("test_right", test_right)
+                    #print("actions", actions)
+
+                prot_left = actions[:halfway, :]  # actions for the prot when he is on the left
+                prot_left_pre = actions[halfway:, :]  
+
+                adv_right = adversary_actions[:halfway, :]
+                adv_right_pre = adversary_actions[halfway:, :]
+
+                prot_actions = np.empty_like(actions)
+                #temp = prot_right
+                prot_actions[:halfway, :] = prot_left
+                prot_actions[halfway:, :] = adv_right_pre
+
+                adv_actions = np.empty_like(actions)
+                adv_actions[:halfway, :] = adv_right
+                adv_actions[halfway:, :] = prot_left_pre
+
+                actions = prot_actions
+                adversary_actions = adv_actions
 
             # Rescale and perform action
             if self.update_left is True:
@@ -358,8 +410,8 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             #    print("ooo")
             # assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
             if self.use_mirror is True:
-                half_envs = len(rewards) // 2
-                rewards[half_envs:] = -rewards[half_envs:]
+                #half_envs = len(rewards) // 2
+                rewards[halfway:] = -rewards[halfway:]
             self.num_timesteps += env.num_envs
             #wandb.log({"epochs": self.num_timesteps})
             # Give access to local variables
@@ -543,16 +595,18 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             buf.rewards = torch.from_numpy(buf.rewards).to(self.device)
             buf.advantages = torch.from_numpy(buf.advantages).to(self.device)
             buf.episode_starts = torch.from_numpy(buf.episode_starts).to(self.device)
-            for i in range(buf.buffer_size):
-                # use target network
-                _, _, buf.values[i], _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device), network_keys=[i for i in range(self.num_adversaries)])
-                #buf.values[i] = self.value_targ_forward(torch.Tensor(buf.observations[i]).to(self.device),
-                #                                      network_keys=[i for i in range(self.num_adversaries)])
-            # _, _, last_values, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
-            buf.compute_returns_and_advantage_pt(buf.values[i], torch.Tensor(buf.dones[-1]).to(self.device))
-            rollout_advantages_copy = deepcopy(self.rollout_buffer.advantages)
-            # buf.compute_returns_and_advantage_pt_test(last_values, torch.Tensor(buf.dones[-1]).to(self.device))
-            self.rollout_buffer.advantages = buf.advantages
+            with torch.no_grad():
+                for i in range(buf.buffer_size):
+                    # use target network
+                    _, _, buf.values[i], _, _ = self.policy(torch.Tensor(buf.observations[i]).to(self.device), network_keys=[i for i in range(self.num_adversaries)])
+                    #buf.values[i] = self.value_targ_forward(torch.Tensor(buf.observations[i]).to(self.device),
+                    #                                      network_keys=[i for i in range(self.num_adversaries)])
+                # _, _, last_values, _, _ = self.policy(torch.Tensor(buf.observations[-1]).to(self.device))
+                buf.compute_returns_and_advantage_pt(buf.values[i], torch.Tensor(buf.dones[-1]).to(self.device))
+                rollout_advantages_copy = deepcopy(self.rollout_buffer.advantages)
+                # buf.compute_returns_and_advantage_pt_test(last_values, torch.Tensor(buf.dones[-1]).to(self.device))
+                self.rollout_buffer.advantages = buf.advantages
+
         # train for n_epochs epochs
         for epoch in range(self.n_epochs):
             approx_kl_divs = []
