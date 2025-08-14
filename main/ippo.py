@@ -398,7 +398,7 @@ def main(PLAYER):
                         help='Initial level to load from. By default 0, starting from pretrain', default=0)
     parser.add_argument('--resume-epoch', type=int, help='Resume epoch. By default 0, starting from pretrain',
                         default=0)
-    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=1)
+    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=2)
     parser.add_argument('--enable-combo', action='store_true', help='Enable special move action space for environment')
     parser.add_argument('--null-combo', action='store_true', help='Null action space for special move')
     parser.add_argument('--transform-action', action='store_true', help='Transform action space to MultiDiscrete')
@@ -543,7 +543,7 @@ def main(PLAYER):
             env_batch_size=args.env_batch_size,
             envs_per_matchup=args.envs_per_matchup,
             state_len=len(STATE),
-            device="cuda",
+            device="cpu",
             verbose=2,
             n_steps=num_steps,  # 1408,
             batch_size=int(num_steps * len(state_list) / 10),  # 2816,  # 512,
