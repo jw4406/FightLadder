@@ -159,9 +159,9 @@ class ParallelUpdater:
     To add a new job type:
     1. Add job handler static method: _handle_your_job_type(job, device_id, done_queue, ...) -> Any
     2. Add elif case in _generic_worker_function: elif job_type == "YOUR_JOB_TYPE": ...
-    3. Add necessary persistent state variables to persistent_state in _generic_worker_function.
+    3. Add necessary persistent state variables to persistent_state in _generic_worker_function (if needed).
     4. Add job creation method: _create_your_job_type_job(...) -> tuple (NOTE: This might not be necessary for every job)
-    5. Add public method: your_job_type(...) -> None (uses _submit_job and _wait_for_jobs)
+    5. Add public method: your_job_type(self, active_jobs, ...) -> None (uses _submit_job and _wait_for_jobs). This method should use the _parallel_job_executor decorator (@_parallel_job_executor) and have jobs submitted to active_jobs. Use self.`_submit_job` with active_jobs.
     """
     
     def __init__(self, n_workers: int) -> None:
@@ -312,7 +312,6 @@ class ParallelUpdater:
             print(f"Worker {device_id} error: {e}")
             done_queue.put(f"ERROR_{job_id}")
 
-
     def _submit_job(self, job: str, device_id: int, active_jobs: List[int], *args) -> None:
         """
         This function is used to submit job to the ParallelUpdater.
@@ -400,7 +399,18 @@ class ParallelUpdater:
                 print("Warning: Timeout waiting for job completion")
                 break
     
-    def update_value_functions(self, policy: Any, perturbed_agent: Any, perturbed_adv_buf: List[Any], 
+    def _parallel_job_executor(func):
+        """
+        This is a decorator to use 
+        """
+        def wrapper(self, *args, **kwargs):
+            active_jobs = []
+            func(self, active_jobs, *args, **kwargs)
+            self._wait_for_jobs(active_jobs)
+        return wrapper
+
+    @_parallel_job_executor
+    def update_value_functions(self, active_jobs: list, policy: Any, perturbed_agent: Any, perturbed_adv_buf: List[Any], 
                              adversary_buffers: List[Any], batch_size: int, max_grad_norm: float, 
                              n_epochs: int, n_env_per_adv: int, first_run: bool = False) -> None:
         """
@@ -426,7 +436,6 @@ class ParallelUpdater:
         shards = shard_indices(len(all_indices), self.n_workers)
 
         # Submit jobs to worker processes
-        active_jobs = []
         for device_id, i_list in enumerate(shards):
             if not i_list:
                 continue
@@ -436,12 +445,8 @@ class ParallelUpdater:
                 perturbed_adv_buf, batch_size, max_grad_norm, n_epochs,
                 n_env_per_adv, perturbed_agent.n_env_per_adv, first_run
             )
-            
             self._submit_job("UPDATE_VALUE_FUNCTIONS", device_id, active_jobs, *job)
 
-        # Wait for all jobs to complete
-        self._wait_for_jobs(active_jobs)
-                   
     def shutdown(self) -> None:
         """Clean shutdown of worker processes."""
         for queue in self.input_queues:
@@ -706,7 +711,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
 
         self.rollout_buffer.vectorized_compute_returns_and_advantages(self.rollout_buffer.values[-1, :], self.rollout_buffer.dones[-1, :])
 
-        need to swap and flatten here 
+        #need to swap and flatten here 
         self.perturbed_agent_policy = self.perturbed_agent.policy
         
         # Selectively update the ego (actor) policy
