@@ -12,6 +12,12 @@ from .const import *
 from .algorithms import LeaguePPO
 from .nash import NashEquilibriumECOSSolver
 from .multi_head_ppo import PPO_From_SPAR
+from .justin.role_based_spar import RoleBasedSPAR # Import the new agent
+import random
+import re
+
+# This list must be available for the Generalist curriculum design
+CHARACTERS = ["Ryu", "EHonda", "Blanka", "Guile", "Ken", "ChunLi", "Zangief", "Dhalsim", "Sagat", "MBison", "Balrog", "Vega"]
 
 
 PER_HISTORICAL_STEPS = 1e7 # 5e3
@@ -155,10 +161,16 @@ class Payoff:
 
             parent_match = True
             if filter_parent:
-                if isinstance(filter_parent, str):
-                    filter_parent = [filter_parent]
-                if not hasattr(player, 'parent') or player.parent not in filter_parent:
-                    parent_match = False
+                # Add regex matching capability
+                if isinstance(filter_parent, str) and hasattr(player, 'parent'):
+                    if not re.match(filter_parent, player.parent):
+                        parent_match = False
+                elif isinstance(filter_parent, list) and hasattr(player, 'parent'):
+                    if player.parent not in filter_parent:
+                        parent_match = False
+                elif not hasattr(player, 'parent'):
+                     parent_match = False
+
             
             if class_match and parent_match:
                 names.append(name)
@@ -420,6 +432,14 @@ class MainPlayer(Player):
     def __init__(self, name, side, constructor, args, agent: LeaguePPO, payoff: Payoff, agent_dict=None, checkpoint_step=0):
         super().__init__(name, side, constructor, args, agent, payoff, agent_dict, checkpoint_step)
 
+    def _create_agent(self):
+        if self.agent is None:
+            # This constructor is now for Derivative_Free_SPAR for all agents
+            self.agent = self.constructor(self.args, self.side, self.name)
+            if self.agent_dict:
+                self.agent.set_parameters(self.agent_dict)
+            self.agent.set_steps(self._checkpoint_step)
+
     def _pfsp_branch(self):
         historical_opponents = self._payoff.get_names("right", Historical) if self.side == "left" else self._payoff.get_names("left", Historical)
         win_rates = self._payoff.get_item(self.name, historical_opponents, "left") if self.side == "left" else self._payoff.get_item(historical_opponents, self.name, "right")
@@ -509,6 +529,14 @@ class MainExploiter(Player):
     def __init__(self, name, side, constructor, args, agent: LeaguePPO, payoff: Payoff, agent_dict=None, checkpoint_step=0):
         super().__init__(name, side, constructor, args, agent, payoff, agent_dict, checkpoint_step)
 
+    def _create_agent(self):
+        if self.agent is None:
+            # This constructor is now for Derivative_Free_SPAR for all agents
+            self.agent = self.constructor(self.args, self.side, self.name)
+            if self.agent_dict:
+                self.agent.set_parameters(self.agent_dict)
+            self.agent.set_steps(self._checkpoint_step)
+
     def get_match(self):
         coin_toss = np.random.random()
 
@@ -557,6 +585,14 @@ class LeagueExploiter(Player):
 
     def __init__(self, name, side, constructor, args, agent: LeaguePPO, payoff: Payoff, agent_dict=None, checkpoint_step=0):
         super().__init__(name, side, constructor, args, agent, payoff, agent_dict, checkpoint_step)
+
+    def _create_agent(self):
+        if self.agent is None:
+            # This constructor is now for Derivative_Free_SPAR for all agents
+            self.agent = self.constructor(self.args, self.side, self.name)
+            if self.agent_dict:
+                self.agent.set_parameters(self.agent_dict)
+            self.agent.set_steps(self._checkpoint_step)
 
     def get_match(self):
         historical_opponents = self._payoff.get_names("right", Historical) if self.side == "left" else self._payoff.get_names("left", Historical)
@@ -817,30 +853,23 @@ class Learner:
         tb_log_name: str = "Learner",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
+        update_ego: bool = True,
+        update_adversary: bool = True,
     ):
         def get_kwargs():
             opponent, _ = self.player.get_match()
             print(f"[Learner] Self({self.player.name}) vs Opponent({opponent.name})")
             
             # Construct opponent agent just-in-time if it doesn't exist.
-            # This is crucial for Historical opponents.
             if opponent.agent is None:
                 opponent._create_agent()
 
-            # Handle getting policy from different opponent agent types
-            if isinstance(opponent.agent, PPO_From_SPAR):
-                # The Generalist agent has a single unified policy.
-                opponent_policy = opponent.agent.policy
-                if self.player.side == "left":
-                    kwargs = {"policy_other": opponent_policy}
-                else:  # player is right
-                    kwargs = {"policy": opponent_policy}
-            else:
-                # Standard 1v1 agent (e.g. LeaguePPO)
-                if self.player.side == "left":
-                    kwargs = {"policy_other": opponent.agent.policy_other}
-                else:  # player is right
-                    kwargs = {"policy": opponent.agent.policy}
+            # The Generalist agent has a single unified policy.
+            opponent_policy = opponent.agent.policy
+            if self.player.side == "left":
+                kwargs = {"policy_other": opponent_policy}
+            else:  # player is right
+                kwargs = {"policy": opponent_policy}
 
             kwargs.update({
                 "coordinate_fn": partial(self.player.send_outcome, opponent.name),
@@ -848,7 +877,16 @@ class Learner:
             })
             return kwargs
         
-        self.player.agent.learn(total_timesteps, rollout_opponent_num, callback, log_interval, tb_log_name, reset_num_timesteps, progress_bar, get_kwargs)
+        self.player.agent.learn(
+            total_timesteps, 
+            callback, 
+            log_interval, 
+            tb_log_name, 
+            reset_num_timesteps, 
+            progress_bar, 
+            update_ego=update_ego, 
+            update_adversary=update_adversary
+        )
 
 
 class GeneralistMainPlayer(Player):
@@ -874,19 +912,48 @@ class GeneralistMainPlayer(Player):
 
     def get_match_set(self):
         """
-        Returns a list of all opponents the generalist agent should train against.
-        This defines the training curriculum for the upcoming generation.
+        Designs a curriculum for the generalist by selecting the most effective
+        exploiters from the league based on win rates from the payoff matrix.
         """
-        # For simplicity, we'll grab all main and league exploiters.
-        # This can be made more sophisticated (e.g., sampling, PFSP over exploiters).
-        main_exploiters = self._payoff.get_names("right", MainExploiter) if self.side == "left" else self._payoff.get_names("left", MainExploiter)
-        league_exploiters = self._payoff.get_names("right", LeagueExploiter) if self.side == "left" else self._payoff.get_names("left", LeagueExploiter)
+        selected_opponents = []
         
-        opponent_names = main_exploiters + league_exploiters
-        
-        # We need to construct the actual player objects to get their policies
-        opponent_players = [self.get_player_by_name(name) for name in opponent_names]
-        return opponent_players
+        # 1. Select the best Main Exploiter for each of our 12 characters
+        for char_name in CHARACTERS:
+            # Find all MEs designed to beat this specific character
+            opponent_side = "right" if self.side == "left" else "left"
+            main_exploiters_for_char = self._payoff.get_names(
+                opponent_side, 
+                filter_class=MainExploiter,
+                filter_parent=f"ME_.*_vs_{char_name}" # Regex to find exploiters targeting this char
+            )
+
+            if main_exploiters_for_char:
+                # Get win rates of these exploiters against the generalist
+                win_rates = self._payoff.get_item(self.name, main_exploiters_for_char, self.side)
+                # Select the one with the highest win rate (most challenging)
+                best_exploiter_name = main_exploiters_for_char[np.argmax(win_rates)]
+                selected_opponents.append(self.get_player_by_name(best_exploiter_name))
+
+        # 2. Select the top N League Exploiters overall
+        league_exploiters = self._payoff.get_names(opponent_side, filter_class=LeagueExploiter)
+        if league_exploiters:
+            win_rates = self._payoff.get_item(self.name, league_exploiters, self.side)
+            # Sort exploiters by win rate and take the top 4
+            sorted_indices = np.argsort(win_rates)[::-1] # descending order
+            top_n = 4
+            for i in range(min(top_n, len(league_exploiters))):
+                best_exploiter_name = league_exploiters[sorted_indices[i]]
+                selected_opponents.append(self.get_player_by_name(best_exploiter_name))
+
+        if not selected_opponents:
+            # Fallback: if no exploiters have played, return a random league exploiter
+            all_les = self._payoff.get_names(opponent_side, filter_class=LeagueExploiter)
+            if all_les:
+                return [self.get_player_by_name(random.choice(all_les))]
+            else:
+                raise RuntimeError("No League Exploiters found. Cannot create a match set.")
+
+        return selected_opponents
     
     def get_match(self):
         """

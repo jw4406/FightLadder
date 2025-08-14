@@ -1,95 +1,50 @@
-import os
-import torch
 import argparse
-import multiprocessing
-multiprocessing.set_start_method('forkserver', force=True)
-from multiprocessing import Process
-from typing import Dict, List
+import multiprocessing as mp
+import os
+from functools import partial
 
-import retro
-
-from common.const import *
-#from common.utils import SubprocVecEnv2P, VecTransposeImage2P
-from common.algorithms import LeaguePPO
-from common.retro_wrappers import SFWrapper, Monitor2P
-from common.league import PayoffManager, League, Learner, GeneralistMainPlayer, GeneralistLearner, MainExploiter, LeagueExploiter
-from common.multi_head_ppo import PPO_From_SPAR
-from stable_baselines3.common.policies import ActorActorCriticCnnGeneralistPolicy
+import torch
+#from common.utils.common_utils import sf_game, state_list
+from common.league import (League, Learner, MainExploiter, MainPlayer,
+                           PayoffManager)
+from common.retro_wrappers import Monitor2P, SFWrapper
 from common.utils import SubprocVecEnv2P, VecTransposeImage2P
+from stable_baselines3.common.policies import \
+    ActorActorCriticCnnGeneralistPolicy
+from common.const import *
+from common.justin.role_based_spar import RoleBasedSPAR
 
-class GeneralistLeague(League):
-    """
-    A League that specifically creates a GeneralistMainPlayer for the main agent
-    while using standard players for exploiters. This avoids modifying the base
-    League class.
-    """
-    def __init__(self,
-                 args,
-                 generalist_constructor,
-                 exploiter_constructor,
-                 payoff=None,
-                 main_agents=1,
-                 main_exploiters=1,
-                 league_exploiters=2):
-        if payoff is None:
-            self._payoff = Payoff()
-        else:
-            self._payoff = payoff
-            
-        self._learning_agents = []
-        for side in ['left', 'right']: # Assuming agents on both sides
-            # Create the generalist main agent
-            for idx in range(main_agents):
-                # The agent is initialized as None, it will be created later in the worker process
-                main_agent = GeneralistMainPlayer(f"MA{idx}_{side}", side, generalist_constructor, args, None, self._payoff)
-                self._learning_agents.append(main_agent)
-                self.add_player(main_agent)
-                self.add_player(main_agent.checkpoint())
-            
-            # Create Standard Main Exploiters
-            for idx in range(main_exploiters):
-                self._learning_agents.append(
-                    MainExploiter(f"ME{idx}_{side}", side, exploiter_constructor, args, None, self._payoff))
-            
-            # Create Standard League Exploiters
-            for idx in range(league_exploiters):
-                self._learning_agents.append(
-                    LeagueExploiter(f"LE{idx}_{side}", side, exploiter_constructor, args, None, self._payoff))
-        
-        for player in self._learning_agents:
-            self.add_player(player)
-
-
-def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, seed=0):
+def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True,
+             null_combo=False, transform_action=False, seed=0):
     def _init():
         players = 2
         env = retro.make(
-            game=game, 
-            state=state, 
+            game=game,
+            state=state,
             use_restricted_actions=retro.Actions.FILTERED,
             obs_type=retro.Observations.IMAGE,
             players=players
         )
-        env = SFWrapper(env, side=side, rendering=rendering, reset_type=reset_type, init_level=init_level, state_dir=state_dir, verbose=verbose, enable_combo=enable_combo, null_combo=null_combo, transform_action=transform_action)
+        env = SFWrapper(env, side=side, rendering=rendering, reset_type=reset_type, init_level=init_level,
+                        state_dir=state_dir, verbose=verbose, enable_combo=enable_combo, null_combo=null_combo,
+                        transform_action=transform_action)
         env = Monitor2P(env)
         env.seed(seed)
         return env
+
     return _init
 
-def generalist_constructor(args, side, log_name, state_list, n_env_per_adv, num_adversaries):
+def unified_constructor(args, side, log_name, state_list):
     """
-    A factory function to create a PPO_From_SPAR agent.
-    It selectively pulls the required arguments from the command-line args
-    to prevent TypeErrors from unexpected keyword arguments.
+    A single factory function to create a RoleBasedSPAR agent.
+    All players in the league will use this constructor.
     """
-    env = VecTransposeImage2P(SubprocVecEnv2P([make_env(sf_game, state=s, side=side, rendering=args.render, reset_type=args.reset, seed=i) for i, s in enumerate(state_list) for _ in range(n_env_per_adv)]))
+    env = VecTransposeImage2P(SubprocVecEnv2P([make_env(sf_game, state=state_list[0], side=side, rendering=args.render, reset_type=args.reset, seed=i) for i in range(args.num_env)]))
     
-    policy_kwargs = {
-        "num_adversaries": num_adversaries
-    }
+    policy_kwargs = {"num_adversaries": 1}
 
-    return PPO_From_SPAR(
-        policy="AACCnnPolicy",
+    return RoleBasedSPAR(
+        policy=ActorActorCriticCnnGeneralistPolicy,
         env=env,
         device="cuda",
         verbose=1,
@@ -102,56 +57,44 @@ def generalist_constructor(args, side, log_name, state_list, n_env_per_adv, num_
         v_learning_rate=1e-4,
         clip_range=0.1,
         tensorboard_log=None if log_name is None else os.path.join(args.log_dir, log_name),
-        num_adversary=num_adversaries,
-        n_global_env=len(state_list) * n_env_per_adv,
-        n_env_per_adv=n_env_per_adv,
+        num_adversary=len(state_list),
+        n_global_env=len(state_list),
+        n_env_per_adv=1,
         policy_kwargs=policy_kwargs,
         I_AM_LEFT=(side=='left'),
         I_AM_RIGHT=(side=='right'),
-    )
-
-def exploiter_constructor(constructor_args, side, log_name, state_list):
-    env = VecTransposeImage2P(SubprocVecEnv2P([make_env(sf_game, state=state_list[0], side=side, rendering=constructor_args.render, reset_type=constructor_args.reset, seed=i) for i in range(constructor_args.num_env)]))
-    return LeaguePPO(
-        side,
-        "CnnPolicy", 
-        env,
-        device="cuda", 
-        verbose=1,
-        n_steps=512,
-        batch_size=1024,
-        n_epochs=4,
-        gamma=0.94,
-        learning_rate=1e-4,
-        clip_range=0.1,
-        tensorboard_log=None if log_name is None else os.path.join(constructor_args.log_dir, log_name),
+        envs_per_matchup=args.envs_per_matchup,
+        state_len=len(state_list),
     )
 
 def worker(idx, player, shared_payoff, total_steps, rollout_opponent_num):
     """
-    Generic worker function that initializes and runs a learner for a given player.
+    Worker function that runs a learner for a given player, with role-based training.
     """
     print(f"Worker {player.name} start")
     with torch.cuda.device(idx % torch.cuda.device_count()):
-        # The agent must be created inside the worker process to avoid pickling issues.
         player._create_agent()
-
-        # The player from the main process doesn't have a reference to the shared payoff
-        # object, so we must set it here.
         player._payoff = shared_payoff
 
-        # Choose the correct learner for the player type
-        if isinstance(player, GeneralistMainPlayer):
-            learner = GeneralistLearner(player)
-            learner.run(total_timesteps=total_steps)
-        else:
-            # The 'rollout_opponent_num' is not used by the GeneralistLearner,
-            # but the standard Learner expects it.
-            learner = Learner(player)
-            learner.run(total_timesteps=total_steps, rollout_opponent_num=rollout_opponent_num)
+        if isinstance(player, MainPlayer):
+            update_ego = True
+            update_adversary = False
+        elif isinstance(player, MainExploiter):
+            update_ego = False
+            update_adversary = True
+        else: # Default for LeagueExploiter or other types
+            update_ego = True
+            update_adversary = True
+
+        learner = Learner(player)
+        learner.run(
+            total_timesteps=total_steps,
+            rollout_opponent_num=rollout_opponent_num,
+            update_ego=update_ego,
+            update_adversary=update_adversary
+        )
 
     print(f"Worker {player.name} finished.")
-
 
 def main():
     # --- Argument Parsing (from ippo.py) ---
@@ -177,63 +120,71 @@ def main():
     parser.add_argument('--seed', type=int, help='Seed', default=0)
     args = parser.parse_args()
     print("Command line args:" + str(args))
-
     os.makedirs(args.save_dir, exist_ok=True)
-    os.makedirs(args.log_dir, exist_ok=True)
-    
     # --- Environment State Generation (from ippo.py) ---
     player_folder_name = [p + '_' + args.side for p in args.player]
-    STATE = [
-        f"two_player/{p_folder}/Champion.Level1.{p_name}Vs{opp_name}.2Player.state"
-        for p_folder, p_name in zip(player_folder_name, args.player)
-        for opp_name in args.opponent_list
-    ]
-    
-    num_adversaries = len(args.opponent_list)
-    
-    # Ensure total envs is divisible by number of adversaries for clean slicing
-    if args.num_env % num_adversaries != 0:
-        raise ValueError(f"Total number of environments ({args.num_env}) must be divisible by the number of adversaries ({num_adversaries}).")
-    n_env_per_adv = args.num_env // num_adversaries
-    
-    # --- Agent Constructors ---
-    # Moved to top level to be pickleable
+    args = parser.parse_args()
 
-    # --- League Setup and Execution (from train_ma.py) ---
+    mp.set_start_method("spawn")
+
+    os.makedirs(args.log_dir, exist_ok=True)
     
-    # Create lightweight "template" agents. The full agents will be constructed in subprocesses.
-    # We need to bind the arguments to the constructor functions
-    from functools import partial
-    gen_constructor_partial = partial(generalist_constructor, state_list=STATE, n_env_per_adv=n_env_per_adv, num_adversaries=num_adversaries)
-    exp_constructor_partial = partial(exploiter_constructor, state_list=STATE)
+    payoff_manager = PayoffManager()
+    payoff_manager.start()
+    shared_payoff = payoff_manager.Payoff()
 
-    with PayoffManager() as manager:
-        shared_payoff = manager.Payoff(args.save_dir)
-        
-        league = GeneralistLeague(
-            args=args, 
-            generalist_constructor=gen_constructor_partial,
-            exploiter_constructor=exp_constructor_partial,
-            payoff=shared_payoff, 
-            main_agents=1, 
-            main_exploiters=args.num_main_exploiters, 
-            league_exploiters=args.num_league_exploiters
-        )
-        
-        processes = []
-        for idx in range(league.size()):
-            player = league.get_player(idx)
-            
-            # The player object is passed to the worker, which will then
-            # create the agent and the appropriate learner. This avoids pickling the agent/env.
-            process = Process(target=worker, args=(idx, player, shared_payoff, args.total_steps, args.rollout_opponent_num))
-            processes.append(process)
+    PLAYER = args.player
+    OPPONENT_LIST = args.opponent_list
+    constructor_partial = partial(unified_constructor, args=args)
+    SIDE = "left"  # "right"
+    player_folder_name = [PLAYER[i] + '_' + SIDE for i in range(len(PLAYER))]
+    #if REMOVAL is not None:
+    #    OPPONENT_LIST.remove(REMOVAL)
 
-        for p in processes:
-            p.start()
-        for p in processes:
-            p.join()
+    # files  = os.listdir
 
+    # if use_mirror is True:
+    #     STATE_prot_left = [
+    #         "two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name[i], PLAYER[i], OPPONENT_LIST[j]) for i in range(len(PLAYER)) for j in range(len(OPPONENT_LIST))]
+
+    #     opp_left_folder_name = []
+    #     for i in range(len(OPPONENT_LIST)):
+    #         opp_left_folder_name.append(OPPONENT_LIST[i] + "_" + SIDE)
+    #     STATE_prot_right = [
+    #         "two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (opp_left_folder_name[i], OPPONENT_LIST[i], PLAYER[j])
+    #         for i in range(len(OPPONENT_LIST)) for j in range(len(PLAYER))]
+    #     # STATE = STATE_prot_left + STATE_prot_right
+
+    #     # chunking requires same adversaries to be next to each other
+
+    #     # interleave
+    #     STATE = STATE_prot_left + STATE_prot_right
+    #     #STATE = STATE_prot_right
+
+    #else:
+
+    STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name[i], PLAYER[i], OPPONENT_LIST[j])
+            for i in range(len(PLAYER))
+            for j in range(len(OPPONENT_LIST))]
+    state_list = STATE
+    initial_agents = {"main_0": constructor_partial(side='left', log_name="main_0", state_list=state_list)}
+
+    league = League(
+        args=args,
+        initial_agents=initial_agents,
+        constructor=constructor_partial,
+        payoff=shared_payoff,
+        main_agents=1,
+        main_exploiters=args.num_main_exploiters,
+        league_exploiters=args.num_league_exploiters
+    )
+
+    players = league.get_players()
+
+    with mp.Pool(processes=args.num_workers) as pool:
+        pool.starmap(worker, [(idx, player, shared_payoff, args.total_steps, args.rollout_opponent_num) for idx, player in enumerate(players)])
+
+    payoff_manager.shutdown()
 
 if __name__ == "__main__":
     main() 

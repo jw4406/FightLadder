@@ -234,7 +234,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
         assert self._last_obs is not None, "No previous observation was provided"
         # Switch to eval mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
-
+        print("HI FROM THE CHILD")
         n_steps = 0
         rollout_buffer.reset()
         for i in range(self.num_adversaries):
