@@ -1,4 +1,5 @@
 # br_worker.py
+import argparse
 import os
 from annotated_types import Ge
 import time, av
@@ -304,74 +305,74 @@ def evaluate_sa_parallel(curr_state: str, model: Generalist_SPAR, exploiter_mode
     return win_rate    
 
 #TODO: Once we are satisfied with evaluate_sa_parallel, we can remove this function (to avoid code bloating).
-@torch.no_grad()
-def evaluate_sa(curr_state: str, model: Generalist_SPAR, exploiter_model: Exploiter, env_index: int, greedy: int=0, record: bool=False):
-    #assert isinstance(model, Specialized_Agent)
-    # global STATE
-    num_episodes = 50
-    win_cnt = 0
-    vic = np.zeros((50,))
-    # env = []
-    for j in range(1, num_episodes + 1):
-        env = make_env(sf_game, state=curr_state, side='both', reset_type='round', rendering=False,
-                 enable_combo=False, null_combo=False,
-                 transform_action=False, seed=0)().env
-        done = False
+# @torch.no_grad()
+# def evaluate_sa(curr_state: str, model: Generalist_SPAR, exploiter_model: Exploiter, env_index: int, greedy: int=0, record: bool=False):
+#     #assert isinstance(model, Specialized_Agent)
+#     # global STATE
+#     num_episodes = 50
+#     win_cnt = 0
+#     vic = np.zeros((50,))
+#     # env = []
+#     for j in range(1, num_episodes + 1):
+#         env = make_env(sf_game, state=curr_state, side='both', reset_type='round', rendering=False,
+#                  enable_combo=False, null_combo=False,
+#                  transform_action=False, seed=0)().env
+#         done = False
 
-        obs = env.reset()
-        if record:
-            video_log = [Image.fromarray(env.render(mode="rgb_array"))]
+#         obs = env.reset()
+#         if record:
+#             video_log = [Image.fromarray(env.render(mode="rgb_array"))]
 
-        while not done:
-            if model.use_mirror is True:
-                (action, _states), (_, _) = model.predict(obs, env_index, deterministic=False)
-                exploit_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
-                action_other = exploit_action
+#         while not done:
+#             if model.use_mirror is True:
+#                 (action, _states), (_, _) = model.predict(obs, env_index, deterministic=False)
+#                 exploit_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
+#                 action_other = exploit_action
 
-            else:
-                if np.random.uniform() > greedy:
-                    (action, _states), (action_other, _states_other) = model.predict(obs, env_index,
-                                                                                     deterministic=False)
-                else:
-                    (action, _states), (action_other, _states_other) = model.predict(obs, env_index,
-                                                                                     deterministic=False)
-            br_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
+#             else:
+#                 if np.random.uniform() > greedy:
+#                     (action, _states), (action_other, _states_other) = model.predict(obs, env_index,
+#                                                                                      deterministic=False)
+#                 else:
+#                     (action, _states), (action_other, _states_other) = model.predict(obs, env_index,
+#                                                                                      deterministic=False)
+#             br_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
 
-            action_other = br_action
-            obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
-            if record:
-                video_log.append(Image.fromarray(env.render(mode="rgb_array")))
+#             action_other = br_action
+#             obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
+#             if record:
+#                 video_log.append(Image.fromarray(env.render(mode="rgb_array")))
 
-            if done:
-                if record:
-                    try:
-                        name = curr_state.split("/")[1]
-                    except:
-                        name = curr_state
-                    height, width, layers = np.array(video_log[0]).shape
-                    container = av.open(f"{args.video_dir}/{name}_episode_{j}.mp4", mode='w')
-                    stream = container.add_stream('h264', rate=10)
-                    stream.width = width
-                    stream.height = height
-                    stream.pix_fmt = 'yuv420p'
-                    for img in video_log:
-                        frame = av.VideoFrame.from_image(img)
-                        for packet in stream.encode(frame):
-                            container.mux(packet)
-                    remain_packets = stream.encode(None)
-                    container.mux(remain_packets)
-                    container.close()
+#             if done:
+#                 if record:
+#                     try:
+#                         name = curr_state.split("/")[1]
+#                     except:
+#                         name = curr_state
+#                     height, width, layers = np.array(video_log[0]).shape
+#                     container = av.open(f"{args.video_dir}/{name}_episode_{j}.mp4", mode='w')
+#                     stream = container.add_stream('h264', rate=10)
+#                     stream.width = width
+#                     stream.height = height
+#                     stream.pix_fmt = 'yuv420p'
+#                     for img in video_log:
+#                         frame = av.VideoFrame.from_image(img)
+#                         for packet in stream.encode(frame):
+#                             container.mux(packet)
+#                     remain_packets = stream.encode(None)
+#                     container.mux(remain_packets)
+#                     container.close()
 
-        if info['enemy_hp'] < info['agent_hp']:
-            print("Victory!")
-            # vic[j-1] = 1
-            win_cnt += 1
+#         if info['enemy_hp'] < info['agent_hp']:
+#             print("Victory!")
+#             # vic[j-1] = 1
+#             win_cnt += 1
 
-        env.close()
+#         env.close()
 
-    win_rate = win_cnt / num_episodes
-    print("Winning rate: {}".format(win_rate))
-    return win_rate
+#     win_rate = win_cnt / num_episodes
+#     print("Winning rate: {}".format(win_rate))
+#     return win_rate
 
 def const_schedule(initial_value: float):
     def func(progress_remaining: float) -> float:
@@ -557,6 +558,12 @@ def train_best_response(task_file_path: str):
     #     # to inspect it later.
 
 if __name__ == "__main__":
+    #Read arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--use_prot", action="store_true")
+    args = parser.parse_args()
+
+
     wandb.login(key='d95a51c4001b862123a34a3853fe0306906d2f07')
     todo_dir = os.path.join(TASK_DIR, "todo")
     processing_dir = os.path.join(TASK_DIR, "processing")
