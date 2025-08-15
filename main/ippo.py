@@ -333,47 +333,17 @@ def evaluate_cross(args, model1, model2, greedy=0.5, record=True):
 def main(PLAYER):
     # global REMOVAL
     # PLAYER = "Blanka"  # "Blanka
+
     global REMOVAL
     use_mirror = True
     
     REMOVAL = None
-
     if use_mirror is True:
         OPPONENT_LIST = ["Sagat", "EHonda"]# "MBison", "Blanka"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
         OPPONENT_LIST = ["Guile", "EHonda", "Sagat","ChunLi"]#, "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
-    SIDE = "left"  # "right"
-    player_folder_name = [PLAYER[i] + '_' + SIDE for i in range(len(PLAYER))]
-    if REMOVAL is not None:
-        OPPONENT_LIST.remove(REMOVAL)
-
-    # files  = os.listdir
-
-    if use_mirror is True:
-        STATE_prot_left = [
-            "two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name[i], PLAYER[i], OPPONENT_LIST[j]) for i in range(len(PLAYER)) for j in range(len(OPPONENT_LIST))]
-
-        opp_left_folder_name = []
-        for i in range(len(OPPONENT_LIST)):
-            opp_left_folder_name.append(OPPONENT_LIST[i] + "_" + SIDE)
-        STATE_prot_right = [
-            "two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (opp_left_folder_name[i], OPPONENT_LIST[i], PLAYER[j])
-            for i in range(len(OPPONENT_LIST)) for j in range(len(PLAYER))]
-        # STATE = STATE_prot_left + STATE_prot_right
-
-        # chunking requires same adversaries to be next to each other
-
-        # interleave
-        STATE = STATE_prot_left + STATE_prot_right
-        #STATE = STATE_prot_right
-
-    else:
-
-        STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name[i], PLAYER[i], OPPONENT_LIST[j])
-                 for i in range(len(PLAYER))
-                 for j in range(len(OPPONENT_LIST))]
-    state_list = STATE
+    
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'],
                         help='Reset stats for a round, a match, or the whole game', default='round')
@@ -381,6 +351,11 @@ def main(PLAYER):
     parser.add_argument('--save-dir', help='The directory to save the trained models',
                         default="trained_models/single_test_large_%s_%s" % (PLAYER, OPPONENT_LIST[0]))
 
+    #if use_mirror is True:
+    #    OPPONENT_LIST = ["Sagat", "EHonda"]# "MBison", "Blanka"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
+    #else:
+        #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
+    #    OPPONENT_LIST = ["Guile", "EHonda", "Sagat","ChunLi"]#, "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
     parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_%s" % '_'.join(PLAYER))
     parser.add_argument('--state', help='The state file to load. By default Champion.Level1.RyuVsGuile',
@@ -417,6 +392,40 @@ def main(PLAYER):
     parser.add_argument("--num_env_to_load", type=int, required=True, help="Number of envs to load", default=1)
     parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=32)
     args = parser.parse_args()
+
+
+    SIDE = "left"  # "right"
+    player_folder_name = [PLAYER[i] + '_' + SIDE for i in range(len(PLAYER))]
+    if REMOVAL is not None:
+        OPPONENT_LIST.remove(REMOVAL)
+
+    # files  = os.listdir
+
+    if use_mirror is True:
+        STATE_prot_left = [
+            "two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name[i], PLAYER[i], OPPONENT_LIST[j]) for i in range(len(PLAYER)) for j in range(len(OPPONENT_LIST)) for k in range(args.envs_per_matchup)]
+
+        opp_left_folder_name = []
+        for i in range(len(OPPONENT_LIST)):
+            opp_left_folder_name.append(OPPONENT_LIST[i] + "_" + SIDE)
+        STATE_prot_right = [
+            "two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (opp_left_folder_name[i], OPPONENT_LIST[i], PLAYER[j])
+            for i in range(len(OPPONENT_LIST)) for j in range(len(PLAYER)) for k in range(args.envs_per_matchup)]
+        # STATE = STATE_prot_left + STATE_prot_right
+
+        # chunking requires same adversaries to be next to each other
+
+        # interleave
+        STATE = STATE_prot_left + STATE_prot_right
+        #STATE = STATE_prot_right
+
+    else:
+
+        STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name[i], PLAYER[i], OPPONENT_LIST[j])
+                 for i in range(len(PLAYER))
+                 for j in range(len(OPPONENT_LIST))
+                 for k in range(args.envs_per_matchup)]
+    state_list = STATE
 
     # PLAYER = args.player
 
@@ -455,14 +464,13 @@ def main(PLAYER):
         env = []
         env_count = 0
         for i in range(i_start, len(STATE)):
-            for j in range(j_start, each_env_count):
-                if exceed_max_envs(env_count, max_envs):
-                    break
-                env.append(
-                    make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render,
-                             enable_combo=args.enable_combo, null_combo=args.null_combo,
-                             transform_action=args.transform_action, seed=0))
-                env_count += 1
+            if exceed_max_envs(env_count, max_envs):
+                break
+            env.append(
+                make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render,
+                            enable_combo=args.enable_combo, null_combo=args.null_combo,
+                            transform_action=args.transform_action, seed=0))
+            env_count += 1
             if exceed_max_envs(env_count, max_envs):
                 break
         # env = [make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=0) for i in range(args.num_env)]
@@ -566,7 +574,8 @@ def main(PLAYER):
             opp_list=OPPONENT_LIST,
             player='_'.join(PLAYER),
             use_mirror=use_mirror,
-            env_generator_func=env_generator
+            env_generator_func=env_generator,
+            state_list=state_list
         )
         # if use_mirror is True:
         #     with open(current_dir + "miror_indicator.txt", "w") as f:
