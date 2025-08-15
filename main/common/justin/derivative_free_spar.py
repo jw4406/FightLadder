@@ -613,7 +613,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
 
         # Create rollout environments in batches using the stored generator function
         total_envs_needed = self.state_len * self.envs_per_matchup
-        total_batches = (total_envs_needed + self.env_batch_size - 1) // self.env_batch_size
+        total_batches = (total_envs_needed + self.env_batch_size - 1) // self.env_batch_size #Calculate ceil of total_envs_needed / self.env_batch_size.
         env_cnt = 0 #how many environments were created
 
         for batch_idx in range(total_batches):
@@ -638,10 +638,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             
             if not result:  # If parent method returned False, propagate it
                 return False
-        return True
-        
-        return True 
-    
+        return True    
 
     def copy_constructor(self, retain_callback=False):
 
