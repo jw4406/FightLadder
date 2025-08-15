@@ -245,7 +245,7 @@ def evaluate_single_iter_exploiter(curr_state: str, use_mirror: bool, model: tor
         env.close()
         return agent_win(info)
 
-def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, return_list: DictProxy, pid: int, episodes: int, greedy: int=0, record: bool=False):
+def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, return_list: DictProxy, pid: int, episodes: int, greedy: int=0, record: bool=False, eval_prot: bool = False):
     try:
         device = select_device()
         model.eval().to(device)
@@ -255,14 +255,18 @@ def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module
         for _ in range(episodes):
             if type(model) is type(exploiter_model):
                 win_count += evaluate_single_iter_exploiter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
+            elif type(model) is type(Derivative_Free_SPAR) and use_mirror is True and eval_prot is True:
+
+                win_count += evaluate_single_iter_prot_prot(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
             else:
-                win_count += evaluate_single_iter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
+                assert use_mirror is True
+                win_count += evaluate_single_iter_prot_adv(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
         return_list[pid] = win_count
     except Exception as e:
         print(f"Worker {pid} failed with exception {e}")
         raise
 
-def evaluate_sa_parallel(curr_state: str, model: Generalist_SPAR, exploiter_model: Exploiter, env_index: int, greedy: int=0, record: bool=False, num_episodes: int=50, num_workers: int=12) -> float:
+def evaluate_sa_parallel(curr_state: str, model: Generalist_SPAR, exploiter_model: Exploiter, env_index: int, greedy: int=0, record: bool=False, num_episodes: int=50, num_workers: int=12, use_mirror: bool=False, eval_prot: bool = False) -> float:
     #Set up multiprocessing
     if __name__=="__main__":
         mp.set_start_method("spawn", force=True)
@@ -286,7 +290,7 @@ def evaluate_sa_parallel(curr_state: str, model: Generalist_SPAR, exploiter_mode
         # evaluate_sa_worker(curr_state, model.use_mirror, policy_copy, exploiter_policy_copy, env_index, return_list, pid, episodes, greedy, record)
         p = mp.Process(
                 target=evaluate_sa_worker,
-                args=(curr_state, model.use_mirror, policy_copy, exploiter_policy_copy, env_index, return_list, pid, episodes, greedy, record)
+                args=(curr_state, use_mirror, policy_copy, exploiter_policy_copy, env_index, return_list, pid, episodes, greedy, record, eval_prot)
                 )
         p.start()
         processes.append(p)
@@ -518,16 +522,16 @@ def train_best_response(task_file_path: str):
     env = exploiter_env_generator()
 
     # 3. Create a new agent to be the best response
-    br_agent = Exploiter('CnnPolicy', exploiter_env_generator(), device='cuda', exploited=finetune_model, n_steps=1024, batch_size=512, n_epochs=10, exploiting='ego')
+    br_agent = Exploiter('CnnPolicy', exploiter_env_generator(), device='cuda', exploited=ftm, n_steps=1024, batch_size=512, n_epochs=10, exploiting='ego')
 
     # 4. Train the BR agent
     br_model_name = f"br_to_{os.path.splitext(os.path.basename(checkpoint_path))[0]}.zip"
     exploiter_callback = ExploiterCheckpointCallback(save_freq=100, save_path=BR_MODEL_DIR, name_prefix=br_model_name)
-    br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
+    #br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
 
     # eval BR against ego right here! both models are already in namespace.
 
-    wr = evaluate_sa_parallel(curr_state=STATE[0], model=finetune_model, exploiter_model=br_agent, env_index=0, record=False)
+    wr = evaluate_sa_parallel(curr_state=STATE[0], model=ftm, exploiter_model=br_agent, env_index=0, record=False, use_mirror=ftm.use_mirror)
     #TODO: Remove the following line once debugging is done
     # wr = evaluate_sa(STATE[0], finetune_model, br_agent, 0, record=False) # do not change False to True
     rew_arr = np.zeros(len(br_agent.ep_info_buffer))
@@ -560,12 +564,12 @@ if __name__ == "__main__":
     stop_file = os.path.join(TASK_DIR, "STOP")
     curr_dir = os.path.dirname(os.path.abspath(__file__))
 
-    if os.path.isfile(curr_dir + "/myfile.txt"):
-        import json
-        test = json.load(open(curr_dir + "/myfile.txt"))
-        print(test)
-    else:
-        print("myfile.txt does not exist")
+    # if os.path.isfile(curr_dir + "/myfile.txt"):
+    #     import json
+    #     test = json.load(open(curr_dir + "/myfile.txt"))
+    #     print(test)
+    # else:
+    #     print("myfile.txt does not exist")
 
     print(f"WORKER [{os.getpid()}]: Starting. Watching {todo_dir} for tasks.")
 
