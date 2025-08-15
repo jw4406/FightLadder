@@ -460,8 +460,8 @@ class Derivative_Free_SPAR(Generalist_SPAR):
     def __init__(self,
             policy: Union[str, Type[ActorCriticPolicy]],
             env: Union[GymEnv, str],
-            envs_per_matchup: int,
-            state_len: int,
+            envs_per_matchup: int=1,
+            state_len: int=1,
             env_batch_size: int = 32,
             c_learning_rate: Union[float, Schedule] = 1e-4,
             d_learning_rate: Union[float, Schedule] = 7e-4,
@@ -501,6 +501,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             player=None,
             use_mirror=False,
             env_generator_func=None, #The function is used to create a copy of the environment
+            state_list=None
     ):
         super().__init__(
             policy=policy,
@@ -549,6 +550,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         self.envs_per_matchup = envs_per_matchup
         self.state_len = state_len
         self.env_batch_size = env_batch_size
+        self.state_list = state_list
 
     def _create_separate_env(self):
         """Create a new environment instance using the stored generator function"""
@@ -581,7 +583,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             _, n_workers = get_n_workers()
             self.parallel_updater = ParallelUpdater(n_workers)
             self.first_run = True  
-
+    
     def collect_rollouts(
                         self,
                         env: VecEnv,
@@ -607,38 +609,202 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 j_start (int):
                     j to start env_generator_func.
             """
-            i_start = env_cnt // envs_per_matchup
-            j_start = env_cnt  % envs_per_matchup
+            #i_start = env_cnt // envs_per_matchup
+            #j_start = env_cnt  % envs_per_matchup
+            #i_start = 0
+            j_start = 0
+            i_start = env_cnt
             return i_start, j_start
 
         # Create rollout environments in batches using the stored generator function
-        total_envs_needed = self.state_len * self.envs_per_matchup
-        total_batches = (total_envs_needed + self.env_batch_size - 1) // self.env_batch_size
+        total_envs_needed = self.state_len# * self.envs_per_matchp
+        # we modified state_list to hold the master list of envs with all the diversity duplicates and everything. 
+
+        #total_batches = (total_envs_needed + self.env_batch_size - 1) // self.env_batch_size
+        # i dont quite understand why this computation is correct
+        total_batches = total_envs_needed // self.env_batch_size
+        if total_envs_needed % self.env_batch_size != 0:
+            raise ValueError("total_envs_needed must be divisible by env_batch_size")
+        # need to do a rem check here
+
         env_cnt = 0 #how many environments were created
+        if total_batches != 1:
+            flat_elements = []
+            adv_flat_elements = list(adversary_buffers[0].obs_shape)
+            adv_flat_elements.insert(0, adversary_buffers[0].buffer_size)
+            adv_flat_elements.insert(1, self.envs_per_matchup)
+            for item in (rollout_buffer.buffer_size,total_envs_needed, rollout_buffer.obs_shape):
+                if isinstance(item, tuple):
+                    flat_elements.extend(item)  # Recursively flatten nested tuples
+                else:
+                    flat_elements.append(item)  # Add integers directly
+            #shape = np.flatten((rollout_buffer.buffer_size,total_envs_needed, rollout_buffer.obs_shape))
+            ego_vertical_batch_obs = np.empty(flat_elements)
+            adv_vertical_batch_obs = np.empty(adv_flat_elements)
+            ego_vertical_batch_rewards = np.empty(np.shape(rollout_buffer.rewards))
+            adv_vertical_batch_rewards = np.empty(np.shape(adversary_buffers[0].rewards))
+            #vertical_batch_rewards_other = np.empty(np.shape(rollout_buffer.rewards_other))
+            ego_vertical_batch_dones = np.empty(np.shape(rollout_buffer.dones))
+            adv_vertical_batch_dones = np.empty(np.shape(adversary_buffers[0].dones))
+            #vertical_batch_infos = np.empty(np.shape(rollout_buffer.infos))
 
         for batch_idx in range(total_batches):
+            # if total_batches != 1:
+            #     flat_elements = []
+            #     for item in (rollout_buffer.buffer_size,total_envs_needed, rollout_buffer.obs_shape):
+            #         if isinstance(item, tuple):
+            #             flat_elements.extend(item)  # Recursively flatten nested tuples
+            #         else:
+            #             flat_elements.append(item)  # Add integers directly
+            #     #shape = np.flatten((rollout_buffer.buffer_size,total_envs_needed, rollout_buffer.obs_shape))
+            #     vertical_batch_obs = np.empty(flat_elements)
             i_start, j_start = _calc_i_start_j_start(env_cnt, self.envs_per_matchup)
             rollout_env = self.env_generator_func(max_envs=self.env_batch_size, i_start=i_start, j_start=j_start)
+            network_keys = [i // self.envs_per_matchup for i in range(i_start, i_start + self.env_batch_size)]
+            # indexing state_list will use i_start : i_start + self.env_batch_size
+
             env_cnt += rollout_env.num_envs
             self._last_obs = rollout_env.reset()  # Set initial observations for this batch
             
             # Call the parent's collect_rollouts with our batched environment
-            result = super().collect_rollouts(
-                rollout_env,
-                callback,
-                rollout_buffer,
-                adversary_buffers,
-                n_rollout_steps
-            )
+            if total_batches == 1:
+                result = super().collect_rollouts(
+                    rollout_env,
+                    callback,
+                    rollout_buffer,
+                    adversary_buffers,
+                    n_rollout_steps
+                )
+                if not result:  # If parent method returned False, propagate it
+                    return False
+        
+                return True
+            else:
+                env = rollout_env
+                assert self._last_obs is not None, "No previous observation was provided"
+                # Switch to eval mode (this affects batch norm / dropout)
+                self.policy.set_training_mode(True)
+
+                n_steps = 0
+                rollout_buffer.reset()
+                for i in range(self.num_adversaries):
+                    adversary_buffers[i].reset()
+                # Sample new weights for the state dependent exploration
+                if self.use_sde:
+                    self.policy.reset_noise(env.num_envs)
+
+                # need to sample leader policy here
+                #for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params'])):
+                #    self.policy.ctrl_optimizer.param_groups[0]['params'][i] = torch.nn.init.uniform_(self.policy.ctrl_optimizer.param_groups[0]['params'][i], a=-1., b=1.)
+
+                callback.on_rollout_start()
+                count = 0
+                while n_steps < n_rollout_steps:
+                    if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+                        # Sample a new noise matrix
+                        self.policy.reset_noise(env.num_envs)
+
+                    with th.no_grad():
+                        # Convert to pytorch tensor or to TensorDict
+
+                        # PROBLEM HERE:
+                        # we need to only call the right heads here cause adversary list may not be the 
+                        # full thing since we're chunking/cycling the envs!
+
+
+                        obs_tensor = obs_as_tensor(self._last_obs, self.device)
+                        s_actions, s_log_probs, s_values, s_dstb_actions, s_dstb_log_probs = self.policy(obs_tensor, network_keys=network_keys)
+                        all_adv_left_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
+                        all_adv_right_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
+                        all_adv_critic_values = torch.zeros((self.n_global_env, 1), device=self.device)
+                        all_adv_log_probs = torch.zeros((self.n_global_env,), device=self.device)
+                        all_adv_dstb_log_probs = torch.zeros((self.n_global_env,), device=self.device)
+                    actions = s_actions
+                    adversary_actions = s_dstb_actions
+                    log_probs = s_log_probs
+                    adversary_log_probs = s_dstb_log_probs
+                    actions = actions.cpu().numpy()
+                    adversary_actions = adversary_actions.cpu().numpy()
+                    all_adv_critic_values = s_values
+
+                    if self.use_mirror is True:
+                        mirror_master_copy_actions = deepcopy(actions)
+                        mirror_master_copy_adv_actions = deepcopy(adversary_actions)
+
+                    # upper half, lower half
+
+                    if self.use_mirror is True:
+                        # print("SINGLE TRAIN EXTRACTOR MIRROR")
+
+                        '''
+                        assume wlog Ehonda is the prot.
+
+                        action right now is:                  adv_action right now is:
+                        EHonda left                                              Sagat    right
+                        EHonda left                                              Sagat    right
+                        EHonda left                                             MBison    right
+                        EHonda left                                             MBison    right
+
+                        EHonda v Sagat       0
+                        Sagat v. EHonda      1
+                        EHonda v. MBison     2
+                        MBison v. EHonda     3
+
+                        action[odds] needs to go to the other side because our design makes prot actions left
+
+                        same with adversary[odds] -- adversary is on the right so adv[ods] is backwards
+
+                        '''
+
+                        prot_left = actions[0::2, :]  # actions for the prot when he is on the left
+                        prot_reversed = actions[1::2,
+                                        :]  # actions for prot when he is on the right... but its backwards right now!
+
+                        adv_right = adversary_actions[0::2, :]
+                        adv_reversed = adversary_actions[1::2, :]
+
+                        temp = np.zeros((self.num_adversaries, self.action_space.shape[0]))
+                        temp = prot_reversed
+
+                        actions[1::2, :] = adversary_actions[1::2, :]
+                        adversary_actions[1::2, :] = temp
+
+                    # Rescale and perform action
+                    if self.update_left is True:
+                        # MESSY
+                        clipped_actions = np.hstack([actions, adversary_actions])
+                    else:
+                        clipped_actions = np.hstack([adversary_actions, actions])
+                    # Clip the actions to avoid out of bound error
+                    if isinstance(self.action_space, spaces.Box):
+                        clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
+
+                    new_obs, rewards, rew_other, dones, infos = env.step(clipped_actions)
+                    ego_vertical_batch_obs[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches)), :, :, :] = th.unsqueeze(th.from_numpy(new_obs), 0)
+                    ego_vertical_batch_rewards[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(th.from_numpy(rewards), 0)
+                    #vertical_batch_rewards_other[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches)), :] = th.unsqueeze(th.from_numpy(rew_other), 0)
+                    ego_vertical_batch_dones[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(th.from_numpy(dones), 0)
+                    #vertical_batch_infos[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches)), :] = th.unsqueeze(th.from_numpy(infos), 0)
+                    for i in range(network_keys):
+
+                        self.num_timesteps += env.num_envs
+                    #wandb.log({"epochs": self.num_timesteps})
+                    # Give access to local variables
+                    callback.update_locals(locals())
+                    if callback.on_step() is False:
+                        return False
+
+                    self._update_info_buffer(infos)
+                    n_steps += 1
+
+                    if isinstance(self.action_space, spaces.Discrete):
+                        # Reshape in case of discrete action
+                        actions = actions.reshape(-1, 1)
+                    count += 1
+            rollout_env.close()  # Clean up this batch
             
-            # Clean up this batch
-            rollout_env.close()
-            del rollout_env
-            gc.collect()
-            
-            if not result:  # If parent method returned False, propagate it
-                return False
-        return True
+            #if not result:  # If parent method returned False, propagate it
+            #    return False
         
         return True 
     
