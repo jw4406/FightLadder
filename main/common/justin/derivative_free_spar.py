@@ -722,11 +722,13 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         with ThreadPoolExecutor(max_workers=2) as executor:
             # Selectively update the ego (actor) policy
             if update_ego:
-                self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent_policy, ego=True)
+                executor.submit(self.leader_grads, self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent_policy, ego=True)
+                # self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent_policy, ego=True)
             
             # Selectively update the adversary (disturber) policy
             if update_adversary:
-                self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
+                executor.submit(self.leader_grads, self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
+                # self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
         
         del self.perturbed_agent_policy
         del self.perturbed_buf
