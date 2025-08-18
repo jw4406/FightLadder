@@ -1,7 +1,16 @@
 #!/bin/bash
 
+# Check if already running in screen, if not, start screen to make sure the Python scripts don't die if the SSH dies.
+if [ -z "$STY" ]; then
+    exec screen -S pipeline "$0" "$@"
+fi
+
+
 # --- Configuration ---
 NUM_WORKERS=12 # Set this to the number of parallel BR trainings you want to run
+USE_MIRROR=true
+OUTFILE="somefile.out"
+ENV_BATCH_SIZE=32
 
 echo "--- Pipeline Orchestrator ---"
 
@@ -13,7 +22,7 @@ rm -f ./tasks/STOP
 
 # 1. Start the main trainer in the background
 echo "Starting the main trainer process in the background..."
-python ippo.py --player Guile &
+python ippo.py --player Guile --use_mirror ${USE_MIRROR} --env_batch_size ${ENV_BATCH_SIZE} > ${OUTFILE} &
 MAIN_TRAINER_PID=$!
 echo "Main trainer started with PID: $MAIN_TRAINER_PID"
 
@@ -21,7 +30,12 @@ echo "Main trainer started with PID: $MAIN_TRAINER_PID"
 echo "Starting $NUM_WORKERS best-response worker processes..."
 for i in $(seq 1 $NUM_WORKERS)
 do
-  python br_worker.py &
+  if $USE_MIRROR; then
+    python br_worker.py --eval_prot --use_mirror &
+    python br_worker.py --use_mirror &
+  else
+    python br_worker.py &
+  fi
 done
 
 # 3. Wait for the main trainer to finish
