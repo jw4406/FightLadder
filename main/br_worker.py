@@ -444,7 +444,7 @@ def exploiter_env_generator():
     #         seed=0)
     return VecTransposeImage2P(SubprocVecEnv2P(env))
 # --- Worker Logic ---
-def train_best_response(task_file_path: str, eval_prot: bool) -> None:
+def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool) -> None:
     """
     The core logic for a single best-response training run.
 
@@ -535,7 +535,7 @@ def train_best_response(task_file_path: str, eval_prot: bool) -> None:
 
     # eval BR against ego right here! both models are already in namespace.
 
-    wr = evaluate_sa_parallel(curr_state=STATE[0], model=ftm, exploiter_model=br_agent, env_index=0, record=False, use_mirror=ftm.use_mirror, eval_prot=eval_prot)
+    wr = evaluate_sa_parallel(curr_state=STATE[0], model=ftm, exploiter_model=br_agent, env_index=0, record=False, use_mirror=use_mirror, eval_prot=eval_prot)
     #TODO: Remove the following line once debugging is done
     # wr = evaluate_sa(STATE[0], finetune_model, br_agent, 0, record=False) # do not change False to True
     rew_arr = np.zeros(len(br_agent.ep_info_buffer))
@@ -564,6 +564,7 @@ if __name__ == "__main__":
     #Read arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval_prot", action="store_true")
+    parser.add_argument("--use_mirror", action="store_true")
     args = parser.parse_args()
 
 
@@ -600,7 +601,7 @@ if __name__ == "__main__":
             os.rename(todo_path, processing_path)
 
             # Now that we've claimed it, process it
-            train_best_response(processing_path, use_prot=args.eval_prot)
+            train_best_response(processing_path, use_prot=args.eval_prot, use_mirror=args.use_mirror)
 
             # Move it to 'done' when finished
             done_path = os.path.join(done_dir, task_filename)
