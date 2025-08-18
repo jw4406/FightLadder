@@ -601,7 +601,7 @@ if __name__ == "__main__":
             os.rename(todo_path, processing_path)
 
             # Now that we've claimed it, process it
-            train_best_response(processing_path, use_prot=args.eval_prot, use_mirror=args.use_mirror)
+            train_best_response(processing_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror)
 
             # Move it to 'done' when finished
             done_path = os.path.join(done_dir, task_filename)
