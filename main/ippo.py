@@ -339,7 +339,7 @@ def main(PLAYER):
     
     REMOVAL = None
     if use_mirror is True:
-        OPPONENT_LIST = ["Sagat", "EHonda"]# "MBison", "Blanka"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
+        OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
         OPPONENT_LIST = ["Guile", "EHonda", "Sagat","ChunLi"]#, "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
@@ -551,7 +551,7 @@ def main(PLAYER):
             env_batch_size=args.env_batch_size,
             envs_per_matchup=args.envs_per_matchup,
             state_len=len(STATE),
-            device="cuda",
+            device="cpu",
             verbose=2,
             n_steps=num_steps,  # 1408,
             batch_size=int(num_steps * len(state_list) / 10),  # 2816,  # 512,
