@@ -619,12 +619,18 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         # Create rollout environments in batches using the stored generator function
         total_envs_needed = self.state_len# * self.envs_per_matchp
         # we modified state_list to hold the master list of envs with all the diversity duplicates and everything. 
-
+        rollout_buffer.reset()
+        for buf in adversary_buffers:
+            buf.reset()
         #total_batches = (total_envs_needed + self.env_batch_size - 1) // self.env_batch_size
         # i dont quite understand why this computation is correct
         total_batches = total_envs_needed // self.env_batch_size
         if total_envs_needed % self.env_batch_size != 0:
             raise ValueError("total_envs_needed must be divisible by env_batch_size")
+        if self.env_batch_size % self.envs_per_matchup != 0:
+            raise ValueError("env_batch_size must be divisible by envs_per_matchup")
+            # do not allow grabbing splits (i.e., A A B B A | A B B A B ) 
+            # only allow (A A | B B ...) or (A A B B | A A B B ...)
         # need to do a rem check here
 
         env_cnt = 0 #how many environments were created
@@ -639,15 +645,31 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 else:
                     flat_elements.append(item)  # Add integers directly
             #shape = np.flatten((rollout_buffer.buffer_size,total_envs_needed, rollout_buffer.obs_shape))
-            ego_vertical_batch_obs = np.empty(flat_elements)
-            adv_vertical_batch_obs = np.empty(adv_flat_elements)
-            ego_vertical_batch_rewards = np.empty(np.shape(rollout_buffer.rewards))
-            adv_vertical_batch_rewards = np.empty(np.shape(adversary_buffers[0].rewards))
+            ego_vertical_batch_obs = th.empty(flat_elements, pin_memory=True)
+            adv_vertical_batch_obs = [th.empty(adv_flat_elements, pin_memory=True) for _ in range(self.num_adversaries)]
+            ego_vertical_batch_rewards = th.empty(np.shape(rollout_buffer.rewards), pin_memory=True)
+            adv_vertical_batch_rewards = [th.empty(np.shape(adversary_buffers[i].rewards), pin_memory=True) for i in range(self.num_adversaries)]
             #vertical_batch_rewards_other = np.empty(np.shape(rollout_buffer.rewards_other))
-            ego_vertical_batch_dones = np.empty(np.shape(rollout_buffer.dones))
-            adv_vertical_batch_dones = np.empty(np.shape(adversary_buffers[0].dones))
+            ego_vertical_batch_dones = th.empty(np.shape(rollout_buffer.dones), pin_memory=True)
+            adv_vertical_batch_dones = [th.empty(np.shape(adversary_buffers[i].dones), pin_memory=True) for i in range(self.num_adversaries)]
             #vertical_batch_infos = np.empty(np.shape(rollout_buffer.infos))
+            ego_vertical_batch_log_probs = th.empty(np.shape(rollout_buffer.log_probs))
+            adv_vertical_batch_log_probs = [th.empty(np.shape(adversary_buffers[i].log_probs)) for i in range(self.num_adversaries)]
+            ego_vertical_batch_values = th.empty(np.shape(rollout_buffer.values)).to(self.device)
+            adv_vertical_batch_values = [th.empty(np.shape(adversary_buffers[i].values), pin_memory=True) for i in range(self.num_adversaries)]
+            ego_vertical_batch_dstb_log_probs = th.empty(np.shape(rollout_buffer.dstb_log_probs), pin_memory=True)
+            adv_vertical_batch_dstb_log_probs = [th.empty(np.shape(adversary_buffers[i].dstb_log_probs), pin_memory=True) for i in range(self.num_adversaries)]
+            ego_vertical_batch_last_ep_starts = th.empty(np.shape(rollout_buffer.episode_starts)).to(self.device)
+            adv_vertical_batch_last_ep_starts = [th.empty(np.shape(adversary_buffers[i].episode_starts), pin_memory=True) for i in range(self.num_adversaries)]
+            last_ep_starts = th.empty(np.shape(rollout_buffer.episode_starts), pin_memory=True)
+            adv_last_ep_starts = [th.empty(np.shape(adversary_buffers[i].episode_starts), pin_memory=True) for i in range(self.num_adversaries)]
+            ego_vertical_batch_actions = th.empty(np.shape(rollout_buffer.actions), pin_memory=True)
+            adv_vertical_batch_actions = [th.empty(np.shape(adversary_buffers[i].actions), pin_memory=True) for i in range(self.num_adversaries)]
+            ego_vertical_batch_adversary_actions = th.empty(np.shape(rollout_buffer.dstb_actions), pin_memory=True)
+            adv_vertical_batch_adversary_actions = [th.empty(np.shape(adversary_buffers[i].dstb_actions), pin_memory=True) for i in range(self.num_adversaries)]
 
+            final_obs_all_envs = th.empty(rollout_buffer.observations[0].shape, device=self.device)
+            final_dones_all_envs = np.empty(rollout_buffer.dones[0].shape)
         for batch_idx in range(total_batches):
             # if total_batches != 1:
             #     flat_elements = []
@@ -665,7 +687,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
 
             env_cnt += rollout_env.num_envs
             self._last_obs = rollout_env.reset()  # Set initial observations for this batch
-            
+            self._last_episode_starts = np.ones(rollout_env.num_envs)
             # Call the parent's collect_rollouts with our batched environment
             if total_batches == 1:
                 result = super().collect_rollouts(
@@ -686,7 +708,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 self.policy.set_training_mode(True)
 
                 n_steps = 0
-                rollout_buffer.reset()
+                #rollout_buffer.reset()
                 for i in range(self.num_adversaries):
                     adversary_buffers[i].reset()
                 # Sample new weights for the state dependent exploration
@@ -780,14 +802,48 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                         clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
                     new_obs, rewards, rew_other, dones, infos = env.step(clipped_actions)
+                    if np.any(rewards != 0):
+                        print("Reward is not 0")
                     ego_vertical_batch_obs[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches)), :, :, :] = th.unsqueeze(th.from_numpy(new_obs), 0)
                     ego_vertical_batch_rewards[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(th.from_numpy(rewards), 0)
                     #vertical_batch_rewards_other[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches)), :] = th.unsqueeze(th.from_numpy(rew_other), 0)
                     ego_vertical_batch_dones[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(th.from_numpy(dones), 0)
                     #vertical_batch_infos[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches)), :] = th.unsqueeze(th.from_numpy(infos), 0)
-                    for i in range(network_keys):
+                    ego_vertical_batch_log_probs[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(log_probs, 0).cpu()
+                    ego_vertical_batch_values[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(s_values, 0)
+                    ego_vertical_batch_dstb_log_probs[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(s_dstb_log_probs, 0).cpu()
+                    ego_vertical_batch_last_ep_starts[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(th.from_numpy(self._last_episode_starts), 0)
+                    ego_vertical_batch_actions[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(th.from_numpy(actions), 0)
+                    ego_vertical_batch_adversary_actions[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(th.from_numpy(adversary_actions), 0)
+                    
+                    # For each environment in the batch, assign its data to the correct adversary buffer and slot.
+                    for j in range(env.num_envs):
+                        # Calculate the global index of the environment across all batches.
+                        global_env_idx = i_start + j
+                        print(global_env_idx)
+                        
+                        # Determine the matchup this environment belongs to. This is the index for the adversary buffer.
+                        matchup_idx = global_env_idx // self.envs_per_matchup
+                        
+                        # Determine the local index of the environment within its matchup group. This is the slot in the buffer.
+                        local_env_idx = global_env_idx % self.envs_per_matchup
 
-                        self.num_timesteps += env.num_envs
+                        # Place the observation, reward, and done status into the correct buffer and slot.
+                        # `count` is the current step in the rollout.
+                        adv_vertical_batch_obs[matchup_idx][count, local_env_idx] = obs_as_tensor(new_obs[j], device='cpu')
+                        adv_vertical_batch_rewards[matchup_idx][count, local_env_idx] = rew_other[j]
+                        #adv_vertical_batch_dones[matchup_idx][count, local_env_idx] = dones[j]
+                        adv_vertical_batch_log_probs[matchup_idx][count, local_env_idx] = log_probs[j]
+                        adv_vertical_batch_values[matchup_idx][count, local_env_idx] = all_adv_critic_values[j]
+                        adv_vertical_batch_dstb_log_probs[matchup_idx][count, local_env_idx] = s_dstb_log_probs[j]
+                        adv_vertical_batch_last_ep_starts[matchup_idx][count, local_env_idx] = th.from_numpy(self._last_episode_starts)[j]
+                        #last_ep_starts[global_env_idx] = th.from_numpy(np.round(dones[j]).astype(bool))
+
+                        adv_vertical_batch_actions[matchup_idx][count, local_env_idx].copy_(th.from_numpy(actions[j]))
+                        adv_vertical_batch_adversary_actions[matchup_idx][count, local_env_idx].copy_(th.from_numpy(adversary_actions[j]))
+
+
+                    self.num_timesteps += env.num_envs
                     #wandb.log({"epochs": self.num_timesteps})
                     # Give access to local variables
                     callback.update_locals(locals())
@@ -801,10 +857,78 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                         # Reshape in case of discrete action
                         actions = actions.reshape(-1, 1)
                     count += 1
+
+                    self._last_obs = new_obs
+                    self._last_episode_starts = dones
+                i_start = batch_idx * self.env_batch_size
+                final_obs_all_envs[i_start : i_start + self.env_batch_size] = obs_as_tensor(new_obs, self.device)
+                final_dones_all_envs[i_start : i_start + self.env_batch_size] = dones
+
             rollout_env.close()  # Clean up this batch
+            result = True
             
             if not result:  # If parent method returned False, propagate it
                 return False
+        
+        rollout_buffer.observations = ego_vertical_batch_obs
+        rollout_buffer.rewards.copy_(ego_vertical_batch_rewards)
+        #rollout_buffer.dones = ego_vertical_batch_dones
+        rollout_buffer.log_probs = ego_vertical_batch_log_probs
+        rollout_buffer.values = ego_vertical_batch_values
+        rollout_buffer.dstb_log_probs = ego_vertical_batch_dstb_log_probs
+        rollout_buffer.episode_starts = ego_vertical_batch_last_ep_starts
+        rollout_buffer.actions = ego_vertical_batch_actions
+        rollout_buffer.adversary_actions = ego_vertical_batch_adversary_actions
+        
+
+        for i in range(len(adversary_buffers)):
+            adversary_buffers[i].observations = adv_vertical_batch_obs[i]
+            adversary_buffers[i].rewards = adv_vertical_batch_rewards[i]
+            #adversary_buffers[i].dones = adv_vertical_batch_dones[i]
+            adversary_buffers[i].log_probs = adv_vertical_batch_log_probs[i]
+            adversary_buffers[i].values = adv_vertical_batch_values[i]
+            adversary_buffers[i].dstb_log_probs = adv_vertical_batch_dstb_log_probs[i]
+            adversary_buffers[i].episode_starts = adv_vertical_batch_last_ep_starts[i]
+            adversary_buffers[i].actions = adv_vertical_batch_actions[i]
+            adversary_buffers[i].adversary_actions = adv_vertical_batch_adversary_actions[i]
+
+        rollout_buffer.full = True
+        for i in range(len(adversary_buffers)):
+            adversary_buffers[i].full = True
+
+        
+        with th.no_grad():
+            # Compute value for the last time:w
+            # step
+            #values = torch.zeros((self.n_global_env,))
+            values = self.policy.predict_values(final_obs_all_envs)
+
+        rollout_buffer.values = rollout_buffer.values.to(self.device, non_blocking=True)
+        rollout_buffer.rewards = rollout_buffer.rewards.to(self.device, non_blocking=True)
+        rollout_buffer.advantages = rollout_buffer.advantages.to(self.device, non_blocking=True)
+        rollout_buffer.episode_starts = rollout_buffer.episode_starts.to(self.device, non_blocking=True)
+        #rollout_buffer.vectorized_compute_returns_and_advantages(last_values=values, dones=torch.Tensor(dones).to(self.device))
+        rollout_buffer.vectorized_compute_returns_and_advantages(last_values=values, dones=final_dones_all_envs)
+        for i in range(len(adversary_buffers)):
+            adversary_buffers[i].values = adversary_buffers[i].values.to(self.device, non_blocking=True)
+            adversary_buffers[i].rewards = adversary_buffers[i].rewards.to(self.device, non_blocking=True)
+            adversary_buffers[i].advantages = adversary_buffers[i].advantages.to(self.device, non_blocking=True)
+            adversary_buffers[i].episode_starts = adversary_buffers[i].episode_starts.to(self.device, non_blocking=True)
+            #adversary_buffers[i].vectorized_compute_returns_and_advantages(last_values=values, dones=final_dones_all_envs)
+            
+
+            start_idx = i * self.envs_per_matchup
+            end_idx = (i + 1) * self.envs_per_matchup
+            adv_last_values = values[start_idx:end_idx]
+            adv_dones = final_dones_all_envs[start_idx:end_idx]
+            adversary_buffers[i].vectorized_compute_returns_and_advantages(last_values=adv_last_values, dones=adv_dones)
+        
+        callback.on_rollout_end()
+
+        rollout_buffer.prepare_data_for_training()
+        for buf in adversary_buffers:
+            buf.prepare_data_for_training()
+        
         return True    
 
     def copy_constructor(self, retain_callback=False):
@@ -881,7 +1005,9 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         self.update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
         self.update_advantages(self.perturbed_agent.policy, self.perturbed_buf, self.perturbed_adv_buf)
         self.perturbed_agent_policy = self.perturbed_agent.policy
-        
+        #self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent_policy, ego=True)
+        #self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
+
         #Try to execute in parallel (on the same device)
         with ThreadPoolExecutor(max_workers=2) as executor:
             # Selectively update the ego (actor) policy
@@ -1043,6 +1169,8 @@ class Derivative_Free_SPAR(Generalist_SPAR):
 
     def leader_grads(self, ori_buf, perturbed_buf, ori_policy, perturbed_policy, ego=True):
         total_start_time = time.time()
+        if ego is True:
+            print("Ego is true", flush=True)
         clip_range = self.clip_range(self._current_progress_remaining)
         entropy_losses, pg_losses, approx_kl_divs_all = [], [], []
 
@@ -1115,6 +1243,8 @@ class Derivative_Free_SPAR(Generalist_SPAR):
              explained_var = explained_variance(self.rollout_buffer.values.flatten().detach().cpu().numpy(), self.rollout_buffer.returns.flatten().detach().cpu().numpy())
         else:
             explained_var = np.nan
+        if ego is True:
+            print("Ego is true", flush=True)
         self._log_leader_metrics(ego, entropy_losses, pg_losses, approx_kl_divs_all, explained_var, clip_range)
 
         total_end_time = time.time()
@@ -1238,7 +1368,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 print("perturbed agent created!", flush=True)
                 self._initialize_parallel_updater()                
                 # perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
-                # continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, n_rollout_steps=self.n_steps) #TODO: This is sequential - remove when done.
+                #continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps) #TODO: This is sequential - remove when done.
 
                 # Run env_perturb_params and collect_rollouts in different threads (cannot be done in different processes because they contain unpickleable objects)
                 with ThreadPoolExecutor(max_workers=2) as executor:
