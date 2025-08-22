@@ -755,6 +755,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
 
                     # upper half, lower half
 
+                    
                     if self.use_mirror is True:
                         # print("SINGLE TRAIN EXTRACTOR MIRROR")
 
@@ -777,19 +778,71 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                         same with adversary[odds] -- adversary is on the right so adv[ods] is backwards
 
                         '''
+                        halfway = actions.shape[0] // 2 #halfway split between upper & lower + left & right
+                        
+                        if DEBUG:
+                            #test = np.zeros_like(actions)
+                            #other_test = np.ones_like(actions)
+                            #test_left = test[halfway:, :]
+                            #test_right = other_test[:halfway, :]
+                            #temp = np.zeros((self.num_adversaries, self.action_space.shape[0]))
+                            #temp[:halfway, :] = test_left
+                            #temp[halfway:, :] = test_right
 
-                        prot_left = actions[0::2, :]  # actions for the prot when he is on the left
-                        prot_reversed = actions[1::2,
-                                        :]  # actions for prot when he is on the right... but its backwards right now!
+                            test2 = np.zeros_like(actions)
+                            count = 0
+                            for i in range(test2.shape[0]):
+                                for j in range(test2.shape[1]):
+                                    test2[i, j] = count
+                                    count += 1
+                            other_test2 = np.zeros_like(actions)
+                            count = other_test2.size - 1
+                            for i in range(other_test2.shape[0]):
+                                for j in range(other_test2.shape[1]):
+                                    other_test2[i, j] = count
+                                    count -= 1
+                            prot_left = test2[:halfway, :]  # actions for the prot when he is on the left
+                            prot_left_pre = test2[halfway:, :]  
 
-                        adv_right = adversary_actions[0::2, :]
-                        adv_reversed = adversary_actions[1::2, :]
+                            adv_right = other_test2[:halfway, :]
+                            adv_right_pre = other_test2[halfway:, :]
 
-                        temp = np.zeros((self.num_adversaries, self.action_space.shape[0]))
-                        temp = prot_reversed
+                            prot_actions = np.empty_like(actions)
+                            prot_actions[:halfway, :] = prot_left
+                            prot_actions[halfway:, :] = adv_right_pre
 
-                        actions[1::2, :] = adversary_actions[1::2, :]
-                        adversary_actions[1::2, :] = temp
+                            adv_actions = np.empty_like(actions)
+                            adv_actions[:halfway, :] = adv_right
+                            adv_actions[halfway:, :] = prot_left_pre
+
+                            #print("temp2", temp2)
+                            #print("other_test2", other_test2)
+                            #print("test2_left", test2_left)
+                            #print("test2_right", test2_right)
+                            #print("actions", actions)
+                            #print("temp", temp)
+                            #print("other_test", other_test)
+                            #print("test_left", test_left)
+                            #print("test_right", test_right)
+                            #print("actions", actions)
+
+                        prot_left = actions[:halfway, :]  # actions for the prot when he is on the left
+                        prot_left_pre = actions[halfway:, :]  
+
+                        adv_right = adversary_actions[:halfway, :]
+                        adv_right_pre = adversary_actions[halfway:, :]
+
+                        prot_actions = np.empty_like(actions)
+                        #temp = prot_right
+                        prot_actions[:halfway, :] = prot_left
+                        prot_actions[halfway:, :] = adv_right_pre
+
+                        adv_actions = np.empty_like(actions)
+                        adv_actions[:halfway, :] = adv_right
+                        adv_actions[halfway:, :] = prot_left_pre
+
+                        actions = prot_actions
+                        adversary_actions = adv_actions
 
                     # Rescale and perform action
                     if self.update_left is True:
@@ -802,6 +855,18 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                         clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
                     new_obs, rewards, rew_other, dones, infos = env.step(clipped_actions)
+
+                    # if mirroring:
+                    # rew = (r,r,r, -r, -r, -r)^T 
+                    if self.use_mirror is True:
+                        halfway = len(rewards) // 2
+                        rewards[halfway:] = -rewards[halfway:]
+                        # now rew = (r, r, r, r, r, r)^T
+                        # this is the correct ego reward
+                    
+                    # if mirror is false
+                    # rew is already (r,r,r,r,r,r)^T and we dont need to do anything
+                    
                     if np.any(rewards != 0):
                         print("Reward is not 0")
                     ego_vertical_batch_obs[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches)), :, :, :] = th.unsqueeze(th.from_numpy(new_obs), 0)
@@ -831,10 +896,14 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                         # Place the observation, reward, and done status into the correct buffer and slot.
                         # `count` is the current step in the rollout.
                         adv_vertical_batch_obs[matchup_idx][count, local_env_idx] = obs_as_tensor(new_obs[j], device='cpu')
-                        adv_vertical_batch_rewards[matchup_idx][count, local_env_idx] = rew_other[j]
+                        # we need to flip adversary rewards because adversary always gets -r
+                        # recall right now that rew = (r, r, r, r, r, r)^T in BOTH cases! (mirror or not)
+
+                        # so we flip every element 
+                        adv_vertical_batch_rewards[matchup_idx][count, local_env_idx] = -rewards[j]
                         #adv_vertical_batch_dones[matchup_idx][count, local_env_idx] = dones[j]
                         adv_vertical_batch_log_probs[matchup_idx][count, local_env_idx] = log_probs[j]
-                        adv_vertical_batch_values[matchup_idx][count, local_env_idx] = all_adv_critic_values[j]
+                        adv_vertical_batch_values[matchup_idx][count, local_env_idx] = -all_adv_critic_values[j]
                         adv_vertical_batch_dstb_log_probs[matchup_idx][count, local_env_idx] = s_dstb_log_probs[j]
                         adv_vertical_batch_last_ep_starts[matchup_idx][count, local_env_idx] = th.from_numpy(self._last_episode_starts)[j]
                         #last_ep_starts[global_env_idx] = th.from_numpy(np.round(dones[j]).astype(bool))
@@ -921,7 +990,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             end_idx = (i + 1) * self.envs_per_matchup
             adv_last_values = values[start_idx:end_idx]
             adv_dones = final_dones_all_envs[start_idx:end_idx]
-            adversary_buffers[i].vectorized_compute_returns_and_advantages(last_values=adv_last_values, dones=adv_dones)
+            adversary_buffers[i].vectorized_compute_returns_and_advantages(last_values=-adv_last_values, dones=adv_dones)
         
         callback.on_rollout_end()
 
@@ -1467,7 +1536,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 len_chunk_to_scan = len(values) // self.rollout_buffer.buffer_size
                 #self.adversary_buffers[i].values[] = values[j * pointer : j * (pointer + grabs_per_rep)]
                 curr_chunk = values[len_chunk_to_scan * j : len_chunk_to_scan * (j + 1)]
-                adv_bufs[i].values[j * grabs_per_rep : (j+1) * grabs_per_rep] = curr_chunk[pointer : pointer + grabs_per_rep]
+                adv_bufs[i].values[j * grabs_per_rep : (j+1) * grabs_per_rep] = -curr_chunk[pointer : pointer + grabs_per_rep]
             
             adv_bufs[i].values =adv_bufs[i].values.reshape(self.adversary_buffers[i].buffer_size, grabs_per_rep)
             adv_bufs[i].dones = adv_bufs[i].dones.reshape(self.adversary_buffers[i].buffer_size, grabs_per_rep)
