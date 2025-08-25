@@ -339,7 +339,7 @@ def main(PLAYER):
     
     REMOVAL = None
     if use_mirror is True:
-        OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
+        OPPONENT_LIST = ["Guile"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
         OPPONENT_LIST = ["Guile", "EHonda", "Sagat","ChunLi"]#, "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
@@ -373,7 +373,7 @@ def main(PLAYER):
                         help='Initial level to load from. By default 0, starting from pretrain', default=0)
     parser.add_argument('--resume-epoch', type=int, help='Resume epoch. By default 0, starting from pretrain',
                         default=0)
-    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=2)
+    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=8)
     parser.add_argument('--enable-combo', action='store_true', help='Enable special move action space for environment')
     parser.add_argument('--null-combo', action='store_true', help='Null action space for special move')
     parser.add_argument('--transform-action', action='store_true', help='Transform action space to MultiDiscrete')
@@ -389,7 +389,7 @@ def main(PLAYER):
     parser.add_argument('--num_env_steps', type=int, help='Number of env steps to run', default=300)
     #parser.add_argument("--player", type=str, required=True)
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
-    parser.add_argument("--num_env_to_load", type=int, required=True, help="Number of envs to load", default=1)
+    parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
     parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=32)
     args = parser.parse_args()
 
@@ -551,7 +551,7 @@ def main(PLAYER):
             env_batch_size=args.env_batch_size,
             envs_per_matchup=args.envs_per_matchup,
             state_len=len(STATE),
-            device="cpu",
+            device="cuda",
             verbose=2,
             n_steps=num_steps,  # 1408,
             batch_size=int(num_steps * len(state_list) / 10),  # 2816,  # 512,
@@ -779,7 +779,7 @@ if __name__ == "__main__":
     wandb.login(key='d95a51c4001b862123a34a3853fe0306906d2f07')
     #parser.add_argument("--player", type=str, required=True)
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
-    parser.add_argument("--num_env_to_load", type=int, required=True, help="Number of envs to load", default=1)
+    parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
     parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=32)
     args = parser.parse_args()
 
