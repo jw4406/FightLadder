@@ -1074,23 +1074,37 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         self.update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
         self.update_advantages(self.perturbed_agent.policy, self.perturbed_buf, self.perturbed_adv_buf)
         self.perturbed_agent_policy = self.perturbed_agent.policy
-        self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent_policy, ego=True)
-        self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
-
-        #Try to execute in parallel (on the same device)
-        """
-        # we have a problem here i dont know why the code in parallel throws errors but the serial version above works. 
+        #TODO: Serial mode - debug only
+        # self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent_policy, ego=True)
+        # self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
+        
+        # Try to execute in parallel (on the same device)
+        if update_ego:
+            ego_policy_bytes: bytes = pickle.dumps(self.policy)
+            ego_perturbed_agent_policy: bytes = pickle.dumps(self.perturbed_agent_policy)
+        if update_adversary:
+            adv_policy_bytes: bytes = pickle.dumps(self.policy)
+            adv_perturbed_agent_policy: bytes = pickle.dumps(self.perturbed_agent_policy)
+        futures = [] #A temporary list to store dummy results.
         with ThreadPoolExecutor(max_workers=2) as executor:
             # Selectively update the ego (actor) policy
             if update_ego:
-                executor.submit(self.leader_grads, self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent_policy, ego=True)
-                # self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent_policy, ego=True)
+                futures.append(executor.submit(self.leader_grads, self.rollout_buffer, self.perturbed_buf, ego_policy_bytes, ego_perturbed_agent_policy, ego=True))
             
             # Selectively update the adversary (disturber) policy
             if update_adversary:
-                executor.submit(self.leader_grads, self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
-                # self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
-        """
+                futures.append(executor.submit(self.leader_grads, self.adversary_buffers, self.perturbed_adv_buf, adv_policy_bytes, adv_perturbed_agent_policy, ego=False))
+            
+            #Wait for both jobs to finish
+            for future in futures:
+                future.result()
+
+            # Copy optimizer states back to main policy
+            if update_ego:
+                self.policy.ctrl_optimizer.load_state_dict(pickle.loads(ego_policy_bytes).ctrl_optimizer.state_dict())
+            if update_adversary:
+                self.policy.dstb_optimizer.load_state_dict(pickle.loads(adv_policy_bytes).dstb_optimizer.state_dict())
+        
         del self.perturbed_agent_policy
         del self.perturbed_buf
         del self.perturbed_adv_buf
@@ -1239,6 +1253,15 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             print(f"  [Timing] Total _update_value_functions: {total_end_time - total_start_time:.4f}s")
 
     def leader_grads(self, ori_buf, perturbed_buf, ori_policy, perturbed_policy, ego=True):
+        def _unpickle_policy(policy: Any) -> torch.nn.Module:
+            """This is a helper function that unpickles a policy."""
+            if isinstance(policy, bytes):
+                policy = pickle.loads(policy)
+            return policy
+        #perturbed_policy might be pickled - if it is, unpickle it.
+        ori_policy = _unpickle_policy(ori_policy)
+        perturbed_policy = _unpickle_policy(perturbed_policy)
+        
         total_start_time = time.time()
         if ego is True:
             print("Ego is true", flush=True)
