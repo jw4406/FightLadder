@@ -28,7 +28,7 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.vec_env import VecEnv
 from utils import move_policy, select_device, get_n_workers
 
-DEBUG = True
+DEBUG = False
 TIMING = False
 
 class DummyCallback(BaseCallback):
@@ -627,8 +627,8 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         total_batches = total_envs_needed // self.env_batch_size
         if total_envs_needed % self.env_batch_size != 0:
             raise ValueError("total_envs_needed must be divisible by env_batch_size")
-        if self.env_batch_size % self.envs_per_matchup != 0:
-            raise ValueError("env_batch_size must be divisible by envs_per_matchup")
+        #if self.envs_per_matchup % self.env_batch_size != 0:
+        #    raise ValueError("env_batch_size must be divisible by envs_per_matchup")
             # do not allow grabbing splits (i.e., A A B B A | A B B A B ) 
             # only allow (A A | B B ...) or (A A B B | A A B B ...)
         # need to do a rem check here
@@ -1074,10 +1074,12 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         self.update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
         self.update_advantages(self.perturbed_agent.policy, self.perturbed_buf, self.perturbed_adv_buf)
         self.perturbed_agent_policy = self.perturbed_agent.policy
-        #self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent_policy, ego=True)
-        #self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
+        self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent_policy, ego=True)
+        self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
 
         #Try to execute in parallel (on the same device)
+        """
+        # we have a problem here i dont know why the code in parallel throws errors but the serial version above works. 
         with ThreadPoolExecutor(max_workers=2) as executor:
             # Selectively update the ego (actor) policy
             if update_ego:
@@ -1088,7 +1090,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             if update_adversary:
                 executor.submit(self.leader_grads, self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
                 # self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
-        
+        """
         del self.perturbed_agent_policy
         del self.perturbed_buf
         del self.perturbed_adv_buf
