@@ -3,44 +3,41 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from typing import List, Dict, Optional
 import argparse
+import os
 
 
-def fetch_wr_data(project_name: str, entity: str, run_id: Optional[str] = None) -> Dict[str, List]:
+def fetch_wr_data(project_name: str, entity: str) -> Dict[str, List]:
     """
     Fetch wr (win rate) data from wandb logs.
     
     Args:
         project_name: Name of the wandb project
         entity: The wandb username/team name
-        run_id: Specific run ID (optional, will use latest run if None)
     
     Returns:
         Dictionary with metric names as keys and lists of (step, value) tuples as values
     """
     api = wandb.Api()
     
-    if run_id:
-        run = api.run(f"{entity}/{project_name}/{run_id}")
-    else:
-        # Get the most recent run
-        runs = api.runs(f"{entity}/{project_name}")
-        if not runs:
-            raise ValueError(f"No runs found in project {entity}/{project_name}")
-        run = runs[0]
-    
-    # Get the history (logged metrics over time)
-    history = run.history()
+    # Get ALL runs from the project
+    runs = api.runs(f"{entity}/{project_name}")
+    if not runs:
+        raise ValueError(f"No runs found in project {entity}/{project_name}")
 
-    print(f"Available columns: {list(history.columns)}") #TODO: Remove this - debugging only
-    
-    # Extract wr-related metrics
-    #TODO: It seems this block doesn't work - wr_data remains empty, need to figure out why.
+    # Collect data from all runs
     wr_data = {}
-    for col in history.columns:
-        if 'br_win_rate' in col:
-            # Filter out NaN values and create (step, value) pairs
-            valid_data = history[['global_step', col]].dropna()
-            wr_data[col] = list(zip(valid_data['global_step'], valid_data[col]))
+    for run in runs:      
+        for key, value in run.summary.items():
+            if 'br_win_rate' in key:
+                # For runs with global_step, use it; otherwise use run creation time or step
+                step = run.summary.get('global_step', run.summary.get('_step', 0))
+                if key not in wr_data:
+                    wr_data[key] = []
+                wr_data[key].append((step, value))
+
+    # Sort data points by global_step for proper plotting
+    for metric in wr_data:
+        wr_data[metric].sort(key=lambda x: x[0])
     
     return wr_data
 
@@ -68,6 +65,7 @@ def plot_wr_data(wr_data: Dict[str, List], save_path: Optional[str] = None) -> N
     plt.tight_layout()
     
     if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"Plot saved to {save_path}")
     
@@ -80,14 +78,13 @@ def main():
     parser = argparse.ArgumentParser(description='Plot win rate data from wandb logs')
     parser.add_argument('--project', type=str, help='wandb project name', default="exploiter")
     parser.add_argument('--entity', type=str, help='wandb username/entity', default="jw4406")
-    parser.add_argument('--run_id', type=str, help='specific run ID (uses latest if not provided)')
-    parser.add_argument('--save_path', type=str, help='path to save plot', default='wr_plot.png')
+    parser.add_argument('--save_path', type=str, help='path to save plot', default='plots/wr_plot.png')
     
     args = parser.parse_args()
     
     try:
         print("Fetching data from wandb...")
-        wr_data = fetch_wr_data(args.project, args.entity, args.run_id)
+        wr_data = fetch_wr_data(args.project, args.entity)
         
         if not wr_data:
             print("No win rate data found in the run")

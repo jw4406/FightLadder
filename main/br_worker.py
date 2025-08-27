@@ -578,8 +578,13 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool) 
             rew_arr[i] = br_agent.ep_info_buffer[i]['r']
         mean_rew = np.mean(rew_arr)
     if ego_timestep is not None:
-        wandb.log({"br_win_rate_vs_%s" % (br_agent.exploiting): wr, "global_step": ego_timestep})
-        wandb.log({"br_mean_reward_vs_%s" % (br_agent.exploiting): mean_rew, "global_step": ego_timestep})
+        try:
+            wandb.log({"br_win_rate_vs_%s" % (br_agent.exploiting): wr, "global_step": ego_timestep})
+        except Exception as e:
+            print(f"wandb.log() failed with error: {e}")
+        
+        if not use_mirror:
+            wandb.log({"br_mean_reward_vs_%s" % (br_agent.exploiting): mean_rew, "global_step": ego_timestep})
     else:
         wandb.log({"br_win_rate_vs_ego": wr})
 
