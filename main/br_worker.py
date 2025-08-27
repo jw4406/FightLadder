@@ -27,10 +27,14 @@ TASK_DIR = os.path.join(current_dir, "trained_models/tasks")
 PROCESSING_DIR = os.path.join(current_dir, "trained_models/processing")
 DONE_DIR = os.path.join(current_dir, "trained_models/done")
 BR_MODEL_DIR = os.path.join(current_dir, "trained_models/br_models")
+WR_STATS_DIR = os.path.join(current_dir, "trained_models/wr_stats")
+MEAN_REW_STATS_DIR = os.path.join(current_dir, "trained_models/mean_rew_stats")
 os.makedirs(BR_MODEL_DIR, exist_ok=True)
 os.makedirs(TASK_DIR, exist_ok=True)
 os.makedirs(PROCESSING_DIR, exist_ok=True)
 os.makedirs(DONE_DIR, exist_ok=True)
+os.makedirs(WR_STATS_DIR, exist_ok=True)
+os.makedirs(MEAN_REW_STATS_DIR, exist_ok=True)
 
 if not os.listdir(TASK_DIR):
     print("Warning: The TASK_DIR is empty. Please run ippo.py --player PLAYER to generate a task file.")
@@ -93,7 +97,7 @@ def evaluate_single_iter_prot_prot(curr_state: str, use_mirror: bool, model: tor
         obs = env.reset()
         if record:
             video_log = [Image.fromarray(env.render(mode="rgb_array"))]
-
+        left_rew = 0
         while not done:
             #TODO: This if is not very clean: can probably be replaced with a single call to predict.
             if use_mirror is True:
@@ -107,6 +111,7 @@ def evaluate_single_iter_prot_prot(curr_state: str, use_mirror: bool, model: tor
 
             #action_other = br_action
             obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
+            left_rew += reward
             if record:
                 video_log.append(Image.fromarray(env.render(mode="rgb_array")))
 
@@ -131,7 +136,7 @@ def evaluate_single_iter_prot_prot(curr_state: str, use_mirror: bool, model: tor
                     container.close()
 
         env.close()
-        return agent_win(info)
+        return agent_win(info), left_rew
 @torch.no_grad()
 def evaluate_single_iter_prot_adv(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, greedy: int=0, record: bool=False) -> bool:
         """
@@ -150,7 +155,7 @@ def evaluate_single_iter_prot_adv(curr_state: str, use_mirror: bool, model: torc
         obs = env.reset()
         if record:
             video_log = [Image.fromarray(env.render(mode="rgb_array"))]
-
+        left_rew = 0
         while not done:
             #TODO: This if is not very clean: can probably be replaced with a single call to predict.
             if use_mirror is True:
@@ -163,6 +168,7 @@ def evaluate_single_iter_prot_adv(curr_state: str, use_mirror: bool, model: torc
 
             #action_other = br_action
             obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
+            left_rew += reward
             if record:
                 video_log.append(Image.fromarray(env.render(mode="rgb_array")))
 
@@ -187,7 +193,7 @@ def evaluate_single_iter_prot_adv(curr_state: str, use_mirror: bool, model: torc
                     container.close()
 
         env.close()
-        return agent_win(info)
+        return [agent_win(info), left_rew]
 
 @torch.no_grad()
 def evaluate_single_iter_exploiter(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, greedy: int=0, record: bool=False) -> bool:
@@ -207,7 +213,7 @@ def evaluate_single_iter_exploiter(curr_state: str, use_mirror: bool, model: tor
         obs = env.reset()
         if record:
             video_log = [Image.fromarray(env.render(mode="rgb_array"))]
-
+        left_rew = 0
         while not done:
             #TODO: This if is not very clean: can probably be replaced with a single call to predict.
             if use_mirror is True:
@@ -220,6 +226,7 @@ def evaluate_single_iter_exploiter(curr_state: str, use_mirror: bool, model: tor
 
             action_other = br_action
             obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
+            left_rew += reward
             if record:
                 video_log.append(Image.fromarray(env.render(mode="rgb_array")))
 
@@ -244,7 +251,7 @@ def evaluate_single_iter_exploiter(curr_state: str, use_mirror: bool, model: tor
                     container.close()
 
         env.close()
-        return agent_win(info)
+        return agent_win(info), left_rew
 
 def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, return_list: DictProxy, pid: int, episodes: int, greedy: int=0, record: bool=False, eval_prot: bool = False):
     try:
@@ -253,16 +260,25 @@ def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module
         exploiter_model.eval().to(device)
 
         win_count = 0
+        rew_arr = []
         for _ in range(episodes):
             if type(model) is type(exploiter_model):
-                win_count += evaluate_single_iter_exploiter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
+                joined_win_rew = evaluate_single_iter_exploiter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
+                win_count += joined_win_rew[0]
+                rew_arr.append(joined_win_rew[1])
+                #win_count += evaluate_single_iter_exploiter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
             elif type(model) is type(Derivative_Free_SPAR) and use_mirror is True and eval_prot is True:
-
-                win_count += evaluate_single_iter_prot_prot(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
+                joined_win_rew = evaluate_single_iter_prot_prot(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
+                win_count += joined_win_rew[0]
+                rew_arr.append(joined_win_rew[1])
+                #win_count += evaluate_single_iter_prot_prot(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
             else:
                 assert use_mirror is True
-                win_count += evaluate_single_iter_prot_adv(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
-        return_list[pid] = win_count
+                joined_win_rew = evaluate_single_iter_prot_adv(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
+                win_count += joined_win_rew[0]
+                rew_arr.append(joined_win_rew[1])
+                #win_count += evaluate_single_iter_prot_adv(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
+        return_list[pid] = [win_count, rew_arr]
     except Exception as e:
         print(f"Worker {pid} failed with exception {e}")
         raise
@@ -298,11 +314,14 @@ def evaluate_sa_parallel(curr_state: str, model: Generalist_SPAR, exploiter_mode
 
     for p in processes:
         p.join()
-
-    total_wins = sum(return_list.values())
+    rew_list = []
+    total_wins = sum(return_list.values()[i][0] for i in range(len(return_list)))
+    rew_list.extend(return_list.values()[i][1] for i in range(len(return_list)))
+    flat_rew_list = [item for sublist in rew_list for item in sublist]
+    avg_rew = sum(flat_rew_list) / len(flat_rew_list)
     win_rate = total_wins / num_episodes
     print(f"Winning rate: {win_rate:.2f}")
-    return win_rate    
+    return win_rate, avg_rew    
 
 #TODO: Once we are satisfied with evaluate_sa_parallel, we can remove this function (to avoid code bloating).
 # @torch.no_grad()
@@ -498,6 +517,11 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool) 
     env = env_generator()
     env.num_envs = 1 # HACKY FOR NOW!
     ftm = Derivative_Free_SPAR.load(checkpoint_path, env=env)
+    use_mirror = ftm.use_mirror
+    
+    #OVERRIDEN HERE
+    
+    
     # Read the path of the frozen policy from the task file
     #data, params, pytorch_variables = load_from_zip_file(
     #    checkpoint_path)
@@ -535,13 +559,24 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool) 
 
     # eval BR against ego right here! both models are already in namespace.
 
-    wr = evaluate_sa_parallel(curr_state=STATE[0], model=ftm, exploiter_model=br_agent, env_index=0, record=False, use_mirror=use_mirror, eval_prot=eval_prot)
+    wr, mean_rew = evaluate_sa_parallel(curr_state=STATE[0], model=ftm, exploiter_model=br_agent, env_index=0, record=False, use_mirror=use_mirror, eval_prot=eval_prot)
+    
+    if ego_timestep is not None:
+        wr_filename = os.path.join(WR_STATS_DIR, f"{ego_timestep}.txt")
+        with open(wr_filename, 'w') as f:
+            f.write(str(wr))
+        
+        mean_rew_filename = os.path.join(MEAN_REW_STATS_DIR, f"{ego_timestep}.txt")
+        with open(mean_rew_filename, 'w') as f:
+            f.write(str(mean_rew))
+            
     #TODO: Remove the following line once debugging is done
     # wr = evaluate_sa(STATE[0], finetune_model, br_agent, 0, record=False) # do not change False to True
-    rew_arr = np.zeros(len(br_agent.ep_info_buffer))
-    for i in range(len(rew_arr)):
-        rew_arr[i] = br_agent.ep_info_buffer[i]['r']
-    mean_rew = np.mean(rew_arr)
+    if use_mirror is False:
+        rew_arr = np.zeros(len(br_agent.ep_info_buffer))
+        for i in range(len(rew_arr)):
+            rew_arr[i] = br_agent.ep_info_buffer[i]['r']
+        mean_rew = np.mean(rew_arr)
     if ego_timestep is not None:
         wandb.log({"br_win_rate_vs_%s" % (br_agent.exploiting): wr, "global_step": ego_timestep})
         wandb.log({"br_mean_reward_vs_%s" % (br_agent.exploiting): mean_rew, "global_step": ego_timestep})

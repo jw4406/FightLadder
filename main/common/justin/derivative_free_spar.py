@@ -1338,7 +1338,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         else:
             explained_var = np.nan
         if ego is True:
-            print("Ego is true", flush=True)
+            print("logging ego metrics", flush=True)
         self._log_leader_metrics(ego, entropy_losses, pg_losses, approx_kl_divs_all, explained_var, clip_range)
 
         total_end_time = time.time()
