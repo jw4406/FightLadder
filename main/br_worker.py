@@ -102,7 +102,7 @@ def evaluate_single_iter_prot_prot(curr_state: str, use_mirror: bool, model: tor
             #TODO: This if is not very clean: can probably be replaced with a single call to predict.
             if use_mirror is True:
                 (action, _states), (_, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs, env_index=env_index, deterministic=False)
-                (_, _), (action_other, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs, env_index=env_index, deterministic=False)
+                (action_other, _), (_, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs, env_index=env_index, deterministic=False)
                 #exploit_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
                 #action_other = exploit_action
             else:
@@ -267,7 +267,7 @@ def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module
                 win_count += joined_win_rew[0]
                 rew_arr.append(joined_win_rew[1])
                 #win_count += evaluate_single_iter_exploiter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
-            elif type(model) is type(Derivative_Free_SPAR) and use_mirror is True and eval_prot is True:
+            elif use_mirror is True and eval_prot is True:
                 joined_win_rew = evaluate_single_iter_prot_prot(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
                 win_count += joined_win_rew[0]
                 rew_arr.append(joined_win_rew[1])

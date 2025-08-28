@@ -1218,7 +1218,7 @@ def generalist_SPAR_predict(use_mirror: bool, policy: torch.nn.Module, obs: np.n
         # when mirror is true, ego is fighting ego
         # we need to query the policy twice
         (left_action, state), (right_action, _) = policy.predict(obs, deterministic=deterministic, network_keys=[env_index])
-        (right_action, state), (_, _) = policy.predict(obs, deterministic=deterministic, network_keys=[env_index])
+        #(right_action, state), (_, _) = policy.predict(obs, deterministic=deterministic, network_keys=[env_index])
     else:
         (left_action, state), (right_action, _) = policy.predict(obs, deterministic=deterministic, network_keys=[env_index])
     return (left_action, state), (right_action, state)
