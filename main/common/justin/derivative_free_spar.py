@@ -551,6 +551,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         self.state_len = state_len
         self.env_batch_size = env_batch_size
         self.state_list = state_list
+        self.policy.num_env_per_adv = self.envs_per_matchup
 
     def _create_separate_env(self):
         """Create a new environment instance using the stored generator function"""
@@ -1032,6 +1033,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         # Copy observation states
         test._last_obs = self._last_obs.copy() if self._last_obs is not None else None
         test._last_episode_starts = self._last_episode_starts.copy() if self._last_episode_starts is not None else None
+        test.policy.num_env_per_adv = self.envs_per_matchup
         return test
 
     def train(self, update_ego: bool = True, update_adversary: bool = True):
@@ -1086,6 +1088,8 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             adv_policy_bytes: bytes = pickle.dumps(self.policy)
             adv_perturbed_agent_policy: bytes = pickle.dumps(self.perturbed_agent_policy)
         futures = [] #A temporary list to store dummy results.
+        #self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent_policy, ego=True)
+        #self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
         with ThreadPoolExecutor(max_workers=2) as executor:
             # Selectively update the ego (actor) policy
             if update_ego:
@@ -1115,7 +1119,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         count = 0
         for i in range(len(param_list)):
             count = count + torch.numel(param_list[i])
-        delta = .2
+        delta = .7
         select = torch.from_numpy(np.random.uniform(low=-1, high=1, size=count)).to(self.device)
         v = delta * select / torch.linalg.norm(select)
         self.delta = delta
@@ -1304,10 +1308,16 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                     with th.no_grad():
                         old_log_prob_tensor = ori_rollout_data.old_log_prob if ego else ori_rollout_data.old_dstb_log_prob
                         #run forward pass to get the log_prob
-                        _, log_prob, entropy, _, _ = ori_policy.evaluate_actions(
+                        if ego:
+                            _, log_prob, entropy, _, _ = ori_policy.evaluate_actions(
                             torch.Tensor(ori_rollout_data.observations).to(self.device), torch.Tensor(ori_rollout_data.actions).to(self.device), torch.Tensor(ori_rollout_data.dstb_actions).to(self.device),
                             shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys
                         )
+                        else:
+                           _, _, _, log_prob, entropy = ori_policy.evaluate_actions(
+                            torch.Tensor(ori_rollout_data.observations).to(self.device), torch.Tensor(ori_rollout_data.actions).to(self.device), torch.Tensor(ori_rollout_data.dstb_actions).to(self.device),
+                            shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys
+                        ) 
                         #run forward pass to get the log_prob
                         #_, log_prob, entropy, _, _ = perturbed_policy.evaluate_actions(
                         log_ratio = log_prob - old_log_prob_tensor
@@ -1501,6 +1511,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                     self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
                     self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
                     self.logger.dump(step=self.num_timesteps)
+            
 
                 self.train(update_ego=update_ego, update_adversary=update_adversary)
                 self.perturbed_agent.env.close()

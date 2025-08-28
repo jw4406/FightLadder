@@ -237,6 +237,7 @@ class Single_SPAR(OnPolicyAlgorithm):
 
         if hasattr(self, "num_adversaries"):
             self.policy_kwargs['num_adversaries'] = self.num_adversaries
+            #self.policy_kwargs['num_env_per_adv'] = self.num_env_per_adv
 
         self.policy = self.policy_class(  # pytype:disable=not-instantiable
             self.observation_space,
