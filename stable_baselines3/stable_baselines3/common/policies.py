@@ -1366,6 +1366,7 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
 
             if self.adversarial: # we are doing adversarial!
                 self.dstb_action_net = nn.ModuleList()
+                self.head_length = 10 # lstm = 6, 2 linear layers = 2 + 2, total 10
                 for i in range(self.num_adversaries):
                     self.dstb_action_net.append(nn.Sequential(
                         nn.LSTM(input_size=latent_dim_pi, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
@@ -1376,6 +1377,7 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
                         self.activation_fn(),
                         self.dstb_action_dist[i].proba_distribution_net(latent_dim=latent_dim_pi))
                     ) 
+
                     #self.dstb_action_net.append(self.dstb_action_dist[i].proba_distribution_net(latent_dim=latent_dim_pi))
         else:
             raise NotImplementedError(f"Unsupported distribution '{self.action_dist}'.")
@@ -1564,7 +1566,8 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             adversarial=True,
             dstb_action_space: spaces.Space = None,
             policy_memory_size: Optional[int] = None,
-            num_adversaries=None
+            num_adversaries=None,
+            num_env_per_adv=None
     ):
         #self.device
         super().__init__(
@@ -1588,6 +1591,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             dstb_action_space=dstb_action_space,
             num_adversaries=num_adversaries
         )
+        self.num_env_per_adv = num_env_per_adv
 
     def forward(self, obs: th.Tensor, deterministic: bool = False, network_keys=None) -> Tuple[
         th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
@@ -1715,7 +1719,8 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             network_keys = self.network_keys
         num_adversaries = len(network_keys)
         mean_actions = self.action_net(latent_pi)#[:, 0, :] # remove middle dim from lstm
-        num_env_per_adv = self.num_global_env // num_adversaries # WHY IS SELF.NUM_GLOBAL_ENV 1?
+        #num_env_per_adv = self.num_global_env // num_adversaries # WHY IS SELF.NUM_GLOBAL_ENV 1?
+        num_env_per_adv = self.num_env_per_adv
         dstb_mean_actions = th.zeros_like(mean_actions)
         num_per = mean_actions.shape[0] // num_adversaries
         full = [i for i in range(self.num_global_env)]
