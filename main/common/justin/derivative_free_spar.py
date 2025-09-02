@@ -551,7 +551,8 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         self.state_len = state_len
         self.env_batch_size = env_batch_size
         self.state_list = state_list
-        self.policy.num_env_per_adv = self.envs_per_matchup
+        if self.policy is not None: 
+            self.policy.num_env_per_adv = self.envs_per_matchup
 
     def _create_separate_env(self):
         """Create a new environment instance using the stored generator function"""
@@ -1077,8 +1078,8 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         self.update_advantages(self.perturbed_agent.policy, self.perturbed_buf, self.perturbed_adv_buf)
         self.perturbed_agent_policy = self.perturbed_agent.policy
         #TODO: Serial mode - debug only
-        # self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent_policy, ego=True)
-        # self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
+        self.leader_grads(self.rollout_buffer, self.perturbed_buf, self.policy, self.perturbed_agent_policy, ego=True)
+        self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agent_policy, ego=False)
         
         # Try to execute in parallel (on the same device)
         if update_ego:
@@ -1269,6 +1270,8 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         total_start_time = time.time()
         if ego is True:
             print("Ego is true", flush=True)
+        else:
+            assert len(ori_policy.dstb_optimizer.param_groups[0]['params']) - ori_policy.extractor_and_trunk_length == ori_policy.head_length * self.num_adversaries
         clip_range = self.clip_range(self._current_progress_remaining)
         entropy_losses, pg_losses, approx_kl_divs_all = [], [], []
 
@@ -1299,7 +1302,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                         print(f"            [Timing] _calculate_policy_loss (ori+pert): {calc_loss_end_time - calc_loss_start_time:.4f}s")
                     
                     compute_grads_start_time = time.time()
-                    self._compute_and_apply_grads(policy_loss, perturbed_policy_loss, ego)
+                    self._compute_and_apply_grads(policy_loss, perturbed_policy_loss, ego, i if ego is False else None)
                     compute_grads_end_time = time.time()
                     if TIMING:
                         print(f"            [Timing] _compute_and_apply_grads: {compute_grads_end_time - compute_grads_start_time:.4f}s")
@@ -1399,7 +1402,9 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         
         return policy_loss, log_prob, entropy
 
-    def _compute_and_apply_grads(self, policy_loss, perturbed_policy_loss, ego):
+    def _compute_and_apply_grads(self, policy_loss, perturbed_policy_loss, ego, adv_num=None):
+        if ego is False:
+            assert adv_num is not None
         if ego:
             F = self.d / self.delta * (perturbed_policy_loss - policy_loss) * self.ego_v
         else:
@@ -1414,9 +1419,20 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             numel = np.prod(size_lists[i])
             reshaped_grad.append(torch.reshape(F[count: count + numel], size_lists[i]))
             count += numel
+        if ego is False:
+            #all_heads_length = self.num_adversaries * self.policy.head_length
+            heads_start_index = self.policy.extractor_and_trunk_length
+            trunk_extractor_indices = [i for i in range(heads_start_index)]
+            this_adv_indices = [i for i in range(heads_start_index + self.policy.head_length * adv_num , heads_start_index + self.policy.head_length * (adv_num + 1))]
+            all_indices = trunk_extractor_indices + this_adv_indices
+            self.policy.dstb_optimizer.zero_grad()
 
-        for i in range(len(size_lists)):
-            param_list[i].grad = reshaped_grad[i].float().detach()
+            for i in all_indices:
+                self.policy.dstb_optimizer.param_groups[0]['params'][i].grad = reshaped_grad[i].float().detach()
+        else:
+            self.policy.ctrl_optimizer.zero_grad()
+            for i in range(len(size_lists)):
+                param_list[i].grad = reshaped_grad[i].float().detach()
 
         optimizer = self.policy.ctrl_optimizer if ego else self.policy.dstb_optimizer
         optimizer.step()

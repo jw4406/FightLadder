@@ -248,14 +248,27 @@ class Single_SPAR(OnPolicyAlgorithm):
         )
 
         self.policy = self.policy.to(self.device)
+        # try:
+        #     self.policy.value_net
+        #     if hasattr(self, "num_adversaries"):
+        #         assert isinstance(self.policy.value_net, nn.ModuleList)
+        #     else:
+        #         pass
+        #     #assert isinstance(self.policy.value_net, nn.ModuleList)
+        # except:
+        #     assert isinstance(self.policy.ego_value_net, nn.ModuleList)
+        # if isinstance(self.policy.value_net, nn.ModuleList):
+        #     for i in range(len(self.policy.value_net)):
+        #         self.policy.value_net[i] = self.policy.value_net[i].to(self.device)
+        #         self.policy.dstb_action_net[i] = self.policy.dstb_action_net[i].to(self.device)
         #for i in range(len(self.policy.value_targ) - 1):
         #    self.policy.value_targ[i] = self.policy.value_targ[i].to(self.device)
         #for i in range(len(self.policy.value_targ[-1])):
         #    self.policy.value_targ[-1][i] = self.policy.value_targ[-1][i].to(self.device)
-        if hasattr(self, "num_adversaries"):
-            for i in range(self.num_adversaries):
-                self.policy.value_net[i] = self.policy.value_net[i].to(self.device)
-                self.policy.dstb_action_net[i] = self.policy.dstb_action_net[i].to(self.device)
+        # if hasattr(self, "num_adversaries"):
+        #     for i in range(self.num_adversaries):
+        #         self.policy.value_net[i] = self.policy.value_net[i].to(self.device)
+        #         self.policy.dstb_action_net[i] = self.policy.dstb_action_net[i].to(self.device)
 
 
 

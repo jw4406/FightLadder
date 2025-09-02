@@ -517,6 +517,8 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool) 
     env = env_generator()
     env.num_envs = 1 # HACKY FOR NOW!
     ftm = Derivative_Free_SPAR.load(checkpoint_path, env=env)
+    if ftm.policy.num_env_per_adv is None:
+        ftm.policy.num_env_per_adv = ftm.envs_per_matchup
     use_mirror = ftm.use_mirror
     
     #OVERRIDEN HERE

@@ -32,7 +32,8 @@ from stable_baselines3.common.torch_layers import (
     MlpExtractor,
     NatureCNN,
     create_mlp,
-    MlpExtractorAdv
+    MlpExtractorAdv,
+    IPPOMlpExtractorAdv
 )
 from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.utils import get_device, is_vectorized_observation, obs_as_tensor
@@ -1366,7 +1367,7 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
 
             if self.adversarial: # we are doing adversarial!
                 self.dstb_action_net = nn.ModuleList()
-                self.head_length = 10 # lstm = 6, 2 linear layers = 2 + 2, total 10
+                self.head_length = 10 # lstm = 4, 2 linear layers = 2 + 2, proba_dist is also a linear, so 2, total 10
                 for i in range(self.num_adversaries):
                     self.dstb_action_net.append(nn.Sequential(
                         nn.LSTM(input_size=latent_dim_pi, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
@@ -1377,6 +1378,8 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
                         self.activation_fn(),
                         self.dstb_action_dist[i].proba_distribution_net(latent_dim=latent_dim_pi))
                     ) 
+                    if i == 0:
+                        assert len(self.dstb_action_net[0]) == 7 and self.head_length == 10
 
                     #self.dstb_action_net.append(self.dstb_action_dist[i].proba_distribution_net(latent_dim=latent_dim_pi))
         else:
@@ -1451,6 +1454,8 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
         else:
             self.ctrl_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.policy_net.parameters(), self.pi_ctrl_features_extractor.parameters(),self.action_net.parameters()), joint_schedule[0](1),maximize=True)
             self.dstb_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.dstb_net.parameters(), self.pi_dstb_features_extractor.parameters(), self.dstb_action_net.parameters()), joint_schedule[1](1), maximize=True)
+            self.extractor_and_trunk_length = 12
+            assert self.extractor_and_trunk_length == 12 and len(self.mlp_extractor.dstb_net) + len(self.pi_dstb_features_extractor.cnn) + len(self.pi_dstb_features_extractor.linear) == 13
             #self.value_optimizer = self.optimizer_class(
             #    itertools.chain(self.mlp_extractor.value_net.parameters(), self.vf_features_extractor.parameters(), itertools.chain.from_iterable([self.value_net[i].parameters() for i in range(self.num_adversaries)])),
             #    joint_schedule[2](1), **self.optimizer_kwargs)
@@ -2425,3 +2430,284 @@ class ContinuousCriticAdv(BaseModel):
         combined_q_value = sum(q_values) / len(q_values)
         return combined_q_value.mean()
 
+# You can add this class at the end of stable_baselines3/stable_baselines3/common/policies.py
+
+class IPPOActorCriticCnnGeneralistPolicy(ActorActorCriticCnnGeneralistPolicy):
+    def __init__(
+            self,
+            observation_space: spaces.Space,
+            action_space: spaces.Space,
+            lr_schedule: Schedule,
+            net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
+            activation_fn: Type[nn.Module] = nn.LeakyReLU,
+            ortho_init: bool = False,
+            use_sde: bool = False,
+            log_std_init: float = 0.0,
+            full_std: bool = True,
+            use_expln: bool = False,
+            squash_output: bool = False,
+            features_extractor_class: Type[BaseFeaturesExtractor] = NatureCNN,
+            features_extractor_kwargs: Optional[Dict[str, Any]] = None,
+            share_features_extractor: bool = False,
+            normalize_images: bool = True,
+            optimizer_class: Type[th.optim.Optimizer] = th.optim.AdamW,
+            optimizer_kwargs: Optional[Dict[str, Any]] = None,
+            adversarial=True,
+            dstb_action_space: spaces.Space = None,
+            policy_memory_size: Optional[int] = None,
+            num_adversaries=None,
+            num_env_per_adv=None
+    ):
+        # We need to replicate the __init__ logic to properly initialize the new feature extractors
+        # before _build() is called.
+
+        super().__init__(
+            observation_space,
+            action_space,
+            lr_schedule,
+            net_arch,
+            activation_fn,
+            ortho_init,
+            use_sde,
+            log_std_init,
+            full_std,
+            use_expln,
+            squash_output,
+            features_extractor_class,
+            features_extractor_kwargs,
+            share_features_extractor,
+            normalize_images,
+            optimizer_class,
+            optimizer_kwargs,
+            dstb_action_space=dstb_action_space,
+            num_adversaries=num_adversaries,
+        )
+
+        # super().__init__(
+        #     observation_space,
+        #     action_space,
+        #     lr_schedule,
+        #     net_arch,
+        #     activation_fn,
+        #     ortho_init,
+        #     use_sde,
+        #     log_std_init,
+        #     full_std,
+        #     use_expln,
+        #     squash_output,
+        #     features_extractor_class,
+        #     features_extractor_kwargs,
+        #     # Pass False to prevent parent feature extractor creation
+        #     share_features_extractor=False,
+        #     _init_setup_model=False,
+        #     normalize_images=normalize_images,
+        #     optimizer_class=optimizer_class,
+        #     optimizer_kwargs=optimizer_kwargs,
+        # )
+
+        # self.adversarial = adversarial
+        # self.dstb_action_space = dstb_action_space
+        # self.num_adversaries = num_adversaries
+        # self.num_env_per_adv = num_env_per_adv
+
+        # # ---- MODIFICATION: Independent Feature Extractors ----
+        # self.pi_ctrl_features_extractor = self.make_features_extractor()
+        # self.pi_dstb_features_extractor = self.make_features_extractor()
+        # self.ego_vf_features_extractor = self.make_features_extractor()
+        # self.adv_vf_features_extractor = self.make_features_extractor()
+        # # A bit of a hack: features_dim is needed by the MLP extractor, and we assume all extractors have the same output dim
+        # self.features_dim = self.pi_ctrl_features_extractor.features_dim
+        # # ---- END MODIFICATION ----
+
+        # if self.adversarial:
+        #     self.dstb_action_dist = []
+        #     for i in range(self.num_adversaries):
+        #         self.dstb_action_dist.append(make_proba_distribution(self.dstb_action_space, use_sde=use_sde, dist_kwargs=self.dist_kwargs))
+
+        # self._build(lr_schedule)
+
+    def _build_mlp_extractor(self) -> None:
+        self.mlp_extractor = IPPOMlpExtractorAdv(
+            self.features_dim,
+            net_arch=self.net_arch,
+            activation_fn=self.activation_fn,
+            device='auto',
+            adversarial=True,
+            context_dim=0
+        )
+
+    def _build(self, joint_schedule) -> None:
+        self.pi_ctrl_features_extractor = self.make_features_extractor()
+        self.pi_dstb_features_extractor = self.make_features_extractor()
+        self.ego_vf_features_extractor = self.make_features_extractor()
+        self.adv_vf_features_extractor = self.make_features_extractor()
+        self._build_mlp_extractor()
+
+        latent_dim_pi = self.mlp_extractor.latent_dim_pi
+        lstm_hidden_size = 256
+        
+        # Actor network setup is the same
+        if isinstance(self.action_dist, (CategoricalDistribution, MultiCategoricalDistribution, BernoulliDistribution)):
+            self.action_net = nn.Sequential(
+                nn.LSTM(input_size=latent_dim_pi, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
+                SelectLastLSTMOutput(),
+                nn.Linear(lstm_hidden_size, lstm_hidden_size),
+                self.activation_fn(),
+                nn.Linear(lstm_hidden_size, latent_dim_pi),
+                self.activation_fn(),
+                self.action_dist.proba_distribution_net(latent_dim=latent_dim_pi)
+            )
+
+            if self.adversarial:
+                self.dstb_action_net = nn.ModuleList()
+                for i in range(self.num_adversaries):
+                    self.dstb_action_net.append(nn.Sequential(
+                        nn.LSTM(input_size=latent_dim_pi, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
+                        SelectLastLSTMOutput(),
+                        nn.Linear(lstm_hidden_size, lstm_hidden_size),
+                        self.activation_fn(),
+                        nn.Linear(lstm_hidden_size, latent_dim_pi),
+                        self.activation_fn(),
+                        self.dstb_action_dist[i].proba_distribution_net(latent_dim=latent_dim_pi))
+                    )
+        else:
+            raise NotImplementedError(f"Unsupported distribution '{self.action_dist}'.")
+
+        # ---- MODIFICATION: Independent Value Networks (Trunk + Head) ----
+        self.adv_value_net = nn.ModuleList()
+        for i in range(self.num_adversaries):
+            self.adv_value_net.append(nn.Sequential(
+                nn.LSTM(input_size=self.features_dim, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
+                SelectLastLSTMOutput(),
+                nn.Linear(lstm_hidden_size, lstm_hidden_size),
+                self.activation_fn(),
+                nn.Linear(lstm_hidden_size, 1))
+            )
+
+        self.ego_value_net = nn.Sequential(
+            nn.LSTM(input_size=self.features_dim, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
+            SelectLastLSTMOutput(),
+            nn.Linear(lstm_hidden_size, lstm_hidden_size),
+            self.activation_fn(),
+            nn.Linear(lstm_hidden_size, 1)
+        )
+        # ---- END MODIFICATION ----
+        
+        self.ctrl_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.policy_net.parameters(), self.pi_ctrl_features_extractor.parameters(),self.action_net.parameters()), joint_schedule[0](1),maximize=True)
+        self.dstb_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.dstb_net.parameters(), self.pi_dstb_features_extractor.parameters(), self.dstb_action_net.parameters()), joint_schedule[1](1), maximize=True)
+        
+        # ---- MODIFICATION: Independent Value Optimizers ----
+        self.ego_value_optimizer = self.optimizer_class(
+            itertools.chain(self.ego_vf_features_extractor.parameters(), self.mlp_extractor.ego_value_net.parameters(), self.ego_value_net.parameters()),
+            joint_schedule[2](1), **self.optimizer_kwargs
+        )
+        self.adv_value_optimizer = self.optimizer_class(
+            itertools.chain(self.adv_vf_features_extractor.parameters(), self.mlp_extractor.adv_value_net.parameters(), self.adv_value_net.parameters()),
+            joint_schedule[2](1), **self.optimizer_kwargs
+        )
+        # ---- END MODIFICATION ----
+        self.train()
+
+    def extract_features(self, obs: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+        preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
+        # ---- MODIFICATION: Extract all 4 features ----
+        pi_ctrl_features = self.pi_ctrl_features_extractor(preprocessed_obs)
+        pi_dstb_features = self.pi_dstb_features_extractor(preprocessed_obs)
+        ego_vf_features = self.ego_vf_features_extractor(preprocessed_obs)
+        adv_vf_features = self.adv_vf_features_extractor(preprocessed_obs)
+        return pi_ctrl_features, pi_dstb_features, ego_vf_features, adv_vf_features
+        # ---- END MODIFICATION ----
+
+    def forward(self, obs: th.Tensor, deterministic: bool = False, network_keys=None) -> Tuple[
+        th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+        
+        if network_keys is None:
+            network_keys = self.network_keys
+        num_adversaries = len(network_keys)
+        
+        pi_ctrl_features, pi_dstb_features, ego_vf_features, adv_vf_features = self.extract_features(obs)
+        latent_pi, latent_pi_dstb = self.mlp_extractor.forward_actor(pi_ctrl_features, pi_dstb_features)
+        latent_ego_vf, latent_adv_vf = self.mlp_extractor.forward_critic(ego_vf_features, adv_vf_features)
+        
+        ctrl_distribution, dstb_distribution = self._get_action_dist_from_latent(latent_pi, latent_pi_dstb, network_keys=network_keys)
+        ctrl_actions = ctrl_distribution.get_actions(deterministic=deterministic)
+        ctrl_log_prob = ctrl_distribution.log_prob(ctrl_actions)
+        
+        dstb_actions = [dist.get_actions(deterministic=deterministic) for dist in dstb_distribution]
+        dstb_log_prob = [dist.log_prob(act) for dist, act in zip(dstb_distribution, dstb_actions)]
+
+        ctrl_actions = ctrl_actions.reshape((-1, *self.action_space.shape))
+        dstb_actions = th.cat([act.reshape((-1, *self.dstb_action_space.shape)) for act in dstb_actions])
+        
+        # ---- MODIFICATION: Independent Value Forward Pass ----
+        num_env_per_adv = ego_vf_features.shape[0] // num_adversaries
+        adv_values = th.zeros((ego_vf_features.shape[0],), device=self.device)
+        for i in range(num_adversaries):
+            adv_values[i*num_env_per_adv:(i+1)*num_env_per_adv] = self.adv_value_net[network_keys[i]](latent_adv_vf[i*num_env_per_adv:(i+1)*num_env_per_adv, :])[:, 0]
+        ego_values = self.ego_value_net(latent_ego_vf)[:, 0]
+        # ---- END MODIFICATION ----
+        
+        dstb_log_prob_tensor = th.zeros((ctrl_actions.shape[0],), device=self.device)
+        for i in range(num_adversaries):
+            dstb_log_prob_tensor[i*num_env_per_adv:(i+1)*num_env_per_adv] = dstb_log_prob[i]
+        
+        return ctrl_actions, ctrl_log_prob, ego_values, adv_values, dstb_actions, dstb_log_prob_tensor
+
+    def evaluate_actions(self, obs, actions: th.Tensor, dstb_actions: th.Tensor, shuffle_keys=None, network_keys=None) -> Tuple[
+        th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+
+        if network_keys is None:
+            network_keys = self.network_keys
+        
+        num_adversaries = len(network_keys)
+        preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
+        pi_ctrl_features = self.pi_ctrl_features_extractor(preprocessed_obs)
+        pi_dstb_features = self.pi_dstb_features_extractor(preprocessed_obs)
+        latent_pi, latent_pi_dstb = self.mlp_extractor.forward_actor(pi_ctrl_features, pi_dstb_features)
+
+        ctrl_distribution, dstb_distribution = self._get_action_dist_from_latent_nonuniform(latent_pi, latent_pi_dstb, shuffle_keys=shuffle_keys, network_keys=network_keys)
+        ctrl_log_prob = ctrl_distribution.log_prob(actions)
+        ctrl_entropy = ctrl_distribution.entropy()
+
+        num_global_env = self.num_global_env
+        num_env_per_adv = num_global_env // num_adversaries
+        
+        concated_adv_log_probs = th.empty_like(ctrl_log_prob, dtype=th.float32)
+        for i in range(num_adversaries):
+            mask = (shuffle_keys.cpu() >= i * num_env_per_adv) & (shuffle_keys.cpu() < (i + 1) * num_env_per_adv)
+            concated_adv_log_probs[mask] = dstb_distribution[i].log_prob(dstb_actions[mask])
+        dstb_log_prob = concated_adv_log_probs
+        dstb_entropy = th.cat([dist.entropy() for dist in dstb_distribution])
+
+        # ---- MODIFICATION: Independent Value Evaluation ----
+        ego_vf_features = self.ego_vf_features_extractor(preprocessed_obs)
+        adv_vf_features = self.adv_vf_features_extractor(preprocessed_obs)
+        latent_ego_vf, latent_adv_vf = self.mlp_extractor.forward_critic(ego_vf_features, adv_vf_features)
+        
+        adv_values = th.empty((ego_vf_features.shape[0],), device=self.device)
+        for i in range(num_adversaries):
+            mask = (shuffle_keys.cpu() >= i*num_env_per_adv) & (shuffle_keys.cpu() < (i+1)*num_env_per_adv)
+            adv_values[mask] = self.adv_value_net[network_keys[i]](latent_adv_vf[mask]).flatten()
+        
+        ego_values = self.ego_value_net(latent_ego_vf).flatten()
+        # ---- END MODIFICATION ----
+        
+        return ego_values, adv_values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy
+
+    def predict_values(self, obs, network_keys=None) -> Tuple[th.Tensor, th.Tensor]:
+        if network_keys is None:
+            network_keys = self.network_keys
+        
+        # ---- MODIFICATION: Independent Value Prediction ----
+        preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
+        ego_vf_features = self.ego_vf_features_extractor(preprocessed_obs)
+        adv_vf_features = self.adv_vf_features_extractor(preprocessed_obs)
+        latent_ego_vf, latent_adv_vf = self.mlp_extractor.forward_critic(ego_vf_features, adv_vf_features)
+        num_env_per_adv = ego_vf_features.shape[0] // len(network_keys)
+        adv_values = th.zeros((ego_vf_features.shape[0],), device=self.device)
+        for i, key in enumerate(network_keys):
+            adv_values[i*num_env_per_adv:(i+1)*num_env_per_adv] = self.adv_value_net[key](latent_adv_vf[i*num_env_per_adv:(i+1)*num_env_per_adv, :])[:, 0]
+
+        ego_values = self.ego_value_net(latent_ego_vf)[:, 0]
+        # ---- END MODIFICATION ----
+        return ego_values, adv_values
