@@ -24,7 +24,7 @@ from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer, ReplayBuffer, AdvRolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.noise import ActionNoise
-from stable_baselines3.common.policies import ActorCriticPolicy, ActorCriticCnnPolicy, MultiInputActorCriticPolicy, ActorActorCriticCnnGeneralistPolicy
+from stable_baselines3.common.policies import ActorCriticPolicy, ActorCriticCnnPolicy, MultiInputActorCriticPolicy, ActorActorCriticCnnGeneralistPolicy, IPPOActorCriticCnnGeneralistPolicy
 from stable_baselines3.common.torch_layers import (
     BaseFeaturesExtractor,
     CombinedExtractor,
@@ -32,6 +32,7 @@ from stable_baselines3.common.torch_layers import (
     NatureCNN,
     create_mlp,
 )
+from common.justin.Generalist_SPAR import Generalist_SPAR
 from stable_baselines3.common.preprocessing import maybe_transpose
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean, explained_variance, get_schedule_fn, \
@@ -3655,17 +3656,20 @@ class Specialized_Agent(TSS_PPO):
         return (left_action, state), (right_action, state)
 
 
-class Specialized_Agent_IPPO(Specialized_Agent):
+class Specialized_Agent_IPPO(Generalist_SPAR):
     policy_aliases: Dict[str, Type[BasePolicy]] = {
         "MlpPolicy": ActorCriticPolicy,
         "CnnPolicy": ActorCriticCnnPolicy,
         "MultiInputPolicy": MultiInputActorCriticPolicy,
-        "AACCnnPolicy": ActorActorCriticCnnPolicy
+        "AACCnnPolicy": ActorActorCriticCnnPolicy,
+        "IPPOAACCnnPolicy": IPPOActorCriticCnnGeneralistPolicy
     }
 
     def __init__(self,
                  policy: Union[str, Type[ActorCriticPolicy]],
                  env: Union[GymEnv, str],
+                 env_batch_size: int = 32,
+                 envs_per_matchup: int = 1,
                  c_learning_rate: Union[float, Schedule] = 1e-4,
                  d_learning_rate: Union[float, Schedule] = 7e-4,
                  v_learning_rate: Union[float, Schedule] = 7e-4,
@@ -3701,7 +3705,11 @@ class Specialized_Agent_IPPO(Specialized_Agent):
                  n_env_per_adv=None,
                  warmstarted_cont_MAGICS=False,
                  opp_list=None,
-                 use_mirror=False
+                 use_mirror=False,
+                 state_len=None,
+                 player=None,
+                 env_generator_func=None,
+                 state_list=None
                  ):
 
         if warmstarted_cont_MAGICS is True:
@@ -3750,224 +3758,777 @@ class Specialized_Agent_IPPO(Specialized_Agent):
             use_mirror=use_mirror
         )
         self.vf_coef = .5
+        self.state_len = state_len
+        self.env_batch_size = env_batch_size
+        self.envs_per_matchup = envs_per_matchup
+        self.state_list = state_list
+        self.env_generator_func = env_generator_func
+        if self.policy is not None: 
+            self.policy.num_env_per_adv = self.envs_per_matchup
+
+    # def collect_rollouts(
+    #         self,
+    #         env: VecEnv,
+    #         callback: BaseCallback,
+    #         rollout_buffer: RolloutBuffer,
+    #         n_rollout_steps: int,
+    # ) -> bool:
+    #     # self._setup_learn()
+    #     assert self._last_obs is not None, "No previous observation was provided"
+    #     # Switch to eval mode (this affects batch norm / dropout)
+    #     self.policy.set_training_mode(False)
+
+    #     n_steps = 0
+    #     rollout_buffer.reset()
+    #     for i in range(self.num_adversaries):
+    #         self.adversaries[i].rollout_buffer.reset()
+    #     # Sample new weights for the state dependent exploration
+    #     if self.use_sde:
+    #         self.policy.reset_noise(env.num_envs)
+
+    #     callback.on_rollout_start()
+
+    #     while n_steps < n_rollout_steps:
+    #         if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+    #             # Sample a new noise matrix
+    #             self.policy.reset_noise(env.num_envs)
+
+    #         with th.no_grad():
+    #             # Convert to pytorch tensor or to TensorDict
+    #             obs_tensor = obs_as_tensor(self._last_obs, self.device)
+    #             s_actions, s_log_probs, s_values_ego, s_values_adv, s_dstb_actions, s_dstb_log_probs = self.policy(obs_tensor)
+    #             all_adv_left_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
+    #             all_adv_right_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
+    #             all_adv_critic_values_ego = torch.zeros((self.n_global_env, 1), device=self.device)
+    #             all_adv_critic_values_adv = torch.zeros((self.n_global_env, 1), device=self.device)
+    #             all_adv_log_probs = torch.zeros((self.n_global_env,), device=self.device)
+    #             all_adv_dstb_log_probs = torch.zeros((self.n_global_env,), device=self.device)
+    #         actions = s_actions
+    #         adversary_actions = s_dstb_actions
+    #         log_probs = s_log_probs
+    #         adversary_log_probs = s_dstb_log_probs
+    #         actions = actions.cpu().numpy()
+    #         adversary_actions = adversary_actions.cpu().numpy()
+    #         all_adv_critic_values_ego = s_values_ego
+    #         all_adv_critic_values_adv = s_values_adv
+    #             # for i in range(self.num_adversaries):
+    #             #     actions, log_probs, values, dstb_actions, dstb_log_probs = self.adversaries[i].policy(obs_tensor)
+    #             #     # actions = actions.cpu()
+    #             #     # dstb_actions = dstb_actions.cpu()
+    #             #     chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
+    #             #     all_adv_left_actions[chunk] = actions[chunk]
+    #             #     all_adv_log_probs[chunk] = log_probs[chunk]
+    #             #     all_adv_critic_values[chunk] = values[chunk]
+    #             #     all_adv_right_actions[chunk] = dstb_actions[chunk]
+    #             #     all_adv_dstb_log_probs[chunk] = dstb_log_probs[chunk]
+
+    #         # if self.update_left is True:
+    #         #     # specialized agent is playing left
+    #         #     # all adversaries are playing right.
+    #         #     all_adv_left_actions = []
+    #         #     all_adv_log_probs = []
+    #         #     actions = s_actions
+    #         #     log_probs = s_log_probs
+    #         #     adversary_actions = all_adv_right_actions
+    #         #     adversary_log_probs = all_adv_dstb_log_probs
+    #         # else:
+    #         #     all_adv_right_actions = []
+    #         #     all_adv_dstb_log_probs = []
+    #         #     actions = s_dstb_actions
+    #         #     log_probs = s_dstb_log_probs
+    #         #     adversary_actions = all_adv_left_actions
+    #         #     adversary_log_probs = all_adv_log_probs
+    #         actions = actions.cpu().numpy()
+    #         adversary_actions = adversary_actions.cpu().numpy()
+    #         if self.use_mirror is True:
+    #             mirror_master_copy_actions = deepcopy(actions)
+    #             mirror_master_copy_adv_actions = deepcopy(adversary_actions)
+
+    #         # upper half, lower half
+
+    #         if self.use_mirror is True:
+    #             # print("SINGLE TRAIN EXTRACTOR MIRROR")
+
+    #             '''
+    #             assume wlog Ehonda is the prot.
+
+    #             action right now is:                  adv_action right now is:
+    #             EHonda left                                              Sagat    right
+    #             EHonda left                                              Sagat    right
+    #             EHonda left                                             MBison    right
+    #             EHonda left                                             MBison    right
+
+    #             EHonda v Sagat       0
+    #             Sagat v. EHonda      1
+    #             EHonda v. MBison     2
+    #             MBison v. EHonda     3
+
+    #             action[odds] needs to go to the other side because our design makes prot actions left
+
+    #             same with adversary[ods] -- adversary is on the right so adv[ods] is backwards
+
+    #             '''
+
+    #             prot_left = actions[0::2, :]  # actions for the prot when he is on the left
+    #             prot_reversed = actions[1::2,
+    #                             :]  # actions for prot when he is on the right... but its backwards right now!
+
+    #             adv_right = adversary_actions[0::2, :]
+    #             adv_reversed = adversary_actions[1::2, :]
+
+    #             temp = np.zeros((self.num_adversaries, self.action_space.shape[0]))
+    #             temp = prot_reversed
+
+    #             actions[1::2, :] = adversary_actions[1::2, :]
+    #             adversary_actions[1::2, :] = temp
+    #         # Rescale and perform action
+    #         if self.update_left is True:
+    #             clipped_actions = np.hstack([actions, adversary_actions])
+    #         else:
+    #             clipped_actions = np.hstack([adversary_actions, actions])
+    #         # Clip the actions to avoid out of bound error
+    #         if isinstance(self.action_space, spaces.Box):
+    #             clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
+
+    #         new_obs, rewards, rew_other, dones, infos = env.step(clipped_actions)
+    #         # assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
+    #         self.num_timesteps += env.num_envs
+    #         wandb.log({"epochs": self.num_timesteps})            # Give access to local variables
+    #         callback.update_locals(locals())
+    #         if callback.on_step() is False:
+    #             return False
+
+    #         self._update_info_buffer(infos)
+    #         n_steps += 1
+
+    #         if isinstance(self.action_space, spaces.Discrete):
+    #             # Reshape in case of discrete action
+    #             actions = actions.reshape(-1, 1)
+
+    #         # Handle timeout by bootstraping with value function
+    #         # see GitHub issue #633
+    #         for idx, done in enumerate(dones):
+    #             if (
+    #                     done
+    #                     and infos[idx].get("terminal_observation") is not None
+    #                     and infos[idx].get("TimeLimit.truncated", False)
+    #             ):
+    #                 terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
+    #                 with th.no_grad():
+    #                     terminal_value = self.policy.predict_values(terminal_obs)[0]
+    #                 rewards[idx] += self.gamma * terminal_value
+    #         if self.use_mirror is True:
+    #             rollout_buffer.add(
+    #                 self._last_obs,  # type: ignore[arg-type]
+    #                 mirror_master_copy_actions,
+    #                 mirror_master_copy_adv_actions,
+    #                 rewards,
+    #                 self._last_episode_starts,  # type: ignore[arg-type]
+    #                 all_adv_critic_values.squeeze(),
+    #                 log_probs,
+    #                 adversary_log_probs
+    #             )
+    #         else:
+    #             rollout_buffer.add(
+    #             self._last_obs,  # type: ignore[arg-type]
+    #             actions,
+    #             adversary_actions,
+    #             rewards,
+    #             self._last_episode_starts,  # type: ignore[arg-type]
+    #             all_adv_critic_values_ego.squeeze(),
+    #             log_probs,
+    #             adversary_log_probs
+    #             )
+
+    #         for i in range(self.num_adversaries):
+    #             chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
+    #             if self.use_mirror is True:
+    #                 self.adversaries[i].rollout_buffer.add(
+    #                     self._last_obs[chunk],
+    #                     mirror_master_copy_actions[chunk],
+    #                     mirror_master_copy_adv_actions[chunk],
+    #                     rewards[chunk],
+    #                     self._last_episode_starts[chunk],
+    #                     all_adv_critic_values_adv[chunk],
+    #                     log_probs[chunk],
+    #                     adversary_log_probs[chunk]  # not done
+    #                 )
+    #             else:
+    #                 self.adversaries[i].rollout_buffer.add(
+    #                     self._last_obs[chunk],
+    #                     actions[chunk],
+    #                     adversary_actions[chunk],
+    #                     -rewards[chunk],
+    #                     self._last_episode_starts[chunk],
+    #                     -all_adv_critic_values_adv[chunk],
+    #                     log_probs[chunk],
+    #                     adversary_log_probs[chunk]  # not done
+    #                 )
+
+    #         self._last_obs = new_obs
+    #         self._last_episode_starts = dones
+
+    #     with th.no_grad():
+    #         # Compute value for the last timestep
+    #         # values = torch.zeros((self.n_global_env,1))
+    #         # for i in range(self.num_adversaries):
+    #         #    chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
+    #         #    values[chunk] = self.adversaries[i].policy.predict_values(obs_as_tensor(new_obs, self.device))[chunk].to('cpu')
+    #         # not bootstrapped correctly
+    #         # use adversary critics not ma critic
+    #         values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))
+    #     rollout_buffer.compute_returns_and_advantage(last_values=values[0], dones=dones)
+
+    #     for i in range(self.num_adversaries):  # is this a bug?
+    #         chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
+    #         self.adversaries[i].rollout_buffer.compute_returns_and_advantage(last_values=-values[1][chunk],
+    #                                                                          dones=dones[chunk])
+
+    #     callback.on_rollout_end()
+
+    #     return True
+
+    # def train(self):
+    #     TSS_PPO.train(self)
+    #     for i in range(self.num_adversaries):
+    #         self.adversaries[i].train_one_adversary(self.policy, ma_left=self.update_left, ma_right=self.update_right)
 
     def collect_rollouts(
-            self,
-            env: VecEnv,
-            callback: BaseCallback,
-            rollout_buffer: RolloutBuffer,
-            n_rollout_steps: int,
-    ) -> bool:
-        # self._setup_learn()
-        assert self._last_obs is not None, "No previous observation was provided"
-        # Switch to eval mode (this affects batch norm / dropout)
-        self.policy.set_training_mode(False)
+                        self,
+                        env: VecEnv,
+                        callback: BaseCallback,
+                        rollout_buffer: RolloutBuffer,
+                        adversary_buffers,
+                        n_rollout_steps: int,
+                        ) -> bool:
+        """Override to use batched environments for memory management"""
+        def _calc_i_start_j_start(env_cnt: int, envs_per_matchup: int) -> tuple:
+            """
+            This helper functino calcaultes the start of i and j to be used in env_generator_func.
 
-        n_steps = 0
+            Args:
+                env_cnt (int):
+                    How many environments were created.
+                envs_per_matchup (int):
+                    Environments to create per matchup.
+            
+            Returns:
+                i_start (int):
+                    i to start env_generator_func.
+                j_start (int):
+                    j to start env_generator_func.
+            """
+            #i_start = env_cnt // envs_per_matchup
+            #j_start = env_cnt  % envs_per_matchup
+            #i_start = 0
+            j_start = 0
+            i_start = env_cnt
+            return i_start, j_start
+
+        # Create rollout environments in batches using the stored generator function
+        total_envs_needed = self.state_len# * self.envs_per_matchp
+        # we modified state_list to hold the master list of envs with all the diversity duplicates and everything. 
         rollout_buffer.reset()
-        for i in range(self.num_adversaries):
-            self.adversaries[i].rollout_buffer.reset()
-        # Sample new weights for the state dependent exploration
-        if self.use_sde:
-            self.policy.reset_noise(env.num_envs)
+        for buf in adversary_buffers:
+            buf.reset()
+        #total_batches = (total_envs_needed + self.env_batch_size - 1) // self.env_batch_size
+        # i dont quite understand why this computation is correct
+        total_batches = total_envs_needed // self.env_batch_size
+        if total_envs_needed % self.env_batch_size != 0:
+            raise ValueError("total_envs_needed must be divisible by env_batch_size")
+        #if self.envs_per_matchup % self.env_batch_size != 0:
+        #    raise ValueError("env_batch_size must be divisible by envs_per_matchup")
+            # do not allow grabbing splits (i.e., A A B B A | A B B A B ) 
+            # only allow (A A | B B ...) or (A A B B | A A B B ...)
+        # need to do a rem check here
 
-        callback.on_rollout_start()
+        env_cnt = 0 #how many environments were created
+        if total_batches != 1:
+            flat_elements = []
+            adv_flat_elements = list(adversary_buffers[0].obs_shape)
+            adv_flat_elements.insert(0, adversary_buffers[0].buffer_size)
+            adv_flat_elements.insert(1, self.envs_per_matchup)
+            for item in (rollout_buffer.buffer_size,total_envs_needed, rollout_buffer.obs_shape):
+                if isinstance(item, tuple):
+                    flat_elements.extend(item)  # Recursively flatten nested tuples
+                else:
+                    flat_elements.append(item)  # Add integers directly
+            #shape = np.flatten((rollout_buffer.buffer_size,total_envs_needed, rollout_buffer.obs_shape))
+            ego_vertical_batch_obs = th.empty(flat_elements, pin_memory=True)
+            adv_vertical_batch_obs = [th.empty(adv_flat_elements, pin_memory=True) for _ in range(self.num_adversaries)]
+            ego_vertical_batch_rewards = th.empty(np.shape(rollout_buffer.rewards), pin_memory=True)
+            adv_vertical_batch_rewards = [th.empty(np.shape(adversary_buffers[i].rewards), pin_memory=True) for i in range(self.num_adversaries)]
+            #vertical_batch_rewards_other = np.empty(np.shape(rollout_buffer.rewards_other))
+            ego_vertical_batch_dones = th.empty(np.shape(rollout_buffer.dones), pin_memory=True)
+            adv_vertical_batch_dones = [th.empty(np.shape(adversary_buffers[i].dones), pin_memory=True) for i in range(self.num_adversaries)]
+            #vertical_batch_infos = np.empty(np.shape(rollout_buffer.infos))
+            ego_vertical_batch_log_probs = th.empty(np.shape(rollout_buffer.log_probs))
+            adv_vertical_batch_log_probs = [th.empty(np.shape(adversary_buffers[i].log_probs)) for i in range(self.num_adversaries)]
+            ego_vertical_batch_values = th.empty(np.shape(rollout_buffer.values)).to(self.device)
+            adv_vertical_batch_values = [th.empty(np.shape(adversary_buffers[i].values), pin_memory=True) for i in range(self.num_adversaries)]
+            ego_vertical_batch_dstb_log_probs = th.empty(np.shape(rollout_buffer.dstb_log_probs), pin_memory=True)
+            adv_vertical_batch_dstb_log_probs = [th.empty(np.shape(adversary_buffers[i].dstb_log_probs), pin_memory=True) for i in range(self.num_adversaries)]
+            ego_vertical_batch_last_ep_starts = th.empty(np.shape(rollout_buffer.episode_starts)).to(self.device)
+            adv_vertical_batch_last_ep_starts = [th.empty(np.shape(adversary_buffers[i].episode_starts), pin_memory=True) for i in range(self.num_adversaries)]
+            last_ep_starts = th.empty(np.shape(rollout_buffer.episode_starts), pin_memory=True)
+            adv_last_ep_starts = [th.empty(np.shape(adversary_buffers[i].episode_starts), pin_memory=True) for i in range(self.num_adversaries)]
+            ego_vertical_batch_actions = th.empty(np.shape(rollout_buffer.actions), pin_memory=True)
+            adv_vertical_batch_actions = [th.empty(np.shape(adversary_buffers[i].actions), pin_memory=True) for i in range(self.num_adversaries)]
+            ego_vertical_batch_adversary_actions = th.empty(np.shape(rollout_buffer.dstb_actions), pin_memory=True)
+            adv_vertical_batch_adversary_actions = [th.empty(np.shape(adversary_buffers[i].dstb_actions), pin_memory=True) for i in range(self.num_adversaries)]
 
-        while n_steps < n_rollout_steps:
-            if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
-                # Sample a new noise matrix
-                self.policy.reset_noise(env.num_envs)
+            final_obs_all_envs = th.empty(rollout_buffer.observations[0].shape, device=self.device)
+            final_dones_all_envs = np.empty(rollout_buffer.dones[0].shape)
+        for batch_idx in range(total_batches):
+            # if total_batches != 1:
+            #     flat_elements = []
+            #     for item in (rollout_buffer.buffer_size,total_envs_needed, rollout_buffer.obs_shape):
+            #         if isinstance(item, tuple):
+            #             flat_elements.extend(item)  # Recursively flatten nested tuples
+            #         else:
+            #             flat_elements.append(item)  # Add integers directly
+            #     #shape = np.flatten((rollout_buffer.buffer_size,total_envs_needed, rollout_buffer.obs_shape))
+            #     vertical_batch_obs = np.empty(flat_elements)
+            i_start, j_start = _calc_i_start_j_start(env_cnt, self.envs_per_matchup)
+            rollout_env = self.env_generator_func(max_envs=self.env_batch_size, i_start=i_start, j_start=j_start)
+            network_keys = [i // self.envs_per_matchup for i in range(i_start, i_start + self.env_batch_size)]
+            # indexing state_list will use i_start : i_start + self.env_batch_size
 
-            with th.no_grad():
-                # Convert to pytorch tensor or to TensorDict
-                obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                s_actions, s_log_probs, s_values, s_dstb_actions, s_dstb_log_probs = self.policy(obs_tensor)
-                all_adv_left_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
-                all_adv_right_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
-                all_adv_critic_values = torch.zeros((self.n_global_env, 1), device=self.device)
-                all_adv_log_probs = torch.zeros((self.n_global_env,), device=self.device)
-                all_adv_dstb_log_probs = torch.zeros((self.n_global_env,), device=self.device)
+            env_cnt += rollout_env.num_envs
+            self._last_obs = rollout_env.reset()  # Set initial observations for this batch
+            self._last_episode_starts = np.ones(rollout_env.num_envs)
+            # Call the parent's collect_rollouts with our batched environment
+            if total_batches == 1:
+                result = super().collect_rollouts(
+                    rollout_env,
+                    callback,
+                    rollout_buffer,
+                    adversary_buffers,
+                    n_rollout_steps
+                )
+                if not result:  # If parent method returned False, propagate it
+                    return False
+        
+                return True
+            else:
+                env = rollout_env
+                assert self._last_obs is not None, "No previous observation was provided"
+                # Switch to eval mode (this affects batch norm / dropout)
+                self.policy.set_training_mode(True)
+
+                n_steps = 0
+                #rollout_buffer.reset()
                 for i in range(self.num_adversaries):
-                    actions, log_probs, values, dstb_actions, dstb_log_probs = self.adversaries[i].policy(obs_tensor)
-                    # actions = actions.cpu()
-                    # dstb_actions = dstb_actions.cpu()
-                    chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
-                    all_adv_left_actions[chunk] = actions[chunk]
-                    all_adv_log_probs[chunk] = log_probs[chunk]
-                    all_adv_critic_values[chunk] = values[chunk]
-                    all_adv_right_actions[chunk] = dstb_actions[chunk]
-                    all_adv_dstb_log_probs[chunk] = dstb_log_probs[chunk]
+                    adversary_buffers[i].reset()
+                # Sample new weights for the state dependent exploration
+                if self.use_sde:
+                    self.policy.reset_noise(env.num_envs)
 
-                if self.update_left is True:
-                    # specialized agent is playing left
-                    # all adversaries are playing right.
-                    all_adv_left_actions = []
-                    all_adv_log_probs = []
-                    actions = s_actions
-                    log_probs = s_log_probs
-                    adversary_actions = all_adv_right_actions
-                    adversary_log_probs = all_adv_dstb_log_probs
-                else:
-                    all_adv_right_actions = []
-                    all_adv_dstb_log_probs = []
-                    actions = s_dstb_actions
-                    log_probs = s_dstb_log_probs
-                    adversary_actions = all_adv_left_actions
-                    adversary_log_probs = all_adv_log_probs
-            actions = actions.cpu().numpy()
-            adversary_actions = adversary_actions.cpu().numpy()
-            if self.use_mirror is True:
-                mirror_master_copy_actions = deepcopy(actions)
-                mirror_master_copy_adv_actions = deepcopy(adversary_actions)
+                # need to sample leader policy here
+                #for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params'])):
+                #    self.policy.ctrl_optimizer.param_groups[0]['params'][i] = torch.nn.init.uniform_(self.policy.ctrl_optimizer.param_groups[0]['params'][i], a=-1., b=1.)
 
-            # upper half, lower half
+                callback.on_rollout_start()
+                count = 0
+                while n_steps < n_rollout_steps:
+                    if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+                        # Sample a new noise matrix
+                        self.policy.reset_noise(env.num_envs)
 
-            if self.use_mirror is True:
-                # print("SINGLE TRAIN EXTRACTOR MIRROR")
-
-                '''
-                assume wlog Ehonda is the prot.
-
-                action right now is:                  adv_action right now is:
-                EHonda left                                              Sagat    right
-                EHonda left                                              Sagat    right
-                EHonda left                                             MBison    right
-                EHonda left                                             MBison    right
-
-                EHonda v Sagat       0
-                Sagat v. EHonda      1
-                EHonda v. MBison     2
-                MBison v. EHonda     3
-
-                action[odds] needs to go to the other side because our design makes prot actions left
-
-                same with adversary[ods] -- adversary is on the right so adv[ods] is backwards
-
-                '''
-
-                prot_left = actions[0::2, :]  # actions for the prot when he is on the left
-                prot_reversed = actions[1::2,
-                                :]  # actions for prot when he is on the right... but its backwards right now!
-
-                adv_right = adversary_actions[0::2, :]
-                adv_reversed = adversary_actions[1::2, :]
-
-                temp = np.zeros((self.num_adversaries, self.action_space.shape[0]))
-                temp = prot_reversed
-
-                actions[1::2, :] = adversary_actions[1::2, :]
-                adversary_actions[1::2, :] = temp
-            # Rescale and perform action
-            if self.update_left is True:
-                clipped_actions = np.hstack([actions, adversary_actions])
-            else:
-                clipped_actions = np.hstack([adversary_actions, actions])
-            # Clip the actions to avoid out of bound error
-            if isinstance(self.action_space, spaces.Box):
-                clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
-
-            new_obs, rewards, rew_other, dones, infos = env.step(clipped_actions)
-            # assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
-            self.num_timesteps += env.num_envs
-            wandb.log({"epochs": self.num_timesteps})            # Give access to local variables
-            callback.update_locals(locals())
-            if callback.on_step() is False:
-                return False
-
-            self._update_info_buffer(infos)
-            n_steps += 1
-
-            if isinstance(self.action_space, spaces.Discrete):
-                # Reshape in case of discrete action
-                actions = actions.reshape(-1, 1)
-
-            # Handle timeout by bootstraping with value function
-            # see GitHub issue #633
-            for idx, done in enumerate(dones):
-                if (
-                        done
-                        and infos[idx].get("terminal_observation") is not None
-                        and infos[idx].get("TimeLimit.truncated", False)
-                ):
-                    terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
                     with th.no_grad():
-                        terminal_value = self.policy.predict_values(terminal_obs)[0]
-                    rewards[idx] += self.gamma * terminal_value
-            if self.use_mirror is True:
-                rollout_buffer.add(
-                    self._last_obs,  # type: ignore[arg-type]
-                    mirror_master_copy_actions,
-                    mirror_master_copy_adv_actions,
-                    rewards,
-                    self._last_episode_starts,  # type: ignore[arg-type]
-                    all_adv_critic_values.squeeze(),
-                    log_probs,
-                    adversary_log_probs
-                )
-            else:
-                rollout_buffer.add(
-                self._last_obs,  # type: ignore[arg-type]
-                actions,
-                adversary_actions,
-                rewards,
-                self._last_episode_starts,  # type: ignore[arg-type]
-                all_adv_critic_values.squeeze(),
-                log_probs,
-                adversary_log_probs
-                )
+                        # Convert to pytorch tensor or to TensorDict
 
-            for i in range(self.num_adversaries):
-                chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
-                if self.use_mirror is True:
-                    self.adversaries[i].rollout_buffer.add(
-                        self._last_obs[chunk],
-                        mirror_master_copy_actions[chunk],
-                        mirror_master_copy_adv_actions[chunk],
-                        rewards[chunk],
-                        self._last_episode_starts[chunk],
-                        all_adv_critic_values[chunk],
-                        log_probs[chunk],
-                        adversary_log_probs[chunk]  # not done
-                    )
-                else:
-                    self.adversaries[i].rollout_buffer.add(
-                        self._last_obs[chunk],
-                        actions[chunk],
-                        adversary_actions[chunk],
-                        rewards[chunk],
-                        self._last_episode_starts[chunk],
-                        all_adv_critic_values[chunk],
-                        log_probs[chunk],
-                        adversary_log_probs[chunk]  # not done
-                    )
+                        # PROBLEM HERE:
+                        # we need to only call the right heads here cause adversary list may not be the 
+                        # full thing since we're chunking/cycling the envs!
 
-            self._last_obs = new_obs
-            self._last_episode_starts = dones
 
+                        obs_tensor = obs_as_tensor(self._last_obs, self.device)
+                        s_actions, s_log_probs, s_values_ego, s_values_adv,s_dstb_actions, s_dstb_log_probs = self.policy(obs_tensor, network_keys=network_keys)
+                        all_adv_left_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
+                        all_adv_right_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
+                        all_adv_critic_values = torch.zeros((self.n_global_env, 1), device=self.device)
+                        all_adv_log_probs = torch.zeros((self.n_global_env,), device=self.device)
+                        all_adv_dstb_log_probs = torch.zeros((self.n_global_env,), device=self.device)
+                    actions = s_actions
+                    adversary_actions = s_dstb_actions
+                    log_probs = s_log_probs
+                    adversary_log_probs = s_dstb_log_probs
+                    actions = actions.cpu().numpy()
+                    adversary_actions = adversary_actions.cpu().numpy()
+                    all_adv_critic_values_ego = s_values_ego
+                    all_adv_critic_values_adv = s_values_adv
+
+                    if self.use_mirror is True:
+                        mirror_master_copy_actions = deepcopy(actions)
+                        mirror_master_copy_adv_actions = deepcopy(adversary_actions)
+
+                    # upper half, lower half
+
+                    
+                    if self.use_mirror is True:
+                        # print("SINGLE TRAIN EXTRACTOR MIRROR")
+
+                        '''
+                        assume wlog Ehonda is the prot.
+
+                        action right now is:                  adv_action right now is:
+                        EHonda left                                              Sagat    right
+                        EHonda left                                              Sagat    right
+                        EHonda left                                             MBison    right
+                        EHonda left                                             MBison    right
+
+                        EHonda v Sagat       0
+                        Sagat v. EHonda      1
+                        EHonda v. MBison     2
+                        MBison v. EHonda     3
+
+                        action[odds] needs to go to the other side because our design makes prot actions left
+
+                        same with adversary[odds] -- adversary is on the right so adv[ods] is backwards
+
+                        '''
+                        halfway = actions.shape[0] // 2 #halfway split between upper & lower + left & right
+                        
+                        if DEBUG:
+                            #test = np.zeros_like(actions)
+                            #other_test = np.ones_like(actions)
+                            #test_left = test[halfway:, :]
+                            #test_right = other_test[:halfway, :]
+                            #temp = np.zeros((self.num_adversaries, self.action_space.shape[0]))
+                            #temp[:halfway, :] = test_left
+                            #temp[halfway:, :] = test_right
+
+                            test2 = np.zeros_like(actions)
+                            count = 0
+                            for i in range(test2.shape[0]):
+                                for j in range(test2.shape[1]):
+                                    test2[i, j] = count
+                                    count += 1
+                            other_test2 = np.zeros_like(actions)
+                            count = other_test2.size - 1
+                            for i in range(other_test2.shape[0]):
+                                for j in range(other_test2.shape[1]):
+                                    other_test2[i, j] = count
+                                    count -= 1
+                            prot_left = test2[:halfway, :]  # actions for the prot when he is on the left
+                            prot_left_pre = test2[halfway:, :]  
+
+                            adv_right = other_test2[:halfway, :]
+                            adv_right_pre = other_test2[halfway:, :]
+
+                            prot_actions = np.empty_like(actions)
+                            prot_actions[:halfway, :] = prot_left
+                            prot_actions[halfway:, :] = adv_right_pre
+
+                            adv_actions = np.empty_like(actions)
+                            adv_actions[:halfway, :] = adv_right
+                            adv_actions[halfway:, :] = prot_left_pre
+
+                            #print("temp2", temp2)
+                            #print("other_test2", other_test2)
+                            #print("test2_left", test2_left)
+                            #print("test2_right", test2_right)
+                            #print("actions", actions)
+                            #print("temp", temp)
+                            #print("other_test", other_test)
+                            #print("test_left", test_left)
+                            #print("test_right", test_right)
+                            #print("actions", actions)
+
+                        prot_left = actions[:halfway, :]  # actions for the prot when he is on the left
+                        prot_left_pre = actions[halfway:, :]  
+
+                        adv_right = adversary_actions[:halfway, :]
+                        adv_right_pre = adversary_actions[halfway:, :]
+
+                        prot_actions = np.empty_like(actions)
+                        #temp = prot_right
+                        prot_actions[:halfway, :] = prot_left
+                        prot_actions[halfway:, :] = adv_right_pre
+
+                        adv_actions = np.empty_like(actions)
+                        adv_actions[:halfway, :] = adv_right
+                        adv_actions[halfway:, :] = prot_left_pre
+
+                        actions = prot_actions
+                        adversary_actions = adv_actions
+
+                    # Rescale and perform action
+                    if self.update_left is True:
+                        # MESSY
+                        clipped_actions = np.hstack([actions, adversary_actions])
+                    else:
+                        clipped_actions = np.hstack([adversary_actions, actions])
+                    # Clip the actions to avoid out of bound error
+                    if isinstance(self.action_space, spaces.Box):
+                        clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
+
+                    new_obs, rewards, rew_other, dones, infos = env.step(clipped_actions)
+
+                    # if mirroring:
+                    # rew = (r,r,r, -r, -r, -r)^T 
+                    if self.use_mirror is True:
+                        halfway = len(rewards) // 2
+                        rewards[halfway:] = -rewards[halfway:]
+                        # now rew = (r, r, r, r, r, r)^T
+                        # this is the correct ego reward
+                    
+                    # if mirror is false
+                    # rew is already (r,r,r,r,r,r)^T and we dont need to do anything
+                    
+                    if np.any(rewards != 0):
+                        print("Reward is not 0")
+                    ego_vertical_batch_obs[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches)), :, :, :] = th.unsqueeze(th.from_numpy(new_obs), 0)
+                    ego_vertical_batch_rewards[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(th.from_numpy(rewards), 0)
+                    #vertical_batch_rewards_other[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches)), :] = th.unsqueeze(th.from_numpy(rew_other), 0)
+                    ego_vertical_batch_dones[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(th.from_numpy(dones), 0)
+                    #vertical_batch_infos[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches)), :] = th.unsqueeze(th.from_numpy(infos), 0)
+                    ego_vertical_batch_log_probs[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(log_probs, 0).cpu()
+                    ego_vertical_batch_values[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(s_values_ego, 0)
+                    ego_vertical_batch_dstb_log_probs[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(s_dstb_log_probs, 0).cpu()
+                    ego_vertical_batch_last_ep_starts[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(th.from_numpy(self._last_episode_starts), 0)
+                    ego_vertical_batch_actions[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(th.from_numpy(actions), 0)
+                    ego_vertical_batch_adversary_actions[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(th.from_numpy(adversary_actions), 0)
+                    
+                    # For each environment in the batch, assign its data to the correct adversary buffer and slot.
+                    for j in range(env.num_envs):
+                        # Calculate the global index of the environment across all batches.
+                        global_env_idx = i_start + j
+                        print(global_env_idx)
+                        
+                        # Determine the matchup this environment belongs to. This is the index for the adversary buffer.
+                        matchup_idx = global_env_idx // self.envs_per_matchup
+                        
+                        # Determine the local index of the environment within its matchup group. This is the slot in the buffer.
+                        local_env_idx = global_env_idx % self.envs_per_matchup
+
+                        # Place the observation, reward, and done status into the correct buffer and slot.
+                        # `count` is the current step in the rollout.
+                        adv_vertical_batch_obs[matchup_idx][count, local_env_idx] = obs_as_tensor(new_obs[j], device='cpu')
+                        # we need to flip adversary rewards because adversary always gets -r
+                        # recall right now that rew = (r, r, r, r, r, r)^T in BOTH cases! (mirror or not)
+
+                        # so we flip every element 
+                        adv_vertical_batch_rewards[matchup_idx][count, local_env_idx] = -rewards[j]
+                        #adv_vertical_batch_dones[matchup_idx][count, local_env_idx] = dones[j]
+                        adv_vertical_batch_log_probs[matchup_idx][count, local_env_idx] = log_probs[j]
+                        adv_vertical_batch_values[matchup_idx][count, local_env_idx] = -all_adv_critic_values_adv[j]
+                        adv_vertical_batch_dstb_log_probs[matchup_idx][count, local_env_idx] = s_dstb_log_probs[j]
+                        adv_vertical_batch_last_ep_starts[matchup_idx][count, local_env_idx] = th.from_numpy(self._last_episode_starts)[j]
+                        #last_ep_starts[global_env_idx] = th.from_numpy(np.round(dones[j]).astype(bool))
+
+                        adv_vertical_batch_actions[matchup_idx][count, local_env_idx].copy_(th.from_numpy(actions[j]))
+                        adv_vertical_batch_adversary_actions[matchup_idx][count, local_env_idx].copy_(th.from_numpy(adversary_actions[j]))
+
+
+                    self.num_timesteps += env.num_envs
+                    #wandb.log({"epochs": self.num_timesteps})
+                    # Give access to local variables
+                    callback.update_locals(locals())
+                    if callback.on_step() is False:
+                        return False
+
+                    self._update_info_buffer(infos)
+                    n_steps += 1
+
+                    if isinstance(self.action_space, spaces.Discrete):
+                        # Reshape in case of discrete action
+                        actions = actions.reshape(-1, 1)
+                    count += 1
+
+                    self._last_obs = new_obs
+                    self._last_episode_starts = dones
+                i_start = batch_idx * self.env_batch_size
+                final_obs_all_envs[i_start : i_start + self.env_batch_size] = obs_as_tensor(new_obs, self.device)
+                final_dones_all_envs[i_start : i_start + self.env_batch_size] = dones
+
+            rollout_env.close()  # Clean up this batch
+            result = True
+            
+            if not result:  # If parent method returned False, propagate it
+                return False
+        
+        rollout_buffer.observations = ego_vertical_batch_obs
+        rollout_buffer.rewards.copy_(ego_vertical_batch_rewards)
+        #rollout_buffer.dones = ego_vertical_batch_dones
+        rollout_buffer.log_probs = ego_vertical_batch_log_probs
+        rollout_buffer.values = ego_vertical_batch_values
+        rollout_buffer.dstb_log_probs = ego_vertical_batch_dstb_log_probs
+        rollout_buffer.episode_starts = ego_vertical_batch_last_ep_starts
+        rollout_buffer.actions = ego_vertical_batch_actions
+        rollout_buffer.adversary_actions = ego_vertical_batch_adversary_actions
+        
+
+        for i in range(len(adversary_buffers)):
+            adversary_buffers[i].observations = adv_vertical_batch_obs[i]
+            adversary_buffers[i].rewards = adv_vertical_batch_rewards[i]
+            #adversary_buffers[i].dones = adv_vertical_batch_dones[i]
+            adversary_buffers[i].log_probs = adv_vertical_batch_log_probs[i]
+            adversary_buffers[i].values = adv_vertical_batch_values[i]
+            adversary_buffers[i].dstb_log_probs = adv_vertical_batch_dstb_log_probs[i]
+            adversary_buffers[i].episode_starts = adv_vertical_batch_last_ep_starts[i]
+            adversary_buffers[i].actions = adv_vertical_batch_actions[i]
+            adversary_buffers[i].adversary_actions = adv_vertical_batch_adversary_actions[i]
+
+        rollout_buffer.full = True
+        for i in range(len(adversary_buffers)):
+            adversary_buffers[i].full = True
+
+        
         with th.no_grad():
-            # Compute value for the last timestep
-            # values = torch.zeros((self.n_global_env,1))
-            # for i in range(self.num_adversaries):
-            #    chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
-            #    values[chunk] = self.adversaries[i].policy.predict_values(obs_as_tensor(new_obs, self.device))[chunk].to('cpu')
-            # not bootstrapped correctly
-            # use adversary critics not ma critic
-            values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))
-        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+            # Compute value for the last time:w
+            # step
+            #values = torch.zeros((self.n_global_env,))
+            final_ego_values, final_adv_values = self.policy.predict_values(final_obs_all_envs)
 
-        for i in range(self.num_adversaries):  # is this a bug?
-            chunk = range(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
-            self.adversaries[i].rollout_buffer.compute_returns_and_advantage(last_values=values[chunk],
-                                                                             dones=dones[chunk])
+        rollout_buffer.values = rollout_buffer.values.to(self.device, non_blocking=True)
+        rollout_buffer.rewards = rollout_buffer.rewards.to(self.device, non_blocking=True)
+        rollout_buffer.advantages = rollout_buffer.advantages.to(self.device, non_blocking=True)
+        rollout_buffer.episode_starts = rollout_buffer.episode_starts.to(self.device, non_blocking=True)
+        #rollout_buffer.vectorized_compute_returns_and_advantages(last_values=values, dones=torch.Tensor(dones).to(self.device))
+        rollout_buffer.vectorized_compute_returns_and_advantages(last_values=values, dones=final_dones_all_envs)
+        for i in range(len(adversary_buffers)):
+            adversary_buffers[i].values = adversary_buffers[i].values.to(self.device, non_blocking=True)
+            adversary_buffers[i].rewards = adversary_buffers[i].rewards.to(self.device, non_blocking=True)
+            adversary_buffers[i].advantages = adversary_buffers[i].advantages.to(self.device, non_blocking=True)
+            adversary_buffers[i].episode_starts = adversary_buffers[i].episode_starts.to(self.device, non_blocking=True)
+            #adversary_buffers[i].vectorized_compute_returns_and_advantages(last_values=values, dones=final_dones_all_envs)
+            
 
+            start_idx = i * self.envs_per_matchup
+            end_idx = (i + 1) * self.envs_per_matchup
+            adv_last_values = values[start_idx:end_idx]
+            adv_dones = final_dones_all_envs[start_idx:end_idx]
+            adversary_buffers[i].vectorized_compute_returns_and_advantages(last_values=adv_last_values, dones=adv_dones)
+        
         callback.on_rollout_end()
 
+        rollout_buffer.prepare_data_for_training()
+        for buf in adversary_buffers:
+            buf.prepare_data_for_training()
+        
         return True
+    def dump_properties(self):
+        
+        PRIMITIVE_TYPES = (int, float, bool, str, type(None))
+        
+        primitive_attrs = {}
 
-    def train(self):
-        TSS_PPO.train(self)
-        for i in range(self.num_adversaries):
-            self.adversaries[i].train_one_adversary(self.policy, ma_left=self.update_left, ma_right=self.update_right)
+        for attr_name in dir(self):
+            if attr_name.startswith('__'):
+                continue
+                
+            try:
+                attr_value = getattr(self, attr_name)
+            except AttributeError:
+                continue
+
+            if callable(attr_value):
+                continue
+
+            if isinstance(attr_value, PRIMITIVE_TYPES):
+                primitive_attrs[attr_name] = attr_value
+                continue
+            
+            if isinstance(attr_value, (list, tuple)):
+                if all(isinstance(item, PRIMITIVE_TYPES) for item in attr_value):
+                    primitive_attrs[attr_name] = attr_value
+
+
+
+        return primitive_attrs
+
+    def learn(
+        self,
+        total_timesteps: int,
+        callback: MaybeCallback = None,
+        log_interval: int = 1,
+        tb_log_name: str = "OnPolicyAlgorithm",
+        reset_num_timesteps: bool = True,
+        progress_bar: bool = False,
+        update_ego: bool = True,
+        update_adversary: bool = True,
+    ):
+        try:
+            iteration = 0
+            #from common.algorithms import Exploiter
+            total_timesteps, callback = self._setup_learn(
+                total_timesteps,
+                callback,
+                reset_num_timesteps,
+                tb_log_name,
+                progress_bar,
+            )
+            self.callback = callback
+
+            window = 250
+            tolerance = .05 # movable
+            rews = []
+
+            callback.on_training_start(locals(), globals())
+
+            while self.num_timesteps < total_timesteps:
+                #perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
+                #print("perturbed agent created!", flush=True)
+                #self._initialize_parallel_updater()                
+                # perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
+                #continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps) #TODO: This is sequential - remove when done.
+
+                # Run env_perturb_params and collect_rollouts in different threads (cannot be done in different processes because they contain unpickleable objects)
+                #with ThreadPoolExecutor(max_workers=2) as executor:
+                #    future_perturbed = executor.submit(perturbed_agent.env_perturb_params)
+                #self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps)
+                continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps) #TODO: This is sequential - remove when done.    
+                    #perturbed_buf, perturbed_adv_buf = future_perturbed.result()
+                    #continue_training = future_collect.result()
+                #self.perturbed_agent = perturbed_agent
+                #self.perturbed_buf = perturbed_buf
+                #self.perturbed_adv_buf = perturbed_adv_buf
+                #self.perturbed_agent_policy = perturbed_agent.policy
+                #print("main agent and perturbed agent rollout done!", flush=True)
+                
+                #if isinstance(self, Exploiter):
+                #    if len(rews) > 2000:
+                #        if (max(rews[-window:]) - min(rews[-window:])) <= tolerance * 2:
+                #            continue_training = False
+                if continue_training is False:
+                    break
+
+                iteration += 1
+                self._update_current_progress_remaining(self.num_timesteps, total_timesteps)
+
+                # Display training infos
+                if log_interval is not None and iteration % log_interval == 0:
+                    time_elapsed = max((time.time_ns() - self.start_time) / 1e9, sys.float_info.epsilon)
+                    fps = int((self.num_timesteps - self._num_timesteps_at_start) / time_elapsed)
+                    self.logger.record("time/iterations", iteration, exclude="tensorboard")
+                    if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
+                        rews.append(safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+                        self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+                        #wandb.log({"eval_rew": safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])})
+                        self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+                    self.logger.record("time/fps", fps)
+                    self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
+                    self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
+                    self.logger.dump(step=self.num_timesteps)
+            
+
+                self.train(update_ego=update_ego, update_adversary=update_adversary)
+                self.perturbed_agent.env.close()
+                #del self.perturbed_agent
+
+            callback.on_training_end()
+        except Exception as e:
+            print(e)
+            print(self.dump_properties())
+            raise e
+        #finally:
+        #    #IMPORTANT! Persistent workers must be cleaned up.
+        #    self.cleanup()
+        #    torch.cuda.empty_cache()
+
+        return self
 
 
 class eepy(MAGICS_PPO):
