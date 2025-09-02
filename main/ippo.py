@@ -557,8 +557,8 @@ def main(PLAYER):
             batch_size=int(num_steps * len(state_list) / 10),  # 2816,  # 512,
             n_epochs=5,
             gamma=0.94,
-            v_learning_rate=5e-3, c_learning_rate=1e-3,
-            d_learning_rate=5e-3, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            v_learning_rate=5e-3, c_learning_rate=1e-4,
+            d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
             c_learning_rate_decay=critic_decay_schedule(1e-4),
             d_learning_rate_decay=critic_decay_schedule(5e-4),
             clip_range=clip_range_schedule,
@@ -577,6 +577,39 @@ def main(PLAYER):
             env_generator_func=env_generator,
             state_list=state_list
         )
+
+        finetune_model = Specialized_Agent_IPPO("IPPOAACCnnPolicy",
+            finetune_env,
+            env_batch_size=args.env_batch_size,
+            envs_per_matchup=args.envs_per_matchup,
+            state_len=len(STATE),
+            device="cuda",
+            verbose=2,
+            n_steps=num_steps,  # 1408,
+            batch_size=int(num_steps * len(state_list) / 10),  # 2816,  # 512,
+            n_epochs=5,
+            gamma=0.94,
+            v_learning_rate=5e-3, c_learning_rate=1e-4,
+            d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            c_learning_rate_decay=critic_decay_schedule(1e-4),
+            d_learning_rate_decay=critic_decay_schedule(5e-4),
+            clip_range=clip_range_schedule,
+            tensorboard_log=args.log_dir,
+            seed=args.seed,
+            ent_coef=.01,
+            dstb_ent_coef=.01,
+            I_AM_LEFT=True,
+            I_AM_RIGHT=False,
+            num_adversary=num_adversary,
+            n_global_env=args.num_env,
+            n_env_per_adv=args.num_env // num_adversary,
+            opp_list=OPPONENT_LIST,
+            player='_'.join(PLAYER),
+            use_mirror=False,
+            env_generator_func=env_generator,
+            state_list=state_list,
+        )
+
         # if use_mirror is True:
         #     with open(current_dir + "miror_indicator.txt", "w") as f:
         #         f.write("1")
