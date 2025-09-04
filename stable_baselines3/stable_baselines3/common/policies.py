@@ -2577,7 +2577,7 @@ class IPPOActorCriticCnnGeneralistPolicy(ActorActorCriticCnnGeneralistPolicy):
         self.adv_value_net = nn.ModuleList()
         for i in range(self.num_adversaries):
             self.adv_value_net.append(nn.Sequential(
-                nn.LSTM(input_size=self.features_dim, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
+                nn.LSTM(input_size=latent_dim_pi, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
                 SelectLastLSTMOutput(),
                 nn.Linear(lstm_hidden_size, lstm_hidden_size),
                 self.activation_fn(),
@@ -2585,7 +2585,7 @@ class IPPOActorCriticCnnGeneralistPolicy(ActorActorCriticCnnGeneralistPolicy):
             )
 
         self.ego_value_net = nn.Sequential(
-            nn.LSTM(input_size=self.features_dim, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
+            nn.LSTM(input_size=latent_dim_pi, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
             SelectLastLSTMOutput(),
             nn.Linear(lstm_hidden_size, lstm_hidden_size),
             self.activation_fn(),
@@ -2672,9 +2672,9 @@ class IPPOActorCriticCnnGeneralistPolicy(ActorActorCriticCnnGeneralistPolicy):
         num_global_env = self.num_global_env
         num_env_per_adv = num_global_env // num_adversaries
         
-        concated_adv_log_probs = th.empty_like(ctrl_log_prob, dtype=th.float32)
+        concated_adv_log_probs = th.empty_like(ctrl_log_prob, dtype=th.float16)
         for i in range(num_adversaries):
-            mask = (shuffle_keys.cpu() >= i * num_env_per_adv) & (shuffle_keys.cpu() < (i + 1) * num_env_per_adv)
+            mask = (shuffle_keys >= i * num_env_per_adv) & (shuffle_keys < (i + 1) * num_env_per_adv)
             concated_adv_log_probs[mask] = dstb_distribution[i].log_prob(dstb_actions[mask])
         dstb_log_prob = concated_adv_log_probs
         dstb_entropy = th.cat([dist.entropy() for dist in dstb_distribution])
@@ -2686,7 +2686,7 @@ class IPPOActorCriticCnnGeneralistPolicy(ActorActorCriticCnnGeneralistPolicy):
         
         adv_values = th.empty((ego_vf_features.shape[0],), device=self.device)
         for i in range(num_adversaries):
-            mask = (shuffle_keys.cpu() >= i*num_env_per_adv) & (shuffle_keys.cpu() < (i+1)*num_env_per_adv)
+            mask = (shuffle_keys >= i*num_env_per_adv) & (shuffle_keys < (i+1)*num_env_per_adv)
             adv_values[mask] = self.adv_value_net[network_keys[i]](latent_adv_vf[mask]).flatten()
         
         ego_values = self.ego_value_net(latent_ego_vf).flatten()
@@ -2695,8 +2695,9 @@ class IPPOActorCriticCnnGeneralistPolicy(ActorActorCriticCnnGeneralistPolicy):
         return ego_values, adv_values, ctrl_log_prob, ctrl_entropy, dstb_log_prob, dstb_entropy
 
     def predict_values(self, obs, network_keys=None) -> Tuple[th.Tensor, th.Tensor]:
-        if network_keys is None:
-            network_keys = self.network_keys
+        network_keys = list(range(self.num_adversaries))
+        # if network_keys is None:
+        #     network_keys = self.network_keys
         
         # ---- MODIFICATION: Independent Value Prediction ----
         preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
