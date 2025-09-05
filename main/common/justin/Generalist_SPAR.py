@@ -91,7 +91,9 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             warmstarted_cont_MAGICS=False,
             opp_list=None,
             player=None,
-            use_mirror=False
+            use_mirror=False,
+            matchups=None,
+            envs_per_matchup=None,
     ):
         assert I_AM_LEFT != I_AM_RIGHT
         super().__init__(
@@ -119,7 +121,8 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             _init_setup_model=False,
             batch_size=batch_size,
             normalize_advantage=normalize_advantage,
-            warmstarted_cont_MAGICS=warmstarted_cont_MAGICS
+            warmstarted_cont_MAGICS=warmstarted_cont_MAGICS,
+            envs_per_matchup=envs_per_matchup
         )
         self.update_left = I_AM_LEFT
         self.dstb_ent_coef = dstb_ent_coef
@@ -168,6 +171,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
         self.n_env_per_adv = n_env_per_adv
         self.learning_rate = [c_learning_rate, d_learning_rate, v_learning_rate]
         self.num_adversaries = num_adversary
+        self.matchups = matchups
         if _init_setup_model:
             self._setup_model()
 
@@ -196,7 +200,9 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                                        dstb_ent_coef=self.dstb_ent_coef,
                                        update_left=not self.update_left,
                                        update_right=not self.update_right,
-                                       warmstarted_cont_MAGICS=self.warmstarted_cont_MAGICS
+                                       warmstarted_cont_MAGICS=self.warmstarted_cont_MAGICS,
+                                       matchups=matchups,
+                                       envs_per_matchup=self.envs_per_matchup
                                        )
             overwrite.rollout_buffer.n_envs = self.n_env_per_adv
             adversary_buffers.append(overwrite.rollout_buffer)
