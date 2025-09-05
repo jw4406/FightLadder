@@ -1,4 +1,5 @@
 import torch
+from typing import List
 
 def agent_win(info: dict) -> bool:
     """
@@ -66,3 +67,13 @@ def get_n_workers() -> tuple:
     n_workers = max(1, n_gpus)
 
     return n_gpus, n_workers
+
+def state2matchup(state: str) -> str:
+    """This function returns the matchup from the state."""
+    state = state.split(".")
+    return state[-3]
+
+def select_matchup_env(matchups: List[str], i: int, envs_per_matchup: int) -> str:
+    """This function generates a key string of the format f'<matchup>_{i}'."""
+    curr_matchup = matchups[i*envs_per_matchup]
+    return f"{curr_matchup}_{i}"
