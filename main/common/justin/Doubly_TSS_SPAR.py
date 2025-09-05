@@ -85,8 +85,12 @@ class Doubly_TSS_SPAR(Single_SPAR):
                  update_left=True,
                  update_right=True,
                  dstb_action_space=None,
-                 warmstarted_cont_MAGICS=False
+                 warmstarted_cont_MAGICS=False,
+                 matchups=None,
+                 envs_per_matchup=None,
                  ):
+        self.matchups=matchups
+        self.envs_per_matchup=envs_per_matchup
         super().__init__(
             policy,
             env,
