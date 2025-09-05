@@ -239,6 +239,9 @@ class Single_SPAR(OnPolicyAlgorithm):
             self.policy_kwargs['num_adversaries'] = self.num_adversaries
             #self.policy_kwargs['num_env_per_adv'] = self.num_env_per_adv
 
+        self.policy_kwargs['matchups'] = self.matchups
+        self.policy_kwargs['envs_per_matchup'] = self.envs_per_matchup
+
         self.policy = self.policy_class(  # pytype:disable=not-instantiable
             self.observation_space,
             self.action_space,

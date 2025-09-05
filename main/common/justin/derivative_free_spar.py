@@ -26,7 +26,7 @@ from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.policies import ActorCriticPolicy, ActorCriticCnnPolicy, MultiInputActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.vec_env import VecEnv
-from utils import move_policy, select_device, get_n_workers
+from utils import move_policy, select_device, get_n_workers, state2matchup, select_matchup_env
 
 DEBUG = False
 TIMING = False
@@ -65,7 +65,7 @@ def shard_indices(n_items: int, n_gpus: int) -> List[List[int]]:
     size = math.ceil(n_items / n_gpus)
     return [list(range(i * size, min((i + 1) * size, n_items))) for i in range(n_gpus)]
 
-def _update_single_value_function(batch_size: int, max_grad_norm: float, policy, buffer, adversary_index: int, num_envs: int, device: torch.device, tag: str=""):
+def _update_single_value_function(batch_size: int, max_grad_norm: float, policy, buffer, adversary_index: int, num_envs: int, device: torch.device, tag: str="", envs_per_matchup: int=None):
     """
     This function has to be placed outside of the object to enable parallel calls.
     TODO: Complete the docstring.
@@ -103,26 +103,13 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
     actions_batch, dstb_actions_batch, observations_batch, returns_batch, all_env_indices = _prep_rollout_data_actions(batch_size, buffer)
     policy.num_global_env = num_envs
     policy.num_adv = 1
-    #for i in range(len(returns_batch) // batch_size): # should this loop be here?
-    # values, _, _, _, _ = policy.evaluate_actions(
-    #     observations_batch,
-    #     actions_batch,
-    #     dstb_actions_batch,
-    #     shuffle_keys=all_env_indices,
-    #     network_keys=[adversary_index]
-    #     )
-    #values = values.flatten()
-        #test = F.mse_loss(returns_batch, values)
-        #value_grads = th.autograd.grad(test, policy.value_optimizer.param_groups[0]['params'][adversary_index], create_graph=True)
-        # Single loss calculation and optimization step
-        #value_losses = []
     for i in range(len(returns_batch) // batch_size):
         values, _, _, _, _ = policy.evaluate_actions(
         observations_batch[i * batch_size:(i + 1) * batch_size],
         actions_batch[i * batch_size:(i + 1) * batch_size],
         dstb_actions_batch[i * batch_size:(i + 1) * batch_size],
         shuffle_keys=all_env_indices[i * batch_size:(i + 1) * batch_size],
-        network_keys=[adversary_index]
+        network_keys=[adversary_index], envs_per_matchup=envs_per_matchup
         )
         #policy.train(True)
         #torch.backends.cudnn.enabled = False
@@ -260,6 +247,7 @@ class ParallelUpdater:
             n_epochs,
             n_env_per_adv,
             n_env_per_pert,
+            envs_per_matchup,
             job_id,
         ) = job[1]
 
@@ -296,11 +284,11 @@ class ParallelUpdater:
                 for epoch in range(n_epochs):
                     _update_single_value_function(
                         batch_size, max_grad_norm, derivative_free_SPAR_policy, 
-                        adversary_buffers[i], i, n_env_per_adv, device
+                        adversary_buffers[i], i, n_env_per_adv, device, envs_per_matchup=envs_per_matchup
                     )
                     _update_single_value_function(
                         batch_size, max_grad_norm, perturbed_agent_policy, 
-                        perturbed_adv_buf[i], i, n_env_per_pert, device
+                        perturbed_adv_buf[i], i, n_env_per_pert, device, envs_per_matchup=envs_per_matchup
                     )
             
             # Signal completion
@@ -337,7 +325,7 @@ class ParallelUpdater:
     def _create_update_values_function_job(self, policy: Any, perturbed_policy: Any, i_list: List[int], 
                    adversary_buffers: List[Any], perturbed_adv_buf: List[Any], 
                    batch_size: int, max_grad_norm: float, n_epochs: int, 
-                   n_env_per_adv: int, n_env_per_pert: int, first_run: bool) -> tuple:
+                   n_env_per_adv: int, n_env_per_pert: int, first_run: bool, envs_per_matchup: int) -> tuple:
         """
         Create job data for worker process - update_values_function.
         
@@ -353,7 +341,7 @@ class ParallelUpdater:
             n_env_per_adv: Number of environments per adversary
             n_env_per_pert: Number of environments per perturbed agent
             first_run: Whether this is the first run (send full models vs state dicts)
-            job_id: Unique identifier for this job
+            envs_per_matchup: Number of environments per matchup
             
         Returns:
             Tuple containing all job data for the worker
@@ -378,6 +366,7 @@ class ParallelUpdater:
             n_epochs,
             n_env_per_adv,
             n_env_per_pert,
+            envs_per_matchup,
         )
     
     def _wait_for_jobs(self, active_jobs: List[str]) -> None:
@@ -412,7 +401,7 @@ class ParallelUpdater:
     @_parallel_job_executor
     def update_value_functions(self, active_jobs: list, policy: Any, perturbed_agent: Any, perturbed_adv_buf: List[Any], 
                              adversary_buffers: List[Any], batch_size: int, max_grad_norm: float, 
-                             n_epochs: int, n_env_per_adv: int, first_run: bool = False) -> None:
+                             n_epochs: int, n_env_per_adv: int, first_run: bool = False, envs_per_matchup: int = None) -> None:
         """
         Submit work to persistent processes and wait for completion.
         
@@ -443,7 +432,7 @@ class ParallelUpdater:
             job = self._create_update_values_function_job(
                 policy, perturbed_agent.policy, i_list, adversary_buffers,
                 perturbed_adv_buf, batch_size, max_grad_norm, n_epochs,
-                n_env_per_adv, perturbed_agent.n_env_per_adv, first_run
+                n_env_per_adv, perturbed_agent.n_env_per_adv, first_run, envs_per_matchup
             )
             self._submit_job("UPDATE_VALUE_FUNCTIONS", device_id, active_jobs, *job)
 
@@ -501,8 +490,10 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             player=None,
             use_mirror=False,
             env_generator_func=None, #The function is used to create a copy of the environment
-            state_list=None
+            state_list=None,
     ):
+        self.matchups = [state2matchup(state) for state in state_list] #This needs to happen before the super().__init__
+        self.envs_per_matchup = envs_per_matchup
         super().__init__(
             policy=policy,
             env=env,
@@ -542,15 +533,15 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             warmstarted_cont_MAGICS=warmstarted_cont_MAGICS,
             opp_list=opp_list,
             player=player,
-            use_mirror=use_mirror
+            use_mirror=use_mirror,
+            matchups=self.matchups,
+            envs_per_matchup=envs_per_matchup
         )
         self.parallel_updater = None
         self.first_run = False
         self.env_generator_func = env_generator_func
-        self.envs_per_matchup = envs_per_matchup
         self.state_len = state_len
         self.env_batch_size = env_batch_size
-        self.state_list = state_list
         if self.policy is not None: 
             self.policy.num_env_per_adv = self.envs_per_matchup
 
@@ -1016,8 +1007,9 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         test.policy.load_state_dict(self.policy.state_dict())
         if hasattr(self, "num_adversaries"):
             for i in range(test.num_adversaries):
-                test.policy.value_net[i] = test.policy.value_net[i].to(test.device)
-                test.policy.dstb_action_net[i] = test.policy.dstb_action_net[i].to(test.device)
+                matchup_key = select_matchup_env(self.matchups, i, self.envs_per_matchup)
+                test.policy.value_net[matchup_key] = test.policy.value_net[matchup_key].to(test.device)
+                test.policy.dstb_action_net[matchup_key] = test.policy.dstb_action_net[matchup_key].to(test.device)
         test.policy.ctrl_optimizer = self.policy.optimizer_class(test.policy.ctrl_optimizer.param_groups[0]['params'], maximize=True)
         test.policy.dstb_optimizer = self.policy.optimizer_class(test.policy.dstb_optimizer.param_groups[0]['params'], maximize=True)
         test.policy.value_optimizer = self.policy.optimizer_class(test.policy.value_optimizer.param_groups[0]['params'])
@@ -1048,31 +1040,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         end_time = time.time()
         if TIMING:
             print(f"Time for _update_value_functions: {end_time - start_time:.4f}s")
-        # shuffle_keys = np.tile([i for i in range(self.num_adversaries * self.envs_per_matchup)], self.rollout_buffer.buffer_size) # becuase these track raw envs
-        # network_keys = [i for i in range(self.num_adversaries)]
-        # values, _, _, _, _ = self.policy.evaluate_actions(torch.Tensor(self.rollout_buffer.observations).to(self.device), torch.Tensor(self.rollout_buffer.actions).to(self.device), torch.Tensor(self.rollout_buffer.dstb_actions).to(self.device),
-        #                              shuffle_keys=shuffle_keys, network_keys=network_keys)
-        # #self.rollout_buffer.values = values.reshape(self.rollout_buffer.buffer_size, self.num_adversaries)
-        # #grabs_per_rep = len(shuffle_keys) // len(network_keys)
-        # grabs_per_rep = self.envs_per_matchup
-        # #skip = len(shuffle_keys) - grabs_per_rep
-        # for i in range(len(self.adversary_buffers)):
-        #     pointer = i * grabs_per_rep
-        #     for j in range(self.rollout_buffer.buffer_size):
-        #         len_chunk_to_scan = len(values) // self.rollout_buffer.buffer_size
-        #         #self.adversary_buffers[i].values[] = values[j * pointer : j * (pointer + grabs_per_rep)]
-        #         curr_chunk = values[len_chunk_to_scan * j : len_chunk_to_scan * (j + 1)]
-        #         self.adversary_buffers[i].values[j * grabs_per_rep : (j+1) * grabs_per_rep] = curr_chunk[pointer : pointer + grabs_per_rep]
-            
-        #     self.adversary_buffers[i].values =self.adversary_buffers[i].values.reshape(self.adversary_buffers[i].buffer_size, grabs_per_rep)
-        #     self.adversary_buffers[i].dones = self.adversary_buffers[i].dones.reshape(self.adversary_buffers[i].buffer_size, grabs_per_rep)
-        #     self.adversary_buffers[i].vectorized_compute_returns_and_advantages(self.adversary_buffers[i].values[-1, :], self.adversary_buffers[i].dones[-1, :])
-        
-        # self.rollout_buffer.values = values.reshape(self.rollout_buffer.buffer_size, self.num_adversaries * self.envs_per_matchup)
-        # self.rollout_buffer.dones = self.rollout_buffer.dones.reshape(self.rollout_buffer.buffer_size, self.num_adversaries * self.envs_per_matchup)
 
-        # self.rollout_buffer.vectorized_compute_returns_and_advantages(self.rollout_buffer.values[-1, :], self.rollout_buffer.dones[-1, :])
-        # self.rollout_buffer.advantages = self.rollout_buffer.swap_and_flatten_pt(self.rollout_buffer.advantages)
         #need to swap and flatten here 
         self.update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
         self.update_advantages(self.perturbed_agent.policy, self.perturbed_buf, self.perturbed_adv_buf)
@@ -1243,7 +1211,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         self.parallel_updater.update_value_functions(
                                                     self.policy, perturbed_agent, perturbed_adv_buf, 
                                                     self.adversary_buffers, self.batch_size, self.max_grad_norm,
-                                                    self.n_epochs, self.n_env_per_adv, self.first_run
+                                                    self.n_epochs, self.n_env_per_adv, self.first_run, self.envs_per_matchup
                                                     )
         update_end_time = time.time()
         if TIMING:
@@ -1270,8 +1238,6 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         total_start_time = time.time()
         if ego is True:
             print("Ego is true", flush=True)
-        else:
-            assert len(ori_policy.dstb_optimizer.param_groups[0]['params']) - ori_policy.extractor_and_trunk_length == ori_policy.head_length * self.num_adversaries
         clip_range = self.clip_range(self._current_progress_remaining)
         entropy_losses, pg_losses, approx_kl_divs_all = [], [], []
 
@@ -1314,12 +1280,12 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                         if ego:
                             _, log_prob, entropy, _, _ = ori_policy.evaluate_actions(
                             torch.Tensor(ori_rollout_data.observations).to(self.device), torch.Tensor(ori_rollout_data.actions).to(self.device), torch.Tensor(ori_rollout_data.dstb_actions).to(self.device),
-                            shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys
+                            shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=self.envs_per_matchup
                         )
                         else:
                            _, _, _, log_prob, entropy = ori_policy.evaluate_actions(
                             torch.Tensor(ori_rollout_data.observations).to(self.device), torch.Tensor(ori_rollout_data.actions).to(self.device), torch.Tensor(ori_rollout_data.dstb_actions).to(self.device),
-                            shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys
+                            shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=self.envs_per_matchup
                         ) 
                         #run forward pass to get the log_prob
                         #_, log_prob, entropy, _, _ = perturbed_policy.evaluate_actions(
@@ -1381,13 +1347,13 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 old_log_prob = rollout_data.old_log_prob
                 _, log_prob, entropy, _, _ = policy.evaluate_actions(
                     torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions,
-                    shuffle_keys=rollout_data.env_indices, network_keys=network_keys
+                    shuffle_keys=rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=self.envs_per_matchup
                 )
             else:
                 old_log_prob = rollout_data.old_dstb_log_prob
                 _, _, _, log_prob, entropy = policy.evaluate_actions(
                     torch.Tensor(rollout_data.observations).to(self.device), actions, dstb_actions,
-                    shuffle_keys=rollout_data.env_indices, network_keys=network_keys
+                    shuffle_keys=rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=self.envs_per_matchup
                 )
         
         advantages = rollout_data.advantages
@@ -1577,7 +1543,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         shuffle_keys = np.tile([i for i in range(self.num_adversaries * self.envs_per_matchup)], ego_buf.buffer_size) # becuase these track raw envs
         network_keys = [i for i in range(self.num_adversaries)]
         values, _, _, _, _ = policy.evaluate_actions(torch.Tensor(ego_buf.observations).to(self.device), torch.Tensor(ego_buf.actions).to(self.device), torch.Tensor(ego_buf.dstb_actions).to(self.device),
-                                     shuffle_keys=shuffle_keys, network_keys=network_keys)
+                                     shuffle_keys=shuffle_keys, network_keys=network_keys, envs_per_matchup=self.envs_per_matchup)
         #self.rollout_buffer.values = values.reshape(self.rollout_buffer.buffer_size, self.num_adversaries)
         #grabs_per_rep = len(shuffle_keys) // len(network_keys)
         grabs_per_rep = self.envs_per_matchup
