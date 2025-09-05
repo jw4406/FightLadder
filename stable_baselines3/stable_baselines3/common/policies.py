@@ -38,6 +38,8 @@ from stable_baselines3.common.torch_layers import (
 from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.utils import get_device, is_vectorized_observation, obs_as_tensor
 
+from utils import select_matchup_env
+
 SelfBaseModel = TypeVar("SelfBaseModel", bound="BaseModel")
 
 
@@ -989,7 +991,7 @@ class ActorActorCriticPolicy(BasePolicy):
             self.action_net = self.action_dist.proba_distribution_net(latent_dim=latent_dim_pi).to('cuda')
             if self.adversarial: # we are doing adversarial!
 
-                self.dstb_action_net= self.dstb_action_dist.proba_distribution_net(
+                self.dstb_action_net = self.dstb_action_dist.proba_distribution_net(
                 latent_dim=latent_dim_pi).to('cuda')
         else:
             raise NotImplementedError(f"Unsupported distribution '{self.action_dist}'.")
@@ -1366,10 +1368,11 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
             )
 
             if self.adversarial: # we are doing adversarial!
-                self.dstb_action_net = nn.ModuleList()
+                self.dstb_action_net = nn.ModuleDict()
                 self.head_length = 10 # lstm = 4, 2 linear layers = 2 + 2, proba_dist is also a linear, so 2, total 10
                 for i in range(self.num_adversaries):
-                    self.dstb_action_net.append(nn.Sequential(
+                    matchup_key = select_matchup_env(self.matchups, i, self.envs_per_matchup)
+                    self.dstb_action_net[matchup_key] = nn.Sequential(
                         nn.LSTM(input_size=latent_dim_pi, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
                         SelectLastLSTMOutput(),
                         nn.Linear(lstm_hidden_size, lstm_hidden_size),
@@ -1377,16 +1380,18 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
                         nn.Linear(lstm_hidden_size, latent_dim_pi),
                         self.activation_fn(),
                         self.dstb_action_dist[i].proba_distribution_net(latent_dim=latent_dim_pi))
-                    ) 
+                     
                     if i == 0:
-                        assert len(self.dstb_action_net[0]) == 7 and self.head_length == 10
+                        assert len(next(iter(self.dstb_action_net.values()))) == 7 and self.head_length == 10
 
                     #self.dstb_action_net.append(self.dstb_action_dist[i].proba_distribution_net(latent_dim=latent_dim_pi))
         else:
             raise NotImplementedError(f"Unsupported distribution '{self.action_dist}'.")
-        self.value_net = nn.ModuleList()
+        
+        self.value_net = nn.ModuleDict()
         for i in range(self.num_adversaries):
-            self.value_net.append(nn.Sequential(
+            matchup_key = select_matchup_env(self.matchups, i, self.envs_per_matchup)
+            self.value_net[matchup_key] = nn.Sequential(
                 nn.LSTM(input_size=self.mlp_extractor.latent_dim_vf, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
                 SelectLastLSTMOutput(),
                 nn.Linear(lstm_hidden_size, lstm_hidden_size),
@@ -1394,7 +1399,6 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
                 nn.Linear(lstm_hidden_size, lstm_hidden_size),
                 self.activation_fn(),
                 nn.Linear(lstm_hidden_size, 1))
-            )
             #self.value_net.append(nn.Linear(self.mlp_extractor.latent_dim_vf, 1))
         # Init weights: use orthogonal initialization
         # with small initial weight for the output
@@ -1572,9 +1576,13 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             dstb_action_space: spaces.Space = None,
             policy_memory_size: Optional[int] = None,
             num_adversaries=None,
-            num_env_per_adv=None
+            num_env_per_adv=None,
+            matchups=None,
+            envs_per_matchup=None,
     ):
         #self.device
+        self.matchups = matchups #This needs to happen before super().__init__
+        self.envs_per_matchup = envs_per_matchup #This needs to happen before super().__init__
         super().__init__(
             observation_space,
             action_space,
@@ -1626,7 +1634,8 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         num_env_per_adv = latent_vf.shape[0] // num_adversaries
         values = th.zeros((latent_vf.shape[0],), device=self.device)
         for i in range(num_adversaries):
-            values[i * num_env_per_adv : (i+1)*num_env_per_adv] = self.value_net[network_keys[i]](latent_vf[i * num_env_per_adv: (i + 1) * num_env_per_adv, :])[:, 0]
+            matchup_key = select_matchup_env(self.matchups, network_keys[i], self.envs_per_matchup)
+            values[i * num_env_per_adv : (i+1)*num_env_per_adv] = self.value_net[matchup_key](latent_vf[i * num_env_per_adv: (i + 1) * num_env_per_adv, :])[:, 0]
             #values[i * num_env_per_adv : (i+1)*num_env_per_adv] = non_chunked[i * num_env_per_adv : (i+1)*num_env_per_adv, 0]
         #values = self.value_net(latent_vf)
         ctrl_distribution, dstb_distribution = self._get_action_dist_from_latent(latent_pi, latent_pi_dstb, network_keys=network_keys)
@@ -1691,7 +1700,8 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         dstb_mean_actions = th.zeros_like(mean_actions)
         num_env_per_adv = mean_actions.shape[0] // num_adversaries
         for i in range(num_adversaries):
-            dstb_mean_actions[i * num_env_per_adv : (i+1) * num_env_per_adv, :] = self.dstb_action_net[network_keys[i]](latent_pi_dstb[i * num_env_per_adv : (i+1) * num_env_per_adv, :])
+            matchup_key = select_matchup_env(self.matchups, network_keys[i], self.envs_per_matchup)
+            dstb_mean_actions[i * num_env_per_adv : (i+1) * num_env_per_adv, :] = self.dstb_action_net[matchup_key](latent_pi_dstb[i * num_env_per_adv : (i+1) * num_env_per_adv, :])
         if isinstance(self.action_dist, DiagGaussianDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std)
         elif isinstance(self.action_dist, CategoricalDistribution):
@@ -1712,10 +1722,11 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             raise ValueError("Invalid action distribution")
 
     def _get_action_dist_from_latent_nonuniform(self, latent_pi: th.Tensor, latent_pi_dstb: th.Tensor,
-                                                shuffle_keys, network_keys=None) -> [Distribution,
+                                                shuffle_keys, network_keys=None, envs_per_matchup: int=None) -> [Distribution,
                                                                   Distribution]:
         """
         Retrieve action distribution given the latent codes.
+        Note that envs_per_matchup comes with a default value of envs_per_matchup=None so it comes at the end so the signature doesn't change.
 
         :param latent_pi: Latent code for the actor
         :return: Action distribution
@@ -1730,13 +1741,16 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         num_per = mean_actions.shape[0] // num_adversaries
         full = [i for i in range(self.num_global_env)]
         adv_distros = []
+        if not envs_per_matchup:
+            raise ValueError(f"No envs_per_matchup is passed.")
         for i in range(num_adversaries):
             which_envs = range(i * num_env_per_adv, (i + 1) * num_env_per_adv)
             indices = np.isin(shuffle_keys, which_envs)
             this_env_latent_pi_dstb = latent_pi_dstb[indices]
-            self.dstb_action_net[network_keys[i]] = self.dstb_action_net[network_keys[i]].to(self.device)
+            matchup_key = select_matchup_env(self.matchups, network_keys[i], envs_per_matchup)
+            self.dstb_action_net[matchup_key] = self.dstb_action_net[matchup_key].to(self.device)
             # chunk = full[i * num_per : (i+1) * num_per]
-            this_adv_dstb_mean_actions = self.dstb_action_net[network_keys[i]](this_env_latent_pi_dstb)
+            this_adv_dstb_mean_actions = self.dstb_action_net[matchup_key](this_env_latent_pi_dstb)
 
             adv_distros.append(self.dstb_action_dist[network_keys[i]].proba_distribution(action_logits=this_adv_dstb_mean_actions))
 
@@ -1757,7 +1771,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         ctrl_dstro, dstb_dstro = self.get_distribution(observation, network_keys=network_keys)
         return ctrl_dstro.get_actions(deterministic=deterministic), [dstb_dstro[i].get_actions(deterministic=deterministic) for i in range(len(network_keys))]
 
-    def evaluate_actions(self, obs, actions: th.Tensor, dstb_actions: th.Tensor, shuffle_keys=None, network_keys=None) -> Tuple[
+    def evaluate_actions(self, obs, actions: th.Tensor, dstb_actions: th.Tensor, shuffle_keys=None, network_keys=None, envs_per_matchup: int=None) -> Tuple[
         th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
         """
         Evaluate actions according to the current policy,
@@ -1790,7 +1804,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             #latent_pi = latent_pi.unsqueeze(1)
             #latent_pi_dstb = latent_pi_dstb.unsqueeze(1)
             #latent_vf = latent_vf.unsqueeze(1)
-            ctrl_distribution, dstb_distribution = self._get_action_dist_from_latent_nonuniform(latent_pi, latent_pi_dstb, shuffle_keys=shuffle_keys, network_keys=network_keys)
+            ctrl_distribution, dstb_distribution = self._get_action_dist_from_latent_nonuniform(latent_pi, latent_pi_dstb, shuffle_keys=shuffle_keys, network_keys=network_keys, envs_per_matchup=envs_per_matchup)
             ctrl_log_prob = ctrl_distribution.log_prob(actions)
             #dstb_log_prob = th.zeros_like(ctrl_log_prob)
             #num_global_env = np.max(shuffle_keys) + 1 #TODO HACKY
@@ -1820,10 +1834,13 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         values = th.empty((latent_vf.shape[0],), device=self.device) #empty is a bit faster than zeros
         num_global_env = th.max(shuffle_keys) + 1 #latent_vf.shape[0] // self.num_adversaries
         num_env_per_adv = num_global_env // num_adversaries
+        if not envs_per_matchup:
+            raise ValueError(f"envs_per_matchup was not provided.")
         for i in range(num_adversaries):
             chunk = full[i * num_env_per_adv: (i + 1) * num_env_per_adv]
             indices = np.isin(shuffle_keys, chunk)
-            values[indices] = self.value_net[network_keys[i]](latent_vf[indices]).flatten()
+            matchup_key = select_matchup_env(self.matchups, network_keys[i], envs_per_matchup)
+            values[indices] = self.value_net[matchup_key](latent_vf[indices]).flatten()
             #values[i * chunk_size: (i + 1) * chunk_size] = non_chunked[
             #                                                         i * chunk_size: (i + 1) * chunk_size, 0]
         ctrl_entropy = ctrl_distribution.entropy()
@@ -1864,7 +1881,8 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         num_env_per_adv = latent_vf.shape[0] // self.num_adversaries
         values = th.zeros((latent_vf.shape[0],), device=self.device)
         for i in range(self.num_adversaries):
-            values[i * num_env_per_adv: (i + 1) * num_env_per_adv] = self.value_net[i](latent_vf[i * num_env_per_adv: (i + 1) * num_env_per_adv, :])[:, 0]
+            matchup_key = select_matchup_env(self.matchups, i, self.envs_per_matchup)
+            values[i * num_env_per_adv: (i + 1) * num_env_per_adv] = self.value_net[matchup_key](latent_vf[i * num_env_per_adv: (i + 1) * num_env_per_adv, :])[:, 0]
             #values[i * num_env_per_adv: (i + 1) * num_env_per_adv] = non_chunked[
             #                                                         i * num_env_per_adv: (i + 1) * num_env_per_adv, 0]
 
@@ -1957,8 +1975,12 @@ class ActorActorCriticCnnPolicy(ActorActorCriticPolicy):
             adversarial=True,
             dstb_action_space: spaces.Space = None,
             policy_memory_size: Optional[int] = None,
-            device='auto'
+            device='auto',
+            matchups=None,
+            envs_per_matchup=None,
     ):
+        self.matchups = matchups
+        self.envs_per_matchup = envs_per_matchup
         super().__init__(
             observation_space,
             action_space,
@@ -1979,7 +2001,6 @@ class ActorActorCriticCnnPolicy(ActorActorCriticPolicy):
             optimizer_kwargs,
             dstb_action_space=dstb_action_space,
             device=device
-
         )
 
     def forward(self, obs: th.Tensor, deterministic: bool = False) -> Tuple[
