@@ -919,6 +919,12 @@ class LeaguePPO(IPPO):
         else:
             raise ValueError("side should be 'left' or 'right'")
         self.side = side
+        self.current_opponent = None
+        self.constructor_fn = None
+        self.constructor_args = None        
+        self.current_opponent = None
+        self.constructor_fn = None
+        self.constructor_args = None        
 
         super().__init__(
             policy,
@@ -1181,6 +1187,23 @@ class LeaguePPO(IPPO):
     def set_steps(self, steps: int) -> None:
         self.num_timesteps = steps
 
+    def set_opponent_character(self, opponent_character: str) -> None:
+        """Recreate environment with new opponent character if needed."""
+        if hasattr(self, 'current_opponent') and self.current_opponent == opponent_character:
+            return
+        
+        self.current_opponent = opponent_character
+        # Close current environment
+        self.env.close()
+        # Recreate with new opponent
+        new_agent = self.constructor_fn(self.constructor_args, self.side, opponent=opponent_character, single_env=False)
+        self.env = new_agent.env
+        # Reset episode tracking
+        self._last_obs = None
+        self._last_episode_starts = None
+        # Recreate with new opponent
+        new_agent = self.constructor_fn(self.constructor_args, self.side, opponent=opponent_character, single_env=False)
+
     def get_parameters(self) -> Dict[str, Dict]:
         """
         Return the parameters of the agent. This includes parameters from different networks, e.g.
@@ -1194,7 +1217,6 @@ class LeaguePPO(IPPO):
         self.policy.to(self.device)
         self.policy_other.to(self.device)
         return params
-
 
 class MAGICS_PPO(OnPolicyAlgorithm):
     """

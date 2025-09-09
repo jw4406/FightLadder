@@ -1,8 +1,9 @@
-import os
+import os, sys
 import torch
 import argparse
 import multiprocessing
-multiprocessing.set_start_method('forkserver', force=True)
+# multiprocessing.set_start_method('forkserver', force=True)
+multiprocessing.set_start_method('spawn', force=True) #TODO: Changed it to spawn to help with CUDA, not sure if it works. Can revert back if needed.
 from multiprocessing import Process
 
 import retro
@@ -14,13 +15,20 @@ from common.retro_wrappers import SFWrapper, Monitor2P
 from common.league import PayoffManager, League, FSPLeague, PSROLeague, Learner
 
 
-STATE = "Champion.RyuVsRyu.2Player.align"
-#STATE = ["Champion.RyuVsRyu.2Player.align", "Champion.Level12.RyuVsBison.2Player", "Champion.Level13.RyuVsBison.2Player", "Champion.Level1.RyuVsRyu.2Player"]
+#TODO: Once this is working, add all characters.
+STATES = {
+        "ryu": "Champion.RyuVsRyu.2Player.align",
+        "guile": "Champion.Level1.RyuVsGuile", 
+        "bison": "Champion.Level12.RyuVsBison.2Player",
+}
+# STATE = "Champion.RyuVsRyu.2Player.align"
+# STATE = ["Champion.RyuVsRyu.2Player.align", "Champion.Level12.RyuVsBison.2Player", "Champion.Level13.RyuVsBison.2Player", "Champion.Level1.RyuVsRyu.2Player"]
 
 
-def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, seed=0):
+def make_env(game, opponent: str, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, seed=0):
     def _init():
         players = 2
+        state = STATES[opponent]
         env = retro.make(
             game=game, 
             state=state, 
@@ -49,12 +57,12 @@ def restore_worker(idx, learner, total_steps, rollout_opponent_num):
         learner.player._initial_weights = learner.player._initial_weights_restore # restore the initial weights to the reset weights
         learner.run(total_timesteps=total_steps, rollout_opponent_num=rollout_opponent_num, reset_num_timesteps=False) # NOTE: do not reset num_timesteps so that the timesteps are restored
 
-
-def constructor(args, side, log_name=None, single_env=False):
+#Added the default opponent so the opponent can be added to the end to not change the order of varaibles.
+def constructor(args, side, log_name=None, single_env=False, opponent: str="ryu"):
     num_env = 1 if single_env else args.num_env
-    env = [make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=i) for i in range(num_env)]
+    env = [make_env(sf_game, opponent=opponent, side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=i) for i in range(num_env)]
     env = VecTransposeImage2P(SubprocVecEnv2P(env))
-    return LeaguePPO(
+    league_ppo = LeaguePPO(
         side,
         "CnnPolicy", 
         env,
@@ -70,6 +78,9 @@ def constructor(args, side, log_name=None, single_env=False):
         # seed=args.seed,
         other_learning_rate=1e-4, # other_lr_schedule,
     )
+    league_ppo.constructor_args = args
+    league_ppo.current_opponent = opponent
+    return league_ppo
 
 
 def main():
@@ -114,9 +125,15 @@ def main():
     # os.makedirs(args.video_dir, exist_ok=True)
     # os.makedirs(args.finetune_dir, exist_ok=True)
 
-    left_model = constructor(args, "left", log_name=None, single_env=True)
-    right_model = constructor(args, "right", log_name=None, single_env=True)
+    opponent_names = ["ryu", "guile", "bison"] #TODO: Add all characters when done testing. Make sure all states are installed (Right now I don't have all characters e.g. I don't have Ryu vs Ken).
+    right_models = {}
+    for opponent in opponent_names:
+        right_models[opponent] = constructor(args, "right", log_name=None, single_env=True, opponent=opponent)
 
+    left_model = constructor(args, "left", log_name=None, single_env=True)
+
+    #TODO: This should fail because right_model is no longer set.
+    #TODO To Justin - what do you want to do with this block?
     if args.left_model_file and args.right_model_file:
         print("load model from " + args.left_model_file + " and " + args.right_model_file)
         left_model.set_parameters_2p(args.left_model_file, args.right_model_file)
@@ -124,7 +141,7 @@ def main():
     
     initial_agents = {
         'left': left_model,
-        'right': right_model,
+        'right': right_models, #NOTE: This is no longer a single model
     }
     
     with PayoffManager() as manager:
@@ -135,17 +152,29 @@ def main():
             league = PSROLeague(args=args, initial_agents=initial_agents, constructor=constructor, payoff=shared_payoff, main_agents=1)
         else:
             league = League(args=args, initial_agents=initial_agents, constructor=constructor, payoff=shared_payoff, main_agents=1, main_exploiters=1, league_exploiters=2)
-        processes = []
+        
+        #TODO: DEBUGGING ONLY!!! This is serial method for debugging instead of multipcroessing.
+        #For some reason, it works but the parallel version doesn't.
+        #After the debugging is done, return to multiprocessing.
         for idx in range(league.size()):
             player = league.get_player(idx)
+            # player.constructor_fn = constructor #TODO: Delete when done
             learner = Learner(player)
-            process = Process(target=worker, args=(idx, learner, args.total_steps, args.rollout_opponent_num))
-            # process.daemon=True  # all processes closed when the main stops
-            processes.append(process)
-        for p in processes:
-            p.start()
-        for p in processes:
-            p.join()
+            worker(idx, learner, args.total_steps, args.rollout_opponent_num)
+        
+        # TODO: This is the parallel version that doesn't work for some reason. Uncomment this block when done debugging the serial version.
+        # processes = []
+        # for idx in range(league.size()):
+        #     player = league.get_player(idx)
+        #     # player.constructor_fn = constructor #TODO: Delete when done
+        #     learner = Learner(player)
+        #     process = Process(target=worker, args=(idx, learner, args.total_steps, args.rollout_opponent_num))
+        #     # process.daemon=True  # all processes closed when the main stops
+        #     processes.append(process)
+        # for p in processes:
+        #     p.start()
+        # for p in processes:
+        #     p.join()
 
 
 def restore():
