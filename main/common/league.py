@@ -5,8 +5,10 @@ from copy import deepcopy
 from datetime import datetime
 from functools import partial
 from multiprocessing.managers import BaseManager
+from typing import Tuple
 
 from stable_baselines3.common.type_aliases import MaybeCallback
+from utils import find_character_name
 
 from .const import *
 from .algorithms import LeaguePPO
@@ -343,11 +345,13 @@ class Player(object):
         self.agent = self.constructor(self.args, self.side, log_name=self.name)
         self.agent.set_parameters(self._initial_weights)
         self.agent.set_steps(self._checkpoint_step)
+        self.agent.constructor_fn = self.constructor #Need to assign a constructor function - do NOT delete!
     
     def get_parameters(self):
         return self._initial_weights if self.agent is None else self.agent.get_parameters()
 
-    def get_match(self) -> 'Player':
+    def get_match(self) -> Tuple['Player', str, bool]:
+        """Return (opponent_player, opponent_character, is_training)"""
         pass
 
     def ready_to_checkpoint(self):
@@ -356,6 +360,11 @@ class Player(object):
     def _create_checkpoint(self):
         return Historical(f"{self.name}_historical_step_{self._checkpoint_step}", self.side, self.constructor, self.args, None, None, self.name, agent_dict=self.get_parameters(), checkpoint_step=0)
 
+    @property
+    def character_name(self) -> str:
+        """Extract character from player name (assumes format like 'MA0_right_ryu')"""
+        return find_character_name(self.name)
+    
     @property
     def payoff(self):
         return self._payoff
@@ -452,7 +461,8 @@ class MainPlayer(Player):
 
         # Make sure you can beat the League
         if coin_toss < 0.5:
-            return self._pfsp_branch()
+            opponent, is_training = self._pfsp_branch()
+            return opponent, opponent.character_name, is_training
 
         main_opponents = self._payoff.get_names("right", MainPlayer) if self.side == "left" else self._payoff.get_names("left", MainPlayer)
         opponent = np.random.choice(main_opponents)
@@ -461,9 +471,11 @@ class MainPlayer(Player):
         if coin_toss < 0.5 + 0.15:
             request = self._verification_branch(opponent)
             if request is not None:
-                return request
+                opponent, is_training = request
+                return opponent, opponent.character_name, is_training
 
-        return self._selfplay_branch(opponent)
+        opponent, is_training = self._selfplay_branch(opponent)
+        return opponent, opponent.character_name, is_training
 
     def ready_to_checkpoint(self):
         steps_passed = self.agent.get_steps() - self._checkpoint_step
@@ -486,6 +498,7 @@ class MainExploiter(Player):
         super().__init__(name, side, constructor, args, agent, payoff, agent_dict, checkpoint_step)
 
     def get_match(self):
+        is_training = True
         coin_toss = np.random.random()
 
         main_opponents = self._payoff.get_names("right", MainPlayer) if self.side == "left" else self._payoff.get_names("left", MainPlayer)
@@ -493,13 +506,14 @@ class MainExploiter(Player):
 
         win_rate = self._payoff.get_item(self.name, opponent, "left") if self.side == "left" else self._payoff.get_item(opponent, self.name, "right")
         if coin_toss < 0.5 or win_rate > 0.1:
-            return self.get_player_by_name(opponent), True
+            return self.get_player_by_name(opponent), is_training
 
         historical_opponents = self._payoff.get_names("right", Historical, opponent) if self.side == "left" else self._payoff.get_names("left", Historical, opponent)
         win_rates = self._payoff.get_item(self.name, historical_opponents, "left") if self.side == "left" else self._payoff.get_item(historical_opponents, self.name, "right")
 
-        return self.get_player_by_name(np.random.choice(
-            historical_opponents, p=pfsp(win_rates, weighting="variance"))), True
+        opponent = self.get_player_by_name(np.random.choice(
+            historical_opponents, p=pfsp(win_rates, weighting="variance"))), is_training
+        return opponent, opponent.character_name, is_training
 
     def checkpoint(self):
         self._checkpoint_step = self.agent.get_steps()
@@ -525,8 +539,10 @@ class LeagueExploiter(Player):
     def get_match(self):
         historical_opponents = self._payoff.get_names("right", Historical) if self.side == "left" else self._payoff.get_names("left", Historical)
         win_rates = self._payoff.get_item(self.name, historical_opponents, "left") if self.side == "left" else self._payoff.get_item(historical_opponents, self.name, "right")
-        return self.get_player_by_name(np.random.choice(
+        opponent = self.get_player_by_name(np.random.choice(
             historical_opponents, p=pfsp(win_rates, weighting="linear_capped"))), True
+        is_training = True
+        return opponent, opponent.character_name, is_training
 
     def checkpoint(self):
         self._checkpoint_step = self.agent.get_steps()
@@ -577,17 +593,32 @@ class League(object):
         else:
             self._payoff = payoff
         self._learning_agents = []
-        for side in initial_agents:
+
+        #Left model (single model - in the future it might be multiple models)
+        for idx in range(main_agents):
+            main_agent = MainPlayer(f"MA{idx}_left", "left", constructor, args, initial_agents["left"], self._payoff)
+            self._learning_agents.append(main_agent)
+            self.add_player(main_agent.checkpoint())
+        for idx in range(main_exploiters):
+            self._learning_agents.append(
+                MainExploiter(f"ME{idx}_left", "left", constructor, args, initial_agents["left"], self._payoff))
+        for idx in range(league_exploiters):
+            self._learning_agents.append(
+                LeagueExploiter(f"LE{idx}_left", "left", constructor, args, initial_agents["left"], self._payoff))      
+
+        #Right model (multiple models)
+        # for side in initial_agents:
+        for char, model in initial_agents["right"].items():
             for idx in range(main_agents):
-                main_agent = MainPlayer(f"MA{idx}_{side}", side, constructor, args, initial_agents[side], self._payoff)
+                main_agent = MainPlayer(f"MA{idx}_right_{char}", "right", constructor, args, model, self._payoff)
                 self._learning_agents.append(main_agent)
                 self.add_player(main_agent.checkpoint())
             for idx in range(main_exploiters):
                 self._learning_agents.append(
-                    MainExploiter(f"ME{idx}_{side}", side, constructor, args, initial_agents[side], self._payoff))
+                    MainExploiter(f"ME{idx}_right_{char}", "right", constructor, args, model, self._payoff))
             for idx in range(league_exploiters):
                 self._learning_agents.append(
-                    LeagueExploiter(f"LE{idx}_{side}", side, constructor, args, initial_agents[side], self._payoff))
+                    LeagueExploiter(f"LE{idx}_right_{char}", "right", constructor, args, model, self._payoff))
         for player in self._learning_agents:
             self.add_player(player)
 
@@ -613,8 +644,10 @@ class FSPPlayer(Player):
 
     def get_match(self):
         historical_opponents = self._payoff.get_names("right", Historical) if self.side == "left" else self._payoff.get_names("left", Historical)
-        return self.get_player_by_name(np.random.choice(
+        opponent = self.get_player_by_name(np.random.choice(
             historical_opponents)), True
+        is_training = True
+        return opponent, opponent.character_name, is_training
 
     def ready_to_checkpoint(self):
         steps_passed = self.agent.get_steps() - self._checkpoint_step
@@ -660,8 +693,10 @@ class PSROPlayer(Player):
 
     def get_match(self):
         historical_opponents, mixed_weights = self._payoff.get_historical_nash("right") if self.side == "left" else self._payoff.get_historical_nash("left")
-        return self.get_player_by_name(np.random.choice(
+        opponent = self.get_player_by_name(np.random.choice(
             historical_opponents, p=mixed_weights)), True
+        is_training = True
+        return opponent, opponent.character_name, is_training
 
     def ready_to_checkpoint(self):
         steps_passed = self.agent.get_steps() - self._checkpoint_step
@@ -783,7 +818,27 @@ class Learner:
         progress_bar: bool = False,
     ):
         def get_kwargs():
-            opponent, _ = self.player.get_match()
+            opponent, character, _ = self.player.get_match()
+            # Set the environment to match against this opponent character
+            self.player.agent.set_opponent_character(character)
+            print(f"[Learner] Self({self.player.name}) vs Opponent({opponent.name}) - Character: {character}")
+            if self.player.side == "left":
+                kwargs =    {
+                            "policy_other": opponent.agent.policy_other,
+                            "coordinate_fn": partial(self.player.send_outcome, opponent.name),
+                            "sync_fn": self.player.sync,
+                            } 
+            else: 
+                kwargs =    {
+                            "policy": opponent.agent.policy,
+                            "coordinate_fn": partial(self.player.send_outcome, opponent.name),
+                            "sync_fn": self.player.sync,
+                            }
+            return kwargs        
+        
+        def get_kwargs():
+            opponent, character, _ = self.player.get_match()
+            self.player.agent.set_opponent_character(character)
             print(f"[Learner] Self({self.player.name}) vs Opponent({opponent.name})")
             kwargs = {
                 "policy_other": opponent.agent.policy_other,

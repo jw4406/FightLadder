@@ -1,5 +1,8 @@
 import torch
 from typing import List
+import warnings
+
+CHARACTERS = ["ryu", "guile", "bison"] #TODO: Add all characters
 
 def agent_win(info: dict) -> bool:
     """
@@ -77,3 +80,19 @@ def select_matchup_env(matchups: List[str], i: int, envs_per_matchup: int) -> st
     """This function generates a key string of the format f'<matchup>_{i}'."""
     curr_matchup = matchups[i*envs_per_matchup]
     return f"{curr_matchup}_{i}"
+
+def find_character_name(s: str) -> str:
+    """
+    This function looks for a character name in a string.
+    WARNING: If there are more than 1 character in the string, returns an arbitrary one.
+    Returns an empty string if no character name is found.
+    """
+    res = ""
+    for character in CHARACTERS:
+        if character in s:
+            if res:
+                warnings.warn(f"Found multiple character names in {s}.")
+            res = character
+    if not res:
+        warnings.warn(f"Could not find a character name in {s}.")
+    return res
