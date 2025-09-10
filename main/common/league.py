@@ -346,6 +346,7 @@ class Player(object):
         self.agent.set_parameters(self._initial_weights)
         self.agent.set_steps(self._checkpoint_step)
         self.agent.constructor_fn = self.constructor #Need to assign a constructor function - do NOT delete!
+        self.agent.constructor_args = self.args
     
     def get_parameters(self):
         return self._initial_weights if self.agent is None else self.agent.get_parameters()
@@ -512,7 +513,7 @@ class MainExploiter(Player):
         win_rates = self._payoff.get_item(self.name, historical_opponents, "left") if self.side == "left" else self._payoff.get_item(historical_opponents, self.name, "right")
 
         opponent = self.get_player_by_name(np.random.choice(
-            historical_opponents, p=pfsp(win_rates, weighting="variance"))), is_training
+            historical_opponents, p=pfsp(win_rates, weighting="variance")))
         return opponent, opponent.character_name, is_training
 
     def checkpoint(self):
@@ -835,20 +836,5 @@ class Learner:
                             "sync_fn": self.player.sync,
                             }
             return kwargs        
-        
-        def get_kwargs():
-            opponent, character, _ = self.player.get_match()
-            self.player.agent.set_opponent_character(character)
-            print(f"[Learner] Self({self.player.name}) vs Opponent({opponent.name})")
-            kwargs = {
-                "policy_other": opponent.agent.policy_other,
-                "coordinate_fn": partial(self.player.send_outcome, opponent.name),
-                "sync_fn": self.player.sync,
-            } if self.player.side == "left" else {
-                "policy": opponent.agent.policy,
-                "coordinate_fn": partial(self.player.send_outcome, opponent.name),
-                "sync_fn": self.player.sync,
-            }
-            return kwargs
         
         self.player.agent.learn(total_timesteps, rollout_opponent_num, callback, log_interval, tb_log_name, reset_num_timesteps, progress_bar, get_kwargs)

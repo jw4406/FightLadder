@@ -1201,8 +1201,6 @@ class LeaguePPO(IPPO):
         # Reset episode tracking
         self._last_obs = None
         self._last_episode_starts = None
-        # Recreate with new opponent
-        new_agent = self.constructor_fn(self.constructor_args, self.side, opponent=opponent_character, single_env=False)
 
     def get_parameters(self) -> Dict[str, Dict]:
         """
