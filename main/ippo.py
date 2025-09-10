@@ -790,7 +790,11 @@ def main(PLAYER):
             #                   "epochs": 0})
             model.learn(
                 total_timesteps=args.total_steps,
+<<<<<<< HEAD
                 #callback=[checkpoint_callback, file_queue_callback]
+=======
+                callback=[checkpoint_callback, file_queue_callback]
+>>>>>>> d238d550cca67e453ec10e155bc77fd651cf8a92
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)
         for i in range(len(model.adversaries)):
