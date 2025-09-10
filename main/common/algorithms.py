@@ -3756,7 +3756,9 @@ class Specialized_Agent_IPPO(Derivative_Free_SPAR):
             n_env_per_adv=n_env_per_adv,
             warmstarted_cont_MAGICS=warmstarted_cont_MAGICS,
             opp_list=opp_list,
-            use_mirror=use_mirror
+            use_mirror=use_mirror,
+            state_list=state_list,
+            envs_per_matchup=envs_per_matchup
         )
         self.vf_coef = .5
         self.state_len = state_len
@@ -4539,6 +4541,7 @@ class Specialized_Agent_IPPO(Derivative_Free_SPAR):
 
     def update(self, rollout_buffer, ori_policy, ego, clip_range):
         #network_keys, curr_buf = self._get_buffers_and_keys(rollout_buffer, ego)
+        entropy_losses, pg_losses, approx_kl_divs_all = [], [], []
         for epoch in range(self.n_epochs):
 
             num_runs_count = 1 if ego else self.num_adversaries
@@ -4549,11 +4552,18 @@ class Specialized_Agent_IPPO(Derivative_Free_SPAR):
                     policy_loss, log_prob, entropy = self._calculate_policy_loss(
                             ori_rollout_data, ori_policy, ego, network_keys, clip_range
                         )
+                    entropy_losses.append(entropy)
+                    pg_losses.append(policy_loss)
+                    #approx_kl_divs_all.append(approx_kl_div)
                     optimizer = self.policy.ctrl_optimizer if ego else self.policy.dstb_optimizer
                     optimizer.zero_grad()
                     policy_loss.backward()
                     th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                     optimizer.step()
+                    with th.no_grad():
+                        log_ratio = log_prob - ori_rollout_data.old_log_prob if ego else log_prob - ori_rollout_data.old_dstb_log_prob
+                        approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
+                        approx_kl_divs_all.append(approx_kl_div)
                     value_loss = self._update_value_functions(ori_rollout_data, ego, network_keys, clip_range)
                     # need to update value functions here 
                 #self.policy.value_optimizer.step()

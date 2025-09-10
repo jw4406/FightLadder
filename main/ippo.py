@@ -335,14 +335,14 @@ def main(PLAYER):
     # PLAYER = "Blanka"  # "Blanka
 
     global REMOVAL
-    use_mirror = True
+    use_mirror = False
     
     REMOVAL = None
     if use_mirror is True:
         OPPONENT_LIST = ["Guile"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
-        OPPONENT_LIST = ["Guile", "EHonda", "Sagat","ChunLi"]#, "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
+        OPPONENT_LIST = ["Guile"]#", "Sagat","ChunLi"]#, "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
     
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'],
@@ -373,7 +373,7 @@ def main(PLAYER):
                         help='Initial level to load from. By default 0, starting from pretrain', default=0)
     parser.add_argument('--resume-epoch', type=int, help='Resume epoch. By default 0, starting from pretrain',
                         default=0)
-    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=8)
+    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=4)
     parser.add_argument('--enable-combo', action='store_true', help='Enable special move action space for environment')
     parser.add_argument('--null-combo', action='store_true', help='Null action space for special move')
     parser.add_argument('--transform-action', action='store_true', help='Transform action space to MultiDiscrete')
@@ -487,7 +487,7 @@ def main(PLAYER):
         return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
 
-    checkpoint_interval = 1000 # checkpoint_interval * num_envs = total_steps_per_checkpoint
+    checkpoint_interval = 10000 # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
                                  other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
@@ -554,11 +554,11 @@ def main(PLAYER):
             device="cuda",
             verbose=2,
             n_steps=num_steps,  # 1408,
-            batch_size=int(num_steps * len(state_list) / 10),  # 2816,  # 512,
+            batch_size=int(num_steps * len(state_list)),  # 2816,  # 512,
             n_epochs=5,
             gamma=0.94,
-            v_learning_rate=5e-3, c_learning_rate=1e-4,
-            d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            v_learning_rate=1e-3, c_learning_rate=5e-4,
+            d_learning_rate=0.0, v_learning_rate_decay=critic_decay_schedule(1e-3),
             c_learning_rate_decay=critic_decay_schedule(1e-4),
             d_learning_rate_decay=critic_decay_schedule(5e-4),
             clip_range=clip_range_schedule,
@@ -790,7 +790,7 @@ def main(PLAYER):
             #                   "epochs": 0})
             model.learn(
                 total_timesteps=args.total_steps,
-                callback=[checkpoint_callback, file_queue_callback]
+                #callback=[checkpoint_callback, file_queue_callback]
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)
         for i in range(len(model.adversaries)):

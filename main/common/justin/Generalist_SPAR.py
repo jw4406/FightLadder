@@ -532,7 +532,8 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             adversary_buffers[i].episode_starts = adversary_buffers[i].episode_starts.to(self.device, non_blocking=True)
             adversary_buffers[i].vectorized_compute_returns_and_advantages(last_values=-values[chunk],
                                                                              dones=torch.Tensor(dones[chunk]).to(self.device))
-
+        print(f"[DEBUG @ GAE]: Ego advantages mean: {rollout_buffer.advantages.mean().item():.4f}")
+        print(f"[DEBUG @ GAE]: Adv[0] advantages mean: {adversary_buffers[0].advantages.mean().item():.4f}")
         callback.on_rollout_end()
 
         rollout_buffer.prepare_data_for_training()

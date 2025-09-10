@@ -24,8 +24,9 @@ from utils import agent_win, select_device
 current_dir = os.path.dirname(os.path.abspath(__file__))
 print(current_dir)
 TASK_DIR = os.path.join(current_dir, "trained_models/tasks")
-PROCESSING_DIR = os.path.join(current_dir, "trained_models/processing")
-DONE_DIR = os.path.join(current_dir, "trained_models/done")
+PROCESSING_DIR = os.path.join(current_dir, "trained_models/tasks/processing")
+DONE_DIR = os.path.join(current_dir, "trained_models/tasks/done")
+ERROR_DIR = os.path.join(current_dir, "trained_models/tasks/error")
 BR_MODEL_DIR = os.path.join(current_dir, "trained_models/br_models")
 WR_STATS_DIR = os.path.join(current_dir, "trained_models/wr_stats")
 MEAN_REW_STATS_DIR = os.path.join(current_dir, "trained_models/mean_rew_stats")
@@ -35,6 +36,7 @@ os.makedirs(PROCESSING_DIR, exist_ok=True)
 os.makedirs(DONE_DIR, exist_ok=True)
 os.makedirs(WR_STATS_DIR, exist_ok=True)
 os.makedirs(MEAN_REW_STATS_DIR, exist_ok=True)
+os.makedirs(ERROR_DIR, exist_ok=True)
 
 if not os.listdir(TASK_DIR):
     print("Warning: The TASK_DIR is empty. Please run ippo.py --player PLAYER to generate a task file.")
@@ -273,7 +275,7 @@ def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module
                 rew_arr.append(joined_win_rew[1])
                 #win_count += evaluate_single_iter_prot_prot(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
             else:
-                assert use_mirror is True
+                #assert use_mirror is True
                 joined_win_rew = evaluate_single_iter_prot_adv(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
                 win_count += joined_win_rew[0]
                 rew_arr.append(joined_win_rew[1])
@@ -516,9 +518,46 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool) 
     ) """
     env = env_generator()
     env.num_envs = 1 # HACKY FOR NOW!
-    ftm = Derivative_Free_SPAR.load(checkpoint_path, env=env)
-    if ftm.policy.num_env_per_adv is None:
-        ftm.policy.num_env_per_adv = ftm.envs_per_matchup
+    try:
+        ftm = Derivative_Free_SPAR.load(checkpoint_path, env=env)
+        if ftm.policy.num_env_per_adv is None:
+            ftm.policy.num_env_per_adv = ftm.envs_per_matchup
+    except Exception as e:
+        data, params, pytorch_variables = load_from_zip_file(
+            checkpoint_path)
+        ftm = Derivative_Free_SPAR(
+            "AACCnnPolicy",
+            env,
+            env_batch_size=16,
+            envs_per_matchup=4,
+            state_len=len(STATE),
+            device="cuda",
+            verbose=2,
+            n_steps=96,  # 1408,
+            batch_size=48,  # 2816,  # 512,
+            n_epochs=5,
+            gamma=0.94,
+            v_learning_rate=5e-4, c_learning_rate=1e-5,
+            d_learning_rate=5e-5, v_learning_rate_decay=critic_decay_schedule(1e-3),
+            c_learning_rate_decay=critic_decay_schedule(1e-4),
+            d_learning_rate_decay=critic_decay_schedule(5e-4),
+            clip_range=linear_schedule(0.075, 0.025),
+            tensorboard_log='logs',
+            seed=0,
+            ent_coef=.01,
+            dstb_ent_coef=.01,
+            I_AM_LEFT=True,
+            I_AM_RIGHT=False,
+            num_adversary=1,
+            n_global_env=4,
+            n_env_per_adv=4,
+            opp_list=[PLAYER],
+            player='_'.join(PLAYER),
+            use_mirror=use_mirror,
+            env_generator_func=env_generator,
+            state_list=STATE,
+        )
+        ftm.set_parameters(params, exact_match=True, device=ftm.device)
     use_mirror = ftm.use_mirror
     
     #OVERRIDEN HERE
@@ -613,6 +652,7 @@ if __name__ == "__main__":
     wandb.login(key='d95a51c4001b862123a34a3853fe0306906d2f07')
     todo_dir = os.path.join(TASK_DIR, "todo")
     processing_dir = os.path.join(TASK_DIR, "processing")
+    error_dir = os.path.join(TASK_DIR, "error")
     done_dir = os.path.join(TASK_DIR, "done")
     stop_file = os.path.join(TASK_DIR, "STOP")
     curr_dir = os.path.dirname(os.path.abspath(__file__))
@@ -637,6 +677,7 @@ if __name__ == "__main__":
         task_filename = random.choice(tasks)
         todo_path = os.path.join(todo_dir, task_filename)
         processing_path = os.path.join(processing_dir, task_filename)
+        error_path = os.path.join(error_dir, task_filename)
 
         try:
             # Atomically move the task file to claim it
@@ -656,7 +697,7 @@ if __name__ == "__main__":
             print(f"WORKER [{os.getpid()}]: A critical error occurred. Error: {e}")
             # Move the failed task back to todo or to an error folder
             try:
-                os.rename(processing_path, todo_path)
+                os.rename(processing_path, error_path)
             except:
                 pass
 
