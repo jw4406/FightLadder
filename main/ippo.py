@@ -7,6 +7,7 @@ import argparse
 import numpy as np
 from PIL import Image
 import copy
+from common.justin.bare_derivative_free_spar import BareDerivativeFreeSPAR
 
 import retro
 from stable_baselines3.common.callbacks import CheckpointCallback, SACheckpointCallback, FileQueueTriggerCallback
@@ -784,23 +785,19 @@ def main(PLAYER):
             #if hasattr(model, "num_adversaries"):
             #    for i in range(model.num_adversaries):
             #        model.adversaries[i]._setup_learn(model.adversaries[i].num_timesteps)
-            #wandb.init(project="baseline_cheetah_20_dseeu",
-            #           entity='jw4406',
-            #           config={"eval_rew": 0,
-            #                   "epochs": 0})
+            wandb.init(project="dfs_ego_only",
+                       entity='jw4406',
+                       config={"eval_rew": 0,
+                               "epochs": 0})
             model.learn(
                 total_timesteps=args.total_steps,
-<<<<<<< HEAD
                 #callback=[checkpoint_callback, file_queue_callback]
-=======
-                callback=[checkpoint_callback, file_queue_callback]
->>>>>>> d238d550cca67e453ec10e155bc77fd651cf8a92
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)
-        for i in range(len(model.adversaries)):
-            model.adversaries[i].save("enemy_policy_%d.pt" % i)
-        model.adversaries = []
-        model.save(finetune_epoch_model_path)
+        # for i in range(len(model.adversaries)):
+        #     model.adversaries[i].save("enemy_policy_%d.pt" % i)
+        # model.adversaries = []
+        # model.save(finetune_epoch_model_path)
     else:
         state_list = ['two_player/EHonda_left/Champion.Level1.EHondaVsEHonda.2Player.state']
         for i in range(len(state_list)):

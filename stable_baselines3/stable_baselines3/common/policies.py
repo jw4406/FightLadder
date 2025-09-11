@@ -1457,7 +1457,7 @@ class ActorActorCriticGeneralistPolicy(ActorActorCriticPolicy):
                 joint_schedule[0](1), **self.optimizer_kwargs)
         else:
             self.ctrl_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.policy_net.parameters(), self.pi_ctrl_features_extractor.parameters(),self.action_net.parameters()), joint_schedule[0](1),maximize=True)
-            self.dstb_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.dstb_net.parameters(), self.pi_dstb_features_extractor.parameters(), self.dstb_action_net.parameters()), joint_schedule[1](1), maximize=True)
+            self.dstb_optimizer = self.optimizer_class(itertools.chain(self.mlp_extractor.dstb_net.parameters(), self.pi_dstb_features_extractor.parameters(), self.dstb_action_net.parameters()), joint_schedule[1](1), maximize=False)
             self.extractor_and_trunk_length = 12
             assert self.extractor_and_trunk_length == 12 and len(self.mlp_extractor.dstb_net) + len(self.pi_dstb_features_extractor.cnn) + len(self.pi_dstb_features_extractor.linear) == 13
             #self.value_optimizer = self.optimizer_class(
@@ -1739,7 +1739,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         num_env_per_adv = self.num_env_per_adv
         dstb_mean_actions = th.zeros_like(mean_actions)
         num_per = mean_actions.shape[0] // num_adversaries
-        full = [i for i in range(self.num_global_env)]
+        #full = [i for i in range(self.num_global_env)]
         adv_distros = []
         if not envs_per_matchup:
             raise ValueError(f"No envs_per_matchup is passed.")

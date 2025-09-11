@@ -8,6 +8,7 @@ import numpy as np
 import pickle
 from gym import spaces
 import math
+import wandb
 import random
 from typing import List
 from copy import deepcopy
@@ -86,7 +87,7 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
             all_actions.append(torch.Tensor(rollout_data.actions))
             all_dstb_actions.append(torch.Tensor(rollout_data.dstb_actions))
             all_observations.append(rollout_data.observations)
-            all_returns.append(torch.Tensor(-rollout_data.returns))
+            all_returns.append(torch.Tensor(rollout_data.returns))
             all_env_indices.extend(rollout_data.env_indices)
         
         actions_batch = torch.cat(all_actions).to(device)
@@ -893,10 +894,10 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                         # recall right now that rew = (r, r, r, r, r, r)^T in BOTH cases! (mirror or not)
 
                         # so we flip every element 
-                        adv_vertical_batch_rewards[matchup_idx][count, local_env_idx] = -rewards[j]
+                        adv_vertical_batch_rewards[matchup_idx][count, local_env_idx] = rewards[j]
                         #adv_vertical_batch_dones[matchup_idx][count, local_env_idx] = dones[j]
                         adv_vertical_batch_log_probs[matchup_idx][count, local_env_idx] = log_probs[j]
-                        adv_vertical_batch_values[matchup_idx][count, local_env_idx] = -all_adv_critic_values[j]
+                        adv_vertical_batch_values[matchup_idx][count, local_env_idx] = all_adv_critic_values[j]
                         adv_vertical_batch_dstb_log_probs[matchup_idx][count, local_env_idx] = s_dstb_log_probs[j]
                         adv_vertical_batch_last_ep_starts[matchup_idx][count, local_env_idx] = th.from_numpy(self._last_episode_starts)[j]
                         #last_ep_starts[global_env_idx] = th.from_numpy(np.round(dones[j]).astype(bool))
@@ -983,7 +984,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             end_idx = (i + 1) * self.envs_per_matchup
             adv_last_values = values[start_idx:end_idx]
             adv_dones = final_dones_all_envs[start_idx:end_idx]
-            adversary_buffers[i].vectorized_compute_returns_and_advantages(last_values=-adv_last_values, dones=adv_dones)
+            adversary_buffers[i].vectorized_compute_returns_and_advantages(last_values=adv_last_values, dones=adv_dones)
         
         callback.on_rollout_end()
 
@@ -1011,7 +1012,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 test.policy.value_net[matchup_key] = test.policy.value_net[matchup_key].to(test.device)
                 test.policy.dstb_action_net[matchup_key] = test.policy.dstb_action_net[matchup_key].to(test.device)
         test.policy.ctrl_optimizer = self.policy.optimizer_class(test.policy.ctrl_optimizer.param_groups[0]['params'], maximize=True)
-        test.policy.dstb_optimizer = self.policy.optimizer_class(test.policy.dstb_optimizer.param_groups[0]['params'], maximize=True)
+        test.policy.dstb_optimizer = self.policy.optimizer_class(test.policy.dstb_optimizer.param_groups[0]['params'], maximize=False)
         test.policy.value_optimizer = self.policy.optimizer_class(test.policy.value_optimizer.param_groups[0]['params'])
         for i in range(len(self.adversary_buffers)):
             self.adversary_buffers[i].reset()
@@ -1331,6 +1332,14 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 batch_loop_end_time = time.time()
                 if TIMING:
                     print(f"          [Timing] Batch processing loop ({'ego' if ego else 'adv'} run {i}): {batch_loop_end_time - batch_loop_start_time:.4f}s")
+                
+                if self.target_kl is not None and np.mean(approx_kl_divs_epoch) > 1.5 * self.target_kl:
+                    if ego:
+                        print(f"Early stopping at epoch {j}, adversary {i} due to reaching max KL divergence for ego policy.")
+                    else:
+                        print(f"Early stopping at epoch {j}, adversary {i} due to reaching max KL divergence for adversary policy.")
+                    break
+
                 approx_kl_divs_all.extend(approx_kl_divs_epoch)
                 run_end_time = time.time()
                 if TIMING:
@@ -1407,9 +1416,9 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         if ego is False:
             assert adv_num is not None
         if ego:
-            F = -self.d / self.delta * (perturbed_policy_loss - policy_loss) * self.ego_v
+            F = self.d / self.delta * (perturbed_policy_loss - policy_loss) * self.ego_v
         else:
-            F = -self.d / self.delta * (perturbed_policy_loss - policy_loss) * self.adv_v
+            F = self.d / self.delta * (perturbed_policy_loss - policy_loss) * self.adv_v
         #if not ego:
         print(f"[DEBUG @ apply_grads]: (pert_loss - policy_loss) = {(perturbed_policy_loss - policy_loss).item():.4f}")
         print(f"[DEBUG @ apply_grads]: Final gradient F mean: {F.mean().item():.4f}")
@@ -1531,7 +1540,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                     if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
                         rews.append(safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
                         self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                        #wandb.log({"eval_rew": safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])})
+                        wandb.log({"eval_rew": safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])})
                         self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                     self.logger.record("time/fps", fps)
                     self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
@@ -1598,7 +1607,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 len_chunk_to_scan = len(values) // self.rollout_buffer.buffer_size
                 #self.adversary_buffers[i].values[] = values[j * pointer : j * (pointer + grabs_per_rep)]
                 curr_chunk = values[len_chunk_to_scan * j : len_chunk_to_scan * (j + 1)]
-                adv_bufs[i].values[j * grabs_per_rep : (j+1) * grabs_per_rep] = -curr_chunk[pointer : pointer + grabs_per_rep]
+                adv_bufs[i].values[j * grabs_per_rep : (j+1) * grabs_per_rep] = curr_chunk[pointer : pointer + grabs_per_rep]
             
             adv_bufs[i].values =adv_bufs[i].values.reshape(self.adversary_buffers[i].buffer_size, grabs_per_rep)
             adv_bufs[i].dones = adv_bufs[i].dones.reshape(self.adversary_buffers[i].buffer_size, grabs_per_rep)
