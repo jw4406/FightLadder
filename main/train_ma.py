@@ -44,6 +44,9 @@ def make_env(game, opponent: str, side, reset_type, rendering, init_level=1, sta
 
 
 def worker(idx, learner, total_steps, rollout_opponent_num):
+    print(f"Starting worker for {learner.player.name} (type: {type(learner.player).__name__})") #TODO: DEBUG ONLY! Remove when done
+    print(f"Agent exists: {learner.player.agent is not None}") #TODO: DEBUG ONLY! Remove when done
+
     print(f"worker {learner.player.name} start")
     with torch.cuda.device(idx % torch.cuda.device_count()):
         learner.player.construct_agent()
@@ -152,13 +155,11 @@ def main():
             league = PSROLeague(args=args, initial_agents=initial_agents, constructor=constructor, payoff=shared_payoff, main_agents=1)
         else:
             league = League(args=args, initial_agents=initial_agents, constructor=constructor, payoff=shared_payoff, main_agents=1, main_exploiters=1, league_exploiters=2)
-        
         #TODO: DEBUGGING ONLY!!! This is serial method for debugging instead of multipcroessing.
         #For some reason, it works but the parallel version doesn't.
         #After the debugging is done, return to multiprocessing.
         for idx in range(league.size()):
             player = league.get_player(idx)
-            # player.constructor_fn = constructor #TODO: Delete when done
             learner = Learner(player)
             worker(idx, learner, args.total_steps, args.rollout_opponent_num)
         
