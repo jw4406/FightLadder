@@ -342,6 +342,7 @@ class Player(object):
         self._checkpoint_step = checkpoint_step
     
     def construct_agent(self):
+        print(f"Constructing agent for {self.name}") #TODO: DEBUG ONLY! Remove when done.
         self.agent = self.constructor(self.args, self.side, log_name=self.name)
         self.agent.set_parameters(self._initial_weights)
         self.agent.set_steps(self._checkpoint_step)
