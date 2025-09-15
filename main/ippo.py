@@ -374,7 +374,7 @@ def main(PLAYER):
                         help='Initial level to load from. By default 0, starting from pretrain', default=0)
     parser.add_argument('--resume-epoch', type=int, help='Resume epoch. By default 0, starting from pretrain',
                         default=0)
-    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=4)
+    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=8)
     parser.add_argument('--enable-combo', action='store_true', help='Enable special move action space for environment')
     parser.add_argument('--null-combo', action='store_true', help='Null action space for special move')
     parser.add_argument('--transform-action', action='store_true', help='Transform action space to MultiDiscrete')
@@ -510,30 +510,30 @@ def main(PLAYER):
             seed=args.seed,
             update_left=bool(args.update_left),
             update_right=bool(args.update_right),
-            other_learning_rate=other_lr_schedule
+            other_learning_rate=0.0
         )
 
-        finetune_model = TSS_PPO(
-            "AACCnnPolicy",
-            finetune_env,
-            device="cpu",
-            verbose=2,
-            n_steps=48,
-            batch_size=24,  # 512,
-            n_epochs=1,
-            gamma=0.94,
-            v_learning_rate=1e-3, c_learning_rate=1e-4,
-            d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
-            c_learning_rate_decay=critic_decay_schedule(1e-4),
-            d_learning_rate_decay=critic_decay_schedule(5e-4),
-            clip_range=clip_range_schedule,
-            tensorboard_log=args.log_dir,
-            seed=args.seed,
-            ent_coef=.01,
-            dstb_ent_coef=.01,
-            update_left=bool(args.update_left),
-            update_right=bool(args.update_right),
-        )
+        # finetune_model = TSS_PPO(
+        #     "AACCnnPolicy",
+        #     finetune_env,
+        #     device="cpu",
+        #     verbose=2,
+        #     n_steps=48,
+        #     batch_size=24,  # 512,
+        #     n_epochs=1,
+        #     gamma=0.94,
+        #     v_learning_rate=1e-3, c_learning_rate=1e-4,
+        #     d_learning_rate=5e-4, v_learning_rate_decay=critic_decay_schedule(1e-3),
+        #     c_learning_rate_decay=critic_decay_schedule(1e-4),
+        #     d_learning_rate_decay=critic_decay_schedule(5e-4),
+        #     clip_range=clip_range_schedule,
+        #     tensorboard_log=args.log_dir,
+        #     seed=args.seed,
+        #     ent_coef=.01,
+        #     dstb_ent_coef=.01,
+        #     update_left=bool(args.update_left),
+        #     update_right=bool(args.update_right),
+        # )
 
         if REMOVAL is None:
             num_adversary = len(OPPONENT_LIST) * len(PLAYER)
@@ -546,7 +546,7 @@ def main(PLAYER):
                 assert isinstance(REMOVAL, list)
                 num_adversary = 12 - len(REMOVAL)
 
-        finetune_model = Derivative_Free_SPAR(
+        finetune_model = BareDerivativeFreeSPAR(
             "AACCnnPolicy",
             finetune_env,
             env_batch_size=args.env_batch_size,
@@ -618,9 +618,9 @@ def main(PLAYER):
         # else:
         #     with open(current_dir + "miror_indicator.txt", "w") as f:
         #         f.write("0")
-        props = finetune_model.dump_properties()
-        with open(current_dir + '/myfile.txt', 'w') as f:
-            print(props, file=f)
+        #props = finetune_model.dump_properties()
+        #with open(current_dir + '/myfile.txt', 'w') as f:
+        #    print(props, file=f)
 
 
         ''' 
@@ -785,7 +785,7 @@ def main(PLAYER):
             #if hasattr(model, "num_adversaries"):
             #    for i in range(model.num_adversaries):
             #        model.adversaries[i]._setup_learn(model.adversaries[i].num_timesteps)
-            wandb.init(project="dfs_ego_only",
+            wandb.init(project="dfs_simple_ego_only",
                        entity='jw4406',
                        config={"eval_rew": 0,
                                "epochs": 0})

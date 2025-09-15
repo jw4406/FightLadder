@@ -849,6 +849,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                         clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
                     new_obs, rewards, rew_other, dones, infos = env.step(clipped_actions)
+                    #new_obs = np.ones_like(new_obs) * n_steps
 
                     # if mirroring:
                     # rew = (r,r,r, -r, -r, -r)^T 
@@ -863,7 +864,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                     
                     if np.any(rewards != 0):
                         print("Reward is not 0")
-                    ego_vertical_batch_obs[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches)), :, :, :] = th.unsqueeze(th.from_numpy(new_obs), 0)
+                    ego_vertical_batch_obs[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches)), :, :, :] = th.unsqueeze(th.from_numpy(self._last_obs), 0)
                     ego_vertical_batch_rewards[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(th.from_numpy(rewards), 0)
                     #vertical_batch_rewards_other[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches)), :] = th.unsqueeze(th.from_numpy(rew_other), 0)
                     ego_vertical_batch_dones[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(th.from_numpy(dones), 0)
@@ -1034,6 +1035,11 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         """
         Update policy using the currently gathered rollout buffer.
         """
+        self.policy.num_global_env = self.n_global_env
+        self.train_standard()
+        """
+        no = self.collect_rollouts(self.env, self.callback, self.rollout_buffer, self.adversary_buffers, self.n_steps)
+
         # 3. Update value functions for both original and perturbed agents
         # This is called for all agents as the values are needed for advantage calculation.
         start_time = time.time()
@@ -1084,6 +1090,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         del self.perturbed_adv_buf
         gc.collect()
         torch.cuda.empty_cache()
+        """
     
     def perturb_params(self, param_list, ego=True):
         count = 0
@@ -1495,6 +1502,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 progress_bar,
             )
             self.callback = callback
+            self.rollout_buffer.ego = True
 
             window = 250
             tolerance = .05 # movable
@@ -1507,19 +1515,19 @@ class Derivative_Free_SPAR(Generalist_SPAR):
                 print("perturbed agent created!", flush=True)
                 self._initialize_parallel_updater()                
                 # perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
-                #continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps) #TODO: This is sequential - remove when done.
+                continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps) #TODO: This is sequential - remove when done.
 
                 # Run env_perturb_params and collect_rollouts in different threads (cannot be done in different processes because they contain unpickleable objects)
-                with ThreadPoolExecutor(max_workers=2) as executor:
-                    future_perturbed = executor.submit(perturbed_agent.env_perturb_params)
-                    future_collect = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps)
+                # with ThreadPoolExecutor(max_workers=2) as executor:
+                #     future_perturbed = executor.submit(perturbed_agent.env_perturb_params)
+                #     future_collect = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps)
                     
-                    perturbed_buf, perturbed_adv_buf = future_perturbed.result()
-                    continue_training = future_collect.result()
-                self.perturbed_agent = perturbed_agent
-                self.perturbed_buf = perturbed_buf
-                self.perturbed_adv_buf = perturbed_adv_buf
-                self.perturbed_agent_policy = perturbed_agent.policy
+                #     perturbed_buf, perturbed_adv_buf = future_perturbed.result()
+                #     continue_training = future_collect.result()
+                # self.perturbed_agent = perturbed_agent
+                # self.perturbed_buf = perturbed_buf
+                # self.perturbed_adv_buf = perturbed_adv_buf
+                # self.perturbed_agent_policy = perturbed_agent.policy
                 print("main agent and perturbed agent rollout done!", flush=True)
                 
                 #if isinstance(self, Exploiter):
@@ -1549,8 +1557,8 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             
 
                 self.train(update_ego=update_ego, update_adversary=update_adversary)
-                self.perturbed_agent.env.close()
-                del self.perturbed_agent
+                #self.perturbed_agent.env.close()
+                #del self.perturbed_agent
 
             callback.on_training_end()
         
@@ -1626,3 +1634,102 @@ class Derivative_Free_SPAR(Generalist_SPAR):
 
     def set_steps(self, steps: int) -> None:
         self.num_timesteps = steps
+    
+
+    def train_standard(self, adversary_index: int = None) -> None:
+        """
+        Update policy using the currently gathered rollout buffer.
+        """
+        self.policy.set_training_mode(True)
+        self._update_learning_rate(
+            [self.policy.ctrl_optimizer, self.policy.dstb_optimizer, self.policy.value_optimizer])
+        clip_range = self.clip_range(self._current_progress_remaining)
+        #clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
+        entropy_losses = []
+        pg_losses, value_losses = [], []
+        approx_kl_divs = []
+        clip_fractions = []
+
+        for epoch in range(self.n_epochs):
+            for rollout_data in self.rollout_buffer.get(self.batch_size):
+                actions = rollout_data.actions
+                dstb_actions = rollout_data.dstb_actions
+                
+                values, log_prob, entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
+                    rollout_data.observations,
+                    actions,
+                    dstb_actions,
+                    shuffle_keys=rollout_data.env_indices,
+                    network_keys=[adversary_index] if adversary_index is not None else list(range(self.num_adversaries)),
+                    envs_per_matchup=self.envs_per_matchup
+                )
+                
+                values = values.flatten()
+                value_loss = F.mse_loss(rollout_data.returns, values)
+                value_losses.append(value_loss.item())
+                
+                advantages = rollout_data.advantages
+                if self.normalize_advantage and len(advantages) > 1:
+                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                
+                ratio = torch.exp(log_prob - torch.Tensor(rollout_data.old_log_prob).to(self.device))
+                policy_loss_1 = advantages * ratio
+                policy_loss_2 = advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)
+                policy_loss = torch.min(policy_loss_1, policy_loss_2).mean()
+                
+                pg_losses.append(policy_loss.item())
+                clip_fraction = th.mean((th.abs(ratio - 1) > clip_range).float()).item()
+                clip_fractions.append(clip_fraction)
+
+                if self.clip_range_vf is None:
+                    values_pred = values
+                else:
+                    values_pred = rollout_data.old_values + torch.clamp(
+                        values - rollout_data.old_values, -clip_range_vf, clip_range_vf
+                    )
+                value_loss = F.mse_loss(torch.Tensor(rollout_data.returns).to(self.device), values_pred)
+                value_losses.append(value_loss.item())
+
+                entropy_loss = -entropy.mean()
+                entropy_losses.append(entropy_loss.item())
+                
+                #dstb_entropy_loss = -dstb_entropy.mean()
+                #dstb_entropy_losses.append(dstb_entropy_loss.item())
+                
+                entropy_loss = -entropy.mean()
+                entropy_losses.append(entropy_loss.item())
+                
+                #dstb_entropy_loss = -dstb_entropy.mean()
+                #dstb_entropy_losses.append(dstb_entropy_loss.item())
+                
+                entropy_loss = -entropy.mean()
+                entropy_losses.append(entropy_loss.item())
+                with th.no_grad():
+                    log_ratio = log_prob.detach().cpu() - rollout_data.old_log_prob.cpu()
+                    approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
+                    approx_kl_divs.append(approx_kl_div)
+                
+                #dstb_entropy_loss = -dstb_entropy.mean()
+                #dstb_entropy_losses.append(dstb_entropy_loss.item())
+                
+                loss = policy_loss + value_loss
+
+                self.policy.ctrl_optimizer.zero_grad()
+                #self.policy.dstb_optimizer.zero_grad()
+                self.policy.value_optimizer.zero_grad()
+                
+                loss.backward()
+                
+                self.policy.ctrl_optimizer.step()
+                #self.policy.dstb_optimizer.step()
+                self.policy.value_optimizer.step()
+
+        explained_var = explained_variance(self.rollout_buffer.values.flatten().detach().cpu().numpy(), self.rollout_buffer.returns.flatten().detach().cpu().numpy())
+
+        # Logs
+        self.logger.record("train/entropy_loss", np.mean(entropy_losses))
+        self.logger.record("train/policy_gradient_loss", np.mean(pg_losses))
+        self.logger.record("train/value_loss", np.mean(value_losses))
+        self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
+        self.logger.record("train/clip_fraction", np.mean(clip_fractions))
+        self.logger.record("train/loss", loss.item())
