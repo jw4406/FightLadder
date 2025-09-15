@@ -306,7 +306,7 @@ class Single_SPAR(OnPolicyAlgorithm):
             self.policy.reset_noise(env.num_envs)
 
         callback.on_rollout_start()
-
+        count = 0
         while n_steps < n_rollout_steps:
             if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
                 # Sample a new noise matrix
@@ -315,11 +315,13 @@ class Single_SPAR(OnPolicyAlgorithm):
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                actions, log_probs, values, dstb_actions, dstb_log_probs = self.policy(obs_tensor)
+                actions, log_probs, values= self.policy(obs_tensor)
+                _, test, _ = self.policy.evaluate_actions(obs_tensor, actions)
+                assert th.allclose(log_probs, test)
             actions = actions.cpu().numpy()
-            dstb_actions = dstb_actions.cpu().numpy()
+            #dstb_actions = dstb_actions.cpu().numpy()
             # Rescale and perform action
-            clipped_actions = np.hstack([actions, dstb_actions])
+            clipped_actions = np.hstack([actions, np.zeros_like(actions)])
             # Clip the actions to avoid out of bound error
             if isinstance(self.action_space, spaces.Box):
                 clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
@@ -352,25 +354,31 @@ class Single_SPAR(OnPolicyAlgorithm):
                     with th.no_grad():
                         terminal_value = self.policy.predict_values(terminal_obs)[0]
                     rewards[idx] += self.gamma * terminal_value
-
+            _, test, _ = self.policy.evaluate_actions(obs_tensor, th.from_numpy(actions).to(self.device))
+            assert th.allclose(log_probs, test)
+            #assert th.allclose(log_probs.flatten(), test)
             rollout_buffer.add(
-                self._last_obs,  # type: ignore[arg-type]
+                self._last_obs.copy(),  # type: ignore[arg-type]
                 actions,
-                dstb_actions,
+                np.zeros_like(actions),
                 rewards,
                 self._last_episode_starts,  # type: ignore[arg-type]
                 values,
-                log_probs,
-                dstb_log_probs
+                log_probs.flatten(),
+                th.zeros_like(log_probs.flatten())
             )
+
+            _, test, _ = self.policy.evaluate_actions(obs_tensor, th.from_numpy(actions).to(self.device))
+            assert th.allclose(rollout_buffer.log_probs[count], test.cpu())
             self._last_obs = new_obs
             self._last_episode_starts = dones
+            count += 1
 
         with th.no_grad():
             # Compute value for the last timestep
             values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))
 
-        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+        rollout_buffer.vectorized_compute_returns_and_advantages(last_values=values, dones=dones)
 
         callback.on_rollout_end()
 

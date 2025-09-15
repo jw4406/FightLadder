@@ -594,6 +594,7 @@ class IPPO(PPO):
                                        safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
                     self.logger.record("rollout/ep_rew_other_mean",
                                        safe_mean([ep_info["ro"] for ep_info in self.ep_info_buffer]))
+                    wandb.log({"eval_rew": safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])})
                     self.logger.record("rollout/ep_len_mean",
                                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                 self.logger.record("time/fps", fps)
