@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image
 import copy
 from common.justin.bare_derivative_free_spar import BareDerivativeFreeSPAR
+from common.justin.clean_derivative_free_spar import CleanDerivativeFreeSPAR
 
 import retro
 from stable_baselines3.common.callbacks import CheckpointCallback, SACheckpointCallback, FileQueueTriggerCallback
@@ -578,6 +579,21 @@ def main(PLAYER):
         #     env_generator_func=env_generator,
         #     state_list=state_list,
         # )
+
+        finetune_model = CleanDerivativeFreeSPAR(
+            "AACCnnPolicy",
+            finetune_env,
+            device="cuda",
+            verbose=2,
+            n_steps=2048,
+            batch_size=256,
+            n_epochs=1,
+            state_list=state_list,
+            envs_per_matchup=args.envs_per_matchup,
+            env_generator_func=env_generator,
+            num_adversaries=num_adversary,
+            n_env_per_adv=args.num_env // num_adversary,
+        )
 
         #TODO: This is commented out per Justin's comment - should be uncommented in the future.
         # finetune_model = Specialized_Agent_IPPO("IPPOAACCnnPolicy",
