@@ -1812,7 +1812,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             num_global_env = self.num_global_env
             num_env_per_adv = num_global_env // num_adversaries
             full = [i for i in range(num_global_env)]
-            concated_adv_log_probs = th.empty_like(ctrl_log_prob,dtype=th.float16) #empty_like is a bit faster than zeros_like
+            concated_adv_log_probs = th.empty_like(ctrl_log_prob,dtype=th.float32) #empty_like is a bit faster than zeros_like
             for i in range(num_adversaries):
                 chunk = full[i * num_env_per_adv : (i+1)*num_env_per_adv]
                 #Try not to move stuff to CPU if can be avoided
