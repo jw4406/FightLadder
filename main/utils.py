@@ -1,6 +1,7 @@
 import torch
-from typing import List
+from typing import List, Any
 import warnings
+import pickle
 
 CHARACTERS = ["ryu", "guile", "bison"] #TODO: Add all characters
 
@@ -96,3 +97,9 @@ def find_character_name(s: str) -> str:
     if not res:
         warnings.warn(f"Could not find a character name in {s}.")
     return res
+
+def unpickle_policy(policy: Any) -> torch.nn.Module:
+    """This is a helper function that unpickles a policy."""
+    if isinstance(policy, bytes):
+        policy = pickle.loads(policy)
+    return policy
