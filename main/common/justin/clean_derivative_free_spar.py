@@ -14,7 +14,10 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.utils import get_schedule_fn
 from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer, ReplayBuffer, AdvRolloutBuffer
 from utils import state2matchup
+from stable_baselines3.common.utils import obs_as_tensor, safe_mean
 from common.justin.Doubly_TSS_SPAR import Doubly_TSS_SPAR as dtss
+from stable_baselines3.common.vec_env import VecEnv
+from stable_baselines3.common.callbacks import BaseCallback
 
 import numpy as np
 import torch.nn as nn
@@ -204,3 +207,199 @@ class CleanDerivativeFreeSPAR(PPO):
         )
 
         self.policy = self.policy.to(self.device)
+    
+    def collect_rollouts(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int) -> bool:
+        assert self._last_obs is not None, "No previous observation was provided"
+        # Switch to eval mode (this affects batch norm / dropout)
+        #rollout_policy = self.policy if policy is None else policy
+        #rollout_policy_other = self.policy_other if policy_other is None else policy_other
+        #rollout_policy.set_training_mode(False)
+        #rollout_policy_other.set_training_mode(False)
+        self.policy.set_training_mode(False)
+
+        n_steps = 0
+        rollout_buffer.reset()
+        for i in range(self.num_adversaries):
+            adversary_buffers[i].reset()
+        #rollout_buffer_other.reset()
+        # Sample new weights for the state dependent exploration
+        if self.use_sde:
+            rollout_policy.reset_noise(env.num_envs)
+            rollout_policy_other.reset_noise(env.num_envs)
+
+        callback.on_rollout_start()
+
+        while n_steps < n_rollout_steps:
+            if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+                # Sample a new noise matrix
+                rollout_policy.reset_noise(env.num_envs)
+                rollout_policy_other.reset_noise(env.num_envs)
+
+            with th.no_grad():
+                # Convert to pytorch tensor or to TensorDict
+                obs_tensor = obs_as_tensor(self._last_obs, self.device)
+                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values = self.policy(obs_tensor, deterministic=False, ego_forward=True)
+                #actions_other, values_other, log_probs_other = rollout_policy_other(obs_tensor)
+            actions = ego_actions.cpu().numpy()
+            actions_other = adv_actions.cpu().numpy()
+
+            # Rescale and perform action
+            clipped_actions = np.hstack([actions, actions_other])
+            # print(clipped_actions, flush=True)
+            # print(np.shape(clipped_actions),flush=True)
+            # Clip the actions to avoid out of bound error
+            if isinstance(self.action_space, spaces.Box):
+                clipped_actions = np.clip(np.hstack([actions, actions_other]), self.action_space.low,
+                                          self.action_space.high)
+
+            new_obs, rewards, rewards_other, dones, infos = env.step(clipped_actions)
+
+            self.num_timesteps += env.num_envs
+
+            # Give access to local variables
+            callback.update_locals(locals())
+            if callback.on_step() is False:
+                return False
+
+            self._update_info_buffer(infos)
+            n_steps += 1
+
+            if isinstance(self.action_space, spaces.Discrete):
+                # Reshape in case of discrete action
+                actions = actions.reshape(-1, 1)
+                actions_other = actions_other.reshape(-1, 1)
+
+            # Handle timeout by bootstraping with value function
+            # see GitHub issue #633
+            # for idx, done in enumerate(dones):
+            #     if (
+            #             done
+            #             and coordinate_fn is not None
+            #     ):
+            #         coordinate_fn(infos[idx]["outcome"])
+            #     if (
+            #             done
+            #             and infos[idx].get("terminal_observation") is not None
+            #             and infos[idx].get("TimeLimit.truncated", False)
+            #     ):
+            #         # print(f"[PPO] idx: {idx}, done: {done}, outcome: {infos[idx]['outcome']}", flush=True)
+            #         terminal_obs = rollout_policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
+            #         terminal_obs_other = rollout_policy_other.obs_to_tensor(infos[idx]["terminal_observation"])[0]
+            #         with th.no_grad():
+            #             terminal_value = rollout_policy.predict_values(terminal_obs)[0]
+            #             terminal_value_other = rollout_policy_other.predict_values(terminal_obs_other)[0]
+            #         rewards[idx] += self.gamma * terminal_value
+            #         rewards_other[idx] += self.gamma * terminal_value_other
+
+                    # from IPython import embed; embed()
+            rollout_buffer.add(self._last_obs.copy(), actions, actions_other, rewards, self._last_episode_starts, values,
+                                   ego_log_probs, adv_log_probs)
+            #for i in range(self.num_adversaries):
+            #    adversary_buffers[i].add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts, values_other,
+            #                             adv_log_probs)
+            self._last_obs = new_obs
+            self._last_episode_starts = dones
+
+        with th.no_grad():
+            # Compute value for the last timestep
+            values = self.policy.value_forward(obs_as_tensor(new_obs, self.device))
+            #values_other = rollout_policy_other.predict_values(obs_as_tensor(new_obs, self.device))
+
+        rollout_buffer.vectorized_compute_returns_and_advantages(last_values=values, dones=dones)
+        #if self.update_right:
+        #    rollout_buffer_other.compute_returns_and_advantage(last_values=values_other, dones=dones)
+
+        callback.on_rollout_end()
+
+        return True
+
+    def learn(
+        self,
+        total_timesteps: int,
+        callback: MaybeCallback = None,
+        log_interval: int = 1,
+        tb_log_name: str = "OnPolicyAlgorithm",
+        reset_num_timesteps: bool = True,
+        progress_bar: bool = False,
+        update_ego: bool = True,
+        update_adversary: bool = True,
+    ):
+        #try:
+        iteration = 0
+        #from common.algorithms import Exploiter
+        total_timesteps, callback = self._setup_learn(
+            total_timesteps,
+            callback,
+            reset_num_timesteps,
+            tb_log_name,
+            progress_bar,
+        )
+        self.callback = callback
+
+        window = 250
+        tolerance = .05 # movable
+        rews = []
+
+        callback.on_training_start(locals(), globals())
+
+        while self.num_timesteps < total_timesteps:
+            #perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
+            print("perturbed agent created!", flush=True)
+            #self._initialize_parallel_updater()      
+            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps) #TODO: This is sequential - remove when done.
+            # perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
+            #continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps) #TODO: This is sequential - remove when done.
+
+            # Run env_perturb_params and collect_rollouts in different threads (cannot be done in different processes because they contain unpickleable objects)
+            # with ThreadPoolExecutor(max_workers=2) as executor:
+            #     future_perturbed = executor.submit(perturbed_agent.env_perturb_params)
+            #     future_collect = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps)
+                
+            #     perturbed_buf, perturbed_adv_buf = future_perturbed.result()
+            #     continue_training = future_collect.result()
+            # self.perturbed_agent = perturbed_agent
+            # self.perturbed_buf = perturbed_buf
+            # self.perturbed_adv_buf = perturbed_adv_buf
+            # self.perturbed_agent_policy = perturbed_agent.policy
+            # print("main agent and perturbed agent rollout done!", flush=True)
+            
+            #if isinstance(self, Exploiter):
+            #    if len(rews) > 2000:
+            #        if (max(rews[-window:]) - min(rews[-window:])) <= tolerance * 2:
+            #            continue_training = False
+            if continue_training is False:
+                break
+
+            iteration += 1
+            self._update_current_progress_remaining(self.num_timesteps, total_timesteps)
+
+            # Display training infos
+            if log_interval is not None and iteration % log_interval == 0:
+                time_elapsed = max((time.time_ns() - self.start_time) / 1e9, sys.float_info.epsilon)
+                fps = int((self.num_timesteps - self._num_timesteps_at_start) / time_elapsed)
+                self.logger.record("time/iterations", iteration, exclude="tensorboard")
+                if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
+                    rews.append(safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+                    self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+                    wandb.log({"eval_rew": safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])})
+                    self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+                self.logger.record("time/fps", fps)
+                self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
+                self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
+                self.logger.dump(step=self.num_timesteps)
+        
+
+            self.train()
+            #self.perturbed_agent.env.close()
+            #del self.perturbed_agent
+
+        callback.on_training_end()
+        
+        # finally:
+        #     #IMPORTANT! Persistent workers must be cleaned up.
+        #     self.cleanup()
+        #     torch.cuda.empty_cache()
+
+        #except Exception as e:
+        #    print(e)
+        return self

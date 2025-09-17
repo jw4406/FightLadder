@@ -13,7 +13,7 @@ import torch.nn as nn
 from anyio import value
 from gym import spaces
 import warnings
-
+from stable_baselines3.common.preprocessing import preprocess_obs
 from .policies import BasePolicy, SelectLastLSTMOutput
 from .distributions import BernoulliDistribution, CategoricalDistribution, DiagGaussianDistribution, MultiCategoricalDistribution, StateDependentNoiseDistribution, make_proba_distribution
 from .preprocessing import maybe_transpose
@@ -23,12 +23,13 @@ from .utils import obs_as_tensor, safe_mean, explained_variance, get_schedule_fn
 from .save_util import load_from_zip_file, recursive_getattr, recursive_setattr, \
     save_to_zip_file
 from .vec_env import VecEnv
+from .distributions import Distribution
 
 from .buffers import DictRolloutBuffer, RolloutBuffer, ReplayBuffer, AdvRolloutBuffer
 from .callbacks import BaseCallback
 from .noise import ActionNoise
 from .policies import ActorCriticPolicy, ActorCriticCnnPolicy, MultiInputActorCriticPolicy
-from typing import Union, Type, Optional, Dict, Any, List
+from typing import Union, Type, Optional, Dict, Any, List, Tuple
 #from stable_baselines3.common.clean_new_policies import CleanActorActorCriticPolicy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor, FlattenExtractor, MlpExtractorAdv, NatureCNN
 from utils import select_matchup_env
@@ -240,5 +241,63 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             #                   copy.deepcopy(self.mlp_extractor.value_net).requires_grad_(False).to('cuda'),
             #                   [copy.deepcopy(self.value_net)[i].requires_grad_(False).to('cuda') for i in range(len(self.value_net))]]
 
-    
+    def _get_ego_action_dist_from_latent(self, latent_pi) -> Tuple[Distribution, Distribution]:
+        mean_actions = self.action_net(latent_pi)
         
+        if isinstance(self.action_dist, BernoulliDistribution):
+            return self.action_dist.proba_distribution(action_logits=mean_actions)
+        raise ValueError("Invalid action distribution")
+
+    def _get_adv_action_dist_from_latent(self, latent_pi_dstb) -> Tuple[Distribution, Distribution]:
+        dstb_actions = th.zeros_like(latent_pi_dstb)
+        num_env_per_adv = self.num_env_per_adv
+        for i in range(self.num_adversaries):
+            key = select_matchup_env(self.matchups, i, self.envs_per_matchup)
+            dstb_actions[i * num_env_per_adv : (i+1) * num_env_per_adv, :] = self.dstb_action_net[key](latent_pi_dstb[i * num_env_per_adv : (i+1) * num_env_per_adv, :])
+        return dstb_actions
+
+    def ego_forward(self, obs, deterministic=False) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+        new_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
+        pi_ctrl_features = self.pi_ctrl_features_extractor(new_obs)
+        latent_pi = self.mlp_extractor.ego_forward(pi_ctrl_features)
+        ctrl_distribution = self._get_ego_action_dist_from_latent(latent_pi)
+        ctrl_actions = ctrl_distribution.get_actions(deterministic=deterministic)
+        ctrl_log_prob = ctrl_distribution.log_prob(ctrl_actions)
+        return ctrl_actions, ctrl_log_prob
+
+    def adv_forward(self, obs, deterministic=False) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+        new_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
+        pi_dstb_features = self.pi_dstb_features_extractor(new_obs)
+        latent_pi_dstb = self.mlp_extractor.adv_forward(pi_dstb_features)
+        dstb_distribution = self._get_adv_action_dist_from_latent(latent_pi_dstb)
+        dstb_actions = dstb_distribution.get_actions(deterministic=deterministic)
+        dstb_log_prob = dstb_distribution.log_prob(dstb_actions)
+        return dstb_actions, dstb_log_prob
+
+    def value_forward(self, obs) -> Tuple[th.Tensor, th.Tensor]:
+        new_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
+        vf_features = self.vf_features_extractor(new_obs)
+        latent_vf = self.mlp_extractor.forward_critic(vf_features)
+        for i in range(self.num_adversaries):
+            # NOT DONE YET! NEED TO CHUNK
+            key = select_matchup_env(self.matchups, i, self.envs_per_matchup)
+            values = self.value_net[key](latent_vf)
+        return values
+
+    def forward(self, obs, deterministic=False, ego_forward=False, adv_forward=False, network_keys=None) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+        if ego_forward:
+            ego_actions, ego_log_prob = self.ego_forward(obs, deterministic)
+        else:
+            ego_actions = th.zeros()
+            ego_log_prob = th.zeros()
+            #ego_entropy = th.zeros()
+        if adv_forward:
+            adv_actions, adv_log_prob = self.adv_forward(obs, deterministic, network_keys=network_keys, envs_per_matchup=envs_per_matchup, shuffle_keys=shuffle_keys)
+        else:
+            adv_actions = th.zeros_like(ego_actions)
+            adv_log_prob = th.zeros_like(ego_log_prob)
+            #adv_entropy = th.zeros()
+        
+
+        values = self.value_forward(obs)
+        return ego_actions, ego_log_prob, adv_actions, adv_log_prob, values

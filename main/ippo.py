@@ -583,7 +583,7 @@ def main(PLAYER):
         finetune_model = CleanDerivativeFreeSPAR(
             "AACCnnPolicy",
             finetune_env,
-            device="cuda",
+            device="cpu",
             verbose=2,
             n_steps=2048,
             batch_size=256,

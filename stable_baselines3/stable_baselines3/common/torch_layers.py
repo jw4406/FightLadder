@@ -364,8 +364,17 @@ class MlpExtractorAdv(nn.Module):
         """
         return self.forward_actor(ctrl_features), self.forward_critic(dstb_features)
 
-    def forward_actor(self, ctrl_features: th.Tensor, dstb_features: th.Tensor) -> [th.Tensor, th.Tensor]:
-        return self.policy_net(ctrl_features), self.dstb_net(dstb_features)
+    def forward_actor(self, ctrl_features: th.Tensor, dstb_features: th.Tensor = None) -> [th.Tensor, th.Tensor]:
+        if dstb_features is None:
+            return self.policy_net(ctrl_features)
+        else:
+            return self.policy_net(ctrl_features), self.dstb_net(dstb_features)
+    
+    def adv_forward(self, dstb_features: th.Tensor) -> th.Tensor:
+        return self.dstb_net(dstb_features)
+
+    def ego_forward(self, ctrl_features: th.Tensor) -> th.Tensor:
+        return self.policy_net(ctrl_features)
 
     def forward_critic(self, vf_features: th.Tensor) -> th.Tensor:
         return self.value_net(vf_features)
