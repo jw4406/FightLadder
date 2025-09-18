@@ -1081,8 +1081,9 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         #         self.policy.dstb_optimizer.load_state_dict(pickle.loads(adv_policy_bytes).dstb_optimizer.state_dict())
         
         self.perturbed_agents_policy.clear()
-        self.perturbed_bufs.clear()
-        self.perturbed_adv_bufs.clear()
+        del self.perturbed_agents_policy
+        del self.perturbed_bufs
+        del self.perturbed_adv_bufs
         gc.collect()
         torch.cuda.empty_cache()
     
