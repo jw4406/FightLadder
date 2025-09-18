@@ -41,7 +41,7 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         lr_schedule: Schedule,
         # TODO(antonin): update type annotation when we remove shared network support
         net_arch: Union[List[int], Dict[str, List[int]], List[Dict[str, List[int]]], None] = None,
-        activation_fn: Type[nn.Module] = nn.Tanh,
+        activation_fn: Type[nn.Module] = nn.LeakyReLU,
         ortho_init: bool = True,
         use_sde: bool = False,
         log_std_init: float = 0.0,
@@ -103,6 +103,8 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         self.pi_dstb_features_extractor = self.make_features_extractor()
         self.pi_ctrl_features_extractor = self.features_extractor
         #self.vf_features
+        net_arch = dict(pi=[256,256], vf=[256,256])
+        self.net_arch = net_arch
         self._build_network(lr_schedule)
 
         print("hello")
@@ -242,19 +244,21 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             #                   [copy.deepcopy(self.value_net)[i].requires_grad_(False).to('cuda') for i in range(len(self.value_net))]]
 
     def _get_ego_action_dist_from_latent(self, latent_pi) -> Tuple[Distribution, Distribution]:
-        mean_actions = self.action_net(latent_pi)
+        mean_actions = self.action_net[-1](latent_pi)
         
         if isinstance(self.action_dist, BernoulliDistribution):
             return self.action_dist.proba_distribution(action_logits=mean_actions)
         raise ValueError("Invalid action distribution")
 
     def _get_adv_action_dist_from_latent(self, latent_pi_dstb) -> Tuple[Distribution, Distribution]:
-        dstb_actions = th.zeros_like(latent_pi_dstb)
-        num_env_per_adv = self.num_env_per_adv
+        dstb_actions = th.zeros((latent_pi_dstb.shape[0], self.dstb_action_space.shape[0]))
+        latents_per_adv = latent_pi_dstb.shape[0] // self.num_adversaries
         for i in range(self.num_adversaries):
             key = select_matchup_env(self.matchups, i, self.envs_per_matchup)
-            dstb_actions[i * num_env_per_adv : (i+1) * num_env_per_adv, :] = self.dstb_action_net[key](latent_pi_dstb[i * num_env_per_adv : (i+1) * num_env_per_adv, :])
-        return dstb_actions
+            dstb_actions[i * latents_per_adv : (i+1) * latents_per_adv, :] = self.dstb_action_net[key][-1](latent_pi_dstb[i * latents_per_adv : (i+1) * latents_per_adv, :])
+        dstb_actions = dstb_actions.reshape((-1, self.dstb_action_space.shape[0]))
+        return [self.dstb_action_dist[i].proba_distribution(action_logits=dstb_actions[i * latents_per_adv : (i+1) * latents_per_adv, :]) for i in range(self.num_adversaries)]
+        
 
     def ego_forward(self, obs, deterministic=False) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
         new_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
@@ -301,3 +305,29 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
 
         values = self.value_forward(obs)
         return ego_actions, ego_log_prob, adv_actions, adv_log_prob, values
+
+    def evaluate_ego_actions(self, obs, ego_actions) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+        preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
+        features = self.pi_ctrl_features_extractor(preprocessed_obs)
+        latent_pi = self.mlp_extractor.ego_forward(features)
+        ctrl_distribution = self._get_ego_action_dist_from_latent(latent_pi)
+        ctrl_log_prob = ctrl_distribution.log_prob(ego_actions)
+        ctrl_entropy = ctrl_distribution.entropy()
+        return ctrl_log_prob, ctrl_entropy
+    
+    def evaluate_adv_actions(self, obs, adv_actions) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+        preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
+        features = self.pi_dstb_features_extractor(preprocessed_obs)
+        actions_per_adv = adv_actions.shape[0] // self.num_adversaries
+        latent_pi_dstb = self.mlp_extractor.adv_forward(features)
+        dstb_distribution = self._get_adv_action_dist_from_latent(latent_pi_dstb)
+        dstb_log_prob = [dstb_distribution[i].log_prob(adv_actions[i * actions_per_adv : (i+1) * actions_per_adv, :]) for i in range(self.num_adversaries)]
+        dstb_entropy = [dstb_distribution[i].entropy() for i in range(self.num_adversaries)]
+        return dstb_log_prob, dstb_entropy
+
+    def evaluate_states(self, obs) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+        preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
+        features = self.vf_features_extractor(preprocessed_obs)
+        latent_vf = self.mlp_extractor.forward_critic(features)
+        values = self.value_net(latent_vf)
+        return values
