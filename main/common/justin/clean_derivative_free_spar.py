@@ -14,13 +14,14 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.utils import get_schedule_fn
 from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer, ReplayBuffer, AdvRolloutBuffer
 from utils import state2matchup
-from stable_baselines3.common.utils import obs_as_tensor, safe_mean
+from stable_baselines3.common.utils import obs_as_tensor, safe_mean, explained_variance
 from common.justin.Doubly_TSS_SPAR import Doubly_TSS_SPAR as dtss
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.callbacks import BaseCallback
 
 import numpy as np
 import torch.nn as nn
+import torch.nn.functional as F
 from anyio import value
 from gym import spaces
 from stable_baselines3 import PPO
@@ -33,17 +34,17 @@ class CleanDerivativeFreeSPAR(PPO):
             policy: Union[str, Type[ActorCriticPolicy]],
             env: Union[GymEnv, str],
             c_learning_rate: Union[float, Schedule] = 1e-4,
-            d_learning_rate: Union[float, Schedule] = 7e-4,
+            d_learning_rate: Union[float, Schedule] = 2e-4,
             v_learning_rate: Union[float, Schedule] = 7e-4,
             c_learning_rate_decay: Union[float, Schedule] = 1e-4,
-            d_learning_rate_decay: Union[float, Schedule] = 7e-4,
+            d_learning_rate_decay: Union[float, Schedule] = 2e-4,
             v_learning_rate_decay: Union[float, Schedule] = 7e-4,
             n_steps: int = 2048,
             batch_size: int = 64,
             n_epochs: int = 1,
             gamma: float = 0.99,
             gae_lambda: float = 0.95,
-            clip_range: Union[float, Schedule] = 0.2,
+            clip_range: Union[float, Schedule] = 0.1,
             clip_range_vf: Union[None, float, Schedule] = None,
             normalize_advantage: bool = False,
             ent_coef: float = 0.0,
@@ -178,7 +179,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 assert self.clip_range_vf > 0, "`clip_range_vf` must be positive, " "pass `None` to deactivate vf clipping"
 
             self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
-        buffer_cls = DictRolloutBuffer if isinstance(self.observation_space, spaces.Dict) else AdvRolloutBuffer
+        buffer_cls = DictRolloutBuffer if isinstance(self.observation_space, spaces.Dict) else RolloutBuffer
         self.rollout_buffer_class = buffer_cls
         self.rollout_buffer = buffer_cls(
             self.n_steps,
@@ -188,7 +189,7 @@ class CleanDerivativeFreeSPAR(PPO):
             gamma=self.gamma,
             gae_lambda=self.gae_lambda,
             n_envs=self.n_envs,
-            dstb_action_space=self.dstb_action_space
+            #dstb_action_space=self.dstb_action_space
         )
 
         if hasattr(self, "num_adversaries"):
@@ -238,7 +239,8 @@ class CleanDerivativeFreeSPAR(PPO):
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values = self.policy(obs_tensor, deterministic=False, ego_forward=True)
+                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values = self.policy(obs_tensor, deterministic=False, ego_forward=True, adv_forward=False)
+                other_values = -values
                 #actions_other, values_other, log_probs_other = rollout_policy_other(obs_tensor)
             actions = ego_actions.cpu().numpy()
             actions_other = adv_actions.cpu().numpy()
@@ -292,8 +294,11 @@ class CleanDerivativeFreeSPAR(PPO):
             #         rewards_other[idx] += self.gamma * terminal_value_other
 
                     # from IPython import embed; embed()
-            rollout_buffer.add(self._last_obs.copy(), actions, actions_other, rewards, self._last_episode_starts, values,
-                                   ego_log_probs, adv_log_probs)
+            rollout_buffer.add(self._last_obs.copy(), actions, rewards, self._last_episode_starts, values,
+                                   ego_log_probs)
+            for i in range(self.num_adversaries):
+                adversary_buffers[i].add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts, other_values,
+                                         adv_log_probs)
             #for i in range(self.num_adversaries):
             #    adversary_buffers[i].add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts, values_other,
             #                             adv_log_probs)
@@ -305,7 +310,9 @@ class CleanDerivativeFreeSPAR(PPO):
             values = self.policy.value_forward(obs_as_tensor(new_obs, self.device))
             #values_other = rollout_policy_other.predict_values(obs_as_tensor(new_obs, self.device))
 
-        rollout_buffer.vectorized_compute_returns_and_advantages(last_values=values, dones=dones)
+        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+        for i in range(self.num_adversaries):
+            adversary_buffers[i].compute_returns_and_advantage(last_values=-values, dones=dones)
         #if self.update_right:
         #    rollout_buffer_other.compute_returns_and_advantage(last_values=values_other, dones=dones)
 
@@ -389,7 +396,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 self.logger.dump(step=self.num_timesteps)
         
 
-            self.train()
+            self.train(update_ego=True, update_adversary=False)
             #self.perturbed_agent.env.close()
             #del self.perturbed_agent
 
@@ -404,10 +411,11 @@ class CleanDerivativeFreeSPAR(PPO):
         #    print(e)
         return self
     
-    def train(self) -> None:
+    def train(self, update_ego: bool = True, update_adversary: bool = True) -> None:
+        first = True
 
-        # this function is currently identical to ppo train function
-
+        # afk test!
+        assert update_ego != update_adversary
 
         """
         Update policy using the currently gathered rollout buffer.
@@ -427,14 +435,18 @@ class CleanDerivativeFreeSPAR(PPO):
         clip_fractions = []
 
         continue_training = True
+        if update_ego:
+            buf = self.rollout_buffer
+        else:
+            buf = self.adversary_buffers[0]
+
 
         # train for n_epochs epochs
         for epoch in range(self.n_epochs):
             approx_kl_divs = []
             # Do a complete pass on the rollout buffer
-            for rollout_data in self.rollout_buffer.get(self.batch_size):
+            for rollout_data in buf.get(self.batch_size):
                 actions = rollout_data.actions
-                adv_actions = rollout_data.dstb_actions
                 if isinstance(self.action_space, spaces.Discrete):
                     # Convert discrete action from float to long
                     actions = rollout_data.actions.long().flatten()
@@ -443,27 +455,46 @@ class CleanDerivativeFreeSPAR(PPO):
                 if self.use_sde:
                     self.policy.reset_noise(self.batch_size)
 
-                ego_log_prob, ego_entropy = self.policy.evaluate_ego_actions(rollout_data.observations, actions)
-                adv_log_prob, adv_entropy = self.policy.evaluate_adv_actions(rollout_data.observations, adv_actions)
-                #values = self.policy.evaluate_states(rollout_data.observations)
-                #values = values.flatten()
+                if update_ego:
+                    log_prob, entropy = self.policy.evaluate_ego_actions(rollout_data.observations, actions)
+                    #entropy = ego_entropy
+                if update_adversary:
+                    log_prob, entropy = self.policy.evaluate_adv_actions(rollout_data.observations, actions)
+                    #entropy = adv_entropy
+                values = self.policy.evaluate_states(rollout_data.observations)
+                if update_adversary:
+                    values = -values
+                values = values.flatten()
                 # Normalize advantage
                 advantages = rollout_data.advantages
+                self.normalize_advantage = True
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
                 if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
                 # ratio between old and new policy, should be one at the first iteration
-                ratio = th.exp(ego_log_prob - rollout_data.old_log_prob)
+                #if update_ego:  
+                ratio = th.exp(log_prob - rollout_data.old_log_prob)
+                if first:
+                    print(f"[DEBUG @ train]: ratio: {ratio.mean().item():.4f}")
+                    assert th.allclose(log_prob, rollout_data.old_log_prob)
+                    first = False
+                #if update_adversary:
+                #    ratio_adv = th.exp(adv_log_prob - rollout_data.old_dstb_log_prob)
 
                 # clipped surrogate loss
+                #if update_ego:
                 policy_loss_1 = advantages * ratio
                 policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
                 policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
+                #if update_adversary:
+                #    policy_loss_adv_1 = advantages * ratio_adv
+                #    policy_loss_adv_2 = advantages * th.clamp(ratio_adv, 1 - clip_range, 1 + clip_range)
+                #    policy_loss_adv = th.min(policy_loss_adv_1, policy_loss_adv_2).mean()
 
                 # Logging
-                pg_losses.append(policy_loss.item())
-                clip_fraction = th.mean((th.abs(ratio - 1) > clip_range).float()).item()
+                pg_losses.append(policy_loss.item())# if update_ego else policy_loss_adv.item())
+                clip_fraction = th.mean((th.abs(ratio - 1) > clip_range).float()).item()# if update_ego else th.mean((th.abs(ratio_adv - 1) > clip_range).float()).item()
                 clip_fractions.append(clip_fraction)
 
                 if self.clip_range_vf is None:
@@ -487,14 +518,18 @@ class CleanDerivativeFreeSPAR(PPO):
                     entropy_loss = -th.mean(entropy)
 
                 entropy_losses.append(entropy_loss.item())
-
-                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+                pl = policy_loss#_ego if update_ego else policy_loss_adv
+                loss = pl + self.ent_coef * entropy_loss + self.vf_coef * value_loss
 
                 # Calculate approximate form of reverse KL Divergence for early stopping
                 # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
                 # and discussion in PR #419: https://github.com/DLR-RM/stable-baselines3/pull/419
                 # and Schulman blog: http://joschu.net/blog/kl-approx.html
                 with th.no_grad():
+                    #if update_ego:
+                    #    log_ratio = ego_log_prob - rollout_data.old_log_prob
+                    #else:
+                    #    log_ratio = adv_log_prob - rollout_data.old_dstb_log_prob
                     log_ratio = log_prob - rollout_data.old_log_prob
                     approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
                     approx_kl_divs.append(approx_kl_div)
@@ -506,17 +541,23 @@ class CleanDerivativeFreeSPAR(PPO):
                     break
 
                 # Optimization step
-                self.policy.optimizer.zero_grad()
+                self.policy.ctrl_optimizer.zero_grad()
+                self.policy.dstb_optimizer.zero_grad()
+                self.policy.value_optimizer.zero_grad()
                 loss.backward()
                 # Clip grad norm
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                self.policy.optimizer.step()
+                if update_ego:
+                    self.policy.ctrl_optimizer.step()
+                else:
+                    self.policy.dstb_optimizer.step()
+                self.policy.value_optimizer.step()
 
             if not continue_training:
                 break
 
         self._n_updates += self.n_epochs
-        explained_var = explained_variance(self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten())
+        explained_var = explained_variance(buf.values.flatten(), buf.returns.flatten())
 
         # Logs
         self.logger.record("train/entropy_loss", np.mean(entropy_losses))

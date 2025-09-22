@@ -694,7 +694,7 @@ class ActorCriticPolicy(BasePolicy):
         :param latent_pi: Latent code for the actor
         :return: Action distribution
         """
-        mean_actions = self.action_net[-1](latent_pi) # fuckassery here
+        mean_actions = self.action_net(latent_pi) 
 
         if isinstance(self.action_dist, DiagGaussianDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std)
@@ -742,7 +742,7 @@ class ActorCriticPolicy(BasePolicy):
             latent_vf = self.mlp_extractor.forward_critic(vf_features)
         distribution = self._get_action_dist_from_latent(latent_pi)
         log_prob = distribution.log_prob(actions)
-        values = self.value_net['GuileVsGuile_0'](latent_vf)
+        values = self.value_net(latent_vf)
         entropy = distribution.entropy()
         return values, log_prob, entropy
 
