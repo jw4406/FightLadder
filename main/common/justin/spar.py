@@ -222,7 +222,7 @@ class Single_SPAR(OnPolicyAlgorithm):
                 assert self.clip_range_vf > 0, "`clip_range_vf` must be positive, " "pass `None` to deactivate vf clipping"
 
             self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
-        buffer_cls = DictRolloutBuffer if isinstance(self.observation_space, spaces.Dict) else AdvRolloutBuffer
+        buffer_cls = DictRolloutBuffer if isinstance(self.observation_space, spaces.Dict) else RolloutBuffer
         self.rollout_buffer_class = buffer_cls
         self.rollout_buffer = buffer_cls(
             self.n_steps,
@@ -232,7 +232,7 @@ class Single_SPAR(OnPolicyAlgorithm):
             gamma=self.gamma,
             gae_lambda=self.gae_lambda,
             n_envs=self.n_envs,
-            dstb_action_space=self.dstb_action_space
+            #dstb_action_space=self.dstb_action_space
         )
 
         if hasattr(self, "num_adversaries"):

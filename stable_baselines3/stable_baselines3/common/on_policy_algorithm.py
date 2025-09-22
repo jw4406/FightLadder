@@ -112,7 +112,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         else:
             if hasattr(self, "adversarial"):
 
-                self.rollout_buffer_class = RolloutBuffer if self.adversarial is False else AdvRolloutBuffer
+                self.rollout_buffer_class = RolloutBuffer# if self.adversarial is False else AdvRolloutBuffer
             else:
                 self.rollout_buffer_class = RolloutBuffer
             buffer_cls = self.rollout_buffer_class
