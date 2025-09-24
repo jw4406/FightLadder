@@ -989,7 +989,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         # 3. Update value functions for both original and perturbed agents
         # This is called for all agents as the values are needed for advantage calculation.
         start_time = time.time()
-        #TODO: Need to call self._update_value_functions K times - on each (self.perturbed_agent, self.perturbed_adv_buf) pair - Parallizable.
+        #self._udpate_value_functions already uses multiprocessing - no need to parallelize this loop for now.
         [self._update_value_functions(perturbed_agent, perturbed_adv_buf) for perturbed_agent, perturbed_adv_buf in zip(self.perturbed_agents, self.perturbed_adv_bufs)]
         end_time = time.time()
         if TIMING:
@@ -997,8 +997,12 @@ class Derivative_Free_SPAR(Generalist_SPAR):
 
         #need to swap and flatten here 
         self.update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
-        #TODO: Need to do call this K times with every triplet of (self.perturbed_agent.policy, self.perturbed_buf, self.perturbed_adv_buf) - Parallelizable.
-        [self.update_advantages(policy, perturbed_buf, perturbed_buf_adv) for policy, perturbed_buf, perturbed_buf_adv in zip(self.perturbed_agents_policy, self.perturbed_bufs, self.perturbed_adv_bufs)]
+        futures = []
+        with ThreadPoolExecutor(max_workers=len(self.perturbed_bufs)) as executor:
+            for policy, perturbed_buf, perturbed_buf_adv in zip(self.perturbed_agents_policy, self.perturbed_bufs, self.perturbed_adv_bufs):
+                futures.append(executor.submit(self.update_advantages, policy, perturbed_buf, perturbed_buf_adv))
+            for future in futures:
+                future.result()
         self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in self.perturbed_agents]
         self.leader_grads(self.rollout_buffer, self.perturbed_bufs, self.policy, self.perturbed_agents_policy, ego=True)
         
