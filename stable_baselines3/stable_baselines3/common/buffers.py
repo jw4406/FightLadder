@@ -685,6 +685,39 @@ class RolloutBuffer(BaseBuffer):
             self.env_indices[batch_inds].flatten()
         )
         return RolloutBufferSamples(*tuple(map(self.to_torch, data)))
+    def prepare_data_for_training(self) -> None:
+        """
+        Prepares the buffer for training by swapping and flattening the data.
+        This is a one-time operation that should be called after collecting rollouts.
+        """
+        #print("--- AdvRolloutBuffer PREPARED ---")
+        if not self.generator_ready:
+            _torch_tensor_names = [
+                "observations",
+                "actions",
+                "values",
+                "log_probs",
+                "advantages",
+                "returns",
+            ]
+            for tensor_name in _torch_tensor_names:
+                tensor = self.__dict__[tensor_name]
+                #if self.pin_memory:
+                    # Data is already a tensor, just move to the correct device
+                #    th_tensor = tensor.to(self.device, non_blocking=True)
+                #else:
+                    # th.as_tensor avoids a copy if the numpy array is on the CPU and writable
+                    # which should be the case here
+                th_tensor = th.as_tensor(tensor, device=self.device)
+                
+                shape = th_tensor.shape
+                # .contiguous().view() is more efficient than reshape for non-contiguous tensors
+                # We clone here to sever any computational graph links among buffer tensors
+                self.__dict__[tensor_name] = th_tensor.transpose(0, 1).contiguous().view(shape[0] * shape[1], *shape[2:]).clone()
+
+            # Handle env_indices separately as it remains a numpy array
+            self.env_indices = self.swap_and_flatten(self.env_indices)
+            self.generator_ready = True
 
 class AdvRolloutBuffer(BaseBuffer):
     """
