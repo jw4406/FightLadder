@@ -82,39 +82,41 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
         """
         all_rollout_data = list(buffer.get(batch_size))
         all_actions = []
-        all_dstb_actions = []
+        #all_dstb_actions = []
         all_observations = []
         all_returns = []
         all_env_indices = []
 
         for rollout_data in all_rollout_data:
             all_actions.append(torch.Tensor(rollout_data.actions))
-            all_dstb_actions.append(torch.Tensor(rollout_data.dstb_actions))
+            #all_dstb_actions.append(torch.Tensor(rollout_data.dstb_actions))
             all_observations.append(rollout_data.observations)
             all_returns.append(torch.Tensor(rollout_data.returns))
             all_env_indices.extend(rollout_data.env_indices)
         
         actions_batch = torch.cat(all_actions).to(device)
-        dstb_actions_batch = torch.cat(all_dstb_actions).to(device)
+        #dstb_actions_batch = torch.cat(all_dstb_actions).to(device)
         observations_batch = torch.cat(all_observations).to(device)
         returns_batch = torch.cat(all_returns).to(device)
 
-        return actions_batch, dstb_actions_batch, observations_batch, returns_batch, all_env_indices
+        return actions_batch, observations_batch, returns_batch, all_env_indices
     
     total_start_time = time.time()
 
 
     #Process all rollout data and actions at once instead of batch by batch.
-    actions_batch, dstb_actions_batch, observations_batch, returns_batch, all_env_indices = _prep_rollout_data_actions(batch_size, buffer)
+    actions_batch, observations_batch, returns_batch, all_env_indices = _prep_rollout_data_actions(batch_size, buffer)
     policy.num_global_env = num_envs
     policy.num_adv = 1
     for i in range(len(returns_batch) // batch_size):
-        values, _, _, _, _ = policy.evaluate_actions(
+        values = policy.evaluate_states(
         observations_batch[i * batch_size:(i + 1) * batch_size],
-        actions_batch[i * batch_size:(i + 1) * batch_size],
-        dstb_actions_batch[i * batch_size:(i + 1) * batch_size],
-        shuffle_keys=all_env_indices[i * batch_size:(i + 1) * batch_size],
-        network_keys=[adversary_index], envs_per_matchup=envs_per_matchup
+        #actions_batch[i * batch_size:(i + 1) * batch_size],
+        #dstb_actions_batch[i * batch_size:(i + 1) * batch_size],
+        #shuffle_keys=all_env_indices[i * batch_size:(i + 1) * batch_size],
+        #network_keys=[adversary_index], envs_per_matchup=envs_per_matchup
+        buf_num=[adversary_index],
+        env_indices=all_env_indices[i * batch_size:(i + 1) * batch_size]
         )
         #policy.train(True)
         #torch.backends.cudnn.enabled = False
@@ -789,13 +791,17 @@ class CleanDerivativeFreeSPAR(PPO):
         callback.on_training_start(locals(), globals())
 
         while self.num_timesteps < total_timesteps:
-            #perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
+            perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
             print("perturbed agent created!", flush=True)
-            #self._initialize_parallel_updater() 
+            self._initialize_parallel_updater() 
                  
             self.inner_loop()
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps) #TODO: This is sequential - remove when done.
-            # perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
+            perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
+            self.perturbed_agent = perturbed_agent
+            self.perturbed_buf = perturbed_buf
+            self.perturbed_adv_buf = perturbed_adv_buf
+            self.perturbed_agent_policy = perturbed_agent.policy
             #continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps) #TODO: This is sequential - remove when done.
 
             # Run env_perturb_params and collect_rollouts in different threads (cannot be done in different processes because they contain unpickleable objects)
@@ -857,7 +863,7 @@ class CleanDerivativeFreeSPAR(PPO):
         self.train_derivative_free(update_ego, update_adversary)
     
     def train_derivative_free(self, update_ego: bool = True, update_adversary: bool = True) -> None:
-        #self._update_value_functions(self.policy, self.rollout_buffer, self.adversary_buffers)
+        self._update_value_functions(self.perturbed_agent, self.perturbed_adv_buf)
         self._update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
         self.leader_grads(self.rollout_buffer, self.adversary_buffers, self.policy, self.policy, ego=True)
         self.leader_grads(self.adversary_buffers, self.rollout_buffer, self.policy, self.policy, ego=False)
