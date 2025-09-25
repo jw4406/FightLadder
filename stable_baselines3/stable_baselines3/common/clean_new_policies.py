@@ -359,9 +359,15 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         env_ids = env_indices // self.envs_per_matchup
         for i in range(len(buf_num)):
             indices = (env_ids == buf_num[i])
+            if len(indices) > 1:
+                indices = indices[:, 0]
             key = select_matchup_env(self.matchups, buf_num[i], self.envs_per_matchup)
             if len(buf_num) == 1:
-                indices = th.ones_like(indices)
+                if isinstance(indices, np.ndarray):
+                    indices = th.ones_like(th.from_numpy(indices))
+                else:
+
+                    indices = th.ones_like(indices)
             values[indices] = self.value_net[key](latent_vf[indices])
         #values = self.value_net(latent_vf)
         return values
