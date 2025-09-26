@@ -35,6 +35,7 @@ from stable_baselines3 import PPO
 from utils import select_matchup_env, select_device, get_n_workers, move_policy
 
 TIMING = False
+DEBUG = False
 
 class DummyCallback(BaseCallback):
     def __init__(self):
@@ -646,13 +647,9 @@ class CleanDerivativeFreeSPAR(PPO):
 
         self.policy = self.policy.to(self.device)
     
-    def collect_rollouts(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int) -> bool:
+    def collect_rollouts(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True) -> bool:
         assert self._last_obs is not None, "No previous observation was provided"
         # Switch to eval mode (this affects batch norm / dropout)
-        #rollout_policy = self.policy if policy is None else policy
-        #rollout_policy_other = self.policy_other if policy_other is None else policy_other
-        #rollout_policy.set_training_mode(False)
-        #rollout_policy_other.set_training_mode(False)
         self.policy.set_training_mode(False)
 
         n_steps = 0
@@ -662,23 +659,21 @@ class CleanDerivativeFreeSPAR(PPO):
         #rollout_buffer_other.reset()
         # Sample new weights for the state dependent exploration
         if self.use_sde:
-            rollout_policy.reset_noise(env.num_envs)
-            rollout_policy_other.reset_noise(env.num_envs)
+            self.policy.reset_noise(env.num_envs)
 
         callback.on_rollout_start()
 
         while n_steps < n_rollout_steps:
             if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
                 # Sample a new noise matrix
-                rollout_policy.reset_noise(env.num_envs)
-                rollout_policy_other.reset_noise(env.num_envs)
+                self.policy.reset_noise(env.num_envs)
 
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values = self.policy(obs_tensor, deterministic=False, ego_forward=False, adv_forward=True)
+                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values = self.policy(obs_tensor, deterministic=False, ego_forward=update_ego, adv_forward=update_adversary)
                 other_values = -values
-                #actions_other, values_other, log_probs_other = rollout_policy_other(obs_tensor)
+
             actions = ego_actions.cpu().numpy()
             actions_other = adv_actions.cpu().numpy()
 
@@ -770,7 +765,7 @@ class CleanDerivativeFreeSPAR(PPO):
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
         update_ego: bool = True,
-        update_adversary: bool = True,
+        update_adversary: bool = False,
     ):
         #try:
         iteration = 0
@@ -791,17 +786,17 @@ class CleanDerivativeFreeSPAR(PPO):
         callback.on_training_start(locals(), globals())
 
         while self.num_timesteps < total_timesteps:
-            perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
+            #perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
             print("perturbed agent created!", flush=True)
-            self._initialize_parallel_updater() 
+            #self._initialize_parallel_updater() 
                  
-            self.inner_loop()
-            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps) #TODO: This is sequential - remove when done.
-            perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
-            self.perturbed_agent = perturbed_agent
-            self.perturbed_buf = perturbed_buf
-            self.perturbed_adv_buf = perturbed_adv_buf
-            self.perturbed_agent_policy = perturbed_agent.policy
+            #self.inner_loop()
+            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, update_ego, update_adversary) #TODO: This is sequential - remove when done.
+            #perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
+            #self.perturbed_agent = perturbed_agent
+            #self.perturbed_buf = perturbed_buf
+            #self.perturbed_adv_buf = perturbed_adv_buf
+            #self.perturbed_agent_policy = perturbed_agent.policy
             #continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps) #TODO: This is sequential - remove when done.
 
             # Run env_perturb_params and collect_rollouts in different threads (cannot be done in different processes because they contain unpickleable objects)
@@ -843,7 +838,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 self.logger.dump(step=self.num_timesteps)
         
 
-            self.train(update_ego=False, update_adversary=True)
+            self.train(update_ego=update_ego, update_adversary=update_adversary)
             #self.perturbed_agent.env.close()
             #del self.perturbed_agent
 
@@ -859,8 +854,8 @@ class CleanDerivativeFreeSPAR(PPO):
         return self
     
     def train(self, update_ego: bool = True, update_adversary: bool = True) -> None:
-        #self.train_standard(update_ego, update_adversary)
-        self.train_derivative_free(update_ego, update_adversary)
+        self.train_standard(update_ego, update_adversary)
+        #self.train_derivative_free(update_ego, update_adversary)
     
     def train_derivative_free(self, update_ego: bool = True, update_adversary: bool = True) -> None:
         self._update_value_functions(self.perturbed_agent, self.perturbed_adv_buf)
@@ -924,7 +919,7 @@ class CleanDerivativeFreeSPAR(PPO):
             buf = self.rollout_buffer
         else:
             self.policy.num_adversaries = 1
-            buf = self.adversary_buffers[1]
+            buf = self.adversary_buffers[0]
 
 
         # train for n_epochs epochs

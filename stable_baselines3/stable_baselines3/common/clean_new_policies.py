@@ -359,7 +359,7 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         env_ids = env_indices // self.envs_per_matchup
         for i in range(len(buf_num)):
             indices = (env_ids == buf_num[i])
-            if len(indices) > 1:
+            if len(indices.shape) > 1:
                 indices = indices[:, 0]
             key = select_matchup_env(self.matchups, buf_num[i], self.envs_per_matchup)
             if len(buf_num) == 1:
