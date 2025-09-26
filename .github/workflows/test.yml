@@ -15,6 +15,10 @@ jobs:
       with:
         python-version: '3.11'
 
+    - name: Install local stable-baselines3
+      run: |
+        pip install -e ./path/to/stable_baselines3_folder
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
