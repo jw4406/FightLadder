@@ -24,11 +24,9 @@ jobs:
       run: |
         pip install -e ./stable_baselines3
 
-    - name: Create retro mock for testing
+    - name: Install retro from wheel
       run: |
-        mkdir -p /tmp/mock_modules
-        echo "# Mock retro module for testing" > /tmp/mock_modules/retro.py
-        export PYTHONPATH="/tmp/mock_modules:$PYTHONPATH"
+        pip install --only-binary=all retro || echo "No wheel available"
 
     - name: Run unit tests
       run: |
