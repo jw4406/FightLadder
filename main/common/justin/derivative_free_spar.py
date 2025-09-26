@@ -27,7 +27,7 @@ from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.policies import ActorCriticPolicy, ActorCriticCnnPolicy, MultiInputActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.vec_env import VecEnv
-from utils import move_policy, select_device, get_n_workers, state2matchup, select_matchup_env
+from main.utils import move_policy, select_device, get_n_workers, state2matchup, select_matchup_env
 
 DEBUG = False
 TIMING = False

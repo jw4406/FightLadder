@@ -16,7 +16,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.type_aliases import GymObs, GymStepReturn
 
 from .const import *
-from common.utils import linear_schedule
+from main.common.utils import linear_schedule
 
 
 class SFWrapper(gym.Wrapper):

@@ -7,13 +7,13 @@ import multiprocessing as mp
 sys.path.append(".")
 sys.path.append("..")
 sys.path.append("../..")
-from common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P
-from common.retro_wrappers import SFWrapper, Monitor2P
+from main.common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P
+from main.common.retro_wrappers import SFWrapper, Monitor2P
 from main.common.justin.clean_derivative_free_spar import CleanDerivativeFreeSPAR
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.utils import safe_mean
-from utils import state2matchup
-from common.const import *
+from main.utils import state2matchup
+from main.common.const import *
 import wandb
 
 PLAYER = ["Guile"]
@@ -88,29 +88,7 @@ def env_generator(max_envs: int = 0, i_start: int = 0, j_start: int = 0):
             env_count += 1
             if exceed_max_envs(env_count, max_envs):
                 break
-        # env = [make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=0) for i in range(args.num_env)]
-        # env = make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render,
-        #         enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action,
-        #         seed=0)
         return VecTransposeImage2P(SubprocVecEnv2P(env))
-
-
-#env = env_generator()
-    
-#model = CleanDerivativeFreeSPAR(
-#        policy="AACCnnPolicy",
-#        env=env,
-#        n_steps=2048,
-#        batch_size=512,
-#        n_epochs=1,
-#        num_adversaries=num_adversaries,
-#        n_env_per_adv=n_env_per_adv,
-#        state_list=STATE,
-#        envs_per_matchup=envs_per_matchup,
-#        env_generator_func=env_generator,
-#        dstb_action_space=MultiBinary(15),
-#        verbose=1
-#    )
 
 
 def test_ego_forward():

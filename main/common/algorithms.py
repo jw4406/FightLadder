@@ -32,8 +32,8 @@ from stable_baselines3.common.torch_layers import (
     NatureCNN,
     create_mlp,
 )
-from common.justin.Generalist_SPAR import Generalist_SPAR
-from common.justin.derivative_free_spar import Derivative_Free_SPAR
+from main.common.justin.Generalist_SPAR import Generalist_SPAR
+from main.common.justin.derivative_free_spar import Derivative_Free_SPAR
 from stable_baselines3.common.preprocessing import maybe_transpose
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean, explained_variance, get_schedule_fn, \
