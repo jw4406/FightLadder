@@ -15,14 +15,14 @@ jobs:
       with:
         python-version: '3.11'
 
-    - name: Install local stable-baselines3
-      run: |
-        pip install -e ./stable_baselines3
-
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+    - name: Install local stable-baselines3
+      run: |
+        pip install -e ./stable_baselines3
 
     - name: Run unit tests
       run: |
