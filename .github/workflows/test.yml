@@ -17,7 +17,7 @@ jobs:
 
     - name: Install local stable-baselines3
       run: |
-        pip install -e ./path/to/stable_baselines3_folder
+        pip install -e ./stable_baselines3_folder
 
     - name: Install dependencies
       run: |
