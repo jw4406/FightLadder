@@ -1,3 +1,4 @@
+import unittest
 import sys
 import retro
 import numpy as np
@@ -90,106 +91,83 @@ def env_generator(max_envs: int = 0, i_start: int = 0, j_start: int = 0):
                 break
         return VecTransposeImage2P(SubprocVecEnv2P(env))
 
+class TestAdvantageValueRewardsSign(unittest.TestCase):
+    """
+    TODO: Add a description of this test.
+    """
 
-def test_ego_forward():
-    print("--- Running Test: Ego Forward ---")
-    
-    #def env_generator_func():
-    #    return DummyVecEnv([lambda: make_env(side="left")])
+    def setUp(self) -> None:
+        wandb.login(key='d95a51c4001b862123a34a3853fe0306906d2f07')
+        wandb.init(project="spar-learning", name="test_ego_forward",config={"eval_rew": 0, "epochs": 0})
+        mp.set_start_method("spawn", force=True) #A lot of stable_baseline3 objects don't support the default "fork".
 
-    env = env_generator()
-    
-    #state_list = ["Champion.Level1.RyuVsRyu"]
-    #num_adversaries = 1
-    #n_env_per_adv = 1
-    #envs_per_matchup = 1
-    
-    model = CleanDerivativeFreeSPAR(
-        policy="AACCnnPolicy",
-        env=env,
-        n_steps=2048,
-        batch_size=512,
-        n_epochs=1,
-        num_adversaries=num_adversaries,
-        n_env_per_adv=n_env_per_adv,
-        state_list=STATE,
-        envs_per_matchup=envs_per_matchup,
-        env_generator_func=env_generator,
-        dstb_action_space=MultiBinary(15),
-        verbose=1
-    )
+        #Parameters
+        self.mean_reward_threshold = 0.3 #Mean reward threshold.
+        self.n_steps = 2048
+        self.batch_size = 512
+        self.n_epochs = 1
 
-    model.learn(total_timesteps=model.n_steps * 15, update_ego=True, update_adversary=False)
-    
-    mean_reward = safe_mean([ep_info["r"] for ep_info in model.ep_info_buffer])
-    print(f"Ego forward final mean reward: {mean_reward}")
-    
-    assert mean_reward > 0.3, f"Mean reward {mean_reward} is not > 0.3"
-    env.close()
+        self.env = env_generator()
 
-def test_adversary_forward():
-    print("--- Running Test: Adversary Forward ---")
+    def test_ego_forward(self):   
+        env = env_generator()
+        model = CleanDerivativeFreeSPAR(
+            policy="AACCnnPolicy",
+            env=env,
+            n_steps=self.n_steps,
+            batch_size=self.batch_size,
+            n_epochs=self.n_epochs,
+            num_adversaries=num_adversaries,
+            n_env_per_adv=n_env_per_adv,
+            state_list=STATE,
+            envs_per_matchup=envs_per_matchup,
+            env_generator_func=env_generator,
+            dstb_action_space=MultiBinary(15),
+            verbose=1
+        )
+        model.learn(total_timesteps=model.n_steps * 15, update_ego=True, update_adversary=False)
+        mean_reward = safe_mean([ep_info["r"] for ep_info in model.ep_info_buffer])
+        env.close()
+        self.assertGreater(mean_reward, self.mean_reward_threshold, f"Mean reward {mean_reward} is not > {self.mean_reward_threshold}.")
 
-    #def env_generator_func():
-    #    return DummyVecEnv([lambda: make_env(side="right")])
+    def test_adversary_forward(self):
+        model = CleanDerivativeFreeSPAR(
+            policy="AACCnnPolicy",
+            env=self.env,
+            n_steps=self.n_steps,
+            batch_size=self.batch_size,
+            n_epochs=self.n_epochs,
+            num_adversaries=num_adversaries,
+            n_env_per_adv=n_env_per_adv,
+            state_list=STATE,
+            envs_per_matchup=envs_per_matchup,
+            env_generator_func=env_generator,
+            dstb_action_space=MultiBinary(15),
+            verbose=1
+        )
+        model.learn(total_timesteps=model.n_steps * 15, update_ego=False, update_adversary=True)
+        mean_reward = safe_mean([ep_info["r"] for ep_info in model.ep_info_buffer])
+        self.env.close()
+        self.assertLess(mean_reward, -self.mean_reward_threshold, f"Mean reward {mean_reward} is not < -{self.mean_reward_threshold}.")
 
-    env = env_generator()
-    
-
-    model = CleanDerivativeFreeSPAR(
-        policy="AACCnnPolicy",
-        env=env,
-        n_steps=2048,
-        batch_size=512,
-        n_epochs=1,
-        num_adversaries=num_adversaries,
-        n_env_per_adv=n_env_per_adv,
-        state_list=STATE,
-        envs_per_matchup=envs_per_matchup,
-        env_generator_func=env_generator,
-        dstb_action_space=MultiBinary(15),
-        verbose=1
-    )
-
-    model.learn(total_timesteps=model.n_steps * 15, update_ego=False, update_adversary=True)
-
-    mean_reward = safe_mean([ep_info["r"] for ep_info in model.ep_info_buffer])
-    print(f"Adversary forward final mean reward: {mean_reward}")
-    
-    assert mean_reward < -0.3, f"Mean reward {mean_reward} is not < -0.3"
-    env.close()
-
-def test_advantage_value_rewards_sign():
-
-    env = env_generator()
-    
-
-    model = CleanDerivativeFreeSPAR(
-        policy="AACCnnPolicy",
-        env=env,
-        n_steps=2048,
-        batch_size=512,
-        n_epochs=1,
-        num_adversaries=num_adversaries,
-        n_env_per_adv=n_env_per_adv,
-        state_list=STATE,
-        envs_per_matchup=envs_per_matchup,
-        env_generator_func=env_generator,
-        dstb_action_space=MultiBinary(15),
-        verbose=1
-    )
-    model.learn(total_timesteps=model.n_steps, update_ego=False, update_adversary=True)
-    assert torch.allclose(model.adversary_buffers[0].values + model.rollout_buffer.values, torch.zeros_like(model.adversary_buffers[0].values))
-    assert np.allclose(model.adversary_buffers[0].rewards + model.rollout_buffer.rewards, np.zeros_like(model.adversary_buffers[0].rewards))
-    summed_advantages = model.rollout_buffer.advantages + model.adversary_buffers[0].advantages
-    assert torch.allclose(summed_advantages, torch.zeros_like(summed_advantages))
-    print(f"Summed advantages: {summed_advantages.mean().item():.4f}") 
-
-if __name__ == "__main__":
-    wandb.login(key='d95a51c4001b862123a34a3853fe0306906d2f07')
-    wandb.init(project="spar-learning", name="test_ego_forward",config={"eval_rew": 0,
-                               "epochs": 0})
-    mp.set_start_method("spawn", force=True) #A lot of stable_baseline3 objects don't support the default "fork".
-    #test_ego_forward()
-    #test_adversary_forward()
-    test_advantage_value_rewards_sign()
+    def test_advantage_value_rewards_sign(self):
+        model = CleanDerivativeFreeSPAR(
+            policy="AACCnnPolicy",
+            env=self.env,
+            n_steps=self.n_steps,
+            batch_size=self.batch_size,
+            n_epochs=self.n_epochs,
+            num_adversaries=num_adversaries,
+            n_env_per_adv=n_env_per_adv,
+            state_list=STATE,
+            envs_per_matchup=envs_per_matchup,
+            env_generator_func=env_generator,
+            dstb_action_space=MultiBinary(15),
+            verbose=1
+        )
+        model.learn(total_timesteps=model.n_steps, update_ego=False, update_adversary=True)
+        self.env.close()
+        self.assertTrue(torch.allclose(model.adversary_buffers[0].values + model.rollout_buffer.values, torch.zeros_like(model.adversary_buffers[0].values)))
+        self.assertTrue(np.allclose(model.adversary_buffers[0].rewards + model.rollout_buffer.rewards, np.zeros_like(model.adversary_buffers[0].rewards)))
+        summed_advantages = model.rollout_buffer.advantages + model.adversary_buffers[0].advantages
+        self.assertTrue(torch.allclose(summed_advantages, torch.zeros_like(summed_advantages)))
