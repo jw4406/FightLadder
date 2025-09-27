@@ -685,6 +685,39 @@ class RolloutBuffer(BaseBuffer):
             self.env_indices[batch_inds].flatten()
         )
         return RolloutBufferSamples(*tuple(map(self.to_torch, data)))
+    def prepare_data_for_training(self) -> None:
+        """
+        Prepares the buffer for training by swapping and flattening the data.
+        This is a one-time operation that should be called after collecting rollouts.
+        """
+        #print("--- AdvRolloutBuffer PREPARED ---")
+        if not self.generator_ready:
+            _torch_tensor_names = [
+                "observations",
+                "actions",
+                "values",
+                "log_probs",
+                "advantages",
+                "returns",
+            ]
+            for tensor_name in _torch_tensor_names:
+                tensor = self.__dict__[tensor_name]
+                #if self.pin_memory:
+                    # Data is already a tensor, just move to the correct device
+                #    th_tensor = tensor.to(self.device, non_blocking=True)
+                #else:
+                    # th.as_tensor avoids a copy if the numpy array is on the CPU and writable
+                    # which should be the case here
+                th_tensor = th.as_tensor(tensor, device=self.device)
+                
+                shape = th_tensor.shape
+                # .contiguous().view() is more efficient than reshape for non-contiguous tensors
+                # We clone here to sever any computational graph links among buffer tensors
+                self.__dict__[tensor_name] = th_tensor.transpose(0, 1).contiguous().view(shape[0] * shape[1], *shape[2:]).clone()
+
+            # Handle env_indices separately as it remains a numpy array
+            self.env_indices = self.swap_and_flatten(self.env_indices)
+            self.generator_ready = True
 
 class AdvRolloutBuffer(BaseBuffer):
     """
@@ -759,28 +792,28 @@ class AdvRolloutBuffer(BaseBuffer):
         if self.pin_memory:
             # Create tensors directly on pinned CPU memory
             self.observations = th.zeros(obs_shape, dtype=th.uint8).pin_memory()
-            self.actions = th.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=th.float16).pin_memory()
-            self.dstb_actions = th.zeros((self.buffer_size, self.n_envs, self.dstb_action_dim), dtype=th.float16).pin_memory()
-            self.rewards = th.zeros((self.buffer_size, self.n_envs), dtype=th.float16).pin_memory()
-            self.returns = th.zeros((self.buffer_size, self.n_envs), dtype=th.float16).pin_memory()
+            self.actions = th.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=th.float32).pin_memory()
+            self.dstb_actions = th.zeros((self.buffer_size, self.n_envs, self.dstb_action_dim), dtype=th.float32).pin_memory()
+            self.rewards = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
+            self.returns = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
             self.episode_starts = th.zeros((self.buffer_size, self.n_envs), dtype=th.bool).pin_memory()
-            self.values = th.zeros((self.buffer_size, self.n_envs), dtype=th.float16).pin_memory()
-            self.log_probs = th.zeros((self.buffer_size, self.n_envs), dtype=th.float16).pin_memory()
-            self.dstb_log_probs = th.zeros((self.buffer_size, self.n_envs), dtype=th.float16).pin_memory()
-            self.advantages = th.zeros((self.buffer_size, self.n_envs), dtype=th.float16).pin_memory()
-            self.dones = th.zeros((self.buffer_size, self.n_envs), dtype=th.float16).pin_memory()
+            self.values = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
+            self.log_probs = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
+            self.dstb_log_probs = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
+            self.advantages = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
+            self.dones = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
         else:
             self.observations = np.zeros(obs_shape, dtype=np.uint8)
-            self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float16)
-            self.dstb_actions = np.zeros((self.buffer_size, self.n_envs, self.dstb_action_dim), dtype=np.float16)
-            self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
-            self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
+            self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
+            self.dstb_actions = np.zeros((self.buffer_size, self.n_envs, self.dstb_action_dim), dtype=np.float32)
+            self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+            self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
             self.episode_starts = np.zeros((self.buffer_size, self.n_envs), dtype=bool)
-            self.values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
-            self.log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
-            self.dstb_log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
-            self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
-            self.dones = np.zeros((self.buffer_size, self.n_envs), dtype=np.float16)
+            self.values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+            self.log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+            self.dstb_log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+            self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+            self.dones = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
 
         self.generator_ready = False
         self.env_indices = np.tile(np.arange(self.n_envs), (self.buffer_size, 1))  # Shape: (buffer_size, n_envs)
@@ -825,6 +858,7 @@ class AdvRolloutBuffer(BaseBuffer):
         new_episode_indices = np.where(self.episode_starts)
         if len(new_episode_indices) > 0:
             self.X0_RETURNS_MASTER[new_episode_indices[1]] = self.returns[new_episode_indices[0], new_episode_indices[1]]
+        self.returns = self.returns.clone()
 
     def compute_returns_and_advantage_pt(self, last_values: th.Tensor, dones: th.Tensor) -> None:
         """
@@ -916,7 +950,7 @@ class AdvRolloutBuffer(BaseBuffer):
         # While this part is difficult to fully vectorize without complex operations,
         # running a small Python loop over pre-computed tensors on a GPU is still very fast.
 
-        advantages_pt = th.zeros_like(deltas)
+        advantages_pt = th.zeros_like(deltas, device=self.values.device)
         last_gae_lam = th.zeros_like(last_values) # Shape: (n_envs,)
         discount_factor = self.gamma * self.gae_lambda
 
@@ -1058,7 +1092,6 @@ class AdvRolloutBuffer(BaseBuffer):
                 "advantages",
                 "returns",
             ]
-
             for tensor_name in _torch_tensor_names:
                 tensor = self.__dict__[tensor_name]
                 if self.pin_memory:
@@ -1071,15 +1104,15 @@ class AdvRolloutBuffer(BaseBuffer):
                 
                 shape = th_tensor.shape
                 # .contiguous().view() is more efficient than reshape for non-contiguous tensors
-                self.__dict__[tensor_name] = th_tensor.transpose(0, 1).contiguous().view(shape[0] * shape[1], *shape[2:])
+                # We clone here to sever any computational graph links among buffer tensors
+                self.__dict__[tensor_name] = th_tensor.transpose(0, 1).contiguous().view(shape[0] * shape[1], *shape[2:]).clone()
 
             # Handle env_indices separately as it remains a numpy array
             self.env_indices = self.swap_and_flatten(self.env_indices)
-
             self.generator_ready = True
 
 
-    def get(self, batch_size: Optional[int] = None) -> Generator[AdvRolloutBufferSamples, None, None]:
+    def old_get(self, batch_size: Optional[int] = None) -> Generator[AdvRolloutBufferSamples, None, None]:
         assert self.full, ""
         assert self.generator_ready, "You must call .prepare_data_for_training() before getting data from the buffer."
         indices = np.random.permutation(self.buffer_size * self.n_envs)
@@ -1094,8 +1127,39 @@ class AdvRolloutBuffer(BaseBuffer):
         while start_idx < self.buffer_size * self.n_envs:
             self.current_shot = indices[start_idx : start_idx + batch_size]
             yield self._get_samples(indices[start_idx: start_idx + batch_size])
+            #yield self._get_samples(list(range(start_idx, start_idx + batch_size)))
             start_idx += batch_size
+    def get(self, batch_size: Optional[int] = None) -> Generator[AdvRolloutBufferSamples, None, None]:
+        assert self.full, ""
+        indices = np.random.permutation(self.buffer_size * self.n_envs)
+        #indices = list(range(self.buffer_size * self.n_envs))
+        # Prepare the data
+        if not self.generator_ready:
 
+            _tensor_names = [
+                "observations",
+                "actions",
+                "dstb_actions",
+                "values",
+                "log_probs",
+                "dstb_log_probs",
+                "advantages",
+                "returns",
+                "env_indices"
+            ]
+
+            for tensor in _tensor_names:
+                self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
+            self.generator_ready = True
+
+        # Return everything, don't create minibatches
+        if batch_size is None:
+            batch_size = self.buffer_size * self.n_envs
+
+        start_idx = 0
+        while start_idx < self.buffer_size * self.n_envs:
+            yield self._get_samples(indices[start_idx : start_idx + batch_size])
+            start_idx += batch_size
     def _get_samples(
             self,
             batch_inds: np.ndarray,

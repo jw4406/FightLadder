@@ -38,7 +38,7 @@ from stable_baselines3.common.torch_layers import (
 from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.utils import get_device, is_vectorized_observation, obs_as_tensor
 
-from utils import select_matchup_env
+from main.utils import select_matchup_env
 
 SelfBaseModel = TypeVar("SelfBaseModel", bound="BaseModel")
 
@@ -694,7 +694,7 @@ class ActorCriticPolicy(BasePolicy):
         :param latent_pi: Latent code for the actor
         :return: Action distribution
         """
-        mean_actions = self.action_net(latent_pi)
+        mean_actions = self.action_net(latent_pi) 
 
         if isinstance(self.action_dist, DiagGaussianDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std)
@@ -1788,15 +1788,15 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         # Preprocess the observation if needed
         with th.no_grad():
             num_adversaries = len(network_keys)
-            #features = self.extract_features(obs)
-            preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
-            features = (self.pi_ctrl_features_extractor(preprocessed_obs), self.pi_dstb_features_extractor(preprocessed_obs))
+            pi_ctrl_features, pi_dstb_features, vf_features = self.extract_features(obs)
+            #preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
+            #features = (self.pi_ctrl_features_extractor(preprocessed_obs), self.pi_dstb_features_extractor(preprocessed_obs))
             if self.share_features_extractor:
-                latent_both, latent_vf = self.mlp_extractor(features)
+                latent_both, latent_vf = self.mlp_extractor((pi_ctrl_features, pi_dstb_features))
                 latent_pi = latent_both[0]
                 latent_pi_dstb = latent_both[1]
             else:
-                pi_ctrl_features, pi_dstb_features = features
+                #pi_ctrl_features, pi_dstb_features = features
                 latent_both = self.mlp_extractor.forward_actor(pi_ctrl_features, pi_dstb_features)
                 latent_pi = latent_both[0]
                 latent_pi_dstb = latent_both[1]
@@ -1804,14 +1804,15 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
             #latent_pi = latent_pi.unsqueeze(1)
             #latent_pi_dstb = latent_pi_dstb.unsqueeze(1)
             #latent_vf = latent_vf.unsqueeze(1)
-            ctrl_distribution, dstb_distribution = self._get_action_dist_from_latent_nonuniform(latent_pi, latent_pi_dstb, shuffle_keys=shuffle_keys, network_keys=network_keys, envs_per_matchup=envs_per_matchup)
+            #ctrl_distribution, dstb_distribution = self._get_action_dist_from_latent_nonuniform(latent_pi, latent_pi_dstb, shuffle_keys=shuffle_keys, network_keys=network_keys, envs_per_matchup=envs_per_matchup)
+            ctrl_distribution, dstb_distribution = self._get_action_dist_from_latent(latent_pi, latent_pi_dstb, network_keys=network_keys)
             ctrl_log_prob = ctrl_distribution.log_prob(actions)
             #dstb_log_prob = th.zeros_like(ctrl_log_prob)
             #num_global_env = np.max(shuffle_keys) + 1 #TODO HACKY
             num_global_env = self.num_global_env
             num_env_per_adv = num_global_env // num_adversaries
             full = [i for i in range(num_global_env)]
-            concated_adv_log_probs = th.empty_like(ctrl_log_prob,dtype=th.float16) #empty_like is a bit faster than zeros_like
+            concated_adv_log_probs = th.empty_like(ctrl_log_prob,dtype=th.float32) #empty_like is a bit faster than zeros_like
             for i in range(num_adversaries):
                 chunk = full[i * num_env_per_adv : (i+1)*num_env_per_adv]
                 #Try not to move stuff to CPU if can be avoided
@@ -1829,7 +1830,7 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
         #for i in range(self.num_adversaries):
         #    test[i * (chunk_size): (i + 1) * chunk_size] = dstb_log_prob[i][:]
         #dstb_log_prob = test
-        vf_features = self.vf_features_extractor(preprocessed_obs)
+        #vf_features = self.vf_features_extractor(preprocessed_obs)
         latent_vf = self.mlp_extractor.forward_critic(vf_features)
         values = th.empty((latent_vf.shape[0],), device=self.device) #empty is a bit faster than zeros
         num_global_env = th.max(shuffle_keys) + 1 #latent_vf.shape[0] // self.num_adversaries
@@ -1952,6 +1953,120 @@ class ActorActorCriticCnnGeneralistPolicy(ActorActorCriticGeneralistPolicy):
 
         return (actions, state), (dstb_actions, state)  # type: ignore[return-value]
 
+class bare_AACCNNGP(ActorActorCriticCnnGeneralistPolicy):
+    def __init__(self,observation_space: spaces.Space,
+            action_space: spaces.Space,
+            lr_schedule: Schedule,
+            net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
+            activation_fn: Type[nn.Module] = nn.LeakyReLU,
+            ortho_init: bool = False,
+            use_sde: bool = False,
+            log_std_init: float = 0.0,
+            full_std: bool = True,
+            use_expln: bool = False,
+            squash_output: bool = False,
+            features_extractor_class: Type[BaseFeaturesExtractor] = NatureCNN,
+            features_extractor_kwargs: Optional[Dict[str, Any]] = None,
+            share_features_extractor: bool = False,
+            normalize_images: bool = True,
+            optimizer_class: Type[th.optim.Optimizer] = th.optim.AdamW,
+            optimizer_kwargs: Optional[Dict[str, Any]] = None,
+            adversarial=True,
+            dstb_action_space: spaces.Space = None,
+            policy_memory_size: Optional[int] = None,
+            num_adversaries=None,
+            num_env_per_adv=None,
+            matchups=None,
+            envs_per_matchup=None,
+    ):
+        super().__init__(observation_space=observation_space,        
+            action_space=action_space,
+            lr_schedule=lr_schedule,
+            net_arch=net_arch,
+            activation_fn=activation_fn,
+            ortho_init=ortho_init,
+            use_sde=use_sde,
+            log_std_init=log_std_init,
+            full_std=full_std,
+            use_expln=use_expln,
+            squash_output=squash_output,
+            features_extractor_class=features_extractor_class,
+            features_extractor_kwargs=features_extractor_kwargs,
+            share_features_extractor=share_features_extractor,
+            normalize_images=normalize_images,
+            optimizer_class=optimizer_class,
+            optimizer_kwargs=optimizer_kwargs,
+            adversarial=adversarial,
+            dstb_action_space=dstb_action_space,
+            policy_memory_size=policy_memory_size,
+            num_adversaries=num_adversaries,
+            num_env_per_adv=num_env_per_adv,
+            matchups=matchups,
+            envs_per_matchup=envs_per_matchup,
+    )
+
+    def forward(self, obs: th.Tensor, deterministic: bool = False) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+        features = self.extract_features(obs)
+        ego_features = features[0]
+        adv_features = features[1]
+        vf_features = features[2]
+        if self.share_features_extractor:
+            latent_pi, latent_vf = self.mlp_extractor(features)
+        else:
+            #pi_features, vf_features = features
+            latent_pi, latent_pi_dstb = self.mlp_extractor.forward_actor(ego_features, adv_features)
+            latent_vf = self.mlp_extractor.forward_critic(vf_features)
+        # Evaluate the values for the given observations
+        values = self.value_net['GuileVsGuile_0'](latent_vf)
+        distribution = self._get_action_dist_from_latent(latent_pi)
+        actions = distribution.get_actions(deterministic=deterministic)
+        log_prob = distribution.log_prob(actions)
+        actions = actions.reshape((-1,) + self.action_space.shape)
+        return actions, log_prob , values
+    def _get_action_dist_from_latent(self, latent_pi) -> Distribution:
+        mean_actions = self.action_net(latent_pi)
+
+        if isinstance(self.action_dist, DiagGaussianDistribution):
+            return self.action_dist.proba_distribution(mean_actions, self.log_std)
+        elif isinstance(self.action_dist, CategoricalDistribution):
+            # Here mean_actions are the logits before the softmax
+            return self.action_dist.proba_distribution(action_logits=mean_actions)
+        elif isinstance(self.action_dist, MultiCategoricalDistribution):
+            # Here mean_actions are the flattened logits
+            return self.action_dist.proba_distribution(action_logits=mean_actions)
+        elif isinstance(self.action_dist, BernoulliDistribution):
+            # Here mean_actions are the logits (before rounding to get the binary actions)
+            return self.action_dist.proba_distribution(action_logits=mean_actions)
+        elif isinstance(self.action_dist, StateDependentNoiseDistribution):
+            return self.action_dist.proba_distribution(mean_actions, self.log_std, latent_pi)
+        else:
+            raise ValueError("Invalid action distribution")
+    def evaluate_actions(self, obs: th.Tensor, actions: th.Tensor) -> Tuple[th.Tensor, th.Tensor, Optional[th.Tensor]]:
+        """
+        Evaluate actions according to the current policy,
+        given the observations.
+
+        :param obs: Observation
+        :param actions: Actions
+        :return: estimated value, log likelihood of taking those actions
+            and entropy of the action distribution.
+        """
+        # Preprocess the observation if needed
+        features = self.extract_features(obs)
+        ego_features = features[0]
+        adv_features = features[1]
+        vf_features = features[2]
+        if self.share_features_extractor:
+            latent_pi, latent_vf = self.mlp_extractor(features)
+        else:
+            #pi_features, vf_features = features
+            latent_pi , latent_pi_dstb = self.mlp_extractor.forward_actor(ego_features, adv_features)
+            latent_vf = self.mlp_extractor.forward_critic(vf_features)
+        distribution = self._get_action_dist_from_latent(latent_pi)
+        log_prob = distribution.log_prob(actions.type(th.float32))
+        values = self.value_net['GuileVsGuile_0'](latent_vf)
+        entropy = distribution.entropy()
+        return values, log_prob, entropy
 class ActorActorCriticCnnPolicy(ActorActorCriticPolicy):
     def __init__(
             self,

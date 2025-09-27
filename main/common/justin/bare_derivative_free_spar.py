@@ -13,7 +13,7 @@ from functorch import vmap as eepy
 from retro.examples.brute import rollout
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
-from stable_baselines3.common.policies import ActorActorCriticCnnGeneralistPolicy
+from stable_baselines3.common.policies import ActorActorCriticCnnGeneralistPolicy, bare_AACCNNGP
 from typing import Union, Type, Optional, Dict, Any
 from .spar import Single_SPAR
 from .Doubly_TSS_SPAR import Doubly_TSS_SPAR
@@ -28,6 +28,9 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 
 class BareDerivativeFreeSPAR(Single_SPAR):
+    policy_aliases = {
+        "AACCnnPolicy": bare_AACCNNGP
+    }
     def __init__(self,
         policy: Union[str, Type[ActorActorCriticCnnGeneralistPolicy]],
         env: Union[GymEnv, str],
@@ -168,7 +171,12 @@ class BareDerivativeFreeSPAR(Single_SPAR):
             j_start = 0
             i_start = env_cnt
             return i_start, j_start
-
+        ct = super().collect_rollouts(env, callback, rollout_buffer, n_rollout_steps)
+        for i in range(self.rollout_buffer.buffer_size):
+            _, test, _ = self.policy.evaluate_actions(self.rollout_buffer.observations[i].to(self.device), self.rollout_buffer.actions[i].to(self.device))
+            assert th.allclose(self.rollout_buffer.log_probs[i], test.cpu())
+        #self.rollout_buffer.prepare_data_for_training()
+        return ct
         # Create rollout environments in batches using the stored generator function
         total_envs_needed = self.state_len# * self.envs_per_matchp
         # we modified state_list to hold the master list of envs with all the diversity duplicates and everything. 
@@ -277,11 +285,7 @@ class BareDerivativeFreeSPAR(Single_SPAR):
 
                     obs_tensor = obs_as_tensor(self._last_obs, self.device)
                     s_actions, s_log_probs, s_values, s_dstb_actions, s_dstb_log_probs = self.policy(obs_tensor, network_keys=network_keys)
-                    all_adv_left_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
-                    all_adv_right_actions = torch.zeros((self.n_global_env, self.action_space.n), device=self.device)
                     all_adv_critic_values = torch.zeros((self.n_global_env, 1), device=self.device)
-                    all_adv_log_probs = torch.zeros((self.n_global_env,), device=self.device)
-                    all_adv_dstb_log_probs = torch.zeros((self.n_global_env,), device=self.device)
                 actions = s_actions
                 adversary_actions = s_dstb_actions
                 log_probs = s_log_probs
@@ -410,7 +414,7 @@ class BareDerivativeFreeSPAR(Single_SPAR):
                 
                 #if np.any(rewards != 0):
                 #    print("Reward is not 0")
-                ego_vertical_batch_obs[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches)), :, :, :] = th.unsqueeze(th.from_numpy(new_obs), 0)
+                ego_vertical_batch_obs[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches)), :, :, :] = th.unsqueeze(th.from_numpy(self._last_obs), 0)
                 ego_vertical_batch_rewards[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(th.from_numpy(rewards), 0)
                 #vertical_batch_rewards_other[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches)), :] = th.unsqueeze(th.from_numpy(rew_other), 0)
                 ego_vertical_batch_dones[count, int(batch_idx * (total_envs_needed / total_batches)) : int((batch_idx + 1) * (total_envs_needed / total_batches))] = th.unsqueeze(th.from_numpy(dones), 0)
@@ -561,22 +565,80 @@ class BareDerivativeFreeSPAR(Single_SPAR):
         approx_kl_divs = []
         clip_fractions = []
 
+        self.policy.set_training_mode(False)
+        # with th.no_grad():
+        #     _, recomputed_log_probs, _ = self.policy.evaluate_actions(self.rollout_buffer.observations, self.rollout_buffer.actions)
+
+        # stored_log_probs = self.rollout_buffer.log_probs
+        
+        # if not th.allclose(recomputed_log_probs, stored_log_probs):
+        #     print("!!! LOG PROBS DO NOT MATCH !!!")
+        #     diff = th.abs(recomputed_log_probs - stored_log_probs)
+        #     print(f"Max difference: {th.max(diff).item()}")
+        #     print(f"Mean difference: {th.mean(diff).item()}")
+        #     max_diff_idx = th.argmax(diff).item()
+        #     print(f"Index of max difference: {max_diff_idx}")
+        #     print(f"Recomputed log_prob at index {max_diff_idx}: {recomputed_log_probs[max_diff_idx].item()}")
+        #     print(f"Stored log_prob at index {max_diff_idx}: {stored_log_probs[max_diff_idx].item()}")
+        #     print(f"Observation at index {max_diff_idx}: {self.rollout_buffer.observations[max_diff_idx]}")
+        #     print(f"Action at index {max_diff_idx}: {self.rollout_buffer.actions[max_diff_idx]}")
+
+        # assert th.allclose(recomputed_log_probs, stored_log_probs), "Log probabilities do not match between collection and training."
+        self.policy.set_training_mode(True)
+        for i in range(self.rollout_buffer.buffer_size):    
+            _, test, _ = self.policy.evaluate_actions(self.rollout_buffer.observations[i].to(self.device), self.rollout_buffer.actions[i].to(self.device))
+            assert th.allclose(self.rollout_buffer.log_probs[i], test.cpu())
+        test_obs = deepcopy(self.rollout_buffer.observations)
+        test_actions = deepcopy(self.rollout_buffer.actions)
+        test_old_log_prob = deepcopy(self.rollout_buffer.log_probs)
+        #check oirder
+        #test_actions = deepcopy(self.rollout_buffer.actions[0])
+        #test_old_log_prob = deepcopy(self.rollout_buffer.log_probs[0].flatten())
+        self.rollout_buffer.observations = self.rollout_buffer.observations.cpu().numpy()
+        self.rollout_buffer.actions = self.rollout_buffer.actions.cpu().numpy()
+        self.rollout_buffer.log_probs = self.rollout_buffer.log_probs.cpu().numpy()
         for epoch in range(self.n_epochs):
-            for rollout_data in self.rollout_buffer.get(self.batch_size):
+
+            for i in range(self.rollout_buffer.buffer_size):    
+                _, pre_test, _ = self.policy.evaluate_actions(th.from_numpy(self.rollout_buffer.observations[i]).to(self.device), th.from_numpy(self.rollout_buffer.actions[i]).to(self.device))
+                assert th.allclose(th.from_numpy(self.rollout_buffer.log_probs[i]), pre_test.cpu())
+            for rollout_data in self.rollout_buffer.get(batch_size=1):
+
+                for i in range(self.rollout_buffer.buffer_size):    
+                    _, post_test, _ = self.policy.evaluate_actions(th.from_numpy(self.rollout_buffer.observations).to(self.device), th.from_numpy(self.rollout_buffer.actions).to(self.device))
+                    assert th.allclose(th.from_numpy(self.rollout_buffer.log_probs), post_test.cpu())
+                count = 0
+                for j in range(8):
+                    for i in range(300):
+                        #assert False not in (rollout_data.observations[count] == test_obs[i, j])
+                        #assert False not in (rollout_data.actions[count] == test_actions[i, j])
+                        #assert False not in (rollout_data.old_log_prob[count] == test_old_log_prob[i, j])
+                        count = count + 1
+                #assert False not in (rollout_data.observations[0:8] == test_obs)
+                #assert False not in (rollout_data.actions[0:8] == test_actions)
+                #assert False not in (rollout_data.old_log_prob[0:8] == test_old_log_prob)
+                _,rollout_data_test, _ = self.policy.evaluate_actions(th.from_numpy(rollout_data.observations[0:8]).to(self.device), th.from_numpy(rollout_data.actions[0:8]).to(self.device))
+                _, buf_test, _ = self.policy.evaluate_actions(th.from_numpy(self.rollout_buffer.observations[0:8]).to(self.device), th.from_numpy(self.rollout_buffer.actions[0:8]).to(self.device))
+
+                #assert th.allclose(self.rollout_buffer.log_probs[0:8], buf_test.cpu())
+                #assert th.allclose(rollout_data.old_log_prob[0:8], rollout_data_test.cpu())
                 actions = rollout_data.actions
                 dstb_actions = rollout_data.dstb_actions
                 
-                values, log_prob, entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
-                    rollout_data.observations,
-                    actions,
-                    dstb_actions,
-                    shuffle_keys=rollout_data.env_indices,
-                    network_keys=[adversary_index] if adversary_index is not None else list(range(self.num_adversaries)),
-                    envs_per_matchup=self.envs_per_matchup
-                )
+                # values, log_prob, entropy, dstb_log_prob, dstb_entropy = self.policy.evaluate_actions(
+                #     rollout_data.observations,
+                #     actions,
+                #     dstb_actions,
+                #     shuffle_keys=rollout_data.env_indices,
+                #     network_keys=[adversary_index] if adversary_index is not None else list(range(self.num_adversaries)),
+                #     envs_per_matchup=self.envs_per_matchup
+                # )
+
+                values, log_prob, entropy = self.policy.evaluate_actions(
+                    th.from_numpy(rollout_data.observations).to(self.device), th.from_numpy(actions).to(self.device))
                 
                 values = values.flatten()
-                value_loss = F.mse_loss(rollout_data.returns, values)
+                value_loss = F.mse_loss(rollout_data.returns.to(self.device), values)
                 value_losses.append(value_loss.item())
                 
                 advantages = rollout_data.advantages
@@ -584,56 +646,56 @@ class BareDerivativeFreeSPAR(Single_SPAR):
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
                 
                 ratio = torch.exp(log_prob - torch.Tensor(rollout_data.old_log_prob).to(self.device))
-                policy_loss_1 = advantages * ratio
-                policy_loss_2 = advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)
-                policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
+                # policy_loss_1 = advantages.to(self.device) * ratio
+                # policy_loss_2 = advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)
+                # policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
                 
-                pg_losses.append(policy_loss.item())
-                clip_fraction = th.mean((th.abs(ratio - 1) > clip_range).float()).item()
-                clip_fractions.append(clip_fraction)
+                # pg_losses.append(policy_loss.item())
+                # clip_fraction = th.mean((th.abs(ratio - 1) > clip_range).float()).item()
+                # clip_fractions.append(clip_fraction)
 
-                if self.clip_range_vf is None:
-                    values_pred = values
-                else:
-                    values_pred = rollout_data.old_values + torch.clamp(
-                        values - rollout_data.old_values, -clip_range_vf, clip_range_vf
-                    )
-                value_loss = F.mse_loss(torch.Tensor(rollout_data.returns).to(self.device), values_pred)
-                value_losses.append(value_loss.item())
+                # if self.clip_range_vf is None:
+                #     values_pred = values
+                # else:
+                #     values_pred = rollout_data.old_values + torch.clamp(
+                #         values - rollout_data.old_values, -clip_range_vf, clip_range_vf
+                #     )
+                # value_loss = F.mse_loss(torch.Tensor(rollout_data.returns).to(self.device), values_pred)
+                # value_losses.append(value_loss.item())
 
-                entropy_loss = -entropy.mean()
-                entropy_losses.append(entropy_loss.item())
+                # entropy_loss = -entropy.mean()
+                # entropy_losses.append(entropy_loss.item())
                 
-                #dstb_entropy_loss = -dstb_entropy.mean()
-                #dstb_entropy_losses.append(dstb_entropy_loss.item())
+                # #dstb_entropy_loss = -dstb_entropy.mean()
+                # #dstb_entropy_losses.append(dstb_entropy_loss.item())
                 
-                entropy_loss = -entropy.mean()
-                entropy_losses.append(entropy_loss.item())
+                # entropy_loss = -entropy.mean()
+                # entropy_losses.append(entropy_loss.item())
                 
-                #dstb_entropy_loss = -dstb_entropy.mean()
-                #dstb_entropy_losses.append(dstb_entropy_loss.item())
+                # #dstb_entropy_loss = -dstb_entropy.mean()
+                # #dstb_entropy_losses.append(dstb_entropy_loss.item())
                 
-                entropy_loss = -entropy.mean()
-                entropy_losses.append(entropy_loss.item())
-                with th.no_grad():
-                    log_ratio = log_prob.detach().cpu() - rollout_data.old_log_prob.cpu()
-                    approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
-                    approx_kl_divs.append(approx_kl_div)
+                # entropy_loss = -entropy.mean()
+                # entropy_losses.append(entropy_loss.item())
+                # with th.no_grad():
+                #     log_ratio = log_prob.detach().cpu() - rollout_data.old_log_prob.cpu()
+                #     approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
+                #     approx_kl_divs.append(approx_kl_div)
                 
-                #dstb_entropy_loss = -dstb_entropy.mean()
-                #dstb_entropy_losses.append(dstb_entropy_loss.item())
+                # #dstb_entropy_loss = -dstb_entropy.mean()
+                # #dstb_entropy_losses.append(dstb_entropy_loss.item())
                 
-                loss = policy_loss + value_loss
+                # loss = policy_loss + value_loss
 
-                self.policy.ctrl_optimizer.zero_grad()
-                #self.policy.dstb_optimizer.zero_grad()
-                self.policy.value_optimizer.zero_grad()
+                # self.policy.ctrl_optimizer.zero_grad()
+                # #self.policy.dstb_optimizer.zero_grad()
+                # self.policy.value_optimizer.zero_grad()
                 
-                loss.backward()
+                # loss.backward()
                 
-                self.policy.ctrl_optimizer.step()
-                #self.policy.dstb_optimizer.step()
-                self.policy.value_optimizer.step()
+                # self.policy.ctrl_optimizer.step()
+                # #self.policy.dstb_optimizer.step()
+                # self.policy.value_optimizer.step()
 
         explained_var = explained_variance(self.rollout_buffer.values.flatten().detach().cpu().numpy(), self.rollout_buffer.returns.flatten().detach().cpu().numpy())
 

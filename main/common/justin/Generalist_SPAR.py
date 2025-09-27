@@ -18,6 +18,7 @@ from functorch import vmap as eepy
 from retro.examples.brute import rollout
 from torch.nn import functional as F
 from typing import Any, Dict, Mapping, Optional, Tuple, Union, Type, List, TypeVar
+import warnings
 
 from stable_baselines3 import PPO, DQN
 from stable_baselines3.dqn.policies import QNetwork, DQNPolicy
@@ -308,6 +309,8 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             all_adv_critic_values = s_values
 
             if self.use_mirror is True:
+                mirror_master_copy_log_probs = deepcopy(log_probs)
+                mirror_master_copy_adv_log_probs = deepcopy(adversary_log_probs)
                 mirror_master_copy_actions = deepcopy(actions)
                 mirror_master_copy_adv_actions = deepcopy(adversary_actions)
 
@@ -398,6 +401,16 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                 adv_actions[:halfway, :] = adv_right
                 adv_actions[halfway:, :] = prot_left_pre
 
+                log_probs_left = mirror_master_copy_log_probs[:halfway]
+                log_probs_left_pre = mirror_master_copy_log_probs[halfway:]
+                adv_log_probs_right = mirror_master_copy_adv_log_probs[:halfway]
+                adv_log_probs_right_pre = mirror_master_copy_adv_log_probs[halfway:]
+
+                log_probs[:halfway] = log_probs_left
+                log_probs[halfway:] = adv_log_probs_right_pre
+                adversary_log_probs[:halfway] = adv_log_probs_right
+                adversary_log_probs[halfway:] = log_probs_left_pre
+
                 actions = prot_actions
                 adversary_actions = adv_actions
 
@@ -412,6 +425,8 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                 clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
             new_obs, rewards, rew_other, dones, infos = env.step(clipped_actions)
+
+            #new_obs = np.ones_like(new_obs) * n_steps
             #if np.any(rewards > 0):
             #    print("ooo")
             # assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
@@ -475,9 +490,9 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                         self._last_obs[chunk],
                         mirror_master_copy_actions[chunk],
                         mirror_master_copy_adv_actions[chunk],
-                        -rewards[chunk],
+                        rewards[chunk],
                         self._last_episode_starts[chunk],
-                        -all_adv_critic_values[chunk],
+                        all_adv_critic_values[chunk],
                         log_probs[chunk],
                         adversary_log_probs[chunk]  # not done
                     )
@@ -486,9 +501,9 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                         self._last_obs[chunk],
                         actions[chunk],
                         adversary_actions[chunk],
-                        -rewards[chunk],
+                        rewards[chunk],
                         self._last_episode_starts[chunk],
-                        -all_adv_critic_values[chunk],
+                        all_adv_critic_values[chunk],
                         log_probs[chunk],
                         adversary_log_probs[chunk]  # not done
                     )
@@ -530,7 +545,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
             adversary_buffers[i].rewards = adversary_buffers[i].rewards.to(self.device, non_blocking=True)
             adversary_buffers[i].advantages = adversary_buffers[i].advantages.to(self.device, non_blocking=True)
             adversary_buffers[i].episode_starts = adversary_buffers[i].episode_starts.to(self.device, non_blocking=True)
-            adversary_buffers[i].vectorized_compute_returns_and_advantages(last_values=-values[chunk],
+            adversary_buffers[i].vectorized_compute_returns_and_advantages(last_values=values[chunk],
                                                                              dones=torch.Tensor(dones[chunk]).to(self.device))
         print(f"[DEBUG @ GAE]: Ego advantages mean: {rollout_buffer.advantages.mean().item():.4f}")
         print(f"[DEBUG @ GAE]: Adv[0] advantages mean: {adversary_buffers[0].advantages.mean().item():.4f}")
@@ -745,7 +760,7 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                                                             dstb_approx_kl_div) > 1.5 * self.target_kl:
                     continue_training = False
                     if self.verbose >= 1:
-                        print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
+                        print(f"Early stopping at step {epoch} due to reaching max kl: {ctrl_approx_kl_div:.2f}")
                     break
 
                 # Optimization step
@@ -755,8 +770,9 @@ class Generalist_SPAR(Doubly_TSS_SPAR):
                 self.policy.value_optimizer.zero_grad()
                 if self.warmstarted_cont_MAGICS is True:
                     for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params'])):
-                        self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad = \
-                            self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad - ctrl_imp[i]
+                        pass
+                        #self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad = \
+                        #    self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad - ctrl_imp[i]
                 # Clip grad norm
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.policy.ctrl_optimizer.step()
