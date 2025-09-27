@@ -12,7 +12,7 @@ from copy import deepcopy
 import gc
 from queue import Empty
 import warnings
-from typing import Union, Type, Optional, Dict, Any, List
+from typing import Union, Type, Optional, Dict, Any, List, Tuple
 from stable_baselines3.common.callbacks import ConvertCallback
 from torch.multiprocessing import Process, Queue
 from stable_baselines3.common.policies import BasePolicy, ActorCriticPolicy
@@ -20,20 +20,21 @@ from stable_baselines3.common.clean_new_policies import CleanActorActorCriticPol
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import get_schedule_fn
 from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer, ReplayBuffer, AdvRolloutBuffer
-from main.utils import state2matchup
+from utils import state2matchup
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean, explained_variance
-from main.common.justin.Doubly_TSS_SPAR import Doubly_TSS_SPAR as dtss
+from common.justin.Doubly_TSS_SPAR import Doubly_TSS_SPAR as dtss
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.callbacks import BaseCallback
-
+from common.justin.derivative_free_spar import ParallelUpdater
+from .calc_F import _get_buffers_and_keys, _calculate_policy_loss, _compute_grads, calc_F_grad_single
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 from anyio import value
 from gym import spaces
 from stable_baselines3 import PPO
-from main.utils import select_matchup_env, select_device, get_n_workers, move_policy
-
+from utils import select_matchup_env, select_device, get_n_workers, move_policy, unpickle_policy
+from concurrent.futures import ThreadPoolExecutor
 TIMING = False
 DEBUG = False
 
@@ -100,7 +101,7 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
         observations_batch = torch.cat(all_observations).to(device)
         returns_batch = torch.cat(all_returns).to(device)
 
-        return actions_batch, observations_batch, returns_batch, all_env_indices
+        return actions_batch, observations_batch, returns_batch, np.array(all_env_indices)
     
     total_start_time = time.time()
 
@@ -122,15 +123,16 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
         #policy.train(True)
         #torch.backends.cudnn.enabled = False
         values = values.flatten()
-        offset = 12 # vf extractor and shared trunk are 12
-        num_per_head = 10 # lstm = 6, 2 linear layers = 2 + 2, total 10
+        # offset = 12 # vf extractor and shared trunk are 12
+        # num_per_head = 10 # lstm = 6, 2 linear layers = 2 + 2, total 10
         value_loss = F.mse_loss(values, returns_batch[i * batch_size:(i + 1) * batch_size])
-        indices = list(range(0, offset)) + list(range(offset + adversary_index * num_per_head, offset + (adversary_index + 1) * num_per_head))
-        value_grads = th.autograd.grad(value_loss, [policy.value_optimizer.param_groups[0]['params'][j] for j in indices])
+        # indices = list(range(0, offset)) + list(range(offset + adversary_index * num_per_head, offset + (adversary_index + 1) * num_per_head))
+        # value_grads = th.autograd.grad(value_loss, [policy.value_optimizer.param_groups[0]['params'][j] for j in indices])
         #value_grads = th.cat([grad.view(-1) for grad in value_grads])
         policy.value_optimizer.zero_grad()
-        for i in range(len(value_grads)):
-            policy.value_optimizer.param_groups[0]['params'][indices[i]].grad = value_grads[i]
+        # for i in range(len(value_grads)):
+        #     policy.value_optimizer.param_groups[0]['params'][indices[i]].grad = value_grads[i]
+        value_loss.backward()
         #policy.value_optimizer.zero_grad()
         #for i in range(len(policy.value_optimizer.param_groups[0]['params'])):
         #    policy.value_optimizer.param_groups[0]['params'][i].grad = value_grads[i]
@@ -142,315 +144,315 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
     if TIMING:
         print(f"      [Timing] Total _update_single_value_function ({tag}): {total_end_time - total_start_time:.4f}s")
 
-class ParallelUpdater:
-    """
-    Manages persistent worker processes for parallel value function updates on multiple GPUs.
+# class ParallelUpdater:
+#     """
+#     Manages persistent worker processes for parallel value function updates on multiple GPUs.
     
-    Creates worker processes once and reuses them for subsequent calls, avoiding the overhead
-    of process creation. Uses proper synchronization to wait for job completion.
+#     Creates worker processes once and reuses them for subsequent calls, avoiding the overhead
+#     of process creation. Uses proper synchronization to wait for job completion.
 
 
-    To add a new job type:
-    1. Add job handler static method: _handle_your_job_type(job, device_id, done_queue, ...) -> Any
-    2. Add elif case in _generic_worker_function: elif job_type == "YOUR_JOB_TYPE": ...
-    3. Add necessary persistent state variables to persistent_state in _generic_worker_function (if needed).
-    4. Add job creation method: _create_your_job_type_job(...) -> tuple (NOTE: This might not be necessary for every job)
-    5. Add public method: your_job_type(self, active_jobs, ...) -> None (uses _submit_job and _wait_for_jobs). This method should use the _parallel_job_executor decorator (@_parallel_job_executor) and have jobs submitted to active_jobs. Use self.`_submit_job` with active_jobs.
-    """
+#     To add a new job type:
+#     1. Add job handler static method: _handle_your_job_type(job, device_id, done_queue, ...) -> Any
+#     2. Add elif case in _generic_worker_function: elif job_type == "YOUR_JOB_TYPE": ...
+#     3. Add necessary persistent state variables to persistent_state in _generic_worker_function (if needed).
+#     4. Add job creation method: _create_your_job_type_job(...) -> tuple (NOTE: This might not be necessary for every job)
+#     5. Add public method: your_job_type(self, active_jobs, ...) -> None (uses _submit_job and _wait_for_jobs). This method should use the _parallel_job_executor decorator (@_parallel_job_executor) and have jobs submitted to active_jobs. Use self.`_submit_job` with active_jobs.
+#     """
     
-    def __init__(self, n_workers: int) -> None:
-        """
-        Initialize the parallel updater with persistent worker processes.
+#     def __init__(self, n_workers: int) -> None:
+#         """
+#         Initialize the parallel updater with persistent worker processes.
         
-        Args:
-            n_workers: Number of GPUs/workers to create
-        """
-        self.n_workers: int = n_workers
-        self.processes: List[Process] = []
-        self.input_queues: List[Queue] = []
-        self.done_queue: Queue = Queue()  # Shared queue for completion signals
-        self._initialize_processes()
+#         Args:
+#             n_workers: Number of GPUs/workers to create
+#         """
+#         self.n_workers: int = n_workers
+#         self.processes: List[Process] = []
+#         self.input_queues: List[Queue] = []
+#         self.done_queue: Queue = Queue()  # Shared queue for completion signals
+#         self._initialize_processes()
 
-    def _initialize_processes(self) -> None:
-        """Initialize persistent worker processes once."""
-        for device_id in range(self.n_workers):
-            input_queue = Queue()
-            # Create a custom worker that uses our generic function
-            worker = Process(target=ParallelUpdater._generic_worker_function, 
-                            args=(input_queue, self.done_queue, device_id))
-            worker.daemon = False
-            worker.start()
-            self.processes.append(worker)
-            self.input_queues.append(input_queue)
+#     def _initialize_processes(self) -> None:
+#         """Initialize persistent worker processes once."""
+#         for device_id in range(self.n_workers):
+#             input_queue = Queue()
+#             # Create a custom worker that uses our generic function
+#             worker = Process(target=ParallelUpdater._generic_worker_function, 
+#                             args=(input_queue, self.done_queue, device_id))
+#             worker.daemon = False
+#             worker.start()
+#             self.processes.append(worker)
+#             self.input_queues.append(input_queue)
 
-    @staticmethod
-    def _generic_worker_function(input_queue: Queue, done_queue: Queue, device_id: int) -> None:
-        """Generic worker that can handle different job types."""
+#     @staticmethod
+#     def _generic_worker_function(input_queue: Queue, done_queue: Queue, device_id: int) -> None:
+#         """Generic worker that can handle different job types."""
 
-        persistent_state = {}  # Worker-local persistent state - 
+#         persistent_state = {}  # Worker-local persistent state - 
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            gc.collect()
-            torch.cuda.set_device(device_id)
+#         if torch.cuda.is_available():
+#             torch.cuda.empty_cache()
+#             torch.cuda.synchronize()
+#             gc.collect()
+#             torch.cuda.set_device(device_id)
 
-        while True:
-            try:
-                job = input_queue.get(timeout=1)
-            except Empty:
-                continue
-            if job == "STOP":
-                print(f"Worker {device_id}: Received STOP signal, exiting")
-                break
+#         while True:
+#             try:
+#                 job = input_queue.get(timeout=1)
+#             except Empty:
+#                 continue
+#             if job == "STOP":
+#                 print(f"Worker {device_id}: Received STOP signal, exiting")
+#                 break
 
-            if not isinstance(job, tuple) or len(job) < 2:
-                done_queue.put(f"ERROR_INVALID_JOB_FORMAT")
-                continue
+#             if not isinstance(job, tuple) or len(job) < 2:
+#                 done_queue.put(f"ERROR_INVALID_JOB_FORMAT")
+#                 continue
                 
-            job_type = job[0]
+#             job_type = job[0]
             
-            #NOTE: Add if statements here to be able to handle new jobs.
-            if job_type == "UPDATE_VALUE_FUNCTIONS":
-                ParallelUpdater._handle_update_value_functions(job, device_id, done_queue, persistent_state)
+#             #NOTE: Add if statements here to be able to handle new jobs.
+#             if job_type == "UPDATE_VALUE_FUNCTIONS":
+#                 ParallelUpdater._handle_update_value_functions(job, device_id, done_queue, persistent_state)
 
-            else:
-                print(f"Worker {device_id}: Unknown job type: {job_type}")
-                done_queue.put(f"ERROR_UNKNOWN_JOB_TYPE_{job_type}")
+#             else:
+#                 print(f"Worker {device_id}: Unknown job type: {job_type}")
+#                 done_queue.put(f"ERROR_UNKNOWN_JOB_TYPE_{job_type}")
     
-    @staticmethod
-    def _handle_update_value_functions(job: tuple, device_id: int, done_queue: Queue, persistent_state: dict):
-        """
-        Handle UPDATE_VALUE_FUNCTIONS job type.
+#     @staticmethod
+#     def _handle_update_value_functions(job: tuple, device_id: int, done_queue: Queue, persistent_state: dict):
+#         """
+#         Handle UPDATE_VALUE_FUNCTIONS job type.
 
-        Processes value function updates for both main and perturbed policies on a specific device.
-        Manages model loading/updating, moves models to appropriate device, and executes training loops.
+#         Processes value function updates for both main and perturbed policies on a specific device.
+#         Manages model loading/updating, moves models to appropriate device, and executes training loops.
 
-        Args:
-            job: (tuple) 
-                A tuple containing (job_type, job_data) where job_data contains all training parameters
-            device_id (int):
-                GPU device ID for this worker
-            done_queue: (Queue)
-                A queue for signaling job completion or errors
-            persistent_state: (dict)
-                A dictionary storing worker-local persistent state (models, device, etc.)
+#         Args:
+#             job: (tuple) 
+#                 A tuple containing (job_type, job_data) where job_data contains all training parameters
+#             device_id (int):
+#                 GPU device ID for this worker
+#             done_queue: (Queue)
+#                 A queue for signaling job completion or errors
+#             persistent_state: (dict)
+#                 A dictionary storing worker-local persistent state (models, device, etc.)
 
-        Returns:
-            None: Updates persistent_state in-place and signals completion via done_queue
-        """
-        derivative_free_SPAR_policy = persistent_state.get('derivative_free_SPAR_policy')
-        perturbed_agent_policy = persistent_state.get('perturbed_agent_policy')
-        device = select_device(device_id)
-        # Unpack the original job format for value function updates
-        (
-            derivative_free_SPAR_policy_data,
-            perturbed_agent_policy_data,
-            batch_size,
-            max_grad_norm,
-            i_list,
-            adversary_buffers,
-            perturbed_adv_buf,
-            n_epochs,
-            n_env_per_adv,
-            n_env_per_pert,
-            envs_per_matchup,
-            job_id,
-        ) = job[1]
+#         Returns:
+#             None: Updates persistent_state in-place and signals completion via done_queue
+#         """
+#         derivative_free_SPAR_policy = persistent_state.get('derivative_free_SPAR_policy')
+#         perturbed_agent_policy = persistent_state.get('perturbed_agent_policy')
+#         device = select_device(device_id)
+#         # Unpack the original job format for value function updates
+#         (
+#             derivative_free_SPAR_policy_data,
+#             perturbed_agent_policy_data,
+#             batch_size,
+#             max_grad_norm,
+#             i_list,
+#             adversary_buffers,
+#             perturbed_adv_buf,
+#             n_epochs,
+#             n_env_per_adv,
+#             n_env_per_pert,
+#             envs_per_matchup,
+#             job_id,
+#         ) = job[1]
 
-        try:
-            # Initialize models once (first run)
-            if derivative_free_SPAR_policy is None:
-                if isinstance(derivative_free_SPAR_policy_data, bytes):
-                    derivative_free_SPAR_policy = pickle.loads(derivative_free_SPAR_policy_data)
-                    perturbed_agent_policy = pickle.loads(perturbed_agent_policy_data)
-                    persistent_state['derivative_free_SPAR_policy'] = derivative_free_SPAR_policy
-                    persistent_state['perturbed_agent_policy'] = perturbed_agent_policy
-                else:
-                    # Handle case where first run sends state dict instead of pickled model
-                    raise RuntimeError("First run should send pickled models, not state dicts")
-                move_policy(derivative_free_SPAR_policy, device)
-                move_policy(perturbed_agent_policy, device)
-            else:
-                # Update weights (subsequent runs)
-                if isinstance(derivative_free_SPAR_policy_data, bytes):
-                    derivative_free_SPAR_policy = pickle.loads(derivative_free_SPAR_policy_data)
-                    perturbed_agent_policy = pickle.loads(perturbed_agent_policy_data)
-                    move_policy(derivative_free_SPAR_policy, device)
-                    move_policy(perturbed_agent_policy, device)
-                else:
-                    derivative_free_SPAR_policy.load_state_dict(derivative_free_SPAR_policy_data)
-                    perturbed_agent_policy.load_state_dict(perturbed_agent_policy_data)
-            persistent_state['derivative_free_SPAR_policy'] = derivative_free_SPAR_policy
-            persistent_state['perturbed_agent_policy'] = perturbed_agent_policy
+#         try:
+#             # Initialize models once (first run)
+#             if derivative_free_SPAR_policy is None:
+#                 if isinstance(derivative_free_SPAR_policy_data, bytes):
+#                     derivative_free_SPAR_policy = pickle.loads(derivative_free_SPAR_policy_data)
+#                     perturbed_agent_policy = pickle.loads(perturbed_agent_policy_data)
+#                     persistent_state['derivative_free_SPAR_policy'] = derivative_free_SPAR_policy
+#                     persistent_state['perturbed_agent_policy'] = perturbed_agent_policy
+#                 else:
+#                     # Handle case where first run sends state dict instead of pickled model
+#                     raise RuntimeError("First run should send pickled models, not state dicts")
+#                 move_policy(derivative_free_SPAR_policy, device)
+#                 move_policy(perturbed_agent_policy, device)
+#             else:
+#                 # Update weights (subsequent runs)
+#                 if isinstance(derivative_free_SPAR_policy_data, bytes):
+#                     derivative_free_SPAR_policy = pickle.loads(derivative_free_SPAR_policy_data)
+#                     perturbed_agent_policy = pickle.loads(perturbed_agent_policy_data)
+#                     move_policy(derivative_free_SPAR_policy, device)
+#                     move_policy(perturbed_agent_policy, device)
+#                 else:
+#                     derivative_free_SPAR_policy.load_state_dict(derivative_free_SPAR_policy_data)
+#                     perturbed_agent_policy.load_state_dict(perturbed_agent_policy_data)
+#             persistent_state['derivative_free_SPAR_policy'] = derivative_free_SPAR_policy
+#             persistent_state['perturbed_agent_policy'] = perturbed_agent_policy
 
-            # Do the actual work
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            for i in i_list:
-                for epoch in range(n_epochs):
-                    _update_single_value_function(
-                        batch_size, max_grad_norm, derivative_free_SPAR_policy, 
-                        adversary_buffers[i], i, n_env_per_adv, device, envs_per_matchup=envs_per_matchup
-                    )
-                    _update_single_value_function(
-                        batch_size, max_grad_norm, perturbed_agent_policy, 
-                        perturbed_adv_buf[i], i, n_env_per_pert, device, envs_per_matchup=envs_per_matchup
-                    )
+#             # Do the actual work
+#             if torch.cuda.is_available():
+#                 torch.cuda.empty_cache()
+#             for i in i_list:
+#                 for epoch in range(n_epochs):
+#                     _update_single_value_function(
+#                         batch_size, max_grad_norm, derivative_free_SPAR_policy, 
+#                         adversary_buffers[i], i, n_env_per_adv, device, envs_per_matchup=envs_per_matchup
+#                     )
+#                     _update_single_value_function(
+#                         batch_size, max_grad_norm, perturbed_agent_policy, 
+#                         perturbed_adv_buf[i], i, n_env_per_pert, device, envs_per_matchup=envs_per_matchup
+#                     )
             
-            # Signal completion
-            done_queue.put(job_id)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+#             # Signal completion
+#             done_queue.put(job_id)
+#             if torch.cuda.is_available():
+#                 torch.cuda.empty_cache()
             
-        except Exception as e:
-            print(f"Worker {device_id} error: {e}")
-            done_queue.put(f"ERROR_{job_id}")
+#         except Exception as e:
+#             print(f"Worker {device_id} error: {e}")
+#             done_queue.put(f"ERROR_{job_id}")
 
-    def _submit_job(self, job: str, device_id: int, active_jobs: List[int], *args) -> None:
-        """
-        This function is used to submit job to the ParallelUpdater.
+#     def _submit_job(self, job: str, device_id: int, active_jobs: List[int], *args) -> None:
+#         """
+#         This function is used to submit job to the ParallelUpdater.
 
-        Args:
-            job (str):
-                The job to submit.
-            device_id (int):
-                Device ID to submit the job to.
-            active_jobs (list):
-                A list of all the active jobs to wait for. The submitted job will be appended to this list.
-        """
-        def _gen_job_id(device_id: int=0) -> str:
-            """
-            This helper function generates a random job ID.
-            """
-            return f"job_{device_id}_{int(time.time() * 1000000 + random.randint(0, 10000))}"
+#         Args:
+#             job (str):
+#                 The job to submit.
+#             device_id (int):
+#                 Device ID to submit the job to.
+#             active_jobs (list):
+#                 A list of all the active jobs to wait for. The submitted job will be appended to this list.
+#         """
+#         def _gen_job_id(device_id: int=0) -> str:
+#             """
+#             This helper function generates a random job ID.
+#             """
+#             return f"job_{device_id}_{int(time.time() * 1000000 + random.randint(0, 10000))}"
         
-        job_id = _gen_job_id(device_id=device_id)
-        self.input_queues[device_id].put((job, args + (job_id,)))
-        active_jobs.append(job_id)
+#         job_id = _gen_job_id(device_id=device_id)
+#         self.input_queues[device_id].put((job, args + (job_id,)))
+#         active_jobs.append(job_id)
     
-    def _create_update_values_function_job(self, policy: Any, perturbed_policy: Any, i_list: List[int], 
-                   adversary_buffers: List[Any], perturbed_adv_buf: List[Any], 
-                   batch_size: int, max_grad_norm: float, n_epochs: int, 
-                   n_env_per_adv: int, n_env_per_pert: int, first_run: bool, envs_per_matchup: int) -> tuple:
-        """
-        Create job data for worker process - update_values_function.
+#     def _create_update_values_function_job(self, policy: Any, perturbed_policy: Any, i_list: List[int], 
+#                    adversary_buffers: List[Any], perturbed_adv_buf: List[Any], 
+#                    batch_size: int, max_grad_norm: float, n_epochs: int, 
+#                    n_env_per_adv: int, n_env_per_pert: int, first_run: bool, envs_per_matchup: int) -> tuple:
+#         """
+#         Create job data for worker process - update_values_function.
         
-        Args:
-            policy: Main policy model
-            perturbed_policy: Perturbed policy model
-            i_list: List of adversary indices to process
-            adversary_buffers: List of adversary buffers
-            perturbed_adv_buf: List of perturbed adversary buffers
-            batch_size: Batch size for training
-            max_grad_norm: Maximum gradient norm for clipping
-            n_epochs: Number of training epochs
-            n_env_per_adv: Number of environments per adversary
-            n_env_per_pert: Number of environments per perturbed agent
-            first_run: Whether this is the first run (send full models vs state dicts)
-            envs_per_matchup: Number of environments per matchup
+#         Args:
+#             policy: Main policy model
+#             perturbed_policy: Perturbed policy model
+#             i_list: List of adversary indices to process
+#             adversary_buffers: List of adversary buffers
+#             perturbed_adv_buf: List of perturbed adversary buffers
+#             batch_size: Batch size for training
+#             max_grad_norm: Maximum gradient norm for clipping
+#             n_epochs: Number of training epochs
+#             n_env_per_adv: Number of environments per adversary
+#             n_env_per_pert: Number of environments per perturbed agent
+#             first_run: Whether this is the first run (send full models vs state dicts)
+#             envs_per_matchup: Number of environments per matchup
             
-        Returns:
-            Tuple containing all job data for the worker
-        """
-        if first_run:
-            # First run: send full pickled models
-            policy_data = pickle.dumps(policy)
-            perturbed_policy_data = pickle.dumps(perturbed_policy)
-        else:
-            # Subsequent runs: send only state dicts
-            policy_data = policy.state_dict()
-            perturbed_policy_data = perturbed_policy.state_dict()
+#         Returns:
+#             Tuple containing all job data for the worker
+#         """
+#         if first_run:
+#             # First run: send full pickled models
+#             policy_data = pickle.dumps(policy)
+#             perturbed_policy_data = pickle.dumps(perturbed_policy)
+#         else:
+#             # Subsequent runs: send only state dicts
+#             policy_data = policy.state_dict()
+#             perturbed_policy_data = perturbed_policy.state_dict()
 
-        return (
-            policy_data,
-            perturbed_policy_data,
-            batch_size,
-            max_grad_norm,
-            i_list,
-            adversary_buffers,
-            perturbed_adv_buf,
-            n_epochs,
-            n_env_per_adv,
-            n_env_per_pert,
-            envs_per_matchup,
-        )
+#         return (
+#             policy_data,
+#             perturbed_policy_data,
+#             batch_size,
+#             max_grad_norm,
+#             i_list,
+#             adversary_buffers,
+#             perturbed_adv_buf,
+#             n_epochs,
+#             n_env_per_adv,
+#             n_env_per_pert,
+#             envs_per_matchup,
+#         )
     
-    def _wait_for_jobs(self, active_jobs: List[str]) -> None:
-        """
-        This function waits for all the jobs submitted to active_jobs.
+#     def _wait_for_jobs(self, active_jobs: List[str]) -> None:
+#         """
+#         This function waits for all the jobs submitted to active_jobs.
 
-        Args:
-            active_jobs (list[str]):
-                List of active jobs.
-        """
-        completed_jobs = 0
-        while completed_jobs < len(active_jobs):
-            try:
-                result = self.done_queue.get(timeout=60)  # 60 second timeout
-                if isinstance(result, str) and result.startswith("ERROR_"):
-                    print(f"Job failed: {result}")
-                completed_jobs += 1
-            except Empty:
-                print("Warning: Timeout waiting for job completion")
-                break
+#         Args:
+#             active_jobs (list[str]):
+#                 List of active jobs.
+#         """
+#         completed_jobs = 0
+#         while completed_jobs < len(active_jobs):
+#             try:
+#                 result = self.done_queue.get(timeout=60)  # 60 second timeout
+#                 if isinstance(result, str) and result.startswith("ERROR_"):
+#                     print(f"Job failed: {result}")
+#                 completed_jobs += 1
+#             except Empty:
+#                 print("Warning: Timeout waiting for job completion")
+#                 break
     
-    def _parallel_job_executor(func):
-        """
-        This is a decorator to use 
-        """
-        def wrapper(self, *args, **kwargs):
-            active_jobs = []
-            func(self, active_jobs, *args, **kwargs)
-            self._wait_for_jobs(active_jobs)
-        return wrapper
+#     def _parallel_job_executor(func):
+#         """
+#         This is a decorator to use 
+#         """
+#         def wrapper(self, *args, **kwargs):
+#             active_jobs = []
+#             func(self, active_jobs, *args, **kwargs)
+#             self._wait_for_jobs(active_jobs)
+#         return wrapper
 
-    @_parallel_job_executor
-    def update_value_functions(self, active_jobs: list, policy: Any, perturbed_agent: Any, perturbed_adv_buf: List[Any], 
-                             adversary_buffers: List[Any], batch_size: int, max_grad_norm: float, 
-                             n_epochs: int, n_env_per_adv: int, first_run: bool = False, envs_per_matchup: int = None) -> None:
-        """
-        Submit work to persistent processes and wait for completion.
+#     @_parallel_job_executor
+#     def update_value_functions(self, active_jobs: list, policy: Any, perturbed_agent: Any, perturbed_adv_buf: List[Any], 
+#                              adversary_buffers: List[Any], batch_size: int, max_grad_norm: float, 
+#                              n_epochs: int, n_env_per_adv: int, first_run: bool = False, envs_per_matchup: int = None) -> None:
+#         """
+#         Submit work to persistent processes and wait for completion.
         
-        Args:
-            policy: Main policy model
-            perturbed_agent: Agent containing perturbed policy
-            perturbed_adv_buf: List of perturbed adversary buffers
-            adversary_buffers: List of main adversary buffers
-            batch_size: Batch size for training
-            max_grad_norm: Maximum gradient norm for clipping
-            n_epochs: Number of training epochs
-            n_env_per_adv: Number of environments per adversary
-            first_run: Whether this is the first run (affects data serialization)
-        """
-        # Set required attributes
-        policy.num_global_env = n_env_per_adv
-        perturbed_agent.policy.num_global_env = perturbed_agent.n_env_per_adv
+#         Args:
+#             policy: Main policy model
+#             perturbed_agent: Agent containing perturbed policy
+#             perturbed_adv_buf: List of perturbed adversary buffers
+#             adversary_buffers: List of main adversary buffers
+#             batch_size: Batch size for training
+#             max_grad_norm: Maximum gradient norm for clipping
+#             n_epochs: Number of training epochs
+#             n_env_per_adv: Number of environments per adversary
+#             first_run: Whether this is the first run (affects data serialization)
+#         """
+#         # Set required attributes
+#         policy.num_global_env = n_env_per_adv
+#         perturbed_agent.policy.num_global_env = perturbed_agent.n_env_per_adv
 
-        # Shard work across GPUs
-        all_indices = list(range(len(adversary_buffers)))
-        shards = shard_indices(len(all_indices), self.n_workers)
+#         # Shard work across GPUs
+#         all_indices = list(range(len(adversary_buffers)))
+#         shards = shard_indices(len(all_indices), self.n_workers)
 
-        # Submit jobs to worker processes
-        for device_id, i_list in enumerate(shards):
-            if not i_list:
-                continue
+#         # Submit jobs to worker processes
+#         for device_id, i_list in enumerate(shards):
+#             if not i_list:
+#                 continue
             
-            job = self._create_update_values_function_job(
-                policy, perturbed_agent.policy, i_list, adversary_buffers,
-                perturbed_adv_buf, batch_size, max_grad_norm, n_epochs,
-                n_env_per_adv, perturbed_agent.n_env_per_adv, first_run, envs_per_matchup
-            )
-            self._submit_job("UPDATE_VALUE_FUNCTIONS", device_id, active_jobs, *job)
+#             job = self._create_update_values_function_job(
+#                 policy, perturbed_agent.policy, i_list, adversary_buffers,
+#                 perturbed_adv_buf, batch_size, max_grad_norm, n_epochs,
+#                 n_env_per_adv, perturbed_agent.n_env_per_adv, first_run, envs_per_matchup
+#             )
+#             self._submit_job("UPDATE_VALUE_FUNCTIONS", device_id, active_jobs, *job)
 
-    def shutdown(self) -> None:
-        """Clean shutdown of worker processes."""
-        for queue in self.input_queues:
-            queue.put("STOP")
-        for process in self.processes:
-            process.join(timeout=5)
-            if process.is_alive():
-                process.terminate()
+#     def shutdown(self) -> None:
+#         """Clean shutdown of worker processes."""
+#         for queue in self.input_queues:
+#             queue.put("STOP")
+#         for process in self.processes:
+#             process.join(timeout=5)
+#             if process.is_alive():
+#                 process.terminate()
 
 class CleanDerivativeFreeSPAR(PPO):
     policy_aliases: Dict[str, Type[BasePolicy]] = {
@@ -766,6 +768,7 @@ class CleanDerivativeFreeSPAR(PPO):
         progress_bar: bool = False,
         update_ego: bool = True,
         update_adversary: bool = False,
+        num_pertrubs: int = 1,
     ):
         #try:
         iteration = 0
@@ -786,13 +789,18 @@ class CleanDerivativeFreeSPAR(PPO):
         callback.on_training_start(locals(), globals())
 
         while self.num_timesteps < total_timesteps:
-            #perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
+            perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
             print("perturbed agent created!", flush=True)
-            #self._initialize_parallel_updater() 
+            self._initialize_parallel_updater() 
                  
             #self.inner_loop()
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, update_ego, update_adversary) #TODO: This is sequential - remove when done.
-            #perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
+            perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
+
+            self.perturbed_agents = perturbed_agents
+            self.perturbed_bufs = perturbed_bufs
+            self.perturbed_adv_bufs = perturbed_adv_bufs
+            self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in perturbed_agents]
             #self.perturbed_agent = perturbed_agent
             #self.perturbed_buf = perturbed_buf
             #self.perturbed_adv_buf = perturbed_adv_buf
@@ -854,10 +862,12 @@ class CleanDerivativeFreeSPAR(PPO):
         return self
     
     def train(self, update_ego: bool = True, update_adversary: bool = True) -> None:
-        self.train_standard(update_ego, update_adversary)
-        #self.train_derivative_free(update_ego, update_adversary)
+        #self.train_standard(update_ego, update_adversary)
+        self.train_derivative_free(update_ego, update_adversary)
     
     def train_derivative_free(self, update_ego: bool = True, update_adversary: bool = True) -> None:
+        self.policy.set_training_mode(True)
+        self.perturbed_agent.policy.set_training_mode(True)
         self._update_value_functions(self.perturbed_agent, self.perturbed_adv_buf)
         self._update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
         self.leader_grads(self.rollout_buffer, self.adversary_buffers, self.policy, self.policy, ego=True)
@@ -867,8 +877,98 @@ class CleanDerivativeFreeSPAR(PPO):
         self.perturbed_agent_policy = self.perturbed_agent.policy
 
     # we need to rewrite leader grads and update_advantages
-    def leader_grads(self, ori_buf, perturbed_buf, ori_policy, perturbed_policy, ego=True):
-        pass
+
+    def leader_grads(self,
+                     ori_buf: AdvRolloutBuffer,
+                     perturbed_bufs: Tuple[AdvRolloutBuffer],
+                     ori_policy: CleanActorActorCriticPolicy,
+                     perturbed_policies: List[CleanActorActorCriticPolicy],
+                     ego: bool=True) -> None:
+        """TODO: Complete the docstring."""
+        ori_policy = unpickle_policy(ori_policy)
+        
+        if ego is True:
+            print("Ego is true", flush=True)
+        else:
+            print("Ego is false", flush=True)
+        clip_range = self.clip_range(self._current_progress_remaining)
+        entropy_losses, pg_losses, approx_kl_divs_all = [], [], []
+
+        num_runs_count = 1 if ego else self.num_adversaries
+        for j in range(self.n_epochs):
+            for i in range(num_runs_count):
+                F_grad = 0
+                with ThreadPoolExecutor(max_workers=len(perturbed_bufs)) as executor:
+                    futures = []
+                    for perturbed_buf, perturbed_policy in zip(perturbed_bufs, perturbed_policies): #TODO: This should be parallelizable
+                        future = executor.submit(calc_F_grad_single,
+                                                ori_policy=ori_policy,
+                                                perturbed_policy=perturbed_policy,
+                                                ori_buf=ori_buf,
+                                                perturbed_buf=perturbed_buf,
+                                                ego=ego,
+                                                i=i,
+                                                num_adversaries=self.num_adversaries,
+                                                batch_size=self.batch_size,
+                                                clip_range=clip_range,
+                                                use_sde=self.use_sde,
+                                                device=self.device,
+                                                envs_per_matchup=self.envs_per_matchup,
+                                                d=self.d,
+                                                delta=self.delta,
+                                                ego_v=self.ego_v,
+                                                adv_v=self.adv_v,
+                                                target_kl=self.target_kl,
+                                                )
+                        futures.append(future)
+
+                    # Collect results
+                    for num_actual_bufs, future in enumerate(futures):
+                        F_grad_curr, pg_losses_curr, entropy_losses_curr, approx_kl_divs_curr, break_signal = future.result()
+                        F_grad += F_grad_curr
+                        pg_losses.extend(pg_losses_curr)
+                        entropy_losses.extend(entropy_losses_curr)
+                        approx_kl_divs_all.extend(approx_kl_divs_curr)
+                        if break_signal:
+                            break
+
+                F_grad /= (num_actual_bufs+1) #num_actual_bufs counts how many buffers participated to take the correct average, in case of early stopping.
+                param_list = self.policy.ctrl_optimizer.param_groups[0]['params'] if ego else self.policy.dstb_optimizer.param_groups[0]['params']
+                size_lists = [list(x.shape) for x in param_list]
+                
+                reshaped_grad = []
+                count = 0
+                for i in range(len(size_lists)):
+                    numel = np.prod(size_lists[i])
+                    reshaped_grad.append(torch.reshape(F_grad[count: count + numel], size_lists[i]))
+                    count += numel
+                if ego is False:
+                    heads_start_index = self.policy.extractor_and_trunk_length
+                    trunk_extractor_indices = [i for i in range(heads_start_index)]
+                    this_adv_indices = [i for i in range(heads_start_index + self.policy.head_length * adv_num , heads_start_index + self.policy.head_length * (adv_num + 1))]
+                    all_indices = trunk_extractor_indices + this_adv_indices
+                    self.policy.dstb_optimizer.zero_grad()
+
+                    for i in all_indices:
+                        self.policy.dstb_optimizer.param_groups[0]['params'][i].grad = reshaped_grad[i].float().detach()
+                else:
+                    self.policy.ctrl_optimizer.zero_grad()
+                    for i in range(len(size_lists)):
+                        param_list[i].grad = reshaped_grad[i].float().detach()
+                
+                optimizer = self.policy.ctrl_optimizer if ego else self.policy.dstb_optimizer
+                th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                optimizer.step()                
+
+        self._n_updates += self.n_epochs
+        if hasattr(self.rollout_buffer, 'values') and self.rollout_buffer.values is not None and self.rollout_buffer.returns is not None:
+             explained_var = explained_variance(self.rollout_buffer.values.flatten().detach().cpu().numpy(), self.rollout_buffer.returns.flatten().detach().cpu().numpy())
+        else:
+            explained_var = np.nan
+        if ego is True:
+            print("logging ego metrics", flush=True)
+        self._log_leader_metrics(ego, entropy_losses, pg_losses, approx_kl_divs_all, explained_var, clip_range)
+
     def _update_advantages(self, policy, buf, adversary_buffers):
         updated_values = policy.evaluate_states(buf.observations, env_indices=buf.env_indices, buf_num=[i for i in range(self.num_adversaries)])
         buf.values = updated_values.reshape(buf.buffer_size, self.num_adversaries * self.envs_per_matchup).detach().cpu().numpy()
