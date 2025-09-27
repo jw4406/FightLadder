@@ -393,6 +393,7 @@ def main(PLAYER):
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
     parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
     parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=32)
+    parser.add_argument("--num_pertrubs", type=int, help="Number of perturbed policies to be created.", default=1)
     args = parser.parse_args()
 
 
@@ -807,6 +808,7 @@ def main(PLAYER):
                                "epochs": 0})
             model.learn(
                 total_timesteps=args.total_steps,
+                num_pertrubs = args.num_pertrubs
                 #callback=[checkpoint_callback, file_queue_callback]
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)
@@ -832,6 +834,7 @@ if __name__ == "__main__":
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
     parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
     parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=32)
+    parser.add_argument("--num_pertrubs", type=int, help="Number of perturbed policies to be created.", default=1)
     args = parser.parse_args()
 
     PLAYER = args.player
