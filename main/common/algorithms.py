@@ -32,8 +32,8 @@ from stable_baselines3.common.torch_layers import (
     NatureCNN,
     create_mlp,
 )
-from common.justin.Generalist_SPAR import Generalist_SPAR
-from common.justin.derivative_free_spar import Derivative_Free_SPAR
+from main.common.justin.Generalist_SPAR import Generalist_SPAR
+from main.common.justin.derivative_free_spar import Derivative_Free_SPAR
 from stable_baselines3.common.preprocessing import maybe_transpose
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean, explained_variance, get_schedule_fn, \
@@ -415,6 +415,7 @@ class IPPO(PPO):
         return True
 
     def train(self) -> None:
+        first = True
         """
         Update policy using the currently gathered rollout buffer.
         """
@@ -454,6 +455,8 @@ class IPPO(PPO):
                 approx_kl_divs = []
                 # Do a complete pass on the rollout buffer
                 for rollout_data in rollout_buffer.get(self.batch_size):
+                    _, post_test, _ = policy.evaluate_actions(rollout_data.observations, rollout_data.actions)
+                    #assert th.allclose(rollout_data.old_log_prob, post_test)
                     actions = rollout_data.actions
                     if isinstance(self.action_space, spaces.Discrete):
                         # Convert discrete action from float to long
@@ -473,7 +476,9 @@ class IPPO(PPO):
 
                     # ratio between old and new policy, should be one at the first iteration
                     ratio = th.exp(log_prob - rollout_data.old_log_prob)
-
+                    if first:
+                        print(f"[DEBUG @ train]: ratio: {ratio.mean().item():.4f}")
+                        first = False
                     # clipped surrogate loss
                     policy_loss_1 = advantages * ratio
                     policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
@@ -594,6 +599,7 @@ class IPPO(PPO):
                                        safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
                     self.logger.record("rollout/ep_rew_other_mean",
                                        safe_mean([ep_info["ro"] for ep_info in self.ep_info_buffer]))
+                    wandb.log({"eval_rew": safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])})
                     self.logger.record("rollout/ep_len_mean",
                                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                 self.logger.record("time/fps", fps)

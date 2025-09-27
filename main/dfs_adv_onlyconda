@@ -1,0 +1,7 @@
+nohup: ignoring input
+wandb: Appending key for api.wandb.ai to your netrc file: /home/jw4406/.netrc
+wandb: Currently logged in as: jw4406 to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+usage: ippo.py [-h] --player PLAYER [PLAYER ...]
+               [--num_env_to_load NUM_ENV_TO_LOAD] --env_batch_size
+               ENV_BATCH_SIZE
+ippo.py: error: unrecognized arguments: activate fightladder.out
