@@ -6,7 +6,7 @@ import torch
 
 from stable_baselines3.common.buffers import AdvRolloutBuffer
 from stable_baselines3.common.policies import BasePolicy
-from main.utils import move_policy, select_device, get_n_workers, state2matchup, select_matchup_env, unpickle_policy
+from utils import move_policy, select_device, get_n_workers, state2matchup, select_matchup_env, unpickle_policy
 
 def _get_buffers_and_keys(ori_buf: AdvRolloutBuffer, perturbed_buf: AdvRolloutBuffer, ego: bool, index: int, num_adversaries: int) -> tuple:
     #TODO: Add docstring
@@ -99,13 +99,13 @@ def calc_F_grad_single(
     network_keys, curr_buf, curr_perturbed_buf = _get_buffers_and_keys(ori_buf, perturbed_buf, ego, i, num_adversaries)
     for ori_rollout_data, perturbed_rollout_data in zip(curr_buf.get(batch_size), curr_perturbed_buf.get(batch_size)):                    
         policy_loss, log_prob, entropy = _calculate_policy_loss(
-            ori_rollout_data, ori_policy, ego, network_keys, clip_range, use_sde, device, batch_size, envs_per_matchup
+            ori_rollout_data, ori_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup
         )
         pg_losses.append(policy_loss.item())
         entropy_losses.append(entropy.mean().item())
 
         perturbed_policy_loss, _, _ = _calculate_policy_loss(
-            perturbed_rollout_data, perturbed_policy, ego, network_keys, clip_range, use_sde, device, batch_size, envs_per_matchup
+            perturbed_rollout_data, perturbed_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup
         )
         F_grad = _compute_grads(d, delta, ego_v, adv_v, policy_loss, perturbed_policy_loss, ego, i) if ego else 0
         # #assert improvement > 0, "CRITICAL BUG: Policy is making good actions LESS likely!"
@@ -113,15 +113,18 @@ def calc_F_grad_single(
             old_log_prob_tensor = ori_rollout_data.old_log_prob if ego else ori_rollout_data.old_dstb_log_prob
             #run forward pass to get the log_prob
             if ego:
-                _, log_prob, entropy, _, _ = ori_policy.evaluate_actions(
-                ori_rollout_data.observations.clone().detach().to(device), ori_rollout_data.actions.clone().detach().to(device), ori_rollout_data.dstb_actions.clone().detach().to(device),
-                shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=envs_per_matchup
-            )
+                log_prob, entropy = ori_policy.evaluate_ego_actions(ori_rollout_data.observations, ori_rollout_data.actions)
+                #log_prob, entropy = ori_policy.evaluate_actions(
+                #ori_rollout_data.observations.clone().detach().to(device), ori_rollout_data.actions.clone().detach().to(device), ori_rollout_data.dstb_actions.clone().detach().to(device),
+                #shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=envs_per_matchup
+            #)
             else:
-                _, _, _, log_prob, entropy = ori_policy.evaluate_actions(
-                    ori_rollout_data.observations.clone().detach().to(device), ori_rollout_data.actions.clone().detach().to(device), ori_rollout_data.dstb_actions.clone().detach().to(device),
-                    shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=envs_per_matchup
-            ) 
+                log_prob, entropy = ori_policy.evaluate_adv_actions(ori_rollout_data.observations, ori_rollout_data.actions, buf_num=[i])
+                #_, _, _, log_prob, entropy = ori_policy.evaluate_actions(
+                    #ori_rollout_data.observations.clone().detach().to(device), ori_rollout_data.actions.clone().detach().to(device), ori_rollout_data.dstb_actions.clone().detach().to(device),
+                    #shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=envs_per_matchup
+                #)
+            #) 
             #run forward pass to get the log_prob
             log_ratio = log_prob - old_log_prob_tensor
             approx_kl_div = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).cpu().numpy()

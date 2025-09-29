@@ -32,7 +32,7 @@ from .policies import ActorCriticPolicy, ActorCriticCnnPolicy, MultiInputActorCr
 from typing import Union, Type, Optional, Dict, Any, List, Tuple
 #from stable_baselines3.common.clean_new_policies import CleanActorActorCriticPolicy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor, FlattenExtractor, MlpExtractorAdv, NatureCNN
-from main.utils import select_matchup_env
+from utils import select_matchup_env
 
 class CleanActorActorCriticPolicy(ActorCriticPolicy):
     def __init__(self,
