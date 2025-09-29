@@ -20,12 +20,12 @@ from stable_baselines3.common.clean_new_policies import CleanActorActorCriticPol
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import get_schedule_fn
 from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer, ReplayBuffer, AdvRolloutBuffer
-from main.utils import state2matchup
+from utils import state2matchup
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean, explained_variance
-from main.common.justin.Doubly_TSS_SPAR import Doubly_TSS_SPAR as dtss
+from common.justin.Doubly_TSS_SPAR import Doubly_TSS_SPAR as dtss
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.callbacks import BaseCallback
-from main.common.justin.derivative_free_spar import ParallelUpdater
+from common.justin.derivative_free_spar import ParallelUpdater
 from .calc_F import _get_buffers_and_keys, _calculate_policy_loss, _compute_grads, calc_F_grad_single
 import numpy as np
 import torch.nn as nn
@@ -33,7 +33,7 @@ import torch.nn.functional as F
 from anyio import value
 from gym import spaces
 from stable_baselines3 import PPO
-from main.utils import select_matchup_env, select_device, get_n_workers, move_policy, unpickle_policy
+from utils import select_matchup_env, select_device, get_n_workers, move_policy, unpickle_policy
 from concurrent.futures import ThreadPoolExecutor
 TIMING = False
 DEBUG = False
@@ -789,13 +789,18 @@ class CleanDerivativeFreeSPAR(PPO):
         callback.on_training_start(locals(), globals())
 
         while self.num_timesteps < total_timesteps:
-            perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
+            #perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
+            # print("perturbed agent created!", flush=True)
+            perturbed_agents = [self._create_perturbed_agent()[0] for _ in range(num_pertrubs)] #TODO: Parallelize this.
             print("perturbed agent created!", flush=True)
-            self._initialize_parallel_updater() 
+            self._initialize_parallel_updater()                
+            #TODO: This might be parallelizable.
+            perturbed_bufs, perturbed_adv_bufs = zip(*[perturbed_agent.env_perturb_params() for perturbed_agent in perturbed_agents])
+            #self._initialize_parallel_updater() 
                  
             #self.inner_loop()
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, update_ego, update_adversary) #TODO: This is sequential - remove when done.
-            perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
+            #perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
 
             self.perturbed_agents = perturbed_agents
             self.perturbed_bufs = perturbed_bufs
@@ -867,11 +872,19 @@ class CleanDerivativeFreeSPAR(PPO):
     
     def train_derivative_free(self, update_ego: bool = True, update_adversary: bool = True) -> None:
         self.policy.set_training_mode(True)
-        self.perturbed_agent.policy.set_training_mode(True)
-        self._update_value_functions(self.perturbed_agent, self.perturbed_adv_buf)
-        self._update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
-        self.leader_grads(self.rollout_buffer, self.adversary_buffers, self.policy, self.policy, ego=True)
-        self.leader_grads(self.adversary_buffers, self.rollout_buffer, self.policy, self.policy, ego=False)
+        [self.perturbed_agents[i].policy.set_training_mode(True) for i in range(len(self.perturbed_agents))]
+        #self._update_value_functions(self.perturbed_agent, self.perturbed_adv_buf)
+        [self._update_value_functions(perturbed_agent, perturbed_adv_buf) for perturbed_agent, perturbed_adv_buf in zip(self.perturbed_agents, self.perturbed_adv_bufs)]
+        futures = []
+        with ThreadPoolExecutor(max_workers=len(self.perturbed_bufs)) as executor:
+            for policy, perturbed_buf, perturbed_buf_adv in zip(self.perturbed_agents_policy, self.perturbed_bufs, self.perturbed_adv_bufs):
+                futures.append(executor.submit(self._update_advantages, policy, perturbed_buf, perturbed_buf_adv))
+            for future in futures:
+                future.result()
+        self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in self.perturbed_agents]
+        #self._update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
+        self.leader_grads(self.rollout_buffer, self.adversary_buffers, self.policy, self.perturbed_agents_policy, ego=True)
+        self.leader_grads(self.adversary_buffers, self.rollout_buffer, self.policy, self.perturbed_agents_policy, ego=False)
         #self.update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
         #self.update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
         self.perturbed_agent_policy = self.perturbed_agent.policy

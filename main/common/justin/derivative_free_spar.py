@@ -27,7 +27,7 @@ from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.policies import ActorCriticPolicy, ActorCriticCnnPolicy, MultiInputActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.vec_env import VecEnv
-from main.utils import move_policy, select_device, get_n_workers, state2matchup, select_matchup_env, unpickle_policy
+from utils import move_policy, select_device, get_n_workers, state2matchup, select_matchup_env, unpickle_policy
 
 from .update_value_functions import _update_single_value_function, shard_indices
 from .calc_F import _get_buffers_and_keys, _calculate_policy_loss, _compute_grads, calc_F_grad_single
