@@ -23,10 +23,10 @@ def _get_buffers_and_keys(ori_buf: AdvRolloutBuffer, perturbed_buf: AdvRolloutBu
     #    print(f"[DEBUG @ get_buffers]: For adv {index}, using buffer with advantages mean: {curr_buf.advantages.mean().item():.4f}")
     return network_keys, curr_buf, curr_perturbed_buf
 
-def _calculate_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, ego: bool, network_keys: List[int], clip_range: float, use_sde: bool, device: torch.device, batch_size: int, envs_per_matchup: int):
+def _calculate_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, ego: bool, clip_range: float, use_sde: bool, device: torch.device, batch_size: int, envs_per_matchup: int):
     #TODO: Complete docstring
     actions = torch.Tensor(rollout_data.actions).to(device)
-    dstb_actions = torch.Tensor(rollout_data.dstb_actions).to(device)
+    #dstb_actions = torch.Tensor(rollout_data.dstb_actions).to(device)
 
     if use_sde:
         policy.reset_noise(batch_size)
@@ -34,16 +34,20 @@ def _calculate_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, e
     with torch.no_grad():
         if ego:
             old_log_prob = rollout_data.old_log_prob
-            _, log_prob, entropy, _, _ = policy.evaluate_actions(
-                rollout_data.observations.clone().detach().to(device), actions, dstb_actions,
-                shuffle_keys=rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=envs_per_matchup
-            )
+            log_prob, entropy = policy.evaluate_ego_actions(rollout_data.observations, actions)
+
+            # _, log_prob, entropy, _, _ = policy.evaluate_actions(
+            #     rollout_data.observations.clone().detach().to(device), actions, dstb_actions,
+            #     shuffle_keys=rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=envs_per_matchup
+            # )
         else:
             old_log_prob = rollout_data.old_dstb_log_prob
-            _, _, _, log_prob, entropy = policy.evaluate_actions(
-                rollout_data.observations.clone().detach().to(device), actions, dstb_actions,
-                shuffle_keys=rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=envs_per_matchup
-            )
+            # _, _, _, log_prob, entropy = policy.evaluate_actions(
+            #     rollout_data.observations.clone().detach().to(device), actions, dstb_actions,
+            #     shuffle_keys=rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=envs_per_matchup
+            # )
+
+            log_prob, entropy = policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=[i])
     
     advantages = rollout_data.advantages# if ego else -rollout_data.advantages
     print(f"[DEBUG @ policy_loss]: Adv advantages mean in minibatch: {advantages.mean().item():.4f}")
@@ -52,7 +56,7 @@ def _calculate_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, e
     
     policy_loss_1 = advantages * ratio
     policy_loss_2 = advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)
-    policy_loss = torch.min(policy_loss_1, policy_loss_2).mean()
+    policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
     
     return policy_loss, log_prob, entropy
 
