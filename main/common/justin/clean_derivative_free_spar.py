@@ -883,8 +883,10 @@ class CleanDerivativeFreeSPAR(PPO):
                 future.result()
         self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in self.perturbed_agents]
         #self._update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
-        self.leader_grads(self.rollout_buffer, self.adversary_buffers, self.policy, self.perturbed_agents_policy, ego=True)
-        self.leader_grads(self.adversary_buffers, self.rollout_buffer, self.policy, self.perturbed_agents_policy, ego=False)
+        #self.leader_grads(self.rollout_buffer, self.adversary_buffers, self.policy, self.perturbed_agents_policy, ego=True)
+
+        self.leader_grads(self.rollout_buffer, self.perturbed_bufs, self.policy, self.perturbed_agents_policy, ego=True)
+        self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agents_policy, ego=False)
         #self.update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
         #self.update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
         self.perturbed_agent_policy = self.perturbed_agent.policy
@@ -1393,3 +1395,22 @@ class CleanDerivativeFreeSPAR(PPO):
             _, n_workers = get_n_workers()
             self.parallel_updater = ParallelUpdater(n_workers)
             self.first_run = True 
+
+    def _log_leader_metrics(self, ego, entropy_losses, pg_losses, approx_kl_divs, explained_var, clip_range):
+        prefix = "ego" if ego else "adv"
+
+        self.logger.record(f"train/{prefix}_entropy_loss", np.mean(entropy_losses))
+        self.logger.record(f"train/{prefix}_policy_gradient_loss", np.mean(pg_losses))
+        self.logger.record(f"train/{prefix}_approx_kl", np.mean(approx_kl_divs))
+        self.logger.record(f"train/{prefix}_explained_variance", explained_var)
+
+        if hasattr(self.policy, "log_std"):
+            self.logger.record("train/std", th.exp(self.policy.log_std).mean().item())
+
+        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record("train/clip_range", clip_range)
+        if self.clip_range_vf is not None:
+            clip_range_vf_val = self.clip_range_vf(self._current_progress_remaining)
+            self.logger.record("train/clip_range_vf", clip_range_vf_val)
+
+    
