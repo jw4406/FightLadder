@@ -25,9 +25,9 @@ jobs:
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-    - name: Install gym-retro from source
+    - name: Install gym-retro from GitHub
       run: |
-        pip install gym-retro==0.7.1
+        pip install git+https://github.com/openai/retro.git@v0.8.0
 
     - name: Install local stable-baselines3
       run: |
