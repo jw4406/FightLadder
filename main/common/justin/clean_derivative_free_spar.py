@@ -20,12 +20,12 @@ from stable_baselines3.common.clean_new_policies import CleanActorActorCriticPol
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import get_schedule_fn
 from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer, ReplayBuffer, AdvRolloutBuffer
-from utils import state2matchup
+from main.utils import state2matchup
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean, explained_variance
-from common.justin.Doubly_TSS_SPAR import Doubly_TSS_SPAR as dtss
+from main.common.justin.Doubly_TSS_SPAR import Doubly_TSS_SPAR as dtss
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.callbacks import BaseCallback
-from common.justin.derivative_free_spar import ParallelUpdater
+from main.common.justin.derivative_free_spar import ParallelUpdater
 from .calc_F import _get_buffers_and_keys, _calculate_policy_loss, _compute_grads, calc_F_grad_single
 import numpy as np
 import torch.nn as nn
@@ -33,7 +33,7 @@ import torch.nn.functional as F
 from anyio import value
 from gym import spaces
 from stable_baselines3 import PPO
-from utils import select_matchup_env, select_device, get_n_workers, move_policy, unpickle_policy
+from main.utils import select_matchup_env, select_device, get_n_workers, move_policy, unpickle_policy
 from concurrent.futures import ThreadPoolExecutor
 TIMING = False
 DEBUG = False
