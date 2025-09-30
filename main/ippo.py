@@ -393,7 +393,7 @@ def main(PLAYER):
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
     parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
     parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=32)
-    parser.add_argument("--num_pertrubs", type=int, help="Number of perturbed policies to be created.", default=2)
+    parser.add_argument("--num_pertrubs", type=int, help="Number of perturbed policies to be created.", default=3)
     args = parser.parse_args()
 
 

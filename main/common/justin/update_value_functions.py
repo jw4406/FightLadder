@@ -35,6 +35,7 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
     TODO: Complete the docstring.
     TODO: Complete static types
     """
+    device='cpu'
     def _prep_rollout_data_actions(batch_size: int, buffer) -> tuple:
         """
         This is a helper function that gets all the rollout data and actions once instead of batch by batch.
