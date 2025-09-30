@@ -216,6 +216,7 @@ class ParallelUpdater:
         ) = job[1]
 
         device = select_device(device_id)
+        device = 'cpu'
         try:
             derivative_free_SPAR_policy = ParallelUpdater._load_policy_from_persistent(persistent_state=persistent_state, policy_data=derivative_free_SPAR_policy_data, key="derivative_free_SPAR_policy", device=device)
             perturbed_agent_policy = ParallelUpdater._load_policy_from_persistent(persistent_state=persistent_state, policy_data=perturbed_agent_policy_data, key="perturbed_agent_policy", device=device)

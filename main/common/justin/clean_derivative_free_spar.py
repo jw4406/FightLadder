@@ -885,11 +885,11 @@ class CleanDerivativeFreeSPAR(PPO):
         #self._update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
         #self.leader_grads(self.rollout_buffer, self.adversary_buffers, self.policy, self.perturbed_agents_policy, ego=True)
 
-        self.leader_grads(self.rollout_buffer, self.perturbed_bufs, self.policy, self.perturbed_agents_policy, ego=True)
-        self.leader_grads(self.adversary_buffers, self.perturbed_adv_buf, self.policy, self.perturbed_agents_policy, ego=False)
+        #self.leader_grads(self.rollout_buffer, self.perturbed_bufs, self.policy, self.perturbed_agents_policy, ego=True)
+        self.leader_grads(self.adversary_buffers, self.perturbed_adv_bufs, self.policy, self.perturbed_agents_policy, ego=False)
         #self.update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
         #self.update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
-        self.perturbed_agent_policy = self.perturbed_agent.policy
+        #self.perturbed_agent_policy = self.perturbed_agent.policy
 
     # we need to rewrite leader grads and update_advantages
 
@@ -958,13 +958,13 @@ class CleanDerivativeFreeSPAR(PPO):
                     reshaped_grad.append(torch.reshape(F_grad[count: count + numel], size_lists[i]))
                     count += numel
                 if ego is False:
-                    heads_start_index = self.policy.extractor_and_trunk_length
-                    trunk_extractor_indices = [i for i in range(heads_start_index)]
-                    this_adv_indices = [i for i in range(heads_start_index + self.policy.head_length * adv_num , heads_start_index + self.policy.head_length * (adv_num + 1))]
-                    all_indices = trunk_extractor_indices + this_adv_indices
+                    # heads_start_index = self.policy.extractor_and_trunk_length
+                    # trunk_extractor_indices = [i for i in range(heads_start_index)]
+                    # this_adv_indices = [i for i in range(heads_start_index + self.policy.head_length * adv_num , heads_start_index + self.policy.head_length * (adv_num + 1))]
+                    # all_indices = trunk_extractor_indices + this_adv_indices
                     self.policy.dstb_optimizer.zero_grad()
 
-                    for i in all_indices:
+                    for i in range(len(reshaped_grad)):
                         self.policy.dstb_optimizer.param_groups[0]['params'][i].grad = reshaped_grad[i].float().detach()
                 else:
                     self.policy.ctrl_optimizer.zero_grad()

@@ -23,7 +23,7 @@ def _get_buffers_and_keys(ori_buf: AdvRolloutBuffer, perturbed_buf: AdvRolloutBu
     #    print(f"[DEBUG @ get_buffers]: For adv {index}, using buffer with advantages mean: {curr_buf.advantages.mean().item():.4f}")
     return network_keys, curr_buf, curr_perturbed_buf
 
-def _calculate_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, ego: bool, clip_range: float, use_sde: bool, device: torch.device, batch_size: int, envs_per_matchup: int):
+def _calculate_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, ego: bool, clip_range: float, use_sde: bool, device: torch.device, batch_size: int, envs_per_matchup: int, network_keys = None):
     #TODO: Complete docstring
     actions = torch.Tensor(rollout_data.actions).to(device)
     #dstb_actions = torch.Tensor(rollout_data.dstb_actions).to(device)
@@ -41,13 +41,13 @@ def _calculate_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, e
             #     shuffle_keys=rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=envs_per_matchup
             # )
         else:
-            old_log_prob = rollout_data.old_dstb_log_prob
+            old_log_prob = rollout_data.old_log_prob
             # _, _, _, log_prob, entropy = policy.evaluate_actions(
             #     rollout_data.observations.clone().detach().to(device), actions, dstb_actions,
             #     shuffle_keys=rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=envs_per_matchup
             # )
 
-            log_prob, entropy = policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=[i])
+            log_prob, entropy = policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=network_keys)
     
     advantages = rollout_data.advantages# if ego else -rollout_data.advantages
     print(f"[DEBUG @ policy_loss]: Adv advantages mean in minibatch: {advantages.mean().item():.4f}")
@@ -99,18 +99,18 @@ def calc_F_grad_single(
     network_keys, curr_buf, curr_perturbed_buf = _get_buffers_and_keys(ori_buf, perturbed_buf, ego, i, num_adversaries)
     for ori_rollout_data, perturbed_rollout_data in zip(curr_buf.get(batch_size), curr_perturbed_buf.get(batch_size)):                    
         policy_loss, log_prob, entropy = _calculate_policy_loss(
-            ori_rollout_data, ori_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup
+            ori_rollout_data, ori_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys
         )
         pg_losses.append(policy_loss.item())
         entropy_losses.append(entropy.mean().item())
 
         perturbed_policy_loss, _, _ = _calculate_policy_loss(
-            perturbed_rollout_data, perturbed_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup
+            perturbed_rollout_data, perturbed_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys
         )
-        F_grad = _compute_grads(d, delta, ego_v, adv_v, policy_loss, perturbed_policy_loss, ego, i) if ego else 0
+        F_grad = _compute_grads(d, delta, ego_v, adv_v, policy_loss, perturbed_policy_loss, ego, i)# if ego else 0
         # #assert improvement > 0, "CRITICAL BUG: Policy is making good actions LESS likely!"
         with torch.no_grad():
-            old_log_prob_tensor = ori_rollout_data.old_log_prob if ego else ori_rollout_data.old_dstb_log_prob
+            old_log_prob_tensor = ori_rollout_data.old_log_prob
             #run forward pass to get the log_prob
             if ego:
                 log_prob, entropy = ori_policy.evaluate_ego_actions(ori_rollout_data.observations, ori_rollout_data.actions)
