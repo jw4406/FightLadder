@@ -887,8 +887,8 @@ class CleanDerivativeFreeSPAR(PPO):
         #self._update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
         #self.leader_grads(self.rollout_buffer, self.adversary_buffers, self.policy, self.perturbed_agents_policy, ego=True)
 
-        #self.leader_grads(self.rollout_buffer, self.perturbed_bufs, self.policy, self.perturbed_agents_policy, ego=True)
-        self.leader_grads(self.adversary_buffers, self.perturbed_adv_bufs, self.policy, self.perturbed_agents_policy, ego=False)
+        self.leader_grads(self.rollout_buffer, self.perturbed_bufs, self.policy, self.perturbed_agents_policy, ego=True)
+        #self.leader_grads(self.adversary_buffers, self.perturbed_adv_bufs, self.policy, self.perturbed_agents_policy, ego=False)
         #self.update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
         #self.update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
         #self.perturbed_agent_policy = self.perturbed_agent.policy
