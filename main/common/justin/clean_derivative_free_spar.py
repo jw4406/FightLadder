@@ -770,97 +770,99 @@ class CleanDerivativeFreeSPAR(PPO):
         update_adversary: bool = False,
         num_pertrubs: int = 1,
     ):
-        #try:
-        iteration = 0
-        #from common.algorithms import Exploiter
-        total_timesteps, callback = self._setup_learn(
-            total_timesteps,
-            callback,
-            reset_num_timesteps,
-            tb_log_name,
-            progress_bar,
-        )
-        self.callback = callback
+        try:
+            iteration = 0
+            #from common.algorithms import Exploiter
+            total_timesteps, callback = self._setup_learn(
+                total_timesteps,
+                callback,
+                reset_num_timesteps,
+                tb_log_name,
+                progress_bar,
+            )
+            self.callback = callback
 
-        window = 250
-        tolerance = .05 # movable
-        rews = []
+            window = 250
+            tolerance = .05 # movable
+            rews = []
 
-        callback.on_training_start(locals(), globals())
+            callback.on_training_start(locals(), globals())
 
-        while self.num_timesteps < total_timesteps:
-            #perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
-            # print("perturbed agent created!", flush=True)
-            perturbed_agents = [self._create_perturbed_agent()[0] for _ in range(num_pertrubs)] #TODO: Parallelize this.
-            print("perturbed agent created!", flush=True)
-            self._initialize_parallel_updater()                
-            #TODO: This might be parallelizable.
-            perturbed_bufs, perturbed_adv_bufs = zip(*[perturbed_agent.env_perturb_params() for perturbed_agent in perturbed_agents])
-            #self._initialize_parallel_updater() 
-                 
-            #self.inner_loop()
-            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, update_ego, update_adversary) #TODO: This is sequential - remove when done.
-            #perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
+            while self.num_timesteps < total_timesteps:
+                #perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
+                # print("perturbed agent created!", flush=True)
+                perturbed_agents = [self._create_perturbed_agent()[0] for _ in range(num_pertrubs)] #TODO: Parallelize this.
+                print("perturbed agent created!", flush=True)
+                self._initialize_parallel_updater()                
+                #TODO: This might be parallelizable.
+                perturbed_bufs, perturbed_adv_bufs = zip(*[perturbed_agent.env_perturb_params() for perturbed_agent in perturbed_agents])
+                #self._initialize_parallel_updater() 
+                    
+                #self.inner_loop()
+                continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, update_ego, update_adversary) #TODO: This is sequential - remove when done.
+                #perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
 
-            self.perturbed_agents = perturbed_agents
-            self.perturbed_bufs = perturbed_bufs
-            self.perturbed_adv_bufs = perturbed_adv_bufs
-            self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in perturbed_agents]
-            #self.perturbed_agent = perturbed_agent
-            #self.perturbed_buf = perturbed_buf
-            #self.perturbed_adv_buf = perturbed_adv_buf
-            #self.perturbed_agent_policy = perturbed_agent.policy
-            #continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps) #TODO: This is sequential - remove when done.
+                self.perturbed_agents = perturbed_agents
+                self.perturbed_bufs = perturbed_bufs
+                self.perturbed_adv_bufs = perturbed_adv_bufs
+                self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in perturbed_agents]
+                #self.perturbed_agent = perturbed_agent
+                #self.perturbed_buf = perturbed_buf
+                #self.perturbed_adv_buf = perturbed_adv_buf
+                #self.perturbed_agent_policy = perturbed_agent.policy
+                #continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps) #TODO: This is sequential - remove when done.
 
-            # Run env_perturb_params and collect_rollouts in different threads (cannot be done in different processes because they contain unpickleable objects)
-            # with ThreadPoolExecutor(max_workers=2) as executor:
-            #     future_perturbed = executor.submit(perturbed_agent.env_perturb_params)
-            #     future_collect = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps)
+                # Run env_perturb_params and collect_rollouts in different threads (cannot be done in different processes because they contain unpickleable objects)
+                # with ThreadPoolExecutor(max_workers=2) as executor:
+                #     future_perturbed = executor.submit(perturbed_agent.env_perturb_params)
+                #     future_collect = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps)
+                    
+                #     perturbed_buf, perturbed_adv_buf = future_perturbed.result()
+                #     continue_training = future_collect.result()
+                # self.perturbed_agent = perturbed_agent
+                # self.perturbed_buf = perturbed_buf
+                # self.perturbed_adv_buf = perturbed_adv_buf
+                # self.perturbed_agent_policy = perturbed_agent.policy
+                # print("main agent and perturbed agent rollout done!", flush=True)
                 
-            #     perturbed_buf, perturbed_adv_buf = future_perturbed.result()
-            #     continue_training = future_collect.result()
-            # self.perturbed_agent = perturbed_agent
-            # self.perturbed_buf = perturbed_buf
-            # self.perturbed_adv_buf = perturbed_adv_buf
-            # self.perturbed_agent_policy = perturbed_agent.policy
-            # print("main agent and perturbed agent rollout done!", flush=True)
+                #if isinstance(self, Exploiter):
+                #    if len(rews) > 2000:
+                #        if (max(rews[-window:]) - min(rews[-window:])) <= tolerance * 2:
+                #            continue_training = False
+                if continue_training is False:
+                    break
+
+                iteration += 1
+                self._update_current_progress_remaining(self.num_timesteps, total_timesteps)
+
+                # Display training infos
+                if log_interval is not None and iteration % log_interval == 0:
+                    time_elapsed = max((time.time_ns() - self.start_time) / 1e9, sys.float_info.epsilon)
+                    fps = int((self.num_timesteps - self._num_timesteps_at_start) / time_elapsed)
+                    self.logger.record("time/iterations", iteration, exclude="tensorboard")
+                    if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
+                        rews.append(safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+                        self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+                        wandb.log({"eval_rew": safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])})
+                        self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+                    self.logger.record("time/fps", fps)
+                    self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
+                    self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
+                    self.logger.dump(step=self.num_timesteps)
             
-            #if isinstance(self, Exploiter):
-            #    if len(rews) > 2000:
-            #        if (max(rews[-window:]) - min(rews[-window:])) <= tolerance * 2:
-            #            continue_training = False
-            if continue_training is False:
-                break
 
-            iteration += 1
-            self._update_current_progress_remaining(self.num_timesteps, total_timesteps)
+                self.train(update_ego=update_ego, update_adversary=update_adversary)
+                [perturbed_agent.env.close() for perturbed_agent in self.perturbed_agents]
+                self.perturbed_agents.clear()
+                #self.perturbed_agent.env.close()
+                #del self.perturbed_agent
 
-            # Display training infos
-            if log_interval is not None and iteration % log_interval == 0:
-                time_elapsed = max((time.time_ns() - self.start_time) / 1e9, sys.float_info.epsilon)
-                fps = int((self.num_timesteps - self._num_timesteps_at_start) / time_elapsed)
-                self.logger.record("time/iterations", iteration, exclude="tensorboard")
-                if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-                    rews.append(safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    wandb.log({"eval_rew": safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])})
-                    self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
-                self.logger.record("time/fps", fps)
-                self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
-                self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
-                self.logger.dump(step=self.num_timesteps)
+            callback.on_training_end()
         
-
-            self.train(update_ego=update_ego, update_adversary=update_adversary)
-            #self.perturbed_agent.env.close()
-            #del self.perturbed_agent
-
-        callback.on_training_end()
-        
-        # finally:
-        #     #IMPORTANT! Persistent workers must be cleaned up.
-        #     self.cleanup()
-        #     torch.cuda.empty_cache()
+        finally:
+            #IMPORTANT! Persistent workers must be cleaned up.
+            self.cleanup()
+            torch.cuda.empty_cache()
 
         #except Exception as e:
         #    print(e)
