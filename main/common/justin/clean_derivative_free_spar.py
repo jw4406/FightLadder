@@ -433,29 +433,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 self.perturbed_bufs = list(perturbed_bufs)
                 self.perturbed_adv_bufs = list(perturbed_adv_bufs)
                 self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in perturbed_agents]
-                #self.perturbed_agent = perturbed_agent
-                #self.perturbed_buf = perturbed_buf
-                #self.perturbed_adv_buf = perturbed_adv_buf
-                #self.perturbed_agent_policy = perturbed_agent.policy
-                #continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps) #TODO: This is sequential - remove when done.
 
-                # Run env_perturb_params and collect_rollouts in different threads (cannot be done in different processes because they contain unpickleable objects)
-                # with ThreadPoolExecutor(max_workers=2) as executor:
-                #     future_perturbed = executor.submit(perturbed_agent.env_perturb_params)
-                #     future_collect = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps)
-                    
-                #     perturbed_buf, perturbed_adv_buf = future_perturbed.result()
-                #     continue_training = future_collect.result()
-                # self.perturbed_agent = perturbed_agent
-                # self.perturbed_buf = perturbed_buf
-                # self.perturbed_adv_buf = perturbed_adv_buf
-                # self.perturbed_agent_policy = perturbed_agent.policy
-                # print("main agent and perturbed agent rollout done!", flush=True)
-                
-                #if isinstance(self, Exploiter):
-                #    if len(rews) > 2000:
-                #        if (max(rews[-window:]) - min(rews[-window:])) <= tolerance * 2:
-                #            continue_training = False
                 if continue_training is False:
                     break
 
@@ -501,13 +479,11 @@ class CleanDerivativeFreeSPAR(PPO):
         return self
     
     def train(self, update_ego: bool = True, update_adversary: bool = True) -> None:
-        #self.train_standard(update_ego, update_adversary)
         self.train_derivative_free(update_ego, update_adversary)
     
     def train_derivative_free(self, update_ego: bool = True, update_adversary: bool = True) -> None:
         self.policy.set_training_mode(True)
         [self.perturbed_agents[i].policy.set_training_mode(True) for i in range(len(self.perturbed_agents))]
-        #self._update_value_functions(self.perturbed_agent, self.perturbed_adv_buf)
         [self._update_value_functions(perturbed_agent, perturbed_adv_buf) for perturbed_agent, perturbed_adv_buf in zip(self.perturbed_agents, self.perturbed_adv_bufs)]
         futures = []
         with ThreadPoolExecutor(max_workers=len(self.perturbed_bufs)) as executor:
@@ -516,14 +492,7 @@ class CleanDerivativeFreeSPAR(PPO):
             for future in futures:
                 future.result()
         self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in self.perturbed_agents]
-        #self._update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
-        #self.leader_grads(self.rollout_buffer, self.adversary_buffers, self.policy, self.perturbed_agents_policy, ego=True)
-
         self.leader_grads(self.rollout_buffer, self.perturbed_bufs, self.policy, self.perturbed_agents_policy, ego=True)
-        #self.leader_grads(self.adversary_buffers, self.perturbed_adv_bufs, self.policy, self.perturbed_agents_policy, ego=False)
-        #self.update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
-        #self.update_advantages(self.policy, self.rollout_buffer, self.adversary_buffers)
-        #self.perturbed_agent_policy = self.perturbed_agent.policy
 
     # we need to rewrite leader grads and update_advantages
 
