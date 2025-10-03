@@ -6,7 +6,7 @@ import torch
 
 from stable_baselines3.common.buffers import AdvRolloutBuffer
 from stable_baselines3.common.policies import BasePolicy
-from main.utils import move_policy, select_device, get_n_workers, state2matchup, select_matchup_env, unpickle_policy
+from utils import move_policy, select_device, get_n_workers, state2matchup, select_matchup_env, unpickle_policy
 
 def _get_buffers_and_keys(ori_buf: AdvRolloutBuffer, perturbed_buf: AdvRolloutBuffer, ego: bool, index: int, num_adversaries: int) -> tuple:
     #TODO: Add docstring

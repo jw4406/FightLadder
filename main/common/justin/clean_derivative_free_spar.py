@@ -21,10 +21,10 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.utils import get_schedule_fn
 from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer, ReplayBuffer, AdvRolloutBuffer
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean, explained_variance
-from main.common.justin.Doubly_TSS_SPAR import Doubly_TSS_SPAR as dtss
+from common.justin.Doubly_TSS_SPAR import Doubly_TSS_SPAR as dtss
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.callbacks import BaseCallback
-from main.common.justin.derivative_free_spar import ParallelUpdater
+from common.justin.derivative_free_spar import ParallelUpdater
 from .calc_F import _get_buffers_and_keys, _calculate_policy_loss, _compute_grads, calc_F_grad_single
 import numpy as np
 import torch.nn as nn
@@ -32,7 +32,7 @@ import torch.nn.functional as F
 from anyio import value
 from gym import spaces
 from stable_baselines3 import PPO
-from main.utils import select_matchup_env, select_device, get_n_workers, move_policy, unpickle_policy, state2matchup
+from utils import select_matchup_env, select_device, get_n_workers, move_policy, unpickle_policy, state2matchup
 from concurrent.futures import ThreadPoolExecutor
 from .parallel_updater import ParallelUpdater
 
@@ -410,20 +410,28 @@ class CleanDerivativeFreeSPAR(PPO):
             while self.num_timesteps < total_timesteps:
                 #perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
                 # print("perturbed agent created!", flush=True)
-                perturbed_agents = [self._create_perturbed_agent()[0] for _ in range(num_pertrubs)] #TODO: Parallelize this.
+                with ThreadPoolExecutor(max_workers=num_pertrubs) as executor:
+                    futures = [executor.submit(self._create_perturbed_agent) for _ in range(num_pertrubs)]
+                    perturbed_agents = [future.result()[0] for future in futures]
+                #perturbed_agents = [self._create_perturbed_agent()[0] for _ in range(num_pertrubs)] #TODO: Parallelize this.
                 print("perturbed agent created!", flush=True)
                 self._initialize_parallel_updater()                
                 #TODO: This might be parallelizable.
-                perturbed_bufs, perturbed_adv_bufs = zip(*[perturbed_agent.env_perturb_params() for perturbed_agent in perturbed_agents])
+                with ThreadPoolExecutor(max_workers=num_pertrubs + 1) as executor:
+                    futures = [executor.submit(perturbed_agent.env_perturb_params, update_ego, update_adversary) for perturbed_agent in perturbed_agents]
+                    perturbed_bufs, perturbed_adv_bufs = zip(*[future.result() for future in futures])
+                    future_standard = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, update_ego, update_adversary)
+                    continue_training = future_standard.result()
+                #perturbed_bufs, perturbed_adv_bufs = zip(*[perturbed_agent.env_perturb_params() for perturbed_agent in perturbed_agents])
                 #self._initialize_parallel_updater() 
                     
                 #self.inner_loop()
-                continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, update_ego, update_adversary) #TODO: This is sequential - remove when done.
+                #continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, update_ego, update_adversary) #TODO: This is sequential - remove when done.
                 #perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
 
                 self.perturbed_agents = perturbed_agents
-                self.perturbed_bufs = perturbed_bufs
-                self.perturbed_adv_bufs = perturbed_adv_bufs
+                self.perturbed_bufs = list(perturbed_bufs)
+                self.perturbed_adv_bufs = list(perturbed_adv_bufs)
                 self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in perturbed_agents]
                 #self.perturbed_agent = perturbed_agent
                 #self.perturbed_buf = perturbed_buf
@@ -473,6 +481,11 @@ class CleanDerivativeFreeSPAR(PPO):
                 self.train(update_ego=update_ego, update_adversary=update_adversary)
                 [perturbed_agent.env.close() for perturbed_agent in self.perturbed_agents]
                 self.perturbed_agents.clear()
+                self.perturbed_bufs.clear()
+                self.perturbed_adv_bufs.clear()
+                self.perturbed_agents_policy.clear()
+                gc.collect()
+                torch.cuda.empty_cache()
                 #self.perturbed_agent.env.close()
                 #del self.perturbed_agent
 
@@ -827,7 +840,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 count = count + torch.numel(p)
         return
     
-    def env_perturb_params(self):
+    def env_perturb_params(self, update_ego=True, update_adversary=True):
         buf = self.rollout_buffer_class(self.n_steps,
             self.observation_space,
             self.action_space,
@@ -846,7 +859,7 @@ class CleanDerivativeFreeSPAR(PPO):
             gae_lambda=self.gae_lambda,
             n_envs= self.n_env_per_adv) for i in range(self.num_adversaries)]
         #[adv_buf[i].reset() for i in range(len(adv_buf))]
-        self.collect_rollouts(self.env, self.callback, buf, adv_buf, n_rollout_steps=self.n_steps)
+        self.collect_rollouts(self.env, self.callback, buf, adv_buf, n_rollout_steps=self.n_steps, update_ego=update_ego, update_adversary=update_adversary)
         
         #buf.prepare_data_for_training()
         #for i in range(len(adv_buf)):

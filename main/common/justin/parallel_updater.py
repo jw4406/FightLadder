@@ -10,7 +10,7 @@ import torch
 from torch.multiprocessing import Process, Queue
 import torch.nn.functional as F
 
-from main.utils import move_policy, select_device, get_n_workers, state2matchup, select_matchup_env, unpickle_policy
+from utils import move_policy, select_device, get_n_workers, state2matchup, select_matchup_env, unpickle_policy
 from .update_value_functions import _update_single_value_function, shard_indices
 from .calc_F import _get_buffers_and_keys, _calculate_policy_loss, _compute_grads, calc_F_grad_single
 
