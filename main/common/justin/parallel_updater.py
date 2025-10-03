@@ -375,14 +375,15 @@ class ParallelUpdater:
         """
         def wrapper(self, *args, **kwargs):
             active_jobs = []
-            func(self, active_jobs, *args, **kwargs)
+            func(self, *args, active_jobs=active_jobs, **kwargs)
             self._wait_for_jobs(active_jobs)
         return wrapper
 
     @_parallel_job_executor
-    def update_value_functions(self, active_jobs: list, policy: Any, perturbed_agent: Any, perturbed_adv_buf: List[Any], 
-                             adversary_buffers: List[Any], batch_size: int, max_grad_norm: float, 
-                             n_epochs: int, n_env_per_adv: int, first_run: bool = False, envs_per_matchup: int = None) -> None:
+    def update_value_functions(self, policy: Any, perturbed_agent: Any, perturbed_adv_buf: List[Any], 
+                            adversary_buffers: List[Any], batch_size: int, max_grad_norm: float, 
+                            n_epochs: int, n_env_per_adv: int, first_run: bool = False, 
+                            envs_per_matchup: int = None, *, active_jobs: list) -> None:
         """
         Submit work to persistent processes and wait for completion.
         
