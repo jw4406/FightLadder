@@ -3,11 +3,12 @@ from typing import List, Any
 import numpy as np
 
 import torch
+import torch.autograd as autograd
 
 from stable_baselines3.common.buffers import AdvRolloutBuffer
 from stable_baselines3.common.policies import BasePolicy
 from utils import move_policy, select_device, get_n_workers, state2matchup, select_matchup_env, unpickle_policy
-
+DEBUG = True
 def _get_buffers_and_keys(ori_buf: AdvRolloutBuffer, perturbed_buf: AdvRolloutBuffer, ego: bool, index: int, num_adversaries: int) -> tuple:
     #TODO: Add docstring
     if ego:
@@ -31,22 +32,21 @@ def _calculate_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, e
     if use_sde:
         policy.reset_noise(batch_size)
 
-    with torch.no_grad():
+    #with torch.no_grad():
+    if not DEBUG:
+        with torch.no_grad():
+            if ego:
+                old_log_prob = rollout_data.old_log_prob
+                log_prob, entropy = policy.evaluate_ego_actions(rollout_data.observations, actions)
+            else:
+                old_log_prob = rollout_data.old_log_prob
+                log_prob, entropy = policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=network_keys)
+    else:
         if ego:
             old_log_prob = rollout_data.old_log_prob
             log_prob, entropy = policy.evaluate_ego_actions(rollout_data.observations, actions)
-
-            # _, log_prob, entropy, _, _ = policy.evaluate_actions(
-            #     rollout_data.observations.clone().detach().to(device), actions, dstb_actions,
-            #     shuffle_keys=rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=envs_per_matchup
-            # )
         else:
             old_log_prob = rollout_data.old_log_prob
-            # _, _, _, log_prob, entropy = policy.evaluate_actions(
-            #     rollout_data.observations.clone().detach().to(device), actions, dstb_actions,
-            #     shuffle_keys=rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=envs_per_matchup
-            # )
-
             log_prob, entropy = policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=network_keys)
     
     advantages = rollout_data.advantages# if ego else -rollout_data.advantages
@@ -107,7 +107,13 @@ def calc_F_grad_single(
         perturbed_policy_loss, _, _ = _calculate_policy_loss(
             perturbed_rollout_data, perturbed_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys
         )
-        F_grad = _compute_grads(d, delta, ego_v, adv_v, policy_loss, perturbed_policy_loss, ego, i)# if ego else 0
+
+        if DEBUG:
+            F_grad = autograd.grad(policy_loss, ori_policy.ctrl_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True)
+            F_grad = [t.view(-1) for t in F_grad]
+        else:
+            F_grad = _compute_grads(d, delta, ego_v, adv_v, policy_loss, perturbed_policy_loss, ego, i)# if ego else 0
+
         # #assert improvement > 0, "CRITICAL BUG: Policy is making good actions LESS likely!"
         with torch.no_grad():
             old_log_prob_tensor = ori_rollout_data.old_log_prob
