@@ -82,7 +82,7 @@ class CleanDerivativeFreeSPAR(PPO):
             env: Union[GymEnv, str],
             c_learning_rate: Union[float, Schedule] = 1e-4,
             d_learning_rate: Union[float, Schedule] = 2e-4,
-            v_learning_rate: Union[float, Schedule] = 7e-4,
+            v_learning_rate: Union[float, Schedule] = 5e-4,
             c_learning_rate_decay: Union[float, Schedule] = 1e-4,
             d_learning_rate_decay: Union[float, Schedule] = 2e-4,
             v_learning_rate_decay: Union[float, Schedule] = 7e-4,
@@ -469,13 +469,14 @@ class CleanDerivativeFreeSPAR(PPO):
 
             callback.on_training_end()
         
+        except Exception as e:
+            print(e)
+        
         finally:
             #IMPORTANT! Persistent workers must be cleaned up.
             self.cleanup()
             torch.cuda.empty_cache()
 
-        #except Exception as e:
-        #    print(e)
         return self
     
     def train(self, update_ego: bool = True, update_adversary: bool = True) -> None:
@@ -862,12 +863,22 @@ class CleanDerivativeFreeSPAR(PPO):
         perturbed_agent.policy.num_global_env = perturbed_agent.n_global_env
         
         update_start_time = time.time()
-        for i in range(self.n_epochs):
-            self.parallel_updater.update_value_functions(
-                                                        self.policy, perturbed_agent, perturbed_adv_buf, 
-                                                        self.adversary_buffers, self.batch_size, self.max_grad_norm,
-                                                        self.n_epochs, self.n_env_per_adv, self.first_run, self.envs_per_matchup
-                                                        )
+        results = self.parallel_updater.update_value_functions(
+            self.policy, perturbed_agent, perturbed_adv_buf,
+            self.adversary_buffers, self.batch_size, self.max_grad_norm,
+            self.n_epochs, self.n_env_per_adv, self.first_run, self.envs_per_matchup
+        )
+
+        valid_results = [r for r in results if r is not None]
+        if not valid_results:
+            warnings.warn("No results from value function update workers.")
+            return
+        assert len(valid_results) == 1, f"Expected 1 result, got {len(valid_results)}"
+        # Load the state dicts from the last valid result
+        last_spar_state_dict, last_perturbed_state_dict = valid_results[-1]
+        self.policy.load_state_dict(last_spar_state_dict)
+        perturbed_agent.policy.load_state_dict(last_perturbed_state_dict)
+
         update_end_time = time.time()
         if TIMING:
             print(f"    [Timing] parallel_updater.update_value_functions: {update_end_time - update_start_time:.4f}s")

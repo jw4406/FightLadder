@@ -66,6 +66,7 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
         # for i in range(len(value_grads)):
         #     policy.value_optimizer.param_groups[0]['params'][indices[i]].grad = value_grads[i]
         value_loss.backward()
+        #policy.ee = True
         #policy.value_optimizer.zero_grad()
         #for i in range(len(policy.value_optimizer.param_groups[0]['params'])):
         #    policy.value_optimizer.param_groups[0]['params'][i].grad = value_grads[i]
@@ -262,7 +263,9 @@ class ParallelUpdater:
                     )
             
             # Signal completion
-            done_queue.put(job_id)
+            updated_spar_policy_state_dict = {k: v.cpu() for k, v in derivative_free_SPAR_policy.state_dict().items()}
+            updated_perturbed_policy_state_dict = {k: v.cpu() for k, v in perturbed_agent_policy.state_dict().items()}
+            done_queue.put((job_id, (updated_spar_policy_state_dict, updated_perturbed_policy_state_dict)))
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             
@@ -357,11 +360,14 @@ class ParallelUpdater:
                         raise ValueError(f"Job failed: {result}")
                     elif result.startswith("job_"):
                         job_id = result
+                        job_results[job_id] = None # No data returned
                     else:
                         raise ValueError(f"Unkonwn job result: {result}.")
                 else:
                     job_id = result[0]
-                    job_data = result[1:] if len(result)>1 else None
+                    job_data = result[1:] if len(result) > 1 else None
+                    if len(job_data) == 1:
+                        job_data = job_data[0]
                     job_results[job_id] = job_data
                 completed_jobs += 1
             except Empty:
@@ -376,7 +382,7 @@ class ParallelUpdater:
         def wrapper(self, *args, **kwargs):
             active_jobs = []
             func(self, *args, active_jobs=active_jobs, **kwargs)
-            self._wait_for_jobs(active_jobs)
+            return self._wait_for_jobs(active_jobs)
         return wrapper
 
     @_parallel_job_executor

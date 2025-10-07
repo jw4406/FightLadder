@@ -806,10 +806,11 @@ def main(PLAYER):
                        entity='jw4406',
                        config={"eval_rew": 0,
                                "epochs": 0})
+            #test = CleanDerivativeFreeSPAR.load("/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/ppo_Guile_32000_steps.task")
             model.learn(
                 total_timesteps=args.total_steps,
-                num_pertrubs = args.num_pertrubs
-                #callback=[checkpoint_callback, file_queue_callback]
+                num_pertrubs = args.num_pertrubs,
+                callback=[checkpoint_callback, file_queue_callback]
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)
         # for i in range(len(model.adversaries)):
