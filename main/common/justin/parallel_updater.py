@@ -14,65 +14,65 @@ from utils import move_policy, select_device, get_n_workers, state2matchup, sele
 from .update_value_functions import _update_single_value_function, shard_indices
 from .calc_F import _get_buffers_and_keys, _calculate_policy_loss, _compute_grads, calc_F_grad_single
 
-def _update_single_value_function(batch_size: int, max_grad_norm: float, policy, buffer, adversary_index: int, num_envs: int, device: torch.device, tag: str="", envs_per_matchup: int=None):
-    """
-    This function has to be placed outside of the object to enable parallel calls.
-    TODO: Complete the docstring.
-    TODO: Complete static types
-    """
-    def _prep_rollout_data_actions(batch_size: int, buffer) -> tuple:
-        """
-        This is a helper function that gets all the rollout data and actions once instead of batch by batch.
-        """
-        all_rollout_data = list(buffer.get(batch_size))
-        all_actions = []
-        #all_dstb_actions = []
-        all_observations = []
-        all_returns = []
-        all_env_indices = []
+# def _update_single_value_function(batch_size: int, max_grad_norm: float, policy, buffer, adversary_index: int, num_envs: int, device: torch.device, tag: str="", envs_per_matchup: int=None):
+#     """
+#     This function has to be placed outside of the object to enable parallel calls.
+#     TODO: Complete the docstring.
+#     TODO: Complete static types
+#     """
+#     def _prep_rollout_data_actions(batch_size: int, buffer) -> tuple:
+#         """
+#         This is a helper function that gets all the rollout data and actions once instead of batch by batch.
+#         """
+#         all_rollout_data = list(buffer.get(batch_size))
+#         all_actions = []
+#         #all_dstb_actions = []
+#         all_observations = []
+#         all_returns = []
+#         all_env_indices = []
 
-        for rollout_data in all_rollout_data:
-            all_actions.append(torch.Tensor(rollout_data.actions))
-            #all_dstb_actions.append(torch.Tensor(rollout_data.dstb_actions))
-            all_observations.append(rollout_data.observations)
-            all_returns.append(torch.Tensor(rollout_data.returns))
-            all_env_indices.extend(rollout_data.env_indices)
+#         for rollout_data in all_rollout_data:
+#             all_actions.append(torch.Tensor(rollout_data.actions))
+#             #all_dstb_actions.append(torch.Tensor(rollout_data.dstb_actions))
+#             all_observations.append(rollout_data.observations)
+#             all_returns.append(torch.Tensor(rollout_data.returns))
+#             all_env_indices.extend(rollout_data.env_indices)
         
-        actions_batch = torch.cat(all_actions).to(device)
-        #dstb_actions_batch = torch.cat(all_dstb_actions).to(device)
-        observations_batch = torch.cat(all_observations).to(device)
-        returns_batch = torch.cat(all_returns).to(device)
+#         actions_batch = torch.cat(all_actions).to(device)
+#         #dstb_actions_batch = torch.cat(all_dstb_actions).to(device)
+#         observations_batch = torch.cat(all_observations).to(device)
+#         returns_batch = torch.cat(all_returns).to(device)
 
-        return actions_batch, observations_batch, returns_batch, np.array([env_ind.cpu() for env_ind in all_env_indices])
+#         return actions_batch, observations_batch, returns_batch, np.array([env_ind.cpu() for env_ind in all_env_indices])
     
-    #Process all rollout data and actions at once instead of batch by batch.
-    actions_batch, observations_batch, returns_batch, all_env_indices = _prep_rollout_data_actions(batch_size, buffer)
-    policy.num_global_env = num_envs
-    policy.num_adv = 1
-    for i in range(len(returns_batch) // batch_size):
-        values = policy.evaluate_states(
-        observations_batch[i * batch_size:(i + 1) * batch_size],
-        buf_num=[adversary_index],
-        env_indices=all_env_indices[i * batch_size:(i + 1) * batch_size]
-        )
-        values = values.flatten()
-        # offset = 12 # vf extractor and shared trunk are 12
-        # num_per_head = 10 # lstm = 6, 2 linear layers = 2 + 2, total 10
-        value_loss = F.mse_loss(values, returns_batch[i * batch_size:(i + 1) * batch_size])
-        # indices = list(range(0, offset)) + list(range(offset + adversary_index * num_per_head, offset + (adversary_index + 1) * num_per_head))
-        # value_grads = th.autograd.grad(value_loss, [policy.value_optimizer.param_groups[0]['params'][j] for j in indices])
-        #value_grads = th.cat([grad.view(-1) for grad in value_grads])
-        policy.value_optimizer.zero_grad()
-        # for i in range(len(value_grads)):
-        #     policy.value_optimizer.param_groups[0]['params'][indices[i]].grad = value_grads[i]
-        value_loss.backward()
-        #policy.ee = True
-        #policy.value_optimizer.zero_grad()
-        #for i in range(len(policy.value_optimizer.param_groups[0]['params'])):
-        #    policy.value_optimizer.param_groups[0]['params'][i].grad = value_grads[i]
-        #value_loss.backward()
-        torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
-        policy.value_optimizer.step()
+#     #Process all rollout data and actions at once instead of batch by batch.
+#     actions_batch, observations_batch, returns_batch, all_env_indices = _prep_rollout_data_actions(batch_size, buffer)
+#     policy.num_global_env = num_envs
+#     policy.num_adv = 1
+#     for i in range(len(returns_batch) // batch_size):
+#         values = policy.evaluate_states(
+#         observations_batch[i * batch_size:(i + 1) * batch_size],
+#         buf_num=[adversary_index],
+#         env_indices=all_env_indices[i * batch_size:(i + 1) * batch_size]
+#         )
+#         values = values.flatten()
+#         # offset = 12 # vf extractor and shared trunk are 12
+#         # num_per_head = 10 # lstm = 6, 2 linear layers = 2 + 2, total 10
+#         value_loss = F.mse_loss(values, returns_batch[i * batch_size:(i + 1) * batch_size])
+#         # indices = list(range(0, offset)) + list(range(offset + adversary_index * num_per_head, offset + (adversary_index + 1) * num_per_head))
+#         # value_grads = th.autograd.grad(value_loss, [policy.value_optimizer.param_groups[0]['params'][j] for j in indices])
+#         #value_grads = th.cat([grad.view(-1) for grad in value_grads])
+#         policy.value_optimizer.zero_grad()
+#         # for i in range(len(value_grads)):
+#         #     policy.value_optimizer.param_groups[0]['params'][indices[i]].grad = value_grads[i]
+#         value_loss.backward()
+#         #policy.ee = True
+#         #policy.value_optimizer.zero_grad()
+#         #for i in range(len(policy.value_optimizer.param_groups[0]['params'])):
+#         #    policy.value_optimizer.param_groups[0]['params'][i].grad = value_grads[i]
+#         #value_loss.backward()
+#         torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
+#         policy.value_optimizer.step()
 
 
 class ParallelUpdater:

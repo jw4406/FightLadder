@@ -35,7 +35,7 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
     TODO: Complete the docstring.
     TODO: Complete static types
     """
-    device='cpu'
+    #device='cpu'
     def _prep_rollout_data_actions(batch_size: int, buffer) -> tuple:
         """
         This is a helper function that gets all the rollout data and actions once instead of batch by batch.
@@ -80,7 +80,7 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
         )
         #policy.train(True)
         #torch.backends.cudnn.enabled = False
-        values = values.flatten()
+        values = -values.flatten()
         # offset = 12 # vf extractor and shared trunk are 12
         # num_per_head = 10 # lstm = 6, 2 linear layers = 2 + 2, total 10
         value_loss = F.mse_loss(values, returns_batch[i * batch_size:(i + 1) * batch_size])

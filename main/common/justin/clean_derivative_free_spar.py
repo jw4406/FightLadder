@@ -545,6 +545,8 @@ class CleanDerivativeFreeSPAR(PPO):
                     for num_actual_bufs, future in enumerate(futures):
                         F_grad_curr, pg_losses_curr, entropy_losses_curr, approx_kl_divs_curr, break_signal = future.result()
                         if not DEBUG:
+                            F_grad = F_grad_curr
+                        else:
                             F_grad += F_grad_curr
                         pg_losses.extend(pg_losses_curr)
                         entropy_losses.extend(entropy_losses_curr)
@@ -553,9 +555,10 @@ class CleanDerivativeFreeSPAR(PPO):
                             break
 
                 if not DEBUG:
-                    F_grad /= (num_actual_bufs+1) #num_actual_bufs counts how many buffers participated to take the correct average, in case of early stopping.
-                else:
                     F_grad = F_grad_curr
+                else:
+                    F_grad /= (num_actual_bufs+1) #num_actual_bufs counts how many buffers participated to take the correct average, in case of early stopping.
+                    #F_grad = F_grad_curr
                 param_list = self.policy.ctrl_optimizer.param_groups[0]['params'] if ego else self.policy.dstb_optimizer.param_groups[0]['params']
                 size_lists = [list(x.shape) for x in param_list]
                 
