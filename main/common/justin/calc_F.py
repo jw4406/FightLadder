@@ -110,7 +110,7 @@ def calc_F_grad_single(
 
         if DEBUG:
             F_grad = autograd.grad(policy_loss, ori_policy.ctrl_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True)
-            F_grad = [t.view(-1) for t in F_grad]
+            F_grad = torch.hstack([t.flatten() for t in F_grad])
         else:
             F_grad = _compute_grads(d, delta, ego_v, adv_v, policy_loss, perturbed_policy_loss, ego, i)# if ego else 0
 
