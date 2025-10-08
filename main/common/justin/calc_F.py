@@ -50,7 +50,7 @@ def _calculate_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, e
             log_prob, entropy = policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=network_keys)
     
     advantages = rollout_data.advantages# if ego else -rollout_data.advantages
-    print(f"[DEBUG @ policy_loss]: Adv advantages mean in minibatch: {advantages.mean().item():.4f}")
+    #print(f"[DEBUG @ policy_loss]: Adv advantages mean in minibatch: {advantages.mean().item():.4f}")
 
     ratio = torch.exp(log_prob - old_log_prob.clone().detach().to(device))
     
@@ -109,7 +109,8 @@ def calc_F_grad_single(
         )
 
         if DEBUG:
-            F_grad = autograd.grad(policy_loss, ori_policy.ctrl_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True)
+            F_grad = autograd.grad(policy_loss, ori_policy.ctrl_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True) if ego else \
+                autograd.grad(policy_loss, ori_policy.dstb_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True, allow_unused=True)
             F_grad = torch.hstack([t.flatten() for t in F_grad])
         else:
             F_grad = _compute_grads(d, delta, ego_v, adv_v, policy_loss, perturbed_policy_loss, ego, i)# if ego else 0
@@ -132,6 +133,8 @@ def calc_F_grad_single(
                 #)
             #) 
             #run forward pass to get the log_prob
+            with torch.no_grad():
+                _, log_prob = ori_policy.ego_forward(ori_rollout_data.observations, deterministic=False)
             log_ratio = log_prob - old_log_prob_tensor
             approx_kl_div = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
             approx_kl_divs_epoch.append(approx_kl_div)
@@ -140,4 +143,4 @@ def calc_F_grad_single(
     if target_kl is not None and np.mean(approx_kl_divs_epoch) > 1.5 * target_kl:
         break_signal = True
 
-    return F_grad, pg_losses, entropy_losses, approx_kl_divs_epoch, break_signal
+    return F_grad, pg_losses, entropy_losses, [], break_signal

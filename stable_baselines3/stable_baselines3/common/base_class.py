@@ -314,7 +314,7 @@ class BaseAlgorithm(ABC):
         #from stable_baselines3.a2c.a3c_rarl import A3C_rarl
         #from stable_baselines3.sac.magics_CL import MAGICS_CL
         from stable_baselines3.sac.magics_AL import MAGICS_AL
-        from main.common.algorithms import MAGICS_PPO, TSS_PPO, RARL_PPO, IPPO
+        from common.algorithms import MAGICS_PPO, TSS_PPO, RARL_PPO, IPPO
         """
         Update the optimizers learning rate using the current learning rate schedule
         and the current progress remaining (from 1 to 0).

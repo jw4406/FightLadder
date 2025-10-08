@@ -480,6 +480,7 @@ class CleanDerivativeFreeSPAR(PPO):
         return self
     
     def train(self, update_ego: bool = True, update_adversary: bool = True) -> None:
+        #self.train_standard(update_ego, update_adversary)
         self.train_derivative_free(update_ego, update_adversary)
     
     def train_derivative_free(self, update_ego: bool = True, update_adversary: bool = True) -> None:
@@ -493,7 +494,8 @@ class CleanDerivativeFreeSPAR(PPO):
             for future in futures:
                 future.result()
         self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in self.perturbed_agents]
-        self.leader_grads(self.rollout_buffer, self.perturbed_bufs, self.policy, self.perturbed_agents_policy, ego=True)
+        #self.leader_grads(self.rollout_buffer, self.perturbed_bufs, self.policy, self.perturbed_agents_policy, ego=True)
+        self.leader_grads(self.adversary_buffers, self.perturbed_adv_bufs, self.policy, self.perturbed_agents_policy, ego=False)
 
     # we need to rewrite leader grads and update_advantages
 
@@ -585,6 +587,11 @@ class CleanDerivativeFreeSPAR(PPO):
                 optimizer = self.policy.ctrl_optimizer if ego else self.policy.dstb_optimizer
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 optimizer.step()                
+                with torch.no_grad():
+                    _, log_prob = self.policy.ego_forward(ori_buf.observations)
+                    log_ratio = log_prob - ori_buf.log_probs
+                    approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
+                    approx_kl_divs_all.append(approx_kl_div)
 
         self._n_updates += self.n_epochs
         if hasattr(self.rollout_buffer, 'values') and self.rollout_buffer.values is not None and self.rollout_buffer.returns is not None:
@@ -608,6 +615,7 @@ class CleanDerivativeFreeSPAR(PPO):
 
         for i in range(len(adversary_buffers)):
             updated_values = policy.evaluate_states(adversary_buffers[i].observations, env_indices=adversary_buffers[i].env_indices, buf_num=[i])
+            updated_values = -updated_values
             adversary_buffers[i].values = updated_values.reshape(adversary_buffers[i].buffer_size, self.envs_per_matchup).detach().cpu().numpy()
             adversary_buffers[i].episode_starts = adversary_buffers[i].episode_starts.reshape(adversary_buffers[i].buffer_size, self.envs_per_matchup)
             adversary_buffers[i].advantages = adversary_buffers[i].advantages.reshape(adversary_buffers[i].buffer_size, self.envs_per_matchup).detach().cpu().numpy()
@@ -692,7 +700,7 @@ class CleanDerivativeFreeSPAR(PPO):
                     #if update_ego:  
                     ratio = th.exp(log_prob - rollout_data.old_log_prob)
                     if first:
-                        print(f"[DEBUG @ train]: ratio: {ratio.mean().item():.4f}")
+                        #print(f"[DEBUG @ train]: ratio: {ratio.mean().item():.4f}")
                         assert th.allclose(log_prob, rollout_data.old_log_prob)
                         first = False
                     #if update_adversary:
