@@ -344,7 +344,7 @@ def main(PLAYER):
         OPPONENT_LIST = ["Guile"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
-        OPPONENT_LIST = ["Guile", "Sagat","ChunLi", "MBison"]#, "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
+        OPPONENT_LIST = ["Guile"]#, "Sagat","ChunLi", "MBison"]#, "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
     
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'],
@@ -375,7 +375,7 @@ def main(PLAYER):
                         help='Initial level to load from. By default 0, starting from pretrain', default=0)
     parser.add_argument('--resume-epoch', type=int, help='Resume epoch. By default 0, starting from pretrain',
                         default=0)
-    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=8)
+    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=24)
     parser.add_argument('--enable-combo', action='store_true', help='Enable special move action space for environment')
     parser.add_argument('--null-combo', action='store_true', help='Null action space for special move')
     parser.add_argument('--transform-action', action='store_true', help='Transform action space to MultiDiscrete')
@@ -393,7 +393,7 @@ def main(PLAYER):
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
     parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
     parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=32)
-    parser.add_argument("--num_pertrubs", type=int, help="Number of perturbed policies to be created.", default=2)
+    parser.add_argument("--num_pertrubs", type=int, help="Number of perturbed policies to be created.", default=1)
     args = parser.parse_args()
 
 
@@ -810,7 +810,7 @@ def main(PLAYER):
             model.learn(
                 total_timesteps=args.total_steps,
                 num_pertrubs = args.num_pertrubs,
-                callback=[checkpoint_callback, file_queue_callback]
+                callback=[checkpoint_callback, file_queue_callback], update_ego=False, update_adversary=True
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)
         # for i in range(len(model.adversaries)):
