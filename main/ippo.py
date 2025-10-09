@@ -586,8 +586,8 @@ def main(PLAYER):
             finetune_env,
             device="cpu",
             verbose=2,
-            n_steps=2048,
-            batch_size=256,
+            n_steps=512,
+            batch_size=64,
             n_epochs=1,
             state_list=state_list,
             envs_per_matchup=args.envs_per_matchup,
@@ -810,7 +810,7 @@ def main(PLAYER):
             model.learn(
                 total_timesteps=args.total_steps,
                 num_pertrubs = args.num_pertrubs,
-                callback=[checkpoint_callback, file_queue_callback], update_ego=True, update_adversary=True
+                callback=[checkpoint_callback, file_queue_callback], update_ego=True, update_adversary=False
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)
         # for i in range(len(model.adversaries)):

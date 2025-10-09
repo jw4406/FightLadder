@@ -263,8 +263,8 @@ class ParallelUpdater:
                     )
             
             # Signal completion
-            updated_spar_policy_state_dict = {k: v.cpu() for k, v in derivative_free_SPAR_policy.state_dict().items()}
-            updated_perturbed_policy_state_dict = {k: v.cpu() for k, v in perturbed_agent_policy.state_dict().items()}
+            updated_spar_policy_state_dict = {k: v for k, v in derivative_free_SPAR_policy.state_dict().items()}
+            updated_perturbed_policy_state_dict = {k: v for k, v in perturbed_agent_policy.state_dict().items()}
             done_queue.put((job_id, (updated_spar_policy_state_dict, updated_perturbed_policy_state_dict)))
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()

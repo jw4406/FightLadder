@@ -494,8 +494,10 @@ class CleanDerivativeFreeSPAR(PPO):
             for future in futures:
                 future.result()
         self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in self.perturbed_agents]
-        self.leader_grads(self.rollout_buffer, self.perturbed_bufs, self.policy, self.perturbed_agents_policy, ego=True)
-        self.leader_grads(self.adversary_buffers, self.perturbed_adv_bufs, self.policy, self.perturbed_agents_policy, ego=False)
+        if update_ego:
+            self.leader_grads(self.rollout_buffer, self.perturbed_bufs, self.policy, self.perturbed_agents_policy, ego=True)
+        if update_adversary:
+            self.leader_grads(self.adversary_buffers, self.perturbed_adv_bufs, self.policy, self.perturbed_agents_policy, ego=False)
 
     # we need to rewrite leader grads and update_advantages
 
@@ -518,6 +520,7 @@ class CleanDerivativeFreeSPAR(PPO):
         num_runs_count = 1 if ego else self.num_adversaries
         for j in range(self.n_epochs):
             for i in range(num_runs_count):
+                # i bug
                 F_grad = 0
                 with ThreadPoolExecutor(max_workers=len(perturbed_bufs)) as executor:
                     futures = []
@@ -590,6 +593,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 with torch.no_grad():
                     _, log_prob = self.policy.ego_forward(ori_buf.observations) if ego else self.policy.adv_forward(ori_buf[0].observations)
                     log_ratio = log_prob - ori_buf.log_probs if ego else log_prob - ori_buf[0].log_probs
+                    # 0 bug
                     approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
                     approx_kl_divs_all.append(approx_kl_div)
 
