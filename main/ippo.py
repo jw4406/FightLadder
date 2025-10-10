@@ -394,6 +394,9 @@ def main(PLAYER):
     parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
     parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=24)
     parser.add_argument("--num_pertrubs", type=int, help="Number of perturbed policies to be created.", default=1)
+    parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-4)
+    parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=7e-4)
+    parser.add_argument("--v_lr", type=float, help="value learning rate", default=7e-4)
     args = parser.parse_args()
 
 
@@ -584,10 +587,13 @@ def main(PLAYER):
         finetune_model = CleanDerivativeFreeSPAR(
             "AACCnnPolicy",
             finetune_env,
-            device="cpu",
+            device="cuda",
+            c_learning_rate=args.c_lr,
+            d_learning_rate=args.d_lr,
+            v_learning_rate=args.v_lr,
             verbose=2,
-            n_steps=512,
-            batch_size=64,
+            n_steps=64,
+            batch_size=16,
             n_epochs=1,
             state_list=state_list,
             envs_per_matchup=args.envs_per_matchup,
@@ -836,6 +842,9 @@ if __name__ == "__main__":
     parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
     parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=32)
     parser.add_argument("--num_pertrubs", type=int, help="Number of perturbed policies to be created.", default=1)
+    parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-4)
+    parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=7e-4)
+    parser.add_argument("--v_lr", type=float, help="value learning rate", default=7e-4)
     args = parser.parse_args()
 
     PLAYER = args.player

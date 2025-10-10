@@ -486,13 +486,16 @@ class CleanDerivativeFreeSPAR(PPO):
     def train_derivative_free(self, update_ego: bool = True, update_adversary: bool = True) -> None:
         self.policy.set_training_mode(True)
         [self.perturbed_agents[i].policy.set_training_mode(True) for i in range(len(self.perturbed_agents))]
+
+        #self.dummy_policy_update(update_ego, update_adversary)
+        
         [self._update_value_functions(perturbed_agent, perturbed_adv_buf) for perturbed_agent, perturbed_adv_buf in zip(self.perturbed_agents, self.perturbed_adv_bufs)]
         futures = []
-        with ThreadPoolExecutor(max_workers=len(self.perturbed_bufs)) as executor:
-            for policy, perturbed_buf, perturbed_buf_adv in zip(self.perturbed_agents_policy, self.perturbed_bufs, self.perturbed_adv_bufs):
-                futures.append(executor.submit(self._update_advantages, policy, perturbed_buf, perturbed_buf_adv))
-            for future in futures:
-                future.result()
+        # with ThreadPoolExecutor(max_workers=len(self.perturbed_bufs)) as executor:
+        #     for policy, perturbed_buf, perturbed_buf_adv in zip(self.perturbed_agents_policy, self.perturbed_bufs, self.perturbed_adv_bufs):
+        #         futures.append(executor.submit(self._update_advantages, policy, perturbed_buf, perturbed_buf_adv))
+        #     for future in futures:
+        #         future.result()
         self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in self.perturbed_agents]
         if update_ego:
             self.leader_grads(self.rollout_buffer, self.perturbed_bufs, self.policy, self.perturbed_agents_policy, ego=True)
@@ -543,6 +546,7 @@ class CleanDerivativeFreeSPAR(PPO):
                                                 ego_v=self.ego_v,
                                                 adv_v=self.adv_v,
                                                 target_kl=self.target_kl,
+                                                first_epoch=(j == 0),
                                                 )
                         futures.append(future)
 
@@ -591,7 +595,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 optimizer.step()                
                 with torch.no_grad():
-                    _, log_prob = self.policy.ego_forward(ori_buf.observations) if ego else self.policy.adv_forward(ori_buf[0].observations)
+                    log_prob, _ = self.policy.evaluate_ego_actions(ori_buf.observations, ori_buf.actions) if ego else self.policy.adv_forward(ori_buf[0].observations)
                     log_ratio = log_prob - ori_buf.log_probs if ego else log_prob - ori_buf[0].log_probs
                     # 0 bug
                     approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
@@ -1046,4 +1050,125 @@ class CleanDerivativeFreeSPAR(PPO):
             clip_range_vf_val = self.clip_range_vf(self._current_progress_remaining)
             self.logger.record("train/clip_range_vf", clip_range_vf_val)
 
-    
+    def dummy_policy_update(self, update_ego=True, update_adversary=True):
+        first = True
+
+        # afk test!
+        assert update_ego != update_adversary
+
+        """
+        Update policy using the currently gathered rollout buffer.
+        """
+        # Switch to train mode (this affects batch norm / dropout)
+        self.policy.set_training_mode(True)
+        # Update optimizer learning rate
+        self._update_learning_rate(self.policy.optimizer)
+        # Compute current clip range
+        clip_range = self.clip_range(self._current_progress_remaining)
+        # Optional: clip range for the value function
+        if self.clip_range_vf is not None:
+            clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
+
+        entropy_losses = []
+        pg_losses, value_losses = [], []
+        clip_fractions = []
+
+        continue_training = True
+        if update_ego:
+            buf = self.rollout_buffer
+        else:
+            self.policy.num_adversaries = 1
+            buf = self.adversary_buffers[0]
+
+
+        # train for n_epochs epochs
+        num_runs_count = 1 if update_ego else self.num_adversaries
+        for i in range(num_runs_count):
+            if update_adversary:
+                buf = self.adversary_buffers[i]
+            else:
+                buf = self.rollout_buffer
+            for epoch in range(self.n_epochs):
+                approx_kl_divs = []
+                # Do a complete pass on the rollout buffer
+                for rollout_data in buf.get(self.batch_size):
+                    actions = rollout_data.actions
+                    if isinstance(self.action_space, spaces.Discrete):
+                        # Convert discrete action from float to long
+                        actions = rollout_data.actions.long().flatten()
+
+                    # Re-sample the noise matrix because the log_std has changed
+                    if self.use_sde:
+                        self.policy.reset_noise(self.batch_size)
+
+                    if update_ego:
+                        log_prob, entropy = self.policy.evaluate_ego_actions(rollout_data.observations, actions)
+                        #entropy = ego_entropy
+                    if update_adversary:
+                        log_prob, entropy = self.policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=[i])
+                        #entropy = adv_entropy
+                    if update_ego:
+                        values = self.policy.evaluate_states(rollout_data.observations, env_indices=rollout_data.env_indices, buf_num=[i for i in range(self.num_adversaries)])
+                    else:
+                        values = self.policy.evaluate_states(rollout_data.observations, env_indices=rollout_data.env_indices, buf_num=[i])
+                    if update_adversary:
+                        values = -values
+                    values = values.flatten()
+                    # Normalize advantage
+                    advantages = rollout_data.advantages
+                    self.normalize_advantage = True
+                    # Normalization does not make sense if mini batchsize == 1, see GH issue #325
+                    if self.normalize_advantage and len(advantages) > 1:
+                        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+                    # ratio between old and new policy, should be one at the first iteration
+                    #if update_ego:  
+                    ratio = th.exp(log_prob - rollout_data.old_log_prob)
+                    if first:
+                        #print(f"[DEBUG @ train]: ratio: {ratio.mean().item():.4f}")
+                        assert th.allclose(log_prob, rollout_data.old_log_prob)
+                        first = False
+                    #if update_adversary:
+                    #    ratio_adv = th.exp(adv_log_prob - rollout_data.old_dstb_log_prob)
+
+                    # clipped surrogate loss
+                    #if update_ego:
+                    policy_loss_1 = advantages * ratio
+                    policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
+                    policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
+                    #if update_adversary:
+                    #    policy_loss_adv_1 = advantages * ratio_adv
+                    #    policy_loss_adv_2 = advantages * th.clamp(ratio_adv, 1 - clip_range, 1 + clip_range)
+                    #    policy_loss_adv = th.min(policy_loss_adv_1, policy_loss_adv_2).mean()
+
+                    # Logging
+                    pg_losses.append(policy_loss.item())# if update_ego else policy_loss_adv.item())
+                    clip_fraction = th.mean((th.abs(ratio - 1) > clip_range).float()).item()# if update_ego else th.mean((th.abs(ratio_adv - 1) > clip_range).float()).item()
+                    clip_fractions.append(clip_fraction)
+
+                    if self.clip_range_vf is None:
+                        # No clipping
+                        values_pred = values
+                    else:
+                        # Clip the difference between old and new value
+                        # NOTE: this depends on the reward scaling
+                        values_pred = rollout_data.old_values + th.clamp(
+                            values - rollout_data.old_values, -clip_range_vf, clip_range_vf
+                        )
+                    # Value loss using the TD(gae_lambda) target
+                    value_loss = F.mse_loss(rollout_data.returns, values_pred)
+                    value_losses.append(value_loss.item())
+
+                    # Entropy loss favor exploration
+                    if entropy is None:
+                        # Approximate entropy when no analytical form
+                        entropy_loss = -th.mean(-log_prob)
+                    else:
+                        entropy_loss = -th.mean(entropy)
+
+                    entropy_losses.append(entropy_loss.item())
+                    pl = policy_loss#_ego if update_ego else policy_loss_adv
+                    loss = pl
+                    loss.backward()
+                    self.policy.ctrl_optimizer.zero_grad()
+                    self.policy.ctrl_optimizer.step()
