@@ -18,10 +18,12 @@ def agent_win(info: dict) -> bool:
     """
     return info['enemy_hp'] < info['agent_hp']
 
-def select_device(device_id: int=0) -> torch.device:
+def select_device(device_id: int=0, use_cpu: bool=False) -> torch.device:
     """
     This function returns "cuda" if it is available and "cpu" otherwise
     """
+    if use_cpu:
+        return torch.device("cpu")
     if torch.cuda.is_available():
         return torch.device(f"cuda:{device_id}")
     return torch.device("cpu")
