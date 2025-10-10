@@ -88,6 +88,7 @@ def calc_F_grad_single(
         ego_v: torch.Tensor,
         adv_v: torch.Tensor,
         target_kl: Any,
+        first_epoch: bool,
         ):
     #Return values
     pg_losses = []
