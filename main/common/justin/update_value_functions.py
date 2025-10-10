@@ -59,7 +59,7 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
         observations_batch = torch.cat(all_observations).to(device)
         returns_batch = torch.cat(all_returns).to(device)
 
-        return actions_batch, observations_batch, returns_batch, np.array(all_env_indices)
+        return actions_batch, observations_batch, returns_batch, np.array([env_ind.cpu() for env_ind in all_env_indices])
     
     total_start_time = time.time()
 
