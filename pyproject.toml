@@ -8,7 +8,7 @@ description = "TODO: ADD HERE"
 version = "0.1.0"
 
 dependencies = ["numpy==1.24.4", "torch==2.4.1", "gym-retro==0.8.0", "gymnasium==1.1.1"]
-requires-python = "==3.8.10"
+requires-python = ">=3.8,<3.9"
 
 authors = [
     { name="Justin Wang", email="jw4406@princeton.edu" },
@@ -16,8 +16,10 @@ authors = [
 ]
 readme = "README.md"
 
-[tool.setuptools]
-packages = ["fightladder"]
+
+[tool.setuptools.packages.find]
+where = ["main"]
+
 
 [project.optional-dependencies]
 dev = [
