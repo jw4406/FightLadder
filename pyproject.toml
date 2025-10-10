@@ -18,7 +18,7 @@ readme = "README.md"
 
 
 [tool.setuptools.packages.find]
-where = ["main"]
+where = ["."]
 
 
 [project.optional-dependencies]
