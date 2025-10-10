@@ -226,6 +226,22 @@ class ParallelUpdater:
         Returns:
             None: Updates persistent_state in-place and signals completion via done_queue
         """
+        def use_cpu(adversary_buffers: list, perturbed_adv_buf: list) -> bool:
+            """
+            This helper function returns True if the current device should be CPU based on the device of the first item in adversary_buffers and perturbed_adv_buff.
+            Raises a value error if these devices do not agree, of if any of the lists is empty.
+            """
+            if (not adversary_buffers) or (not perturbed_adv_buf):
+                raise ValueError("adversary_buffers or perturbed_adv_buf is empty.")
+
+            adv_buf_cpu = adversary_buffers[0].device.type == "cpu"
+            per_adv_cpu = perturbed_adv_buf[0].device.type == "cpu"
+            
+            if adv_buf_cpu is not per_adv_cpu:
+                raise ValueError("adv_buf_cpu and per_adv_cpu must agree.")
+            return adv_buf_cpu
+
+        
         # Unpack the original job format for value function updates
         (
             derivative_free_SPAR_policy_data,
@@ -242,7 +258,8 @@ class ParallelUpdater:
             job_id,
         ) = job[1]
 
-        device = select_device(device_id)
+        use_cpu_flag = use_cpu(adversary_buffers, perturbed_adv_buf)
+        device = select_device(device_id, use_cpu_flag)
         # device = 'cpu' #I think this was introduced in debugging session, should probably be removed
         try:
             derivative_free_SPAR_policy = ParallelUpdater._load_policy_from_persistent(persistent_state=persistent_state, policy_data=derivative_free_SPAR_policy_data, key="derivative_free_SPAR_policy", device=device)
