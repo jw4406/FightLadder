@@ -22,4 +22,5 @@ jobs:
           pip install -e ".[dev]"
       - name: Test with pytest
         run: |
+          export PYTHONPATH="${PYTHONPATH}:${GITHUB_WORKSPACE}"
           pytest main/tests
