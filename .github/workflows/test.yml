@@ -18,8 +18,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install gymnasium==1.1.1
+          python -m pip install --upgrade pip setuptools wheel
+          pip install gym==0.21.0 --only-binary :all:
           pip install -e "./stable_baselines3"
           pip install -e ".[dev]"
       - name: Test with pytest
