@@ -29,7 +29,6 @@ from .calc_F import _get_buffers_and_keys, _calculate_policy_loss, _compute_grad
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-from anyio import value
 from gym import spaces
 from stable_baselines3 import PPO
 from utils import select_matchup_env, select_device, get_n_workers, move_policy, unpickle_policy, state2matchup
