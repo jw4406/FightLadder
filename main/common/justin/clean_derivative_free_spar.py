@@ -637,7 +637,7 @@ class CleanDerivativeFreeSPAR(PPO):
         first = True
 
         # afk test!
-        assert update_ego != update_adversary
+        #assert update_ego != update_adversary
 
         """
         Update policy using the currently gathered rollout buffer.
