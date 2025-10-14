@@ -816,7 +816,7 @@ def main(PLAYER):
             model.learn(
                 total_timesteps=args.total_steps,
                 num_pertrubs = args.num_pertrubs,
-                callback=[checkpoint_callback, file_queue_callback], update_ego=True, update_adversary=False
+                callback=[checkpoint_callback, file_queue_callback], update_ego=False, update_adversary=True
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)
         # for i in range(len(model.adversaries)):
