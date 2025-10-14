@@ -573,9 +573,9 @@ class CleanDerivativeFreeSPAR(PPO):
                 
                 reshaped_grad = []
                 count = 0
-                for i in range(len(size_lists)):
-                    numel = np.prod(size_lists[i])
-                    reshaped_grad.append(torch.reshape(F_grad[count: count + numel], size_lists[i]))
+                for k in range(len(size_lists)):
+                    numel = np.prod(size_lists[k])
+                    reshaped_grad.append(torch.reshape(F_grad[count: count + numel], size_lists[k]))
                     count += numel
                 if ego is False:
                     # heads_start_index = self.policy.extractor_and_trunk_length
@@ -584,18 +584,18 @@ class CleanDerivativeFreeSPAR(PPO):
                     # all_indices = trunk_extractor_indices + this_adv_indices
                     self.policy.dstb_optimizer.zero_grad()
 
-                    for i in range(len(reshaped_grad)):
-                        self.policy.dstb_optimizer.param_groups[0]['params'][i].grad = reshaped_grad[i].float().detach()
+                    for k in range(len(reshaped_grad)):
+                        self.policy.dstb_optimizer.param_groups[0]['params'][k].grad = reshaped_grad[k].float().detach()
                 else:
                     self.policy.ctrl_optimizer.zero_grad()
-                    for i in range(len(size_lists)):
-                        param_list[i].grad = reshaped_grad[i].float().detach()
+                    for k in range(len(size_lists)):
+                        param_list[k].grad = reshaped_grad[k].float().detach()
                 
                 optimizer = self.policy.ctrl_optimizer if ego else self.policy.dstb_optimizer
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 optimizer.step()                
                 with torch.no_grad():
-                    log_prob, _ = self.policy.evaluate_ego_actions(ori_buf.observations, ori_buf.actions) if ego else self.policy.adv_forward(ori_buf[0].observations)
+                    log_prob, _ = self.policy.evaluate_ego_actions(ori_buf.observations, ori_buf.actions) if ego else self.policy.evaluate_adv_actions(ori_buf[0].observations, ori_buf[0].actions, buf_num=[i])
                     log_ratio = log_prob - ori_buf.log_probs if ego else log_prob - ori_buf[0].log_probs
                     # 0 bug
                     approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
