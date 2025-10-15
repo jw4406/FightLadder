@@ -592,8 +592,8 @@ def main(PLAYER):
             d_learning_rate=args.d_lr,
             v_learning_rate=args.v_lr,
             verbose=2,
-            n_steps=64,
-            batch_size=16,
+            n_steps=256,
+            batch_size=512,
             n_epochs=1,
             state_list=state_list,
             envs_per_matchup=args.envs_per_matchup,
@@ -816,7 +816,7 @@ def main(PLAYER):
             model.learn(
                 total_timesteps=args.total_steps,
                 num_pertrubs = args.num_pertrubs,
-                callback=[checkpoint_callback, file_queue_callback], update_ego=True, update_adversary=True
+                callback=[checkpoint_callback, file_queue_callback], update_ego=True, update_adversary=False
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)
         # for i in range(len(model.adversaries)):

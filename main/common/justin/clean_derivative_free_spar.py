@@ -38,6 +38,7 @@ from .parallel_updater import ParallelUpdater
 
 TIMING = False
 DEBUG = False
+PARALLEL_CALC_F = False
 
 class DummyCallback(BaseCallback):
     def __init__(self):
@@ -104,7 +105,7 @@ class CleanDerivativeFreeSPAR(PPO):
             tensorboard_log: Optional[str] = None,
             policy_kwargs: Optional[Dict[str, Any]] = None,
             verbose: int = 0,
-            seed: Optional[int] = None,
+            seed: Optional[int] = 0,
             device: Union[th.device, str] = "auto",
             _init_setup_model: bool = True,
             update_left=True,
@@ -480,8 +481,12 @@ class CleanDerivativeFreeSPAR(PPO):
         return self
     
     def train(self, update_ego: bool = True, update_adversary: bool = True) -> None:
-        self.train_standard(update_ego, update_adversary)
-        self.train_derivative_free(update_ego, update_adversary)
+        if update_ego:
+            self.train_standard(update_ego, update_adversary)
+        if update_adversary:
+            self.train_standard(update_ego, update_adversary)
+        #self.train_standard(update_ego, update_adversary)
+        #self.train_derivative_free(update_ego, update_adversary)
     
     def train_derivative_free(self, update_ego: bool = True, update_adversary: bool = True) -> None:
         self.policy.set_training_mode(True)
@@ -525,34 +530,67 @@ class CleanDerivativeFreeSPAR(PPO):
             for i in range(num_runs_count):
                 # i bug
                 F_grad = 0
-                with ThreadPoolExecutor(max_workers=len(perturbed_bufs)) as executor:
-                    futures = []
-                    for perturbed_buf, perturbed_policy in zip(perturbed_bufs, perturbed_policies): #TODO: This should be parallelizable
+                #with ThreadPoolExecutor(max_workers=len(perturbed_bufs)) as executor:
+                futures = []
+                for perturbed_buf, perturbed_policy in zip(perturbed_bufs, perturbed_policies): #TODO: This should be parallelizabl
+                    if PARALLEL_CALC_F:
                         future = executor.submit(calc_F_grad_single,
-                                                ori_policy=ori_policy,
-                                                perturbed_policy=perturbed_policy,
-                                                ori_buf=ori_buf,
-                                                perturbed_buf=perturbed_buf,
-                                                ego=ego,
-                                                i=i,
-                                                num_adversaries=self.num_adversaries,
-                                                batch_size=self.batch_size,
-                                                clip_range=clip_range,
-                                                use_sde=self.use_sde,
-                                                device=self.device,
-                                                envs_per_matchup=self.envs_per_matchup,
-                                                d=self.d,
-                                                delta=self.delta,
-                                                ego_v=self.ego_v,
-                                                adv_v=self.adv_v,
-                                                target_kl=self.target_kl,
-                                                first_epoch=(j == 0),
-                                                )
+                                            ori_policy=ori_policy,
+                                            perturbed_policy=perturbed_policy,
+                                            ori_buf=ori_buf,
+                                            perturbed_buf=perturbed_buf,
+                                            ego=ego,
+                                            i=i,
+                                            num_adversaries=self.num_adversaries,
+                                            batch_size=self.batch_size,
+                                            clip_range=clip_range,
+                                            use_sde=self.use_sde,
+                                            device=self.device,
+                                            envs_per_matchup=self.envs_per_matchup,
+                                            d=self.d,
+                                            delta=self.delta,
+                                            ego_v=self.ego_v,
+                                            adv_v=self.adv_v,
+                                            target_kl=self.target_kl,
+                                            first_epoch=(j == 0),
+                                            )
                         futures.append(future)
+                    else:
+
+                        F_grad_curr, pg_losses_curr, entropy_losses_curr, approx_kl_divs_curr, break_signal = calc_F_grad_single(ori_policy=ori_policy,
+                                            perturbed_policy=perturbed_policy,
+                                            ori_buf=ori_buf,
+                                            perturbed_buf=perturbed_buf,
+                                            ego=ego,
+                                            i=i,
+                                            num_adversaries=self.num_adversaries,
+                                            batch_size=self.batch_size,
+                                            clip_range=clip_range,
+                                            use_sde=self.use_sde,
+                                            device=self.device,
+                                            envs_per_matchup=self.envs_per_matchup,
+                                            d=self.d,
+                                            delta=self.delta,
+                                            ego_v=self.ego_v,
+                                            adv_v=self.adv_v,
+                                            target_kl=self.target_kl,
+                                            first_epoch=(j == 0),
+                                            )
 
                     # Collect results
-                    for num_actual_bufs, future in enumerate(futures):
-                        F_grad_curr, pg_losses_curr, entropy_losses_curr, approx_kl_divs_curr, break_signal = future.result()
+                    if PARALLEL_CALC_F:
+                        for num_actual_bufs, future in enumerate(futures):
+                            F_grad_curr, pg_losses_curr, entropy_losses_curr, approx_kl_divs_curr, break_signal = future.result()
+                            if not DEBUG:
+                                F_grad = F_grad_curr
+                            else:
+                                F_grad += F_grad_curr
+                            pg_losses.extend(pg_losses_curr)
+                            entropy_losses.extend(entropy_losses_curr)
+                            approx_kl_divs_all.extend(approx_kl_divs_curr)
+                            if break_signal:
+                                break
+                    else:
                         if not DEBUG:
                             F_grad = F_grad_curr
                         else:
@@ -561,7 +599,9 @@ class CleanDerivativeFreeSPAR(PPO):
                         entropy_losses.extend(entropy_losses_curr)
                         approx_kl_divs_all.extend(approx_kl_divs_curr)
                         if break_signal:
-                            break
+                            break 
+                    
+
 
                 if not DEBUG:
                     F_grad = F_grad_curr
@@ -637,7 +677,7 @@ class CleanDerivativeFreeSPAR(PPO):
         first = True
 
         # afk test!
-        #assert update_ego != update_adversary
+        assert update_ego != update_adversary
 
         """
         Update policy using the currently gathered rollout buffer.
@@ -708,8 +748,8 @@ class CleanDerivativeFreeSPAR(PPO):
                     #if update_ego:  
                     ratio = th.exp(log_prob - rollout_data.old_log_prob)
                     if first:
-                        #print(f"[DEBUG @ train]: ratio: {ratio.mean().item():.4f}")
-                        assert th.allclose(log_prob, rollout_data.old_log_prob)
+                        print(f"[DEBUG @ train]: ratio: {ratio.mean().item():.4f}")
+                        assert th.allclose(log_prob, rollout_data.old_log_prob), "Log probabilities do not match between collection and training."
                         first = False
                     #if update_adversary:
                     #    ratio_adv = th.exp(adv_log_prob - rollout_data.old_dstb_log_prob)

@@ -12,7 +12,8 @@ try:
 
     # Remove experimental warning
     warnings.filterwarnings("ignore", category=TqdmExperimentalWarning)
-    from tqdm.rich import tqdm
+    #from tqdm.rich import tqdm
+    tqdm = None
 except ImportError:
     # Rich not installed, we only throw an error
     # if the progress bar is used

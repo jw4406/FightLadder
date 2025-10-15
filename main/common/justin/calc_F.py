@@ -8,7 +8,7 @@ import torch.autograd as autograd
 from stable_baselines3.common.buffers import AdvRolloutBuffer
 from stable_baselines3.common.policies import BasePolicy
 from utils import move_policy, select_device, get_n_workers, state2matchup, select_matchup_env, unpickle_policy
-DEBUG = True
+DEBUG =False 
 def _get_buffers_and_keys(ori_buf: AdvRolloutBuffer, perturbed_buf: AdvRolloutBuffer, ego: bool, index: int, num_adversaries: int) -> tuple:
     #TODO: Add docstring
     if ego:
@@ -24,7 +24,7 @@ def _get_buffers_and_keys(ori_buf: AdvRolloutBuffer, perturbed_buf: AdvRolloutBu
     #    print(f"[DEBUG @ get_buffers]: For adv {index}, using buffer with advantages mean: {curr_buf.advantages.mean().item():.4f}")
     return network_keys, curr_buf, curr_perturbed_buf
 
-def _calculate_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, ego: bool, clip_range: float, use_sde: bool, device: torch.device, batch_size: int, envs_per_matchup: int, network_keys = None):
+def _calculate_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, ego: bool, clip_range: float, use_sde: bool, device: torch.device, batch_size: int, envs_per_matchup: int, network_keys = None, perturbed=False):
     #TODO: Complete docstring
     actions = torch.Tensor(rollout_data.actions).to(device)
     #dstb_actions = torch.Tensor(rollout_data.dstb_actions).to(device)
@@ -53,6 +53,8 @@ def _calculate_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, e
     #print(f"[DEBUG @ policy_loss]: Adv advantages mean in minibatch: {advantages.mean().item():.4f}")
 
     ratio = torch.exp(log_prob - old_log_prob.clone().detach().to(device))
+    if not perturbed:
+        assert torch.allclose(log_prob, old_log_prob), "leader_grads, Log probabilities do not match between collection and training."
     
     policy_loss_1 = advantages * ratio
     policy_loss_2 = advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)
@@ -100,13 +102,13 @@ def calc_F_grad_single(
     network_keys, curr_buf, curr_perturbed_buf = _get_buffers_and_keys(ori_buf, perturbed_buf, ego, i, num_adversaries)
     for ori_rollout_data, perturbed_rollout_data in zip(curr_buf.get(batch_size), curr_perturbed_buf.get(batch_size)):                    
         policy_loss, log_prob, entropy = _calculate_policy_loss(
-            ori_rollout_data, ori_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys
+            ori_rollout_data, ori_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys, perturbed=False
         )
         pg_losses.append(policy_loss.item())
         entropy_losses.append(entropy.mean().item())
 
         perturbed_policy_loss, _, _ = _calculate_policy_loss(
-            perturbed_rollout_data, perturbed_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys
+            perturbed_rollout_data, perturbed_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys, perturbed=True
         )
 
         if DEBUG:
