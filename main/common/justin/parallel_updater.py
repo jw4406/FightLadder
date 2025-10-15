@@ -188,12 +188,11 @@ class ParallelUpdater:
                 job = input_queue.get(timeout=1)
             except Empty:
                 continue
-            if job == "STOP":
-                print(f"Worker {device_id}: Received STOP signal, exiting")
+            if job == "STOP": #Healthy stop - shutdown was called.
                 break
-
-            if not isinstance(job, tuple) or len(job) < 2:
-                done_queue.put(f"ERROR_INVALID_JOB_FORMAT")
+            if not isinstance(job, tuple) or len(job) < 2: #Error detected
+                print(f"Worker {device_id}: ERROR - Received malformed job: {type(job).__name__} = {job}")
+                done_queue.put(f"ERROR_INVALID_JOB_FORMAT_{device_id}")
                 continue
                 
             job_type = job[0]
@@ -241,27 +240,24 @@ class ParallelUpdater:
                 raise ValueError("adv_buf_cpu and per_adv_cpu must agree.")
             return adv_buf_cpu
 
-        
-        # Unpack the original job format for value function updates
-        (
-            derivative_free_SPAR_policy_data,
-            perturbed_agent_policy_data,
-            batch_size,
-            max_grad_norm,
-            i_list,
-            adversary_buffers,
-            perturbed_adv_buf,
-            n_epochs,
-            n_env_per_adv,
-            n_env_per_pert,
-            envs_per_matchup,
-            job_id,
-        ) = job[1]
-
-        use_cpu_flag = use_cpu(adversary_buffers, perturbed_adv_buf)
-        device = select_device(device_id, use_cpu_flag)
-        # device = 'cpu' #I think this was introduced in debugging session, should probably be removed
         try:
+            # Unpack the original job format for value function updates
+            (
+                derivative_free_SPAR_policy_data,
+                perturbed_agent_policy_data,
+                batch_size,
+                max_grad_norm,
+                i_list,
+                adversary_buffers,
+                perturbed_adv_buf,
+                n_epochs,
+                n_env_per_adv,
+                n_env_per_pert,
+                envs_per_matchup,
+                job_id,
+            ) = job[1]
+            use_cpu_flag = use_cpu(adversary_buffers, perturbed_adv_buf)
+            device = select_device(device_id, use_cpu_flag)
             derivative_free_SPAR_policy = ParallelUpdater._load_policy_from_persistent(persistent_state=persistent_state, policy_data=derivative_free_SPAR_policy_data, key="derivative_free_SPAR_policy", device=device)
             perturbed_agent_policy = ParallelUpdater._load_policy_from_persistent(persistent_state=persistent_state, policy_data=perturbed_agent_policy_data, key="perturbed_agent_policy", device=device)
 
@@ -287,7 +283,8 @@ class ParallelUpdater:
                 torch.cuda.empty_cache()
             
         except Exception as e:
-            print(f"Worker {device_id} error: {e}")
+            import traceback
+            print(f"Worker {device_id} error: {e}\n{traceback.format_exc()}")
             done_queue.put(f"ERROR_{job_id}")
 
     def _submit_job(self, job: str, device_id: int, active_jobs: List[int], *args) -> None:
