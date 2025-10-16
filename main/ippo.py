@@ -4,6 +4,7 @@ import sys
 import torch
 import multiprocessing as mp
 import argparse
+import random
 import numpy as np
 from PIL import Image
 import copy
@@ -375,7 +376,7 @@ def main(PLAYER):
                         help='Initial level to load from. By default 0, starting from pretrain', default=0)
     parser.add_argument('--resume-epoch', type=int, help='Resume epoch. By default 0, starting from pretrain',
                         default=0)
-    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=24)
+    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=8)
     parser.add_argument('--enable-combo', action='store_true', help='Enable special move action space for environment')
     parser.add_argument('--null-combo', action='store_true', help='Null action space for special move')
     parser.add_argument('--transform-action', action='store_true', help='Transform action space to MultiDiscrete')
@@ -499,7 +500,16 @@ def main(PLAYER):
                                  other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
                                  clip_range_schedule=linear_schedule(0.075, 0.025)):
         REMOVAL
+        np.random.seed(0)
+        random.seed(0)
+        torch.manual_seed(0)
         finetune_env = env_generator()
+        np.random.seed(0)
+        random.seed(0)
+        torch.manual_seed(0)
+        # remove seeds
+
+        
         finetune_model = IPPO(
             "CnnPolicy",
             finetune_env,
@@ -592,14 +602,16 @@ def main(PLAYER):
             d_learning_rate=args.d_lr,
             v_learning_rate=args.v_lr,
             verbose=2,
-            n_steps=256,
-            batch_size=512,
+            n_steps=1024,
+            batch_size=256,
             n_epochs=1,
             state_list=state_list,
             envs_per_matchup=args.envs_per_matchup,
             env_generator_func=env_generator,
             num_adversaries=num_adversary,
             n_env_per_adv=args.num_env // num_adversary,
+            seed= 0,
+            target_kl=0.025
         )
 
         #TODO: This is commented out per Justin's comment - should be uncommented in the future.
@@ -816,7 +828,7 @@ def main(PLAYER):
             model.learn(
                 total_timesteps=args.total_steps,
                 num_pertrubs = args.num_pertrubs,
-                callback=[checkpoint_callback, file_queue_callback], update_ego=True, update_adversary=False
+                callback=[checkpoint_callback, file_queue_callback], update_ego=True, update_adversary=True
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)
         # for i in range(len(model.adversaries)):
