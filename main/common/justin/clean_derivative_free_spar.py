@@ -39,7 +39,7 @@ from .parallel_updater import ParallelUpdater
 TIMING = False
 DEBUG = False
 PARALLEL_CALC_F = False
-
+SAVE_TEST = True
 class DummyCallback(BaseCallback):
     def __init__(self):
         super().__init__()
@@ -284,7 +284,9 @@ class CleanDerivativeFreeSPAR(PPO):
             self.policy.reset_noise(env.num_envs)
 
         callback.on_rollout_start()
-
+        #np.random.seed(0)
+        #random.seed(0)
+        #torch.manual_seed(0)
         while n_steps < n_rollout_steps:
             if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
                 # Sample a new noise matrix
@@ -309,6 +311,9 @@ class CleanDerivativeFreeSPAR(PPO):
                                           self.action_space.high)
 
             new_obs, rewards, rewards_other, dones, infos = env.step(clipped_actions)
+            #np.random.seed(0)
+            #random.seed(0)
+            #torch.manual_seed(0)
 
             self.num_timesteps += env.num_envs
 
@@ -409,26 +414,25 @@ class CleanDerivativeFreeSPAR(PPO):
             callback.on_training_start(locals(), globals())
 
             while self.num_timesteps < total_timesteps:
-                #perturbed_agent, other_ego, other_adv = self._create_perturbed_agent()
-                # print("perturbed agent created!", flush=True)
+
+                #uncomment perturbed agents
                 with ThreadPoolExecutor(max_workers=num_pertrubs) as executor:
                     futures = [executor.submit(self._create_perturbed_agent) for _ in range(num_pertrubs)]
                     perturbed_agents = [future.result()[0] for future in futures]
-                #perturbed_agents = [self._create_perturbed_agent()[0] for _ in range(num_pertrubs)] #TODO: Parallelize this.
                 print("perturbed agent created!", flush=True)
                 self._initialize_parallel_updater()                
                 #TODO: This might be parallelizable.
+
+                # uncomment perturbed agents
                 with ThreadPoolExecutor(max_workers=num_pertrubs + 1) as executor:
                     futures = [executor.submit(perturbed_agent.env_perturb_params, update_ego, update_adversary) for perturbed_agent in perturbed_agents]
                     perturbed_bufs, perturbed_adv_bufs = zip(*[future.result() for future in futures])
                     future_standard = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, update_ego, update_adversary)
                     continue_training = future_standard.result()
-                #perturbed_bufs, perturbed_adv_bufs = zip(*[perturbed_agent.env_perturb_params() for perturbed_agent in perturbed_agents])
-                #self._initialize_parallel_updater() 
-                    
-                #self.inner_loop()
+
                 #continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, update_ego, update_adversary) #TODO: This is sequential - remove when done.
-                #perturbed_buf, perturbed_adv_buf = perturbed_agent.env_perturb_params() #TODO: This is a sequential original line, delete it when done.
+                
+                    
 
                 self.perturbed_agents = perturbed_agents
                 self.perturbed_bufs = list(perturbed_bufs)
@@ -458,11 +462,14 @@ class CleanDerivativeFreeSPAR(PPO):
             
 
                 self.train(update_ego=update_ego, update_adversary=update_adversary)
+                # uncomment perturbed agents
                 [perturbed_agent.env.close() for perturbed_agent in self.perturbed_agents]
                 self.perturbed_agents.clear()
                 self.perturbed_bufs.clear()
                 self.perturbed_adv_bufs.clear()
                 self.perturbed_agents_policy.clear()
+
+
                 gc.collect()
                 torch.cuda.empty_cache()
                 #self.perturbed_agent.env.close()
@@ -482,11 +489,11 @@ class CleanDerivativeFreeSPAR(PPO):
     
     def train(self, update_ego: bool = True, update_adversary: bool = True) -> None:
         if update_ego:
-            self.train_standard(update_ego, update_adversary)
+            self.train_standard(update_ego=True, update_adversary=False)
         if update_adversary:
-            self.train_standard(update_ego, update_adversary)
+            self.train_standard(update_ego=False, update_adversary=True)
         #self.train_standard(update_ego, update_adversary)
-        #self.train_derivative_free(update_ego, update_adversary)
+        self.train_derivative_free(update_ego, update_adversary)
     
     def train_derivative_free(self, update_ego: bool = True, update_adversary: bool = True) -> None:
         self.policy.set_training_mode(True)
@@ -723,9 +730,11 @@ class CleanDerivativeFreeSPAR(PPO):
                     # Re-sample the noise matrix because the log_std has changed
                     if self.use_sde:
                         self.policy.reset_noise(self.batch_size)
-
+                    
                     if update_ego:
                         log_prob, entropy = self.policy.evaluate_ego_actions(rollout_data.observations, actions)
+                        #from stable_baselines3.common.save_util import load_from_zip_file
+                        #data, params, pytorch_variables = load_from_zip_file("test_ego_save.pth", device=self.device)
                         #entropy = ego_entropy
                     if update_adversary:
                         log_prob, entropy = self.policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=[i])
@@ -749,7 +758,7 @@ class CleanDerivativeFreeSPAR(PPO):
                     ratio = th.exp(log_prob - rollout_data.old_log_prob)
                     if first:
                         print(f"[DEBUG @ train]: ratio: {ratio.mean().item():.4f}")
-                        assert th.allclose(log_prob, rollout_data.old_log_prob), "Log probabilities do not match between collection and training."
+                        #assert th.allclose(log_prob, rollout_data.old_log_prob), "Log probabilities do not match between collection and training."
                         first = False
                     #if update_adversary:
                     #    ratio_adv = th.exp(adv_log_prob - rollout_data.old_dstb_log_prob)

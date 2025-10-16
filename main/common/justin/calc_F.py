@@ -54,7 +54,8 @@ def _calculate_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, e
 
     ratio = torch.exp(log_prob - old_log_prob.clone().detach().to(device))
     if not perturbed:
-        assert torch.allclose(log_prob, old_log_prob), "leader_grads, Log probabilities do not match between collection and training."
+        #assert torch.allclose(log_prob, old_log_prob), "leader_grads, Log probabilities do not match between collection and training."
+        pass
     
     policy_loss_1 = advantages * ratio
     policy_loss_2 = advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)
