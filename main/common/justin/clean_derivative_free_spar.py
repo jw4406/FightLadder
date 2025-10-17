@@ -117,6 +117,7 @@ class CleanDerivativeFreeSPAR(PPO):
             env_generator_func=None,
             num_adversaries=None,
             n_env_per_adv=None,
+            use_mirror=False,
     ):
 
         self.matchups = [state2matchup(state) for state in state_list] #This needs to happen before the super().__init__
@@ -227,7 +228,7 @@ class CleanDerivativeFreeSPAR(PPO):
         ))
         self.adversary_buffers = adversary_buffers
         self.env.num_envs = self.n_envs
-
+        self.use_mirror = use_mirror
     def _setup_model(self) -> None:
         #super()._setup_model()
         self._setup_lr_schedule()

@@ -310,9 +310,10 @@ class FileQueueTriggerCallback(CheckpointCallback):
     after a new model checkpoint is saved.
     """
 
-    def __init__(self, task_dir: str, *args, **kwargs):
+    def __init__(self, task_dir: str, use_mirror: bool, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.task_dir_todo = os.path.join(task_dir, "todo")
+        self.use_mirror = use_mirror
         # Ensure the directory exists
         os.makedirs(self.task_dir_todo, exist_ok=True)
         print(f"FileQueueTriggerCallback initialized. Task files will be created in: {self.task_dir_todo}")
