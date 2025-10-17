@@ -393,7 +393,7 @@ class CleanDerivativeFreeSPAR(PPO):
         progress_bar: bool = False,
         update_ego: bool = True,
         update_adversary: bool = False,
-        num_pertrubs: int = 1,
+        num_perturbs: int = 1,
     ):
         try:
             iteration = 0
@@ -415,29 +415,20 @@ class CleanDerivativeFreeSPAR(PPO):
 
             while self.num_timesteps < total_timesteps:
 
-                #uncomment perturbed agents
-                with ThreadPoolExecutor(max_workers=num_pertrubs) as executor:
-                    futures = [executor.submit(self._create_perturbed_agent) for _ in range(num_pertrubs)]
-                    perturbed_agents = [future.result()[0] for future in futures]
-                print("perturbed agent created!", flush=True)
+                self._create_all_perturbed_agents(num_perturbs)
                 self._initialize_parallel_updater()                
-                #TODO: This might be parallelizable.
 
                 # uncomment perturbed agents
-                with ThreadPoolExecutor(max_workers=num_pertrubs + 1) as executor:
-                    futures = [executor.submit(perturbed_agent.env_perturb_params, update_ego, update_adversary) for perturbed_agent in perturbed_agents]
+                with ThreadPoolExecutor(max_workers=num_perturbs + 1) as executor:
+                    futures = [executor.submit(perturbed_agent.env_perturb_params, update_ego, update_adversary) for perturbed_agent in self.perturbed_agents]
                     perturbed_bufs, perturbed_adv_bufs = zip(*[future.result() for future in futures])
                     future_standard = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, update_ego, update_adversary)
                     continue_training = future_standard.result()
 
                 #continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, update_ego, update_adversary) #TODO: This is sequential - remove when done.
-                
-                    
-
-                self.perturbed_agents = perturbed_agents
                 self.perturbed_bufs = list(perturbed_bufs)
                 self.perturbed_adv_bufs = list(perturbed_adv_bufs)
-                self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in perturbed_agents]
+                self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in self.perturbed_agents]
 
                 if continue_training is False:
                     break
@@ -1014,6 +1005,17 @@ class CleanDerivativeFreeSPAR(PPO):
         perturbed_agent._last_episode_starts = np.ones((perturbed_agent.env.num_envs,), dtype=bool)        
         return perturbed_agent, other_ego, other_adv
 
+    def _create_all_perturbed_agents(self, num_perturbs: int) -> None:
+        """This function creates perturbed agents and stores them in self."""
+        #Don't create the perturbed agents if they already exist.
+        if hasattr(self, "perturbed_agents"):
+            return
+
+        with ThreadPoolExecutor(max_workers=num_perturbs) as executor:
+            futures = [executor.submit(self._create_perturbed_agent) for _ in range(num_perturbs)]
+            perturbed_agents = [future.result()[0] for future in futures]
+        self.perturbed_agents = perturbed_agents
+
     def copy_constructor(self, retain_callback=False):
 
         import copy
@@ -1063,7 +1065,7 @@ class CleanDerivativeFreeSPAR(PPO):
         Returns the names of the parameters that should be excluded from save.
         """
         excluded = super()._excluded_save_params()
-        excluded.extend(["parallel_updater"])
+        excluded.extend(["parallel_updater", "callback", "perturbed_agents"])
         return excluded
     
     def cleanup(self):
@@ -1221,3 +1223,10 @@ class CleanDerivativeFreeSPAR(PPO):
                     loss.backward()
                     self.policy.ctrl_optimizer.zero_grad()
                     self.policy.ctrl_optimizer.step()
+
+    @classmethod
+    def load(cls, path: str, num_perturbed: int, **kwargs):
+        model = super().load(path, **kwargs)
+        model._create_all_perturbed_agents(num_perturbed)
+        #TODO: Add a function that creates a callback and assigns it to self. Something like model._create_callback or passed in as an argument.
+        return model
