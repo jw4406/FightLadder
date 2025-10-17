@@ -38,7 +38,7 @@ from .parallel_updater import ParallelUpdater
 
 TIMING = False
 DEBUG = False
-PARALLEL_CALC_F = False
+PARALLEL_CALC_F = True
 SAVE_TEST = True
 class DummyCallback(BaseCallback):
     def __init__(self):
@@ -537,58 +537,58 @@ class CleanDerivativeFreeSPAR(PPO):
             for i in range(num_runs_count):
                 # i bug
                 F_grad = 0
-                #with ThreadPoolExecutor(max_workers=len(perturbed_bufs)) as executor:
-                futures = []
-                for perturbed_buf, perturbed_policy in zip(perturbed_bufs, perturbed_policies): #TODO: This should be parallelizabl
-                    if PARALLEL_CALC_F:
-                        future = executor.submit(calc_F_grad_single,
-                                            ori_policy=ori_policy,
-                                            perturbed_policy=perturbed_policy,
-                                            ori_buf=ori_buf,
-                                            perturbed_buf=perturbed_buf,
-                                            ego=ego,
-                                            i=i,
-                                            num_adversaries=self.num_adversaries,
-                                            batch_size=self.batch_size,
-                                            clip_range=clip_range,
-                                            use_sde=self.use_sde,
-                                            device=self.device,
-                                            envs_per_matchup=self.envs_per_matchup,
-                                            d=self.d,
-                                            delta=self.delta,
-                                            ego_v=self.ego_v,
-                                            adv_v=self.adv_v,
-                                            target_kl=self.target_kl,
-                                            first_epoch=(j == 0),
-                                            )
-                        futures.append(future)
-                    else:
+                with ThreadPoolExecutor(max_workers=len(perturbed_bufs)) as executor:
+                    futures = []
+                    for perturbed_buf, perturbed_policy in zip(perturbed_bufs, perturbed_policies): #TODO: This should be parallelizabl
+                        if PARALLEL_CALC_F:
+                            future = executor.submit(calc_F_grad_single,
+                                                ori_policy=ori_policy,
+                                                perturbed_policy=perturbed_policy,
+                                                ori_buf=ori_buf,
+                                                perturbed_buf=perturbed_buf,
+                                                ego=ego,
+                                                i=i,
+                                                num_adversaries=self.num_adversaries,
+                                                batch_size=self.batch_size,
+                                                clip_range=clip_range,
+                                                use_sde=self.use_sde,
+                                                device=self.device,
+                                                envs_per_matchup=self.envs_per_matchup,
+                                                d=self.d,
+                                                delta=self.delta,
+                                                ego_v=self.ego_v,
+                                                adv_v=self.adv_v,
+                                                target_kl=self.target_kl,
+                                                first_epoch=(j == 0),
+                                                )
+                            futures.append(future)
+                        else:
 
-                        F_grad_curr, pg_losses_curr, entropy_losses_curr, approx_kl_divs_curr, break_signal = calc_F_grad_single(ori_policy=ori_policy,
-                                            perturbed_policy=perturbed_policy,
-                                            ori_buf=ori_buf,
-                                            perturbed_buf=perturbed_buf,
-                                            ego=ego,
-                                            i=i,
-                                            num_adversaries=self.num_adversaries,
-                                            batch_size=self.batch_size,
-                                            clip_range=clip_range,
-                                            use_sde=self.use_sde,
-                                            device=self.device,
-                                            envs_per_matchup=self.envs_per_matchup,
-                                            d=self.d,
-                                            delta=self.delta,
-                                            ego_v=self.ego_v,
-                                            adv_v=self.adv_v,
-                                            target_kl=self.target_kl,
-                                            first_epoch=(j == 0),
-                                            )
+                            F_grad_curr, pg_losses_curr, entropy_losses_curr, approx_kl_divs_curr, break_signal = calc_F_grad_single(ori_policy=ori_policy,
+                                                perturbed_policy=perturbed_policy,
+                                                ori_buf=ori_buf,
+                                                perturbed_buf=perturbed_buf,
+                                                ego=ego,
+                                                i=i,
+                                                num_adversaries=self.num_adversaries,
+                                                batch_size=self.batch_size,
+                                                clip_range=clip_range,
+                                                use_sde=self.use_sde,
+                                                device=self.device,
+                                                envs_per_matchup=self.envs_per_matchup,
+                                                d=self.d,
+                                                delta=self.delta,
+                                                ego_v=self.ego_v,
+                                                adv_v=self.adv_v,
+                                                target_kl=self.target_kl,
+                                                first_epoch=(j == 0),
+                                                )
 
                     # Collect results
                     if PARALLEL_CALC_F:
                         for num_actual_bufs, future in enumerate(futures):
                             F_grad_curr, pg_losses_curr, entropy_losses_curr, approx_kl_divs_curr, break_signal = future.result()
-                            if not DEBUG:
+                            if DEBUG:
                                 F_grad = F_grad_curr
                             else:
                                 F_grad += F_grad_curr
@@ -610,7 +610,7 @@ class CleanDerivativeFreeSPAR(PPO):
                     
 
 
-                if not DEBUG:
+                if DEBUG:
                     F_grad = F_grad_curr
                 else:
                     F_grad /= (num_actual_bufs+1) #num_actual_bufs counts how many buffers participated to take the correct average, in case of early stopping.
