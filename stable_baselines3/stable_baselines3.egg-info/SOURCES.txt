@@ -15,6 +15,7 @@ stable_baselines3/common/atari_wrappers.py
 stable_baselines3/common/base_class.py
 stable_baselines3/common/buffers.py
 stable_baselines3/common/callbacks.py
+stable_baselines3/common/clean_new_policies.py
 stable_baselines3/common/distributions.py
 stable_baselines3/common/env_checker.py
 stable_baselines3/common/env_util.py
