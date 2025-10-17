@@ -418,7 +418,6 @@ class CleanDerivativeFreeSPAR(PPO):
                 self._create_all_perturbed_agents(num_perturbs)
                 self._initialize_parallel_updater()                
 
-                # uncomment perturbed agents
                 with ThreadPoolExecutor(max_workers=num_perturbs + 1) as executor:
                     futures = [executor.submit(perturbed_agent.env_perturb_params, update_ego, update_adversary) for perturbed_agent in self.perturbed_agents]
                     perturbed_bufs, perturbed_adv_bufs = zip(*[future.result() for future in futures])
@@ -1008,7 +1007,7 @@ class CleanDerivativeFreeSPAR(PPO):
     def _create_all_perturbed_agents(self, num_perturbs: int) -> None:
         """This function creates perturbed agents and stores them in self."""
         #Don't create the perturbed agents if they already exist.
-        if hasattr(self, "perturbed_agents"):
+        if getattr(self, "perturbed_agents", None):
             return
 
         with ThreadPoolExecutor(max_workers=num_perturbs) as executor:
