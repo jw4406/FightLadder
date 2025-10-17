@@ -394,7 +394,7 @@ def main(PLAYER):
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
     parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
     parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=12)
-    parser.add_argument("--num_pertrubs", type=int, help="Number of perturbed policies to be created.", default=10)
+    parser.add_argument("--num_perturbs", type=int, help="Number of perturbed policies to be created.", default=10)
     parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-4)
     parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=7e-4)
     parser.add_argument("--v_lr", type=float, help="value learning rate", default=7e-4)
@@ -827,7 +827,7 @@ def main(PLAYER):
             #test = CleanDerivativeFreeSPAR.load("/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/ppo_Guile_32000_steps.task")
             model.learn(
                 total_timesteps=args.total_steps,
-                num_pertrubs = args.num_pertrubs,
+                num_perturbs = args.num_perturbs,
                 callback=[checkpoint_callback, file_queue_callback], update_ego=True, update_adversary=True
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)
@@ -853,7 +853,7 @@ if __name__ == "__main__":
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
     parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
     parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=32)
-    parser.add_argument("--num_pertrubs", type=int, help="Number of perturbed policies to be created.", default=1)
+    parser.add_argument("--num_perturbs", type=int, help="Number of perturbed policies to be created.", default=1)
     parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-4)
     parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=7e-4)
     parser.add_argument("--v_lr", type=float, help="value learning rate", default=7e-4)

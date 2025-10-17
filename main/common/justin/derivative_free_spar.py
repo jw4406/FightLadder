@@ -1325,7 +1325,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
         progress_bar: bool = False,
         update_ego: bool = True,
         update_adversary: bool = True,
-        num_pertrubs: int = 1,
+        num_perturbs: int = 1,
     ):
         try:
             iteration = 0
@@ -1347,7 +1347,7 @@ class Derivative_Free_SPAR(Generalist_SPAR):
             callback.on_training_start(locals(), globals())
 
             while self.num_timesteps < total_timesteps:
-                perturbed_agents = [self._create_perturbed_agent()[0] for _ in range(num_pertrubs)] #TODO: Parallelize this.
+                perturbed_agents = [self._create_perturbed_agent()[0] for _ in range(num_perturbs)] #TODO: Parallelize this.
                 print("perturbed agent created!", flush=True)
                 self._initialize_parallel_updater()                
                 #TODO: This might be parallelizable.
