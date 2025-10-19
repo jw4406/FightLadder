@@ -269,8 +269,13 @@ class CleanDerivativeFreeSPAR(PPO):
         )
 
         self.policy = self.policy.to(self.device)
+    def collect_rollouts(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True, use_mirror: bool = False) -> bool:
+        if self.use_mirror:
+            return self.collect_rollouts_standard(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, update_ego, update_adversary)
+        else:
+            return self.collect_rollouts_mirror(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, update_ego, update_adversary)
     
-    def collect_rollouts(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True) -> bool:
+    def collect_rollouts_standard(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True) -> bool:
         assert self._last_obs is not None, "No previous observation was provided"
         # Switch to eval mode (this affects batch norm / dropout)
         self.policy.set_training_mode(False)
@@ -368,6 +373,233 @@ class CleanDerivativeFreeSPAR(PPO):
         with th.no_grad():
             # Compute value for the last timestep
             values = self.policy.value_forward(obs_as_tensor(new_obs, self.device))
+            #values_other = rollout_policy_other.predict_values(obs_as_tensor(new_obs, self.device))
+
+        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+        for i in range(self.num_adversaries):
+            adversary_buffers[i].compute_returns_and_advantage(last_values=-values[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], dones=dones[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv])
+        #if self.update_right:
+        #    rollout_buffer_other.compute_returns_and_advantage(last_values=values_other, dones=dones)
+
+        callback.on_rollout_end()
+
+        rollout_buffer.prepare_data_for_training()
+        for i in range(len(adversary_buffers)):
+            adversary_buffers[i].prepare_data_for_training()
+
+        return True
+    def collect_rollouts_mirror(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True) -> bool:
+        assert self.use_mirror is True, "Use mirror is not True"
+        assert self._last_obs is not None, "No previous observation was provided"
+        self.policy.set_training_mode(False)
+
+        n_steps = 0
+        rollout_buffer.reset()
+        for i in range(self.num_adversaries):
+            adversary_buffers[i].reset()
+
+        callback.on_rollout_start()
+        #np.random.seed(0)
+        #random.seed(0)
+        #torch.manual_seed(0)
+        while n_steps < n_rollout_steps:
+            if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+                # Sample a new noise matrix
+                self.policy.reset_noise(env.num_envs)
+
+            with th.no_grad():
+                # Convert to pytorch tensor or to TensorDict
+                obs_tensor = obs_as_tensor(self._last_obs, self.device)
+                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values = self.policy(obs_tensor, deterministic=False, ego_forward=update_ego, adv_forward=update_adversary)
+                other_values = -values
+
+            actions = ego_actions.cpu().numpy()
+            actions_other = adv_actions.cpu().numpy()
+
+            # Rescale and perform action
+
+            if self.use_mirror is True:
+                mirror_master_copy_actions = deepcopy(actions)
+                mirror_master_copy_adv_actions = deepcopy(adversary_actions)
+
+                # upper half, lower half
+
+                
+                # print("SINGLE TRAIN EXTRACTOR MIRROR")
+
+                '''
+                assume wlog Ehonda is the prot.
+
+                action right now is:                  adv_action right now is:
+                EHonda left                                              Sagat    right
+                EHonda left                                              Sagat    right
+                EHonda left                                             MBison    right
+                EHonda left                                             MBison    right
+
+                EHonda v Sagat       0
+                Sagat v. EHonda      1
+                EHonda v. MBison     2
+                MBison v. EHonda     3
+
+                action[odds] needs to go to the other side because our design makes prot actions left
+
+                same with adversary[odds] -- adversary is on the right so adv[ods] is backwards
+
+                '''
+                halfway = actions.shape[0] // 2 #halfway split between upper & lower + left & right
+                
+                if DEBUG:
+                    #test = np.zeros_like(actions)
+                    #other_test = np.ones_like(actions)
+                    #test_left = test[halfway:, :]
+                    #test_right = other_test[:halfway, :]
+                    #temp = np.zeros((self.num_adversaries, self.action_space.shape[0]))
+                    #temp[:halfway, :] = test_left
+                    #temp[halfway:, :] = test_right
+
+                    test2 = np.zeros_like(actions)
+                    count = 0
+                    for i in range(test2.shape[0]):
+                        for j in range(test2.shape[1]):
+                            test2[i, j] = count
+                            count += 1
+                    other_test2 = np.zeros_like(actions)
+                    count = other_test2.size - 1
+                    for i in range(other_test2.shape[0]):
+                        for j in range(other_test2.shape[1]):
+                            other_test2[i, j] = count
+                            count -= 1
+                    prot_left = test2[:halfway, :]  # actions for the prot when he is on the left
+                    prot_left_pre = test2[halfway:, :]  
+
+                    adv_right = other_test2[:halfway, :]
+                    adv_right_pre = other_test2[halfway:, :]
+
+                    prot_actions = np.empty_like(actions)
+                    prot_actions[:halfway, :] = prot_left
+                    prot_actions[halfway:, :] = adv_right_pre
+
+                    adv_actions = np.empty_like(actions)
+                    adv_actions[:halfway, :] = adv_right
+                    adv_actions[halfway:, :] = prot_left_pre
+
+                    #print("temp2", temp2)
+                    #print("other_test2", other_test2)
+                    #print("test2_left", test2_left)
+                    #print("test2_right", test2_right)
+                    #print("actions", actions)
+                    #print("temp", temp)
+                    #print("other_test", other_test)
+                    #print("test_left", test_left)
+                    #print("test_right", test_right)
+                    #print("actions", actions)
+
+                prot_left = actions[:halfway, :]  # actions for the prot when he is on the left
+                prot_left_pre = actions[halfway:, :]  
+
+                adv_right = adversary_actions[:halfway, :]
+                adv_right_pre = adversary_actions[halfway:, :]
+
+                prot_actions = np.empty_like(actions)
+                #temp = prot_right
+                prot_actions[:halfway, :] = prot_left
+                prot_actions[halfway:, :] = adv_right_pre
+
+                adv_actions = np.empty_like(actions)
+                adv_actions[:halfway, :] = adv_right
+                adv_actions[halfway:, :] = prot_left_pre
+
+                actions = prot_actions
+                adversary_actions = adv_actions
+                actions_other = adversary_actions
+
+                log_probs_left = ego_log_probs[:halfway]
+                log_probs_left_pre = ego_log_probs[halfway:]
+                adv_log_probs_right = adv_log_probs[:halfway]
+                adv_log_probs_right_pre = adv_log_probs[halfway:]
+
+                ego_log_probs[:halfway] = log_probs_left
+                ego_log_probs[halfway:] = adv_log_probs_right_pre
+                adv_log_probs[:halfway] = adv_log_probs_right
+                adv_log_probs[halfway:] = log_probs_left_pre
+
+                values_left = values[:halfway]
+                values_left_pre = values[halfway:]
+                values_right = other_values[:halfway]
+                values_right_pre = other_values[halfway:]
+
+                values[:halfway] = values_left
+                values[halfway:] = values_right_pre
+                other_values[:halfway] = values_right
+                other_values[halfway:] = values_left_pre
+
+            clipped_actions = np.hstack([actions, actions_other])
+            # print(clipped_actions, flush=True)
+            # print(np.shape(clipped_actions),flush=True)
+            # Clip the actions to avoid out of bound error
+            if isinstance(self.action_space, spaces.Box):
+                clipped_actions = np.clip(np.hstack([actions, actions_other]), self.action_space.low,
+                                          self.action_space.high)
+
+            new_obs, rewards, rewards_other, dones, infos = env.step(clipped_actions)
+            rewards[halfway:] = -rewards[halfway:]
+            #np.random.seed(0)
+            #random.seed(0)
+            #torch.manual_seed(0)
+
+            self.num_timesteps += env.num_envs
+
+            # Give access to local variables
+            callback.update_locals(locals())
+            if callback.on_step() is False:
+                return False
+
+            self._update_info_buffer(infos)
+            n_steps += 1
+
+            if isinstance(self.action_space, spaces.Discrete):
+                # Reshape in case of discrete action
+                actions = actions.reshape(-1, 1)
+                actions_other = actions_other.reshape(-1, 1)
+            
+            # Handle timeout by bootstraping with value function
+            # see GitHub issue #633
+            # for idx, done in enumerate(dones):
+            #     if (
+            #             done
+            #             and coordinate_fn is not None
+            #     ):
+            #         coordinate_fn(infos[idx]["outcome"])
+            #     if (
+            #             done
+            #             and infos[idx].get("terminal_observation") is not None
+            #             and infos[idx].get("TimeLimit.truncated", False)
+            #     ):
+            #         # print(f"[PPO] idx: {idx}, done: {done}, outcome: {infos[idx]['outcome']}", flush=True)
+            #         terminal_obs = rollout_policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
+            #         terminal_obs_other = rollout_policy_other.obs_to_tensor(infos[idx]["terminal_observation"])[0]
+            #         with th.no_grad():
+            #             terminal_value = rollout_policy.predict_values(terminal_obs)[0]
+            #             terminal_value_other = rollout_policy_other.predict_values(terminal_obs_other)[0]
+            #         rewards[idx] += self.gamma * terminal_value
+            #         rewards_other[idx] += self.gamma * terminal_value_other
+
+                    # from IPython import embed; embed()
+            rollout_buffer.add(self._last_obs.copy(), actions, rewards, self._last_episode_starts, values,
+                                   ego_log_probs)
+            for i in range(self.num_adversaries):
+                adversary_buffers[i].add(self._last_obs[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv].copy(), actions_other[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], rewards_other[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], self._last_episode_starts[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], other_values[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv],
+                                         adv_log_probs[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv])
+            #for i in range(self.num_adversaries):
+            #    adversary_buffers[i].add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts, values_other,
+            #                             adv_log_probs)
+            self._last_obs = new_obs
+            self._last_episode_starts = dones
+
+        with th.no_grad():
+            # Compute value for the last timestep
+            values = self.policy.value_forward(obs_as_tensor(new_obs, self.device))
+            values[halfway:] = -values[halfway:]
             #values_other = rollout_policy_other.predict_values(obs_as_tensor(new_obs, self.device))
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
