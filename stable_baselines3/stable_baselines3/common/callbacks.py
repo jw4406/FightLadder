@@ -5,6 +5,8 @@ from typing import Any, Callable, Dict, List, Optional, Union, TYPE_CHECKING
 import copy
 import gym
 import numpy as np
+import subprocess
+import shlex
 #from torch.distributed.pipeline.sync.checkpoint import Checkpoint
 
 try:
@@ -322,6 +324,26 @@ class FileQueueTriggerCallback(CheckpointCallback):
         """
         This method is called by the CheckpointCallback after a checkpoint is saved.
         """
+        def _submit_br_worker(i: int, output_log: str, error_log: str, time: int, eval_prot: bool, use_mirror: bool) -> str:
+            """Submit a br_worker job and return JobID."""
+            wrap = ["python", "br_worker.py"]
+            if eval_prot:
+                wrap.append("--eval_prot")
+            if use_mirror:
+                wrap.append("--use_mirror")
+
+            cmd = [
+                "sbatch", "--parsable",
+                "--job-name", f"br_worker_{i}",
+                "--output", f"{output_log}_{i}",
+                "--error", f"{error_log}_{i}",
+                "--time", str(time),
+                "--wrap", " ".join(wrap),
+            ]
+
+            result = subprocess.run(cmd,check=True, capture_output=True, text=True)
+            return result.stdout.strip()
+
         # The path to the checkpoint that was just saved
         if self.n_calls % self.save_freq == 0:
             checkpoint_path = os.path.join(self.save_path, f"{self.name_prefix}_{self.num_timesteps}_steps.zip")
@@ -332,6 +354,16 @@ class FileQueueTriggerCallback(CheckpointCallback):
 
             try:
                 os.rename(checkpoint_path, task_filepath)
+                #TODO: Justin - time, output_log and error_lag are placeholders. Should probably be inputs. Note that _submit_br_worker has a return value (SLURM ID) that currently isn't used.
+                time = 4000
+                output_log = os.path.join(".", "log")
+                error_log = os.path.join(".", "err")
+                for i in range(self.num_workers):
+                    if self.use_mirror:
+                        _submit_br_worker(i=i, output_log=output_log, error_log=error_log, time=time, eval_prot=True, use_mirror=True)
+                        _submit_br_worker(i=i, output_log=output_log, error_log=error_log, time=time, eval_prot=False, use_mirror=True)
+                    else:
+                        _submit_br_worker(i=i, output_log=output_log, error_log=error_log, time=time, eval_prot=False, use_mirror=False)                   
                 #with open(task_filepath, 'w') as f:
                 #    f.write(checkpoint_path)
                 print(f"CALLBACK: Successfully created task file for {os.path.basename(checkpoint_path)}")
