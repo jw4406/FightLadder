@@ -105,3 +105,6 @@ def unpickle_policy(policy: Any) -> torch.nn.Module:
     if isinstance(policy, bytes):
         policy = pickle.loads(policy)
     return policy
+
+def mirror_flip_attributes(attribute):
+    pass
