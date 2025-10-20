@@ -271,9 +271,9 @@ class CleanDerivativeFreeSPAR(PPO):
         self.policy = self.policy.to(self.device)
     def collect_rollouts(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True, use_mirror: bool = False) -> bool:
         if self.use_mirror:
-            return self.collect_rollouts_standard(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, update_ego, update_adversary)
-        else:
             return self.collect_rollouts_mirror(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, update_ego, update_adversary)
+        else:
+            return self.collect_rollouts_standard(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, update_ego, update_adversary)
     
     def collect_rollouts_standard(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True) -> bool:
         assert self._last_obs is not None, "No previous observation was provided"
@@ -449,6 +449,12 @@ class CleanDerivativeFreeSPAR(PPO):
                 halfway = actions.shape[0] // 2 #halfway split between upper & lower + left & right
                 
                 if DEBUG:
+
+
+                    # TODO: should this be in a function?
+
+
+
                     #test = np.zeros_like(actions)
                     #other_test = np.ones_like(actions)
                     #test_left = test[halfway:, :]
