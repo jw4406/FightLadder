@@ -399,6 +399,7 @@ def main(PLAYER):
     parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=7e-4)
     parser.add_argument("--v_lr", type=float, help="value learning rate", default=7e-4)
     parser.add_argument("--use_mirror", action='store_true', help='Use mirror')
+    parser.add_argument("--num_workers", type=int, help="Number of workers", default=5)
     args = parser.parse_args()
 
 
@@ -734,6 +735,7 @@ def main(PLAYER):
     file_queue_callback = FileQueueTriggerCallback(
         task_dir=TASK_DIR,
         use_mirror=args.use_mirror,
+        num_workers=args.num_workers,
         save_freq=checkpoint_interval,
         save_path=args.save_dir,
         name_prefix=f"{args.model_name_prefix}"
