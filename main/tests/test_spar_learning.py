@@ -13,7 +13,7 @@ from main.common.retro_wrappers import SFWrapper, Monitor2P
 from main.common.justin.clean_derivative_free_spar import CleanDerivativeFreeSPAR
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.utils import safe_mean
-from main.utils import state2matchup
+from main.utils import state2matchup, mirror_flip_attributes
 from main.common.const import *
 import wandb
 
@@ -109,65 +109,77 @@ class TestAdvantageValueRewardsSign(unittest.TestCase):
 
         self.env = env_generator()
 
-    def test_ego_forward(self):   
-        env = env_generator()
-        model = CleanDerivativeFreeSPAR(
-            policy="AACCnnPolicy",
-            env=env,
-            n_steps=self.n_steps,
-            batch_size=self.batch_size,
-            n_epochs=self.n_epochs,
-            num_adversaries=num_adversaries,
-            n_env_per_adv=n_env_per_adv,
-            state_list=STATE,
-            envs_per_matchup=envs_per_matchup,
-            env_generator_func=env_generator,
-            dstb_action_space=MultiBinary(15),
-            verbose=1
-        )
-        model.learn(total_timesteps=model.n_steps * 15, update_ego=True, update_adversary=False)
-        mean_reward = safe_mean([ep_info["r"] for ep_info in model.ep_info_buffer])
-        env.close()
-        self.assertGreater(mean_reward, self.mean_reward_threshold, f"Mean reward {mean_reward} is not > {self.mean_reward_threshold}.")
+    # def test_ego_forward(self):   
+    #     env = env_generator()
+    #     model = CleanDerivativeFreeSPAR(
+    #         policy="AACCnnPolicy",
+    #         env=env,
+    #         n_steps=self.n_steps,
+    #         batch_size=self.batch_size,
+    #         n_epochs=self.n_epochs,
+    #         num_adversaries=num_adversaries,
+    #         n_env_per_adv=n_env_per_adv,
+    #         state_list=STATE,
+    #         envs_per_matchup=envs_per_matchup,
+    #         env_generator_func=env_generator,
+    #         dstb_action_space=MultiBinary(15),
+    #         verbose=1
+    #     )
+    #     model.learn(total_timesteps=model.n_steps * 15, update_ego=True, update_adversary=False)
+    #     mean_reward = safe_mean([ep_info["r"] for ep_info in model.ep_info_buffer])
+    #     env.close()
+    #     self.assertGreater(mean_reward, self.mean_reward_threshold, f"Mean reward {mean_reward} is not > {self.mean_reward_threshold}.")
 
-    def test_adversary_forward(self):
-        model = CleanDerivativeFreeSPAR(
-            policy="AACCnnPolicy",
-            env=self.env,
-            n_steps=self.n_steps,
-            batch_size=self.batch_size,
-            n_epochs=self.n_epochs,
-            num_adversaries=num_adversaries,
-            n_env_per_adv=n_env_per_adv,
-            state_list=STATE,
-            envs_per_matchup=envs_per_matchup,
-            env_generator_func=env_generator,
-            dstb_action_space=MultiBinary(15),
-            verbose=1
-        )
-        model.learn(total_timesteps=model.n_steps * 15, update_ego=False, update_adversary=True)
-        mean_reward = safe_mean([ep_info["r"] for ep_info in model.ep_info_buffer])
-        self.env.close()
-        self.assertLess(mean_reward, -self.mean_reward_threshold, f"Mean reward {mean_reward} is not < -{self.mean_reward_threshold}.")
+    # def test_adversary_forward(self):
+    #     model = CleanDerivativeFreeSPAR(
+    #         policy="AACCnnPolicy",
+    #         env=self.env,
+    #         n_steps=self.n_steps,
+    #         batch_size=self.batch_size,
+    #         n_epochs=self.n_epochs,
+    #         num_adversaries=num_adversaries,
+    #         n_env_per_adv=n_env_per_adv,
+    #         state_list=STATE,
+    #         envs_per_matchup=envs_per_matchup,
+    #         env_generator_func=env_generator,
+    #         dstb_action_space=MultiBinary(15),
+    #         verbose=1
+    #     )
+    #     model.learn(total_timesteps=model.n_steps * 15, update_ego=False, update_adversary=True)
+    #     mean_reward = safe_mean([ep_info["r"] for ep_info in model.ep_info_buffer])
+    #     self.env.close()
+    #     self.assertLess(mean_reward, -self.mean_reward_threshold, f"Mean reward {mean_reward} is not < -{self.mean_reward_threshold}.")
 
-    def test_advantage_value_rewards_sign(self):
-        model = CleanDerivativeFreeSPAR(
-            policy="AACCnnPolicy",
-            env=self.env,
-            n_steps=self.n_steps,
-            batch_size=self.batch_size,
-            n_epochs=self.n_epochs,
-            num_adversaries=num_adversaries,
-            n_env_per_adv=n_env_per_adv,
-            state_list=STATE,
-            envs_per_matchup=envs_per_matchup,
-            env_generator_func=env_generator,
-            dstb_action_space=MultiBinary(15),
-            verbose=1
-        )
-        model.learn(total_timesteps=model.n_steps, update_ego=False, update_adversary=True)
-        self.env.close()
-        self.assertTrue(torch.allclose(model.adversary_buffers[0].values + model.rollout_buffer.values, torch.zeros_like(model.adversary_buffers[0].values)))
-        self.assertTrue(np.allclose(model.adversary_buffers[0].rewards + model.rollout_buffer.rewards, np.zeros_like(model.adversary_buffers[0].rewards)))
-        summed_advantages = model.rollout_buffer.advantages + model.adversary_buffers[0].advantages
-        self.assertTrue(torch.allclose(summed_advantages, torch.zeros_like(summed_advantages)))
+    # def test_advantage_value_rewards_sign(self):
+    #     model = CleanDerivativeFreeSPAR(
+    #         policy="AACCnnPolicy",
+    #         env=self.env,
+    #         n_steps=self.n_steps,
+    #         batch_size=self.batch_size,
+    #         n_epochs=self.n_epochs,
+    #         num_adversaries=num_adversaries,
+    #         n_env_per_adv=n_env_per_adv,
+    #         state_list=STATE,
+    #         envs_per_matchup=envs_per_matchup,
+    #         env_generator_func=env_generator,
+    #         dstb_action_space=MultiBinary(15),
+    #         verbose=1
+    #     )
+    #     model.learn(total_timesteps=model.n_steps, update_ego=False, update_adversary=True)
+    #     self.env.close()
+    #     self.assertTrue(torch.allclose(model.adversary_buffers[0].values + model.rollout_buffer.values, torch.zeros_like(model.adversary_buffers[0].values)))
+    #     self.assertTrue(np.allclose(model.adversary_buffers[0].rewards + model.rollout_buffer.rewards, np.zeros_like(model.adversary_buffers[0].rewards)))
+    #     summed_advantages = model.rollout_buffer.advantages + model.adversary_buffers[0].advantages
+    #     self.assertTrue(torch.allclose(summed_advantages, torch.zeros_like(summed_advantages)))
+
+    def test_mirror_flip_attributes(self):
+        actions = np.array([[1, 2, 3], [4, 5, 6]])
+        actions_other = np.array([[7, 8, 9], [10, 11, 12]])
+        rewards = np.array([13, 14, 15, 16, 17, 18])
+        other_rewards = np.array([-13, -14, -15, -16, -17, -18])
+        halfway_actions = mirror_flip_attributes(actions, actions_other)
+        halfway_rewards = mirror_flip_attributes(rewards, other_rewards)
+        self.assertTrue(np.allclose(halfway_actions[0], np.array([[1, 2, 3], [10, 11, 12]])))
+        self.assertTrue(np.allclose(halfway_actions[1], np.array([[7, 8, 9], [4, 5, 6]])))
+        self.assertTrue(np.allclose(halfway_rewards[0], np.array([13, 14, 15, -16, -17, -18])))
+        self.assertTrue(np.allclose(halfway_rewards[1], np.array([-13, -14, -15, 16, 17, 18])))

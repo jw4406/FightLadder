@@ -338,7 +338,7 @@ def main(PLAYER):
     # PLAYER = "Blanka"  # "Blanka
 
     global REMOVAL
-    use_mirror = False
+    use_mirror = True
     
     REMOVAL = None
     if use_mirror is True:
@@ -612,7 +612,8 @@ def main(PLAYER):
             num_adversaries=num_adversary,
             n_env_per_adv=args.num_env // num_adversary,
             seed= 0,
-            target_kl=0.025
+            target_kl=0.025,
+            use_mirror=use_mirror
         )
 
         #TODO: This is commented out per Justin's comment - should be uncommented in the future.
