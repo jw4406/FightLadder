@@ -253,7 +253,7 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
     def _get_adv_action_dist_from_latent(self, latent_pi_dstb, buf_num, evaluate=False) -> Tuple[Distribution, Distribution]:
         if evaluate:
             assert len(buf_num) == 1
-        dstb_actions = th.zeros((latent_pi_dstb.shape[0], self.dstb_action_space.shape[0]))
+        dstb_actions = th.zeros((latent_pi_dstb.shape[0], self.dstb_action_space.shape[0])).to(self.device)
         latents_per_adv = latent_pi_dstb.shape[0] // self.num_adversaries
         for i in range(len(buf_num)):
             key = select_matchup_env(self.matchups, buf_num[i], self.envs_per_matchup)

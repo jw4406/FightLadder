@@ -2,6 +2,7 @@ import torch
 from typing import List, Any
 import warnings
 import pickle
+import numpy as np
 
 CHARACTERS = ["ryu", "guile", "bison"] #TODO: Add all characters
 
@@ -106,5 +107,22 @@ def unpickle_policy(policy: Any) -> torch.nn.Module:
         policy = pickle.loads(policy)
     return policy
 
-def mirror_flip_attributes(attribute):
-    pass
+def mirror_flip_attributes(attribute1, attribute2):
+    assert attribute1.shape == attribute2.shape
+    #assert attribute1.shape[1] == attribute2.shape[1]
+
+    halfway = attribute1.shape[0] // 2
+    prot_left = attribute1[:halfway]  # actions for the prot when he is on the left
+    prot_left_pre = attribute1[halfway:]  
+
+    adv_right = attribute2[:halfway]
+    adv_right_pre = attribute2[halfway:]
+
+    prot_actions = np.empty_like(attribute1) if isinstance(attribute1, np.ndarray) else torch.empty_like(attribute1, device=attribute1.device)
+    prot_actions[:halfway] = prot_left
+    prot_actions[halfway:] = adv_right_pre
+
+    adv_actions = np.empty_like(attribute2) if isinstance(attribute2, np.ndarray) else torch.empty_like(attribute2, device=attribute2.device)
+    adv_actions[:halfway] = adv_right
+    adv_actions[halfway:] = prot_left_pre
+    return prot_actions, adv_actions

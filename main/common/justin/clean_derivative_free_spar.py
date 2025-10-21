@@ -32,7 +32,7 @@ import torch.nn.functional as F
 from anyio import value
 from gym import spaces
 from stable_baselines3 import PPO
-from utils import select_matchup_env, select_device, get_n_workers, move_policy, unpickle_policy, state2matchup
+from utils import select_matchup_env, select_device, get_n_workers, move_policy, unpickle_policy, state2matchup, mirror_flip_attributes
 from concurrent.futures import ThreadPoolExecutor
 from .parallel_updater import ParallelUpdater
 
@@ -411,6 +411,13 @@ class CleanDerivativeFreeSPAR(PPO):
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 ego_actions, ego_log_probs, adv_actions, adv_log_probs, values = self.policy(obs_tensor, deterministic=False, ego_forward=update_ego, adv_forward=update_adversary)
+                
+                # The value network predicts value from the left player's perspective.
+                # In mirrored rollouts, the ego is on the right for the second half of envs.
+                # Thus, `values` contains ego values for the top half and adversary values for the bottom half.
+                # `other_values` is computed to hold adversary values for the top and ego values for the bottom.
+                # We first negate, then use `mirror_flip_attributes` to swap the bottom halves,
+                # consolidating all ego values in `values` and all adversary values in `other_values`.
                 other_values = -values
 
             actions = ego_actions.cpu().numpy()
@@ -418,126 +425,40 @@ class CleanDerivativeFreeSPAR(PPO):
 
             # Rescale and perform action
 
-            if self.use_mirror is True:
-                mirror_master_copy_actions = deepcopy(actions)
-                mirror_master_copy_adv_actions = deepcopy(adversary_actions)
+            mirror_master_copy_actions = deepcopy(actions)
+            mirror_master_copy_adv_actions = deepcopy(adv_actions)
 
-                # upper half, lower half
+            # upper half, lower half
 
+            
+            # print("SINGLE TRAIN EXTRACTOR MIRROR")
+
+            '''
+            assume wlog Ehonda is the prot.
+
+            action right now is:                  adv_action right now is:
+            EHonda left                                              Sagat    right
+            EHonda left                                              Sagat    right
+            EHonda left                                             MBison    right
+            EHonda left                                             MBison    right
+
+            EHonda v Sagat       0
+            Sagat v. EHonda      1
+            EHonda v. MBison     2
+            MBison v. EHonda     3
+
+            action[odds] needs to go to the other side because our design makes prot actions left
+
+            same with adversary[odds] -- adversary is on the right so adv[ods] is backwards
+
+            '''
+            halfway = actions.shape[0] // 2 #halfway split between upper & lower + left & right
+            actions, actions_other = mirror_flip_attributes(actions, actions_other)
+            ego_log_probs, adv_log_probs = mirror_flip_attributes(ego_log_probs, adv_log_probs)
+            values, other_values = mirror_flip_attributes(values, other_values)
                 
-                # print("SINGLE TRAIN EXTRACTOR MIRROR")
-
-                '''
-                assume wlog Ehonda is the prot.
-
-                action right now is:                  adv_action right now is:
-                EHonda left                                              Sagat    right
-                EHonda left                                              Sagat    right
-                EHonda left                                             MBison    right
-                EHonda left                                             MBison    right
-
-                EHonda v Sagat       0
-                Sagat v. EHonda      1
-                EHonda v. MBison     2
-                MBison v. EHonda     3
-
-                action[odds] needs to go to the other side because our design makes prot actions left
-
-                same with adversary[odds] -- adversary is on the right so adv[ods] is backwards
-
-                '''
-                halfway = actions.shape[0] // 2 #halfway split between upper & lower + left & right
                 
-                if DEBUG:
-
-
-                    # TODO: should this be in a function?
-
-
-
-                    #test = np.zeros_like(actions)
-                    #other_test = np.ones_like(actions)
-                    #test_left = test[halfway:, :]
-                    #test_right = other_test[:halfway, :]
-                    #temp = np.zeros((self.num_adversaries, self.action_space.shape[0]))
-                    #temp[:halfway, :] = test_left
-                    #temp[halfway:, :] = test_right
-
-                    test2 = np.zeros_like(actions)
-                    count = 0
-                    for i in range(test2.shape[0]):
-                        for j in range(test2.shape[1]):
-                            test2[i, j] = count
-                            count += 1
-                    other_test2 = np.zeros_like(actions)
-                    count = other_test2.size - 1
-                    for i in range(other_test2.shape[0]):
-                        for j in range(other_test2.shape[1]):
-                            other_test2[i, j] = count
-                            count -= 1
-                    prot_left = test2[:halfway, :]  # actions for the prot when he is on the left
-                    prot_left_pre = test2[halfway:, :]  
-
-                    adv_right = other_test2[:halfway, :]
-                    adv_right_pre = other_test2[halfway:, :]
-
-                    prot_actions = np.empty_like(actions)
-                    prot_actions[:halfway, :] = prot_left
-                    prot_actions[halfway:, :] = adv_right_pre
-
-                    adv_actions = np.empty_like(actions)
-                    adv_actions[:halfway, :] = adv_right
-                    adv_actions[halfway:, :] = prot_left_pre
-
-                    #print("temp2", temp2)
-                    #print("other_test2", other_test2)
-                    #print("test2_left", test2_left)
-                    #print("test2_right", test2_right)
-                    #print("actions", actions)
-                    #print("temp", temp)
-                    #print("other_test", other_test)
-                    #print("test_left", test_left)
-                    #print("test_right", test_right)
-                    #print("actions", actions)
-
-                prot_left = actions[:halfway, :]  # actions for the prot when he is on the left
-                prot_left_pre = actions[halfway:, :]  
-
-                adv_right = adversary_actions[:halfway, :]
-                adv_right_pre = adversary_actions[halfway:, :]
-
-                prot_actions = np.empty_like(actions)
-                #temp = prot_right
-                prot_actions[:halfway, :] = prot_left
-                prot_actions[halfway:, :] = adv_right_pre
-
-                adv_actions = np.empty_like(actions)
-                adv_actions[:halfway, :] = adv_right
-                adv_actions[halfway:, :] = prot_left_pre
-
-                actions = prot_actions
-                adversary_actions = adv_actions
-                actions_other = adversary_actions
-
-                log_probs_left = ego_log_probs[:halfway]
-                log_probs_left_pre = ego_log_probs[halfway:]
-                adv_log_probs_right = adv_log_probs[:halfway]
-                adv_log_probs_right_pre = adv_log_probs[halfway:]
-
-                ego_log_probs[:halfway] = log_probs_left
-                ego_log_probs[halfway:] = adv_log_probs_right_pre
-                adv_log_probs[:halfway] = adv_log_probs_right
-                adv_log_probs[halfway:] = log_probs_left_pre
-
-                values_left = values[:halfway]
-                values_left_pre = values[halfway:]
-                values_right = other_values[:halfway]
-                values_right_pre = other_values[halfway:]
-
-                values[:halfway] = values_left
-                values[halfway:] = values_right_pre
-                other_values[:halfway] = values_right
-                other_values[halfway:] = values_left_pre
+                
 
             clipped_actions = np.hstack([actions, actions_other])
             # print(clipped_actions, flush=True)
@@ -548,7 +469,8 @@ class CleanDerivativeFreeSPAR(PPO):
                                           self.action_space.high)
 
             new_obs, rewards, rewards_other, dones, infos = env.step(clipped_actions)
-            rewards[halfway:] = -rewards[halfway:]
+            #rewards[halfway:] = -rewards[halfway:]
+            rewards, rewards_other = mirror_flip_attributes(rewards, rewards_other)
             #np.random.seed(0)
             #random.seed(0)
             #torch.manual_seed(0)
