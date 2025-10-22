@@ -371,3 +371,8 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             values[indices] = self.value_net[key](latent_vf[indices])
         #values = self.value_net(latent_vf)
         return values
+
+    def predict(self, obs, deterministic=False) -> Tuple[th.Tensor, th.Tensor]:
+       ego_actions, ego_log_prob = self.ego_forward(obs, deterministic)
+       adv_actions, adv_log_prob = self.adv_forward(obs, deterministic)
+       return (ego_actions, ego_log_prob), (adv_actions, adv_log_prob)

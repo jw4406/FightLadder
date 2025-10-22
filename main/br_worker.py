@@ -7,12 +7,13 @@ import copy
 import random
 import retro
 from PIL import Image
+from stable_baselines3.common.utils import obs_as_tensor
 import wandb
 import torch
 import torch.multiprocessing as mp
 from multiprocessing.managers import DictProxy
 from common.justin.Generalist_SPAR import Generalist_SPAR, generalist_SPAR_predict
-from common.justin.derivative_free_spar import Derivative_Free_SPAR
+from common.justin.clean_derivative_free_spar import CleanDerivativeFreeSPAR
 from common.const import *
 from common.retro_wrappers import SFWrapper, Monitor2P
 from common.algorithms import Exploiter
@@ -49,7 +50,9 @@ PLAYER = "Guile"
 SIDE = "left"
 player_folder_name = PLAYER + '_' + SIDE
 
-STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name, PLAYER, PLAYER)]
+STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name, PLAYER, PLAYER) for i in range(2)]
+
+# TODO: this is static right now. need to make this dynamic based on the state list from the task file.
 
 def gen_dummy_policy(exploiter_model: Exploiter) -> torch.nn.Module:
     """
@@ -94,6 +97,7 @@ def evaluate_single_iter_prot_prot(curr_state: str, use_mirror: bool, model: tor
         env = make_env(sf_game, state=curr_state, side='both', reset_type='round', rendering=False,
                  enable_combo=False, null_combo=False,
                  transform_action=False, seed=0)().env
+        env = env_generator()
         done = False
 
         obs = env.reset()
@@ -101,14 +105,16 @@ def evaluate_single_iter_prot_prot(curr_state: str, use_mirror: bool, model: tor
             video_log = [Image.fromarray(env.render(mode="rgb_array"))]
         left_rew = 0
         while not done:
+            obs_tensor = obs_as_tensor(obs, model.device)
+            #obs_tensor = torch.unsqueeze(obs_tensor, 0)
             #TODO: This if is not very clean: can probably be replaced with a single call to predict.
             if use_mirror is True:
-                (action, _states), (_, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs, env_index=env_index, deterministic=False)
-                (action_other, _), (_, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs, env_index=env_index, deterministic=False)
+                (action, _states), (_, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs_tensor, env_index=env_index, deterministic=False)
+                (action_other, _), (_, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs_tensor, env_index=env_index, deterministic=False)
                 #exploit_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
                 #action_other = exploit_action
             else:
-                (action, _states), (action_other, _states_other) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs, env_index=env_index, deterministic=False)
+                (action, _states), (action_other, _states_other) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs_tensor, env_index=env_index, deterministic=False)
             #br_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
 
             #action_other = br_action
@@ -152,29 +158,33 @@ def evaluate_single_iter_prot_adv(curr_state: str, use_mirror: bool, model: torc
         env = make_env(sf_game, state=curr_state, side='both', reset_type='round', rendering=False,
                  enable_combo=False, null_combo=False,
                  transform_action=False, seed=0)().env
+        env = env_generator()
         done = False
 
         obs = env.reset()
         if record:
             video_log = [Image.fromarray(env.render(mode="rgb_array"))]
         left_rew = 0
-        while not done:
+        while not np.any(done):
+            obs_tensor = obs_as_tensor(obs, model.device)
+            #obs_tensor = torch.unsqueeze(obs_tensor, 0)
             #TODO: This if is not very clean: can probably be replaced with a single call to predict.
             if use_mirror is True:
-                (action, _states), (action_other, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs, env_index=env_index, deterministic=False)
+                (action, _states), (action_other, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs_tensor, env_index=env_index, deterministic=False)
                 #exploit_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
                 #action_other = exploit_action
             else:
-                (action, _states), (action_other, _states_other) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs, env_index=env_index, deterministic=False)
+                (action, _states), (action_other, _states_other) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs_tensor, env_index=env_index, deterministic=False)
             #br_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
-
+            action = action.cpu().numpy()
+            action_other = action_other.cpu().numpy()
             #action_other = br_action
             obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
             left_rew += reward
             if record:
                 video_log.append(Image.fromarray(env.render(mode="rgb_array")))
 
-            if done:
+            if np.any(done):
                 if record:
                     try:
                         name = curr_state.split("/")[1]
@@ -195,7 +205,7 @@ def evaluate_single_iter_prot_adv(curr_state: str, use_mirror: bool, model: torc
                     container.close()
 
         env.close()
-        return [agent_win(info), left_rew]
+        return [agent_win(info), left_rew] # TODO: is a tuple 
 
 @torch.no_grad()
 def evaluate_single_iter_exploiter(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, greedy: int=0, record: bool=False) -> bool:
@@ -435,7 +445,7 @@ def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=N
 
 def env_generator():
     # STATE
-    each_env_count = 4
+    each_env_count = 1
     env = []
     for i in range(len(STATE)):
         for j in range(each_env_count):
@@ -519,13 +529,13 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool) 
     env = env_generator()
     env.num_envs = 1 # HACKY FOR NOW!
     try:
-        ftm = Derivative_Free_SPAR.load(checkpoint_path, env=env)
-        if ftm.policy.num_env_per_adv is None:
-            ftm.policy.num_env_per_adv = ftm.envs_per_matchup
+        ftm = CleanDerivativeFreeSPAR.load(checkpoint_path, env=env, num_perturbed=1)
+        #if ftm.policy.num_env_per_adv is None:
+        #    ftm.policy.num_env_per_adv = ftm.envs_per_matchup
     except Exception as e:
         data, params, pytorch_variables = load_from_zip_file(
             checkpoint_path)
-        ftm = Derivative_Free_SPAR(
+        ftm = CleanDerivativeFreeSPAR(
             "AACCnnPolicy",
             env,
             env_batch_size=16,

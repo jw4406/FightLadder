@@ -481,7 +481,7 @@ class SACheckpointCallback(CheckpointCallback):
             other = self.model
             other.perturbed_agent = []
             other.callback = []
-            other.save(model_path)
+            other.save(model_path, include=['state_list'])
             if self.verbose >= 2:
                 print(f"Saving model checkpoint to {model_path}")
             '''
