@@ -29,7 +29,7 @@ from .calc_F import _get_buffers_and_keys, _calculate_policy_loss, _compute_grad
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim.lr_scheduler import StepLR  #TODO: This can be changed to another scheduler.
+from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau  #TODO: This can be changed to another scheduler.
 from anyio import value
 from gym import spaces
 from stable_baselines3 import PPO
@@ -237,10 +237,10 @@ class CleanDerivativeFreeSPAR(PPO):
         self.num_workers = num_workers
 
         #Create learning rate schedulers
-        self.ctrl_scheduler = StepLR(self.policy.ctrl_optimizer, step_size=scheduler_step_size)
-        self.dstb_scheduler = StepLR(self.policy.dstb_optimizer, step_size=scheduler_step_size)
-        self.value_scheduler = StepLR(self.policy.value_optimizer, step_size=scheduler_step_size)
-    
+        self.ctrl_scheduler = ReduceLROnPlateau(self.policy.ctrl_optimizer, factor=0.5, patience=10)
+        self.dstb_scheduler = ReduceLROnPlateau(self.policy.dstb_optimizer, factor=0.5, patience=10)
+        self.value_scheduler = ReduceLROnPlateau(self.policy.value_optimizer, factor=0.5, patience=10)
+
     def _setup_model(self) -> None:
         assert self.state_list is not None
         assert self.num_adversaries is not None
@@ -287,12 +287,16 @@ class CleanDerivativeFreeSPAR(PPO):
     
     def _update_schedulers(self , step_ego, step_adv, step_val):
         """This functinon updates all schedulers and makes sure that ego_lr <= adv_lr <= value_lr is satisfied."""
+        rew_std = np.std([ep_info["r"] for ep_info in self.ep_info_buffer])
         if step_ego:
-            self.ctrl_scheduler.step()
+            self.ctrl_scheduler.step(rew_std)
         if step_adv:
-            self.dstb_scheduler.step()
+            self.dstb_scheduler.step(rew_std)
         if step_val:
-            self.value_scheduler.step()
+            self.value_scheduler.step(rew_std)
+
+        # do we need to multiply by 3 here cause train standard is called twice and
+        # train derivative free is called once?
 
         ego_lr = self.policy.ctrl_optimizer.param_groups[0]['lr']
         adv_lr = self.policy.dstb_optimizer.param_groups[0]['lr']
@@ -833,7 +837,6 @@ class CleanDerivativeFreeSPAR(PPO):
                 optimizer = self.policy.ctrl_optimizer if ego else self.policy.dstb_optimizer
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 optimizer.step()
-                self._update_schedulers(step_ego=ego, step_adv=(not ego), step_val=False)
                 with torch.no_grad():
                     log_prob, _ = self.policy.evaluate_ego_actions(ori_buf.observations, ori_buf.actions) if ego else self.policy.evaluate_adv_actions(ori_buf[0].observations, ori_buf[0].actions, buf_num=[i])
                     log_ratio = log_prob - ori_buf.log_probs if ego else log_prob - ori_buf[0].log_probs
@@ -842,6 +845,7 @@ class CleanDerivativeFreeSPAR(PPO):
                     approx_kl_divs_all.append(approx_kl_div)
 
         self._n_updates += self.n_epochs
+        self._update_schedulers(step_ego=ego, step_adv=(not ego), step_val=False)
         if hasattr(self.rollout_buffer, 'values') and self.rollout_buffer.values is not None and self.rollout_buffer.returns is not None:
              explained_var = explained_variance(self.rollout_buffer.values.flatten().detach().cpu().numpy(), self.rollout_buffer.returns.flatten().detach().cpu().numpy())
         else:
@@ -1026,11 +1030,11 @@ class CleanDerivativeFreeSPAR(PPO):
                     else:
                         self.policy.dstb_optimizer.step()
                     self.policy.value_optimizer.step()
-                    self._update_schedulers(step_ego=update_ego, step_adv=(not update_ego), step_val=True)
 
                 if not continue_training:
                     break
-
+        self._update_schedulers(step_ego=update_ego, step_adv=(not update_ego), step_val=True)
+        # check location in train derivative free
         self._n_updates += self.n_epochs
         if th.is_tensor(buf.values):
             explained_var = explained_variance(buf.values.flatten().cpu().numpy(), buf.returns.flatten().cpu().numpy())
