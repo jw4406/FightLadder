@@ -61,8 +61,7 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
 
         return actions_batch, observations_batch, returns_batch, np.array([env_ind.cpu() for env_ind in all_env_indices])
     
-    total_start_time = time.time()
-
+    # buffer.device = device
 
     #Process all rollout data and actions at once instead of batch by batch.
     actions_batch, observations_batch, returns_batch, all_env_indices = _prep_rollout_data_actions(batch_size, buffer)
@@ -79,9 +78,4 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
         policy.value_optimizer.zero_grad()
         value_loss.backward()
         th.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
-        #TODO: Need to implement a learning rate scheduler here. This is the value lr and it should be >= adv_lr and ego_lr. However, I think we might be able to get away with not updating the scheduler here.
         policy.value_optimizer.step()
-
-    total_end_time = time.time()
-    if TIMING:
-        print(f"      [Timing] Total _update_single_value_function ({tag}): {total_end_time - total_start_time:.4f}s")
