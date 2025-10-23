@@ -70,32 +70,16 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
     policy.num_adv = 1
     for i in range(len(returns_batch) // batch_size):
         values = policy.evaluate_states(
-        observations_batch[i * batch_size:(i + 1) * batch_size],
-        #actions_batch[i * batch_size:(i + 1) * batch_size],
-        #dstb_actions_batch[i * batch_size:(i + 1) * batch_size],
-        #shuffle_keys=all_env_indices[i * batch_size:(i + 1) * batch_size],
-        #network_keys=[adversary_index], envs_per_matchup=envs_per_matchup
-        buf_num=[adversary_index],
-        env_indices=all_env_indices[i * batch_size:(i + 1) * batch_size]
-        )
-        #policy.train(True)
-        #torch.backends.cudnn.enabled = False
+            observations_batch[i * batch_size:(i + 1) * batch_size],
+            buf_num=[adversary_index],
+            env_indices=all_env_indices[i * batch_size:(i + 1) * batch_size]
+            )
         values = -values.flatten()
-        # offset = 12 # vf extractor and shared trunk are 12
-        # num_per_head = 10 # lstm = 6, 2 linear layers = 2 + 2, total 10
         value_loss = F.mse_loss(values, returns_batch[i * batch_size:(i + 1) * batch_size])
-        # indices = list(range(0, offset)) + list(range(offset + adversary_index * num_per_head, offset + (adversary_index + 1) * num_per_head))
-        # value_grads = th.autograd.grad(value_loss, [policy.value_optimizer.param_groups[0]['params'][j] for j in indices])
-        #value_grads = th.cat([grad.view(-1) for grad in value_grads])
         policy.value_optimizer.zero_grad()
-        # for i in range(len(value_grads)):
-        #     policy.value_optimizer.param_groups[0]['params'][indices[i]].grad = value_grads[i]
         value_loss.backward()
-        #policy.value_optimizer.zero_grad()
-        #for i in range(len(policy.value_optimizer.param_groups[0]['params'])):
-        #    policy.value_optimizer.param_groups[0]['params'][i].grad = value_grads[i]
-        #value_loss.backward()
         th.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
+        #TODO: Need to implement a learning rate scheduler here. This is the value lr and it should be >= adv_lr and ego_lr. However, I think we might be able to get away with not updating the scheduler here.
         policy.value_optimizer.step()
 
     total_end_time = time.time()
