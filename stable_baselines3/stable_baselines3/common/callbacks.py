@@ -342,8 +342,9 @@ class FileQueueTriggerCallback(CheckpointCallback):
                 "--wrap", " ".join(wrap),
             ]
 
-            result = subprocess.run(cmd,check=True, capture_output=True, text=True)
-            return result.stdout.strip()
+            #TODO: These lines are commented for debugging purposes - uncomment when done
+            # result = subprocess.run(cmd,check=True, capture_output=True, text=True)
+            # return result.stdout.strip()
 
         # The path to the checkpoint that was just saved
         if self.n_calls % self.save_freq == 0:

@@ -29,6 +29,7 @@ from .calc_F import _get_buffers_and_keys, _calculate_policy_loss, _compute_grad
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.optim.lr_scheduler import StepLR  #TODO: This can be changed to another scheduler.
 from anyio import value
 from gym import spaces
 from stable_baselines3 import PPO
@@ -119,6 +120,7 @@ class CleanDerivativeFreeSPAR(PPO):
             n_env_per_adv=None,
             use_mirror=False,
             num_workers=None,
+            scheduler_step_size: int=10, #TODO: 10 was chosen arbitrarily - should be changed.
     ):
 
         self.matchups = [state2matchup(state) for state in state_list] if state_list is not None else None #This needs to happen before the super().__init__
@@ -233,6 +235,12 @@ class CleanDerivativeFreeSPAR(PPO):
         self.env.num_envs = self.n_envs
         self.use_mirror = use_mirror
         self.num_workers = num_workers
+
+        #Create learning rate schedulers
+        self.ctrl_scheduler = StepLR(self.policy.ctrl_optimizer, step_size=scheduler_step_size)
+        self.dstb_scheduler = StepLR(self.policy.dstb_optimizer, step_size=scheduler_step_size)
+        self.value_scheduler = StepLR(self.policy.value_optimizer, step_size=scheduler_step_size)
+    
     def _setup_model(self) -> None:
         assert self.state_list is not None
         assert self.num_adversaries is not None
@@ -276,6 +284,31 @@ class CleanDerivativeFreeSPAR(PPO):
         )
 
         self.policy = self.policy.to(self.device)
+    
+    def _update_schedulers(self , step_ego, step_adv, step_val):
+        """This functinon updates all schedulers and makes sure that ego_lr <= adv_lr <= value_lr is satisfied."""
+        if step_ego:
+            self.ctrl_scheduler.step()
+        if step_adv:
+            self.dstb_scheduler.step()
+        if step_val:
+            self.value_scheduler.step()
+
+        ego_lr = self.policy.ctrl_optimizer.param_groups[0]['lr']
+        adv_lr = self.policy.dstb_optimizer.param_groups[0]['lr']
+        value_lr = self.policy.value_optimizer.param_groups[0]['lr']
+        
+        #TODO: Justin - I don't know if this is the rule you want - please go over it and change it if necessary.
+        # Clamp to maintain ordering
+        ego_lr = min(ego_lr, adv_lr, value_lr)
+        adv_lr = min(max(ego_lr, adv_lr), value_lr)
+        value_lr = max(ego_lr, adv_lr, value_lr)
+        
+        self.policy.ctrl_optimizer.param_groups[0]['lr'] = ego_lr
+        self.policy.dstb_optimizer.param_groups[0]['lr'] = adv_lr
+        self.policy.value_optimizer.param_groups[0]['lr'] = value_lr
+
+
     def collect_rollouts(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True, use_mirror: bool = False) -> bool:
         if self.use_mirror:
             return self.collect_rollouts_mirror(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, update_ego, update_adversary)
@@ -395,6 +428,7 @@ class CleanDerivativeFreeSPAR(PPO):
             adversary_buffers[i].prepare_data_for_training()
 
         return True
+    
     def collect_rollouts_mirror(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True) -> bool:
         assert self.use_mirror is True, "Use mirror is not True"
         assert self._last_obs is not None, "No previous observation was provided"
@@ -798,7 +832,8 @@ class CleanDerivativeFreeSPAR(PPO):
                 
                 optimizer = self.policy.ctrl_optimizer if ego else self.policy.dstb_optimizer
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                optimizer.step()                
+                optimizer.step()
+                self._update_schedulers(step_ego=ego, step_adv=(not ego), step_val=False)
                 with torch.no_grad():
                     log_prob, _ = self.policy.evaluate_ego_actions(ori_buf.observations, ori_buf.actions) if ego else self.policy.evaluate_adv_actions(ori_buf[0].observations, ori_buf[0].actions, buf_num=[i])
                     log_ratio = log_prob - ori_buf.log_probs if ego else log_prob - ori_buf[0].log_probs
@@ -991,6 +1026,7 @@ class CleanDerivativeFreeSPAR(PPO):
                     else:
                         self.policy.dstb_optimizer.step()
                     self.policy.value_optimizer.step()
+                    self._update_schedulers(step_ego=update_ego, step_adv=(not update_ego), step_val=True)
 
                 if not continue_training:
                     break
