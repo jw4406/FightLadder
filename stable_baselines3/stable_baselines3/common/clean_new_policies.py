@@ -32,7 +32,7 @@ from .policies import ActorCriticPolicy, ActorCriticCnnPolicy, MultiInputActorCr
 from typing import Union, Type, Optional, Dict, Any, List, Tuple
 #from stable_baselines3.common.clean_new_policies import CleanActorActorCriticPolicy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor, FlattenExtractor, MlpExtractorAdv, NatureCNN
-from utils import select_matchup_env
+from utils import select_matchup_env, move_optimizer_to_device
 
 class CleanActorActorCriticPolicy(ActorCriticPolicy):
     def __init__(self,
@@ -106,8 +106,8 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         net_arch = dict(pi=[256,256], vf=[256,256])
         self.net_arch = net_arch
         self._build_network(lr_schedule)
-
         print("hello")
+
     def _build_mlp_extractor(self, extra=False) -> None:
         """
         Create the policy and value networks.
@@ -124,6 +124,7 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             adversarial=True,
             context_dim=0
         ) 
+
     def _build_network(self, joint_schedule: Schedule) -> None:
         """
         Create the networks and the optimizer.
@@ -264,7 +265,6 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
                 dstb_actions[buf_num[i] * latents_per_adv : (buf_num[i]+1) * latents_per_adv, :] = self.dstb_action_net[key](latent_pi_dstb[buf_num[i] * latents_per_adv : (buf_num[i]+1) * latents_per_adv, :])
         return [self.dstb_action_dist[buf_num[i]].proba_distribution(action_logits=dstb_actions[buf_num[i] * latents_per_adv : (buf_num[i]+1) * latents_per_adv, :]) for i in range(len(buf_num))]
         
-
     def ego_forward(self, obs, deterministic=False) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
         new_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
         pi_ctrl_features = self.pi_ctrl_features_extractor(new_obs)
@@ -376,3 +376,9 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
        ego_actions, ego_log_prob = self.ego_forward(obs, deterministic)
        adv_actions, adv_log_prob = self.adv_forward(obs, deterministic)
        return (ego_actions, ego_log_prob), (adv_actions, adv_log_prob)
+    
+    def move_all_optimizers(self, device: torch.device) -> None:
+        """This function moves all optimizers to the device."""
+        for optimizer_name in ['value_optimizer', 'ctrl_optimizer', 'dstb_optimizer']:
+            optimizer = getattr(self, optimizer_name, None)
+            move_optimizer_to_device(optimizer, device)
