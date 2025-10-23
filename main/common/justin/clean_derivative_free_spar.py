@@ -312,7 +312,6 @@ class CleanDerivativeFreeSPAR(PPO):
         self.policy.dstb_optimizer.param_groups[0]['lr'] = adv_lr
         self.policy.value_optimizer.param_groups[0]['lr'] = value_lr
 
-
     def collect_rollouts(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True, use_mirror: bool = False) -> bool:
         if self.use_mirror:
             return self.collect_rollouts_mirror(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, update_ego, update_adversary)

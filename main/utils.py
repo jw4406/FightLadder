@@ -58,6 +58,8 @@ def move_policy(policy: torch.nn.Module, device: torch.device) -> None:
     _move_if_exists(policy, device, "features_extractor")
     _move_if_exists(policy, device, "action_net")
     _move_if_exists(policy, device, "value_net")
+    if hasattr(policy, "move_all_optimizers"):
+        policy.move_all_optimizers(device)
 
 def get_n_workers() -> tuple:
     """
@@ -126,3 +128,12 @@ def mirror_flip_attributes(attribute1, attribute2):
     adv_actions[:halfway] = adv_right
     adv_actions[halfway:] = prot_left_pre
     return prot_actions, adv_actions
+
+def move_optimizer_to_device(optimizer: torch.optim.Optimizer, device: torch.device) -> None:
+    """Move all optimizer state tensors to the specified device."""
+    if not optimizer:
+        return
+    for state in optimizer.state.values():
+        for k, v in state.items():
+            if isinstance(v, torch.Tensor):
+                state[k] = v.to(device)
