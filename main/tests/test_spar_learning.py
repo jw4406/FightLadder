@@ -109,68 +109,71 @@ class TestAdvantageValueRewardsSign(unittest.TestCase):
 
         self.env = env_generator()
 
-    # def test_ego_forward(self):   
-    #     env = env_generator()
-    #     model = CleanDerivativeFreeSPAR(
-    #         policy="AACCnnPolicy",
-    #         env=env,
-    #         n_steps=self.n_steps,
-    #         batch_size=self.batch_size,
-    #         n_epochs=self.n_epochs,
-    #         num_adversaries=num_adversaries,
-    #         n_env_per_adv=n_env_per_adv,
-    #         state_list=STATE,
-    #         envs_per_matchup=envs_per_matchup,
-    #         env_generator_func=env_generator,
-    #         dstb_action_space=MultiBinary(15),
-    #         verbose=1
-    #     )
-    #     model.learn(total_timesteps=model.n_steps * 15, update_ego=True, update_adversary=False)
-    #     mean_reward = safe_mean([ep_info["r"] for ep_info in model.ep_info_buffer])
-    #     env.close()
-    #     self.assertGreater(mean_reward, self.mean_reward_threshold, f"Mean reward {mean_reward} is not > {self.mean_reward_threshold}.")
+    @unittest.skip
+    def test_ego_forward(self):   
+        env = env_generator()
+        model = CleanDerivativeFreeSPAR(
+            policy="AACCnnPolicy",
+            env=env,
+            n_steps=self.n_steps,
+            batch_size=self.batch_size,
+            n_epochs=self.n_epochs,
+            num_adversaries=num_adversaries,
+            n_env_per_adv=n_env_per_adv,
+            state_list=STATE,
+            envs_per_matchup=envs_per_matchup,
+            env_generator_func=env_generator,
+            dstb_action_space=MultiBinary(15),
+            verbose=1
+        )
+        model.learn(total_timesteps=model.n_steps * 15, update_ego=True, update_adversary=False)
+        mean_reward = safe_mean([ep_info["r"] for ep_info in model.ep_info_buffer])
+        env.close()
+        self.assertGreater(mean_reward, self.mean_reward_threshold, f"Mean reward {mean_reward} is not > {self.mean_reward_threshold}.")
 
-    # def test_adversary_forward(self):
-    #     model = CleanDerivativeFreeSPAR(
-    #         policy="AACCnnPolicy",
-    #         env=self.env,
-    #         n_steps=self.n_steps,
-    #         batch_size=self.batch_size,
-    #         n_epochs=self.n_epochs,
-    #         num_adversaries=num_adversaries,
-    #         n_env_per_adv=n_env_per_adv,
-    #         state_list=STATE,
-    #         envs_per_matchup=envs_per_matchup,
-    #         env_generator_func=env_generator,
-    #         dstb_action_space=MultiBinary(15),
-    #         verbose=1
-    #     )
-    #     model.learn(total_timesteps=model.n_steps * 15, update_ego=False, update_adversary=True)
-    #     mean_reward = safe_mean([ep_info["r"] for ep_info in model.ep_info_buffer])
-    #     self.env.close()
-    #     self.assertLess(mean_reward, -self.mean_reward_threshold, f"Mean reward {mean_reward} is not < -{self.mean_reward_threshold}.")
+    @unittest.skip
+    def test_adversary_forward(self):
+        model = CleanDerivativeFreeSPAR(
+            policy="AACCnnPolicy",
+            env=self.env,
+            n_steps=self.n_steps,
+            batch_size=self.batch_size,
+            n_epochs=self.n_epochs,
+            num_adversaries=num_adversaries,
+            n_env_per_adv=n_env_per_adv,
+            state_list=STATE,
+            envs_per_matchup=envs_per_matchup,
+            env_generator_func=env_generator,
+            dstb_action_space=MultiBinary(15),
+            verbose=1
+        )
+        model.learn(total_timesteps=model.n_steps * 15, update_ego=False, update_adversary=True)
+        mean_reward = safe_mean([ep_info["r"] for ep_info in model.ep_info_buffer])
+        self.env.close()
+        self.assertLess(mean_reward, -self.mean_reward_threshold, f"Mean reward {mean_reward} is not < -{self.mean_reward_threshold}.")
 
-    # def test_advantage_value_rewards_sign(self):
-    #     model = CleanDerivativeFreeSPAR(
-    #         policy="AACCnnPolicy",
-    #         env=self.env,
-    #         n_steps=self.n_steps,
-    #         batch_size=self.batch_size,
-    #         n_epochs=self.n_epochs,
-    #         num_adversaries=num_adversaries,
-    #         n_env_per_adv=n_env_per_adv,
-    #         state_list=STATE,
-    #         envs_per_matchup=envs_per_matchup,
-    #         env_generator_func=env_generator,
-    #         dstb_action_space=MultiBinary(15),
-    #         verbose=1
-    #     )
-    #     model.learn(total_timesteps=model.n_steps, update_ego=False, update_adversary=True)
-    #     self.env.close()
-    #     self.assertTrue(torch.allclose(model.adversary_buffers[0].values + model.rollout_buffer.values, torch.zeros_like(model.adversary_buffers[0].values)))
-    #     self.assertTrue(np.allclose(model.adversary_buffers[0].rewards + model.rollout_buffer.rewards, np.zeros_like(model.adversary_buffers[0].rewards)))
-    #     summed_advantages = model.rollout_buffer.advantages + model.adversary_buffers[0].advantages
-    #     self.assertTrue(torch.allclose(summed_advantages, torch.zeros_like(summed_advantages)))
+    @unittest.skip
+    def test_advantage_value_rewards_sign(self):
+        model = CleanDerivativeFreeSPAR(
+            policy="AACCnnPolicy",
+            env=self.env,
+            n_steps=self.n_steps,
+            batch_size=self.batch_size,
+            n_epochs=self.n_epochs,
+            num_adversaries=num_adversaries,
+            n_env_per_adv=n_env_per_adv,
+            state_list=STATE,
+            envs_per_matchup=envs_per_matchup,
+            env_generator_func=env_generator,
+            dstb_action_space=MultiBinary(15),
+            verbose=1
+        )
+        model.learn(total_timesteps=model.n_steps, update_ego=False, update_adversary=True)
+        self.env.close()
+        self.assertTrue(torch.allclose(model.adversary_buffers[0].values + model.rollout_buffer.values, torch.zeros_like(model.adversary_buffers[0].values)))
+        self.assertTrue(np.allclose(model.adversary_buffers[0].rewards + model.rollout_buffer.rewards, np.zeros_like(model.adversary_buffers[0].rewards)))
+        summed_advantages = model.rollout_buffer.advantages + model.adversary_buffers[0].advantages
+        self.assertTrue(torch.allclose(summed_advantages, torch.zeros_like(summed_advantages)))
 
     def test_mirror_flip_attributes(self):
         actions = np.array([[1, 2, 3], [4, 5, 6]])
