@@ -49,8 +49,8 @@ BR_TRAINING_STEPS = 10000000
 PLAYER = "Guile"
 SIDE = "left"
 player_folder_name = PLAYER + '_' + SIDE
-
-STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name, PLAYER, PLAYER) for i in range(2)]
+video_dir = 'videos/spar_spar_%s' % PLAYER
+STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name, PLAYER, PLAYER) for i in range(1)]
 
 # TODO: this is static right now. need to make this dynamic based on the state list from the task file.
 
@@ -94,9 +94,6 @@ def evaluate_single_iter_prot_prot(curr_state: str, use_mirror: bool, model: tor
         Returns True if won and False otherwise.
         """
         
-        env = make_env(sf_game, state=curr_state, side='both', reset_type='round', rendering=False,
-                 enable_combo=False, null_combo=False,
-                 transform_action=False, seed=0)().env
         env = env_generator()
         done = False
 
@@ -130,7 +127,7 @@ def evaluate_single_iter_prot_prot(curr_state: str, use_mirror: bool, model: tor
                     except:
                         name = curr_state
                     height, width, layers = np.array(video_log[0]).shape
-                    container = av.open(f"{args.video_dir}/{name}_episode_{j}.mp4", mode='w')
+                    container = av.open(f"{video_dir}/{name}_episode_{j}.mp4", mode='w')
                     stream = container.add_stream('h264', rate=10)
                     stream.width = width
                     stream.height = height
@@ -146,7 +143,7 @@ def evaluate_single_iter_prot_prot(curr_state: str, use_mirror: bool, model: tor
         env.close()
         return agent_win(info), left_rew
 @torch.no_grad()
-def evaluate_single_iter_prot_adv(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, greedy: int=0, record: bool=False) -> bool:
+def evaluate_single_iter_prot_adv(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, greedy: int=0, record: bool=False, worker_number: int=0, episode_number: int=0) -> bool:
         """
         This function evaluates a single episode and returns win or loss.
         
@@ -191,7 +188,7 @@ def evaluate_single_iter_prot_adv(curr_state: str, use_mirror: bool, model: torc
                     except:
                         name = curr_state
                     height, width, layers = np.array(video_log[0]).shape
-                    container = av.open(f"{args.video_dir}/{name}_episode_{j}.mp4", mode='w')
+                    container = av.open(f"{video_dir}/{name}_worker_num_{worker_number}_episode_{episode_number}.mp4", mode='w')
                     stream = container.add_stream('h264', rate=10)
                     stream.width = width
                     stream.height = height
@@ -205,7 +202,7 @@ def evaluate_single_iter_prot_adv(curr_state: str, use_mirror: bool, model: torc
                     container.close()
 
         env.close()
-        return [agent_win(info), left_rew] # TODO: is a tuple 
+        return [agent_win(info[0]), left_rew] # TODO: is a tuple 
 
 @torch.no_grad()
 def evaluate_single_iter_exploiter(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, greedy: int=0, record: bool=False) -> bool:
@@ -273,7 +270,7 @@ def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module
 
         win_count = 0
         rew_arr = []
-        for _ in range(episodes):
+        for ep_num in range(episodes):
             if type(model) is type(exploiter_model):
                 joined_win_rew = evaluate_single_iter_exploiter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
                 win_count += joined_win_rew[0]
@@ -286,7 +283,7 @@ def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module
                 #win_count += evaluate_single_iter_prot_prot(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
             else:
                 #assert use_mirror is True
-                joined_win_rew = evaluate_single_iter_prot_adv(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
+                joined_win_rew = evaluate_single_iter_prot_adv(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record, worker_number=pid, episode_number=ep_num)
                 win_count += joined_win_rew[0]
                 rew_arr.append(joined_win_rew[1])
                 #win_count += evaluate_single_iter_prot_adv(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
@@ -295,7 +292,7 @@ def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module
         print(f"Worker {pid} failed with exception {e}")
         raise
 
-def evaluate_sa_parallel(curr_state: str, model: Generalist_SPAR, exploiter_model: Exploiter, env_index: int, greedy: int=0, record: bool=False, num_episodes: int=50, num_workers: int=12, use_mirror: bool=False, eval_prot: bool = False) -> float:
+def evaluate_sa_parallel(curr_state: str, model: Generalist_SPAR, exploiter_model: Exploiter, env_index: int, greedy: int=0, record: bool=False, num_episodes: int=50, num_workers: int=10, use_mirror: bool=False, eval_prot: bool = False) -> float:
     #Set up multiprocessing
     if __name__=="__main__":
         mp.set_start_method("spawn", force=True)
@@ -538,34 +535,19 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool) 
         ftm = CleanDerivativeFreeSPAR(
             "AACCnnPolicy",
             env,
-            env_batch_size=16,
-            envs_per_matchup=4,
-            state_len=len(STATE),
             device="cuda",
             verbose=2,
-            n_steps=96,  # 1408,
-            batch_size=48,  # 2816,  # 512,
-            n_epochs=5,
-            gamma=0.94,
-            v_learning_rate=5e-4, c_learning_rate=1e-5,
-            d_learning_rate=5e-5, v_learning_rate_decay=critic_decay_schedule(1e-3),
-            c_learning_rate_decay=critic_decay_schedule(1e-4),
-            d_learning_rate_decay=critic_decay_schedule(5e-4),
-            clip_range=linear_schedule(0.075, 0.025),
-            tensorboard_log='logs',
-            seed=0,
-            ent_coef=.01,
-            dstb_ent_coef=.01,
-            I_AM_LEFT=True,
-            I_AM_RIGHT=False,
-            num_adversary=1,
-            n_global_env=4,
-            n_env_per_adv=4,
-            opp_list=[PLAYER],
-            player='_'.join(PLAYER),
-            use_mirror=use_mirror,
-            env_generator_func=env_generator,
+            n_steps=256,
+            batch_size=512,
+            n_epochs=1,
             state_list=STATE,
+            envs_per_matchup=1,
+            env_generator_func=env_generator,
+            num_adversaries=1,
+            n_env_per_adv=1,
+            seed= 0,
+            target_kl=0.025,
+            use_mirror=False
         )
         ftm.set_parameters(params, exact_match=True, device=ftm.device)
     use_mirror = ftm.use_mirror
@@ -610,7 +592,7 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool) 
 
     # eval BR against ego right here! both models are already in namespace.
 
-    wr, mean_rew = evaluate_sa_parallel(curr_state=STATE[0], model=ftm, exploiter_model=br_agent, env_index=0, record=False, use_mirror=use_mirror, eval_prot=eval_prot)
+    wr, mean_rew = evaluate_sa_parallel(curr_state=STATE[0], model=ftm, exploiter_model=br_agent, env_index=0, record=True, use_mirror=use_mirror, eval_prot=eval_prot)
     
     if ego_timestep is not None:
         wr_filename = os.path.join(WR_STATS_DIR, f"{ego_timestep}.txt")
