@@ -261,6 +261,87 @@ def evaluate_single_iter_exploiter(curr_state: str, use_mirror: bool, model: tor
 
         env.close()
         return agent_win(info), left_rew
+def save_episode_video(curr_state, video_log: list, name: str, worker_number: int = 0, episode_number: int = 0):
+    try:
+        name = curr_state.split("/")[1]
+    except:
+        name = curr_state
+    height, width, layers = np.array(video_log[0]).shape
+    container = av.open(f"{video_dir}/{name}_worker_num_{worker_number}_episode_{episode_number}.mp4", mode='w')
+    stream = container.add_stream('h264', rate=10)
+    stream.width = width
+    stream.height = height
+    stream.pix_fmt = 'yuv420p'
+    for img in video_log:
+        frame = av.VideoFrame.from_image(img)
+        for packet in stream.encode(frame):
+            container.mux(packet)
+    remain_packets = stream.encode(None)
+    container.mux(remain_packets)
+    container.close()
+
+def evaluate_single_iter(curr_state: str, use_mirror: bool, model: torch.nn.Module,record: bool, env_index: int, exploiter_model: torch.nn.Module = None, greedy: int=0, eval_prot: bool = False)-> bool:
+    # flag checks
+
+    # cases:
+    # 1. use_mirror is True and eval_prot is True: play prot against prot, exploiter model is None
+    # 2. use_mirror is True and eval_prot is False: play prot against adv, exploiter model is None
+    # 3. exploiter_model is not None and eval_prot is True: play prot against exploiter, use_mirror is False
+    # 4. exploiter_model is not None and eval_prot is False: play adv against exploiter, use_mirror is False
+    # 5. use_mirror is False, exploiter model is None, eval_prot is False: play prot against adv (this is the default case)
+    # 6. use_mirror is False, exploiter model is None, eval_prot is True: raise error (this is not possible)
+
+    if use_mirror is True:
+        if exploiter_model is not None:
+            raise ValueError("Exploiter model should not be used when use_mirror is True -- we just play prot against adv")
+    if use_mirror is False:
+        if exploiter_model is None:
+            raise ValueError("Exploiter model should not be None when use_mirror is False")
+    if use_mirror is False and exploiter_model is None and eval_prot is False:
+        print("playing default: prot against adv")
+    if use_mirror is False and exploiter_model is None and eval_prot is True:
+        raise ValueError("Eval prot should not be used when use_mirror is False and exploiter model is None")
+
+    env = env_generator()
+    obs = env.reset()
+    done = False
+    video_log = []
+    while not np.any(done):
+        obs_tensor = obs_as_tensor(obs, model.device)
+        if exploiter_model is not None:
+            (action, _states), (action_other, _states_other) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs_tensor, env_index=env_index, deterministic=False)
+            exploiter_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
+            if eval_prot is True:
+                left_action = action
+                right_action = action_other
+            else:
+                left_action = action_other
+                right_action = action
+        else:
+            if use_mirror is True and eval_prot is True:
+                (action, _states), (_, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs_tensor, env_index=env_index, deterministic=False)
+                (action_other, _states_other), (_, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs_tensor, env_index=env_index, deterministic=False)
+                left_action = action
+                right_action = action_other
+            elif use_mirror is True and eval_prot is False:
+                (_, _), (action, _states_other) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs_tensor, env_index=env_index, deterministic=False)
+                (_, _), (action_other, _states) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs_tensor, env_index=env_index, deterministic=False)
+                left_action = action
+                right_action = action_other
+            elif use_mirror is False and eval_prot is False:
+                (action, _states), (action_other, _states_other) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs_tensor, env_index=env_index, deterministic=False)
+                left_action = action
+                right_action = action_other
+            else:
+                print("current flags: use_mirror={use_mirror}, eval_prot={eval_prot}, exploiter_model={exploiter_model}")
+                raise ValueError("got impossible flag combination")
+        
+        obs, reward, reward_other, done, info = env.step(np.hstack([left_action, right_action]))
+        left_rew += reward
+        if record:
+            video_log.append(Image.fromarray(env.render(mode="rgb_array")))
+    return agent_win(info[0]), left_rew
+
 
 def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, return_list: DictProxy, pid: int, episodes: int, greedy: int=0, record: bool=False, eval_prot: bool = False):
     try:
@@ -271,22 +352,25 @@ def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module
         win_count = 0
         rew_arr = []
         for ep_num in range(episodes):
-            if type(model) is type(exploiter_model):
-                joined_win_rew = evaluate_single_iter_exploiter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
-                win_count += joined_win_rew[0]
-                rew_arr.append(joined_win_rew[1])
-                #win_count += evaluate_single_iter_exploiter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
-            elif use_mirror is True and eval_prot is True:
-                joined_win_rew = evaluate_single_iter_prot_prot(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
-                win_count += joined_win_rew[0]
-                rew_arr.append(joined_win_rew[1])
-                #win_count += evaluate_single_iter_prot_prot(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
-            else:
-                #assert use_mirror is True
-                joined_win_rew = evaluate_single_iter_prot_adv(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record, worker_number=pid, episode_number=ep_num)
-                win_count += joined_win_rew[0]
-                rew_arr.append(joined_win_rew[1])
-                #win_count += evaluate_single_iter_prot_adv(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
+            joined_win_rew = evaluate_single_iter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record, eval_prot=eval_prot)
+            win_count += joined_win_rew[0]
+            rew_arr.append(joined_win_rew[1])
+            # if type(model) is type(exploiter_model):
+            #     joined_win_rew = evaluate_single_iter_exploiter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
+            #     win_count += joined_win_rew[0]
+            #     rew_arr.append(joined_win_rew[1])
+            #     #win_count += evaluate_single_iter_exploiter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
+            # elif use_mirror is True and eval_prot is True:
+            #     joined_win_rew = evaluate_single_iter_prot_prot(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
+            #     win_count += joined_win_rew[0]
+            #     rew_arr.append(joined_win_rew[1])
+            #     #win_count += evaluate_single_iter_prot_prot(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
+            # else:
+            #     #assert use_mirror is True
+            #     joined_win_rew = evaluate_single_iter_prot_adv(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record, worker_number=pid, episode_number=ep_num)
+            #     win_count += joined_win_rew[0]
+            #     rew_arr.append(joined_win_rew[1])
+            #     #win_count += evaluate_single_iter_prot_adv(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
         return_list[pid] = [win_count, rew_arr]
     except Exception as e:
         print(f"Worker {pid} failed with exception {e}")
@@ -332,75 +416,6 @@ def evaluate_sa_parallel(curr_state: str, model: Generalist_SPAR, exploiter_mode
     print(f"Winning rate: {win_rate:.2f}")
     return win_rate, avg_rew    
 
-#TODO: Once we are satisfied with evaluate_sa_parallel, we can remove this function (to avoid code bloating).
-# @torch.no_grad()
-# def evaluate_sa(curr_state: str, model: Generalist_SPAR, exploiter_model: Exploiter, env_index: int, greedy: int=0, record: bool=False):
-#     #assert isinstance(model, Specialized_Agent)
-#     # global STATE
-#     num_episodes = 50
-#     win_cnt = 0
-#     vic = np.zeros((50,))
-#     # env = []
-#     for j in range(1, num_episodes + 1):
-#         env = make_env(sf_game, state=curr_state, side='both', reset_type='round', rendering=False,
-#                  enable_combo=False, null_combo=False,
-#                  transform_action=False, seed=0)().env
-#         done = False
-
-#         obs = env.reset()
-#         if record:
-#             video_log = [Image.fromarray(env.render(mode="rgb_array"))]
-
-#         while not done:
-#             if model.use_mirror is True:
-#                 (action, _states), (_, _) = model.predict(obs, env_index, deterministic=False)
-#                 exploit_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
-#                 action_other = exploit_action
-
-#             else:
-#                 if np.random.uniform() > greedy:
-#                     (action, _states), (action_other, _states_other) = model.predict(obs, env_index,
-#                                                                                      deterministic=False)
-#                 else:
-#                     (action, _states), (action_other, _states_other) = model.predict(obs, env_index,
-#                                                                                      deterministic=False)
-#             br_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
-
-#             action_other = br_action
-#             obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
-#             if record:
-#                 video_log.append(Image.fromarray(env.render(mode="rgb_array")))
-
-#             if done:
-#                 if record:
-#                     try:
-#                         name = curr_state.split("/")[1]
-#                     except:
-#                         name = curr_state
-#                     height, width, layers = np.array(video_log[0]).shape
-#                     container = av.open(f"{args.video_dir}/{name}_episode_{j}.mp4", mode='w')
-#                     stream = container.add_stream('h264', rate=10)
-#                     stream.width = width
-#                     stream.height = height
-#                     stream.pix_fmt = 'yuv420p'
-#                     for img in video_log:
-#                         frame = av.VideoFrame.from_image(img)
-#                         for packet in stream.encode(frame):
-#                             container.mux(packet)
-#                     remain_packets = stream.encode(None)
-#                     container.mux(remain_packets)
-#                     container.close()
-
-#         if info['enemy_hp'] < info['agent_hp']:
-#             print("Victory!")
-#             # vic[j-1] = 1
-#             win_cnt += 1
-
-#         env.close()
-
-#     win_rate = win_cnt / num_episodes
-#     print("Winning rate: {}".format(win_rate))
-#     return win_rate
 
 def const_schedule(initial_value: float):
     def func(progress_remaining: float) -> float:
@@ -526,7 +541,7 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool) 
     env = env_generator()
     env.num_envs = 1 # HACKY FOR NOW!
     try:
-        ftm = CleanDerivativeFreeSPAR.load(checkpoint_path, env=env, num_perturbed=1)
+        ftm = CleanDerivativeFreeSPAR.load(path=checkpoint_path, env=env, num_perturbed=1)
         #if ftm.policy.num_env_per_adv is None:
         #    ftm.policy.num_env_per_adv = ftm.envs_per_matchup
     except Exception as e:
