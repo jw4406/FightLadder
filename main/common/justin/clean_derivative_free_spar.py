@@ -237,9 +237,6 @@ class CleanDerivativeFreeSPAR(PPO):
         self.num_workers = num_workers
 
         #Create learning rate schedulers
-        self.ctrl_scheduler = ReduceLROnPlateau(self.policy.ctrl_optimizer, factor=0.5, patience=10)
-        self.dstb_scheduler = ReduceLROnPlateau(self.policy.dstb_optimizer, factor=0.5, patience=10)
-        self.value_scheduler = ReduceLROnPlateau(self.policy.value_optimizer, factor=0.5, patience=10)
 
     def _setup_model(self) -> None:
         assert self.state_list is not None
@@ -284,6 +281,9 @@ class CleanDerivativeFreeSPAR(PPO):
         )
 
         self.policy = self.policy.to(self.device)
+        self.ctrl_scheduler = ReduceLROnPlateau(self.policy.ctrl_optimizer, factor=0.5, patience=10)
+        self.dstb_scheduler = ReduceLROnPlateau(self.policy.dstb_optimizer, factor=0.5, patience=10)
+        self.value_scheduler = ReduceLROnPlateau(self.policy.value_optimizer, factor=0.5, patience=10)
     
     def _update_schedulers(self , step_ego, step_adv, step_val):
         """This functinon updates all schedulers and makes sure that ego_lr <= adv_lr <= value_lr is satisfied."""
