@@ -85,182 +85,6 @@ def gen_dummy_policy(exploiter_model: Exploiter) -> torch.nn.Module:
     
 
 @torch.no_grad()
-def evaluate_single_iter_prot_prot(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, greedy: int=0, record: bool=False) -> bool:
-        """
-        This function evaluates a single episode and returns win or loss.
-        
-        Args: TODO: Complete the docstring
-
-        Returns True if won and False otherwise.
-        """
-        
-        env = env_generator()
-        done = False
-
-        obs = env.reset()
-        if record:
-            video_log = [Image.fromarray(env.render(mode="rgb_array"))]
-        left_rew = 0
-        while not done:
-            obs_tensor = obs_as_tensor(obs, model.device)
-            #obs_tensor = torch.unsqueeze(obs_tensor, 0)
-            #TODO: This if is not very clean: can probably be replaced with a single call to predict.
-            if use_mirror is True:
-                (action, _states), (_, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs_tensor, env_index=env_index, deterministic=False)
-                (action_other, _), (_, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs_tensor, env_index=env_index, deterministic=False)
-                #exploit_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
-                #action_other = exploit_action
-            else:
-                (action, _states), (action_other, _states_other) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs_tensor, env_index=env_index, deterministic=False)
-            #br_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
-
-            #action_other = br_action
-            obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
-            left_rew += reward
-            if record:
-                video_log.append(Image.fromarray(env.render(mode="rgb_array")))
-
-            if done:
-                if record:
-                    try:
-                        name = curr_state.split("/")[1]
-                    except:
-                        name = curr_state
-                    height, width, layers = np.array(video_log[0]).shape
-                    container = av.open(f"{video_dir}/{name}_episode_{j}.mp4", mode='w')
-                    stream = container.add_stream('h264', rate=10)
-                    stream.width = width
-                    stream.height = height
-                    stream.pix_fmt = 'yuv420p'
-                    for img in video_log:
-                        frame = av.VideoFrame.from_image(img)
-                        for packet in stream.encode(frame):
-                            container.mux(packet)
-                    remain_packets = stream.encode(None)
-                    container.mux(remain_packets)
-                    container.close()
-
-        env.close()
-        return agent_win(info), left_rew
-@torch.no_grad()
-def evaluate_single_iter_prot_adv(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, greedy: int=0, record: bool=False, worker_number: int=0, episode_number: int=0) -> bool:
-        """
-        This function evaluates a single episode and returns win or loss.
-        
-        Args: TODO: Complete the docstring
-
-        Returns True if won and False otherwise.
-        """
-        
-        env = make_env(sf_game, state=curr_state, side='both', reset_type='round', rendering=False,
-                 enable_combo=False, null_combo=False,
-                 transform_action=False, seed=0)().env
-        env = env_generator()
-        done = False
-
-        obs = env.reset()
-        if record:
-            video_log = [Image.fromarray(env.render(mode="rgb_array"))]
-        left_rew = 0
-        while not np.any(done):
-            obs_tensor = obs_as_tensor(obs, model.device)
-            #obs_tensor = torch.unsqueeze(obs_tensor, 0)
-            #TODO: This if is not very clean: can probably be replaced with a single call to predict.
-            if use_mirror is True:
-                (action, _states), (action_other, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs_tensor, env_index=env_index, deterministic=False)
-                #exploit_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
-                #action_other = exploit_action
-            else:
-                (action, _states), (action_other, _states_other) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs_tensor, env_index=env_index, deterministic=False)
-            #br_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
-            action = action.cpu().numpy()
-            action_other = action_other.cpu().numpy()
-            #action_other = br_action
-            obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
-            left_rew += reward
-            if record:
-                video_log.append(Image.fromarray(env.render(mode="rgb_array")))
-
-            if np.any(done):
-                if record:
-                    try:
-                        name = curr_state.split("/")[1]
-                    except:
-                        name = curr_state
-                    height, width, layers = np.array(video_log[0]).shape
-                    container = av.open(f"{video_dir}/{name}_worker_num_{worker_number}_episode_{episode_number}.mp4", mode='w')
-                    stream = container.add_stream('h264', rate=10)
-                    stream.width = width
-                    stream.height = height
-                    stream.pix_fmt = 'yuv420p'
-                    for img in video_log:
-                        frame = av.VideoFrame.from_image(img)
-                        for packet in stream.encode(frame):
-                            container.mux(packet)
-                    remain_packets = stream.encode(None)
-                    container.mux(remain_packets)
-                    container.close()
-
-        env.close()
-        return [agent_win(info[0]), left_rew] # TODO: is a tuple 
-
-@torch.no_grad()
-def evaluate_single_iter_exploiter(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, greedy: int=0, record: bool=False) -> bool:
-        """
-        This function evaluates a single episode and returns win or loss.
-        
-        Args: TODO: Complete the docstring
-
-        Returns True if won and False otherwise.
-        """
-        
-        env = make_env(sf_game, state=curr_state, side='both', reset_type='round', rendering=False,
-                 enable_combo=False, null_combo=False,
-                 transform_action=False, seed=0)().env
-        done = False
-
-        obs = env.reset()
-        if record:
-            video_log = [Image.fromarray(env.render(mode="rgb_array"))]
-        left_rew = 0
-        while not done:
-            #TODO: This if is not very clean: can probably be replaced with a single call to predict.
-            if use_mirror is True:
-                (action, _states), (_, _) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs, env_index=env_index, deterministic=False)
-                exploit_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
-                action_other = exploit_action
-            else:
-                (action, _states), (action_other, _states_other) = generalist_SPAR_predict(use_mirror=use_mirror, policy=model, obs=obs, env_index=env_index, deterministic=False)
-            br_action, _ = exploiter_model.predict(obs, env_index, deterministic=False)
-
-            action_other = br_action
-            obs, reward, reward_other, done, info = env.step(np.hstack([action, action_other]))
-            left_rew += reward
-            if record:
-                video_log.append(Image.fromarray(env.render(mode="rgb_array")))
-
-            if done:
-                if record:
-                    try:
-                        name = curr_state.split("/")[1]
-                    except:
-                        name = curr_state
-                    height, width, layers = np.array(video_log[0]).shape
-                    container = av.open(f"{args.video_dir}/{name}_episode_{j}.mp4", mode='w')
-                    stream = container.add_stream('h264', rate=10)
-                    stream.width = width
-                    stream.height = height
-                    stream.pix_fmt = 'yuv420p'
-                    for img in video_log:
-                        frame = av.VideoFrame.from_image(img)
-                        for packet in stream.encode(frame):
-                            container.mux(packet)
-                    remain_packets = stream.encode(None)
-                    container.mux(remain_packets)
-                    container.close()
-
-        env.close()
-        return agent_win(info), left_rew
 def save_episode_video(curr_state, video_log: list, name: str, worker_number: int = 0, episode_number: int = 0):
     try:
         name = curr_state.split("/")[1]
@@ -306,6 +130,7 @@ def evaluate_single_iter(curr_state: str, use_mirror: bool, model: torch.nn.Modu
     obs = env.reset()
     done = False
     video_log = []
+    left_rew = 0
     while not np.any(done):
         obs_tensor = obs_as_tensor(obs, model.device)
         if exploiter_model is not None:
@@ -335,7 +160,8 @@ def evaluate_single_iter(curr_state: str, use_mirror: bool, model: torch.nn.Modu
             else:
                 print("current flags: use_mirror={use_mirror}, eval_prot={eval_prot}, exploiter_model={exploiter_model}")
                 raise ValueError("got impossible flag combination")
-        
+        left_action = left_action.cpu().numpy()
+        right_action = right_action.cpu().numpy()
         obs, reward, reward_other, done, info = env.step(np.hstack([left_action, right_action]))
         left_rew += reward
         if record:
@@ -347,7 +173,10 @@ def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module
     try:
         device = select_device()
         model.eval().to(device)
-        exploiter_model.eval().to(device)
+        if exploiter_model is not None:
+            exploiter_model.eval().to(device)
+        else:
+            exploiter_model = None
 
         win_count = 0
         rew_arr = []
@@ -397,13 +226,13 @@ def evaluate_sa_parallel(curr_state: str, model: Generalist_SPAR, exploiter_mode
         exploiter_policy_copy = gen_dummy_policy(exploiter_model)
         
         #The following line can be used for serial debugging
-        # evaluate_sa_worker(curr_state, model.use_mirror, policy_copy, exploiter_policy_copy, env_index, return_list, pid, episodes, greedy, record)
-        p = mp.Process(
-                target=evaluate_sa_worker,
-                args=(curr_state, use_mirror, policy_copy, exploiter_policy_copy, env_index, return_list, pid, episodes, greedy, record, eval_prot)
-                )
-        p.start()
-        processes.append(p)
+        evaluate_sa_worker(curr_state, model.use_mirror, policy_copy, exploiter_policy_copy, env_index, return_list, pid, episodes, greedy, record, eval_prot)
+        # p = mp.Process(
+        #         target=evaluate_sa_worker,
+        #         args=(curr_state, use_mirror, policy_copy, exploiter_policy_copy, env_index, return_list, pid, episodes, greedy, record, eval_prot)
+        #         )
+        # p.start()
+        # processes.append(p)
 
     for p in processes:
         p.join()
