@@ -900,11 +900,6 @@ class CleanDerivativeFreeSPAR(PPO):
         clip_fractions = []
 
         continue_training = True
-        if update_ego:
-            buf = self.rollout_buffer
-        else:
-            self.policy.num_adversaries = 1
-            buf = self.adversary_buffers[0]
 
 
         # train for n_epochs epochs
