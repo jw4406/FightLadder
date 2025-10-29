@@ -359,8 +359,9 @@ class FileQueueTriggerCallback(CheckpointCallback):
                 os.rename(checkpoint_path, task_filepath)
                 #TODO: Justin - time, output_log and error_lag are placeholders. Should probably be inputs. Note that _submit_br_worker has a return value (SLURM ID) that currently isn't used.
                 time = 4000
-                output_log = os.path.join(".", "log")
-                error_log = os.path.join(".", "err")
+                log_dir = "~" #TODO: Justin - this should probably be an input, or at the very least, change it to whatever you want
+                output_log = os.path.join(log_dir, "log")
+                error_log = os.path.join(log_dir, "error")
                 for i in range(self.num_workers):
                     if self.use_mirror:
                         _submit_br_worker(i=i, output_log=output_log, error_log=error_log, time=time, eval_prot=True, use_mirror=True)
