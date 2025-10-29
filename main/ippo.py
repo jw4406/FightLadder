@@ -16,7 +16,6 @@ from stable_baselines3.common.callbacks import CheckpointCallback, SACheckpointC
 from stable_baselines3.common.buffers import AdvRolloutBuffer
 from stable_baselines3.common.utils import get_schedule_fn
 from torch.backends.cudnn import deterministic
-
 from common.const import *
 from common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P
 from common.game import get_next_level
@@ -338,7 +337,7 @@ def main(PLAYER):
     # PLAYER = "Blanka"  # "Blanka
 
     global REMOVAL
-    use_mirror = False
+    use_mirror = True
     
     REMOVAL = None
     if use_mirror is True:
@@ -400,6 +399,7 @@ def main(PLAYER):
     parser.add_argument("--v_lr", type=float, help="value learning rate", default=7e-4)
     parser.add_argument("--use_mirror", action='store_true', help='Use mirror')
     parser.add_argument("--num_workers", type=int, help="Number of workers", default=5)
+    parser.add_argument("--load_path", type=str, help="Path to load the model from", default=None)
     args = parser.parse_args()
 
 
@@ -616,6 +616,26 @@ def main(PLAYER):
             target_kl=0.025,
             use_mirror=use_mirror
         )
+
+        if args.load_path:
+            from stable_baselines3.common.save_util import load_from_zip_file
+            from utils import state2matchup
+            try:
+                data, params, pytorch_variables = load_from_zip_file(
+                    args.load_path)
+                if 'state_list' not in data.keys():
+                    print("WARNING: state_list not found in load_path. Using default state list with states %s" % (state_list))
+                    #data['state_list'] = state_list
+                    finetune_model = CleanDerivativeFreeSPAR.load(path=args.load_path, env=finetune_env, num_perturbed=1, state_list=state_list)
+                    matchups = [state2matchup(state) for state in state_list]
+                    assert matchups == finetune_model.matchups
+                else:
+                    finetune_model = CleanDerivativeFreeSPAR.load(path=args.load_path, env=finetune_env, num_perturbed=1)
+            except Exception as e:
+                data, params, pytorch_variables = load_from_zip_file(
+                    args.load_path)
+                finetune_model.set_parameters(params, exact_match=True, device=finetune_model.device)
+                finetune_model.__dict__.update(data)
 
         #TODO: This is commented out per Justin's comment - should be uncommented in the future.
         # finetune_model = Specialized_Agent_IPPO("IPPOAACCnnPolicy",
@@ -862,6 +882,7 @@ if __name__ == "__main__":
     parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-4)
     parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=7e-4)
     parser.add_argument("--v_lr", type=float, help="value learning rate", default=7e-4)
+    parser.add_argument("--load_path", type=str, help="Path to load the model from", default=None)
     args = parser.parse_args()
 
     PLAYER = args.player
