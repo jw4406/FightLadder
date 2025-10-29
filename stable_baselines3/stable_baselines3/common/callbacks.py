@@ -336,8 +336,8 @@ class FileQueueTriggerCallback(CheckpointCallback):
             cmd = [
                 "sbatch", "--parsable",
                 "--job-name", f"br_worker_{i}",
-                "--output", f"{output_log}_{i}",
-                "--error", f"{error_log}_{i}",
+                "--output", f"{output_log}_{i}.log",
+                "--error", f"{error_log}_{i}.err",
                 "--time", str(time),
                 "--wrap", " ".join(wrap),
                 "--gres", "gpu:1"
