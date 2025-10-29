@@ -340,6 +340,7 @@ class FileQueueTriggerCallback(CheckpointCallback):
                 "--error", f"{error_log}_{i}",
                 "--time", str(time),
                 "--wrap", " ".join(wrap),
+                "--gres", "gpu:1"
             ]
 
             #TODO: These lines are commented for debugging purposes - uncomment when done

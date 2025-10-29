@@ -30,6 +30,7 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau  #TODO: This can be changed to another scheduler.
+from torch.optim.lr_scheduler import ExponentialLR
 from anyio import value
 from gym import spaces
 from stable_baselines3 import PPO
@@ -281,19 +282,22 @@ class CleanDerivativeFreeSPAR(PPO):
         )
 
         self.policy = self.policy.to(self.device)
-        self.ctrl_scheduler = ReduceLROnPlateau(self.policy.ctrl_optimizer, factor=0.5, patience=10)
-        self.dstb_scheduler = ReduceLROnPlateau(self.policy.dstb_optimizer, factor=0.5, patience=10)
-        self.value_scheduler = ReduceLROnPlateau(self.policy.value_optimizer, factor=0.5, patience=10)
+        #self.ctrl_scheduler = ReduceLROnPlateau(self.policy.ctrl_optimizer, factor=0.5, patience=10)
+        #self.dstb_scheduler = ReduceLROnPlateau(self.policy.dstb_optimizer, factor=0.5, patience=10)
+        #self.value_scheduler = ReduceLROnPlateau(self.policy.value_optimizer, factor=0.5, patience=10)
+        self.ctrl_scheduler = ExponentialLR(self.policy.ctrl_optimizer, gamma=0.995)
+        self.dstb_scheduler = ExponentialLR(self.policy.dstb_optimizer, gamma=0.995)
+        self.value_scheduler = ExponentialLR(self.policy.value_optimizer, gamma=0.995)
     
     def _update_schedulers(self , step_ego, step_adv, step_val):
         """This functinon updates all schedulers and makes sure that ego_lr <= adv_lr <= value_lr is satisfied."""
         rew_std = np.std([ep_info["r"] for ep_info in self.ep_info_buffer])
         if step_ego:
-            self.ctrl_scheduler.step(rew_std)
+            self.ctrl_scheduler.step()
         if step_adv:
-            self.dstb_scheduler.step(rew_std)
+            self.dstb_scheduler.step()
         if step_val:
-            self.value_scheduler.step(rew_std)
+            self.value_scheduler.step()
 
         # do we need to multiply by 3 here cause train standard is called twice and
         # train derivative free is called once?
@@ -844,7 +848,7 @@ class CleanDerivativeFreeSPAR(PPO):
                     approx_kl_divs_all.append(approx_kl_div)
 
         self._n_updates += self.n_epochs
-        self._update_schedulers(step_ego=ego, step_adv=(not ego), step_val=False)
+        self._update_schedulers(step_ego=ego, step_adv=(not ego), step_val=True)
         if hasattr(self.rollout_buffer, 'values') and self.rollout_buffer.values is not None and self.rollout_buffer.returns is not None:
              explained_var = explained_variance(self.rollout_buffer.values.flatten().detach().cpu().numpy(), self.rollout_buffer.returns.flatten().detach().cpu().numpy())
         else:

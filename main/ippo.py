@@ -338,7 +338,7 @@ def main(PLAYER):
     # PLAYER = "Blanka"  # "Blanka
 
     global REMOVAL
-    use_mirror = True
+    use_mirror = False
     
     REMOVAL = None
     if use_mirror is True:
