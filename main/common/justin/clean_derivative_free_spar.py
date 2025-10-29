@@ -1138,9 +1138,17 @@ class CleanDerivativeFreeSPAR(PPO):
         )
 
         valid_results = [r for r in results if r is not None]
+        
         if not valid_results:
             warnings.warn("No results from value function update workers.")
             return
+        
+        if len(valid_results) > 1:
+            param_averages = {}
+            for key in valid_results[0].keys():
+                param_averages[key] = sum(result[key] for result in valid_results) / len(valid_results)
+            valid_results = [param_averages]
+
         assert len(valid_results) == 1, f"Expected 1 result, got {len(valid_results)}"
         # Load the state dicts from the last valid result
         last_spar_state_dict, last_perturbed_state_dict = valid_results[-1]
