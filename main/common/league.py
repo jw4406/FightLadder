@@ -508,7 +508,8 @@ class MainExploiter(Player):
 
         win_rate = self._payoff.get_item(self.name, opponent, "left") if self.side == "left" else self._payoff.get_item(opponent, self.name, "right")
         if coin_toss < 0.5 or win_rate > 0.1:
-            return self.get_player_by_name(opponent), is_training
+            opponent_player = self.get_player_by_name(opponent)
+            return opponent_player, opponent_player.character_name, is_training
 
         historical_opponents = self._payoff.get_names("right", Historical, opponent) if self.side == "left" else self._payoff.get_names("left", Historical, opponent)
         win_rates = self._payoff.get_item(self.name, historical_opponents, "left") if self.side == "left" else self._payoff.get_item(historical_opponents, self.name, "right")
