@@ -542,8 +542,7 @@ class LeagueExploiter(Player):
     def get_match(self):
         historical_opponents = self._payoff.get_names("right", Historical) if self.side == "left" else self._payoff.get_names("left", Historical)
         win_rates = self._payoff.get_item(self.name, historical_opponents, "left") if self.side == "left" else self._payoff.get_item(historical_opponents, self.name, "right")
-        opponent = self.get_player_by_name(np.random.choice(
-            historical_opponents, p=pfsp(win_rates, weighting="linear_capped"))), True
+        opponent = self.get_player_by_name(np.random.choice(historical_opponents, p=pfsp(win_rates, weighting="linear_capped")))
         is_training = True
         return opponent, opponent.character_name, is_training
 
