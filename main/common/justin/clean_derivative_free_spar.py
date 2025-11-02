@@ -1144,10 +1144,13 @@ class CleanDerivativeFreeSPAR(PPO):
             return
         
         if len(valid_results) > 1:
-            param_averages = {}
-            for key in valid_results[0].keys():
-                param_averages[key] = sum(result[key] for result in valid_results) / len(valid_results)
-            valid_results = [param_averages]
+            unperturbed_param_averages = {}
+            perturbed_param_averages = {}
+            for key in valid_results[0][0].keys():
+                
+                unperturbed_param_averages[key] = sum(result[0][key].to('cpu') for result in valid_results) / len(valid_results)
+                perturbed_param_averages[key] = sum(result[1][key].to('cpu') for result in valid_results) / len(valid_results)
+            valid_results = [(unperturbed_param_averages, perturbed_param_averages)]
 
         assert len(valid_results) == 1, f"Expected 1 result, got {len(valid_results)}"
         # Load the state dicts from the last valid result
