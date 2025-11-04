@@ -29,10 +29,11 @@ from .calc_F import _get_buffers_and_keys, _calculate_policy_loss, _compute_grad
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau  #TODO: This can be changed to another scheduler.
 from anyio import value
 from gym import spaces
 from stable_baselines3 import PPO
-from utils import select_matchup_env, select_device, get_n_workers, move_policy, unpickle_policy, state2matchup
+from utils import select_matchup_env, select_device, get_n_workers, move_policy, unpickle_policy, state2matchup, mirror_flip_attributes
 from concurrent.futures import ThreadPoolExecutor
 from .parallel_updater import ParallelUpdater
 
@@ -117,9 +118,12 @@ class CleanDerivativeFreeSPAR(PPO):
             env_generator_func=None,
             num_adversaries=None,
             n_env_per_adv=None,
+            use_mirror=False,
+            num_workers=None,
+            scheduler_step_size: int=10, #TODO: 10 was chosen arbitrarily - should be changed.
     ):
 
-        self.matchups = [state2matchup(state) for state in state_list] #This needs to happen before the super().__init__
+        self.matchups = [state2matchup(state) for state in state_list] if state_list is not None else None #This needs to happen before the super().__init__
         self.envs_per_matchup = envs_per_matchup
         super().__init__(
             policy,
@@ -183,6 +187,7 @@ class CleanDerivativeFreeSPAR(PPO):
         self.adversarial = True
         self.num_adversaries = num_adversaries
         self.n_env_per_adv = n_env_per_adv
+        self.state_list = state_list if state_list is not None else None
         if _init_setup_model:
             self.env.num_envs = self.n_envs
             self._setup_model()
@@ -190,45 +195,53 @@ class CleanDerivativeFreeSPAR(PPO):
         self.parallel_updater = None
         self.n_global_env = self.n_envs
         adversary_buffers = []
-        for i in range(self.num_adversaries):
-            # overwrite = dtss("AACCnnPolicy",
-            #                            self.env,
-            #                            device=self.device,
-            #                            verbose=self.verbose,
-            #                            n_steps=self.n_steps,
-            #                            batch_size=self.batch_size // self.n_envs,  # 512,
-            #                            n_epochs=self.n_epochs,
-            #                            gamma=self.gamma,
-            #                            v_learning_rate=v_learning_rate, c_learning_rate=c_learning_rate,
-            #                            d_learning_rate=d_learning_rate, v_learning_rate_decay=v_learning_rate_decay,
-            #                            c_learning_rate_decay=c_learning_rate_decay,
-            #                            d_learning_rate_decay=d_learning_rate_decay,
-            #                            clip_range=self.clip_range,
-            #                            tensorboard_log=self.tensorboard_log,
-            #                            seed=self.seed,
-            #                            ent_coef=self.ent_coef,
-            #                            dstb_ent_coef=self.dstb_ent_coef,
-            #                            update_left=not self.update_left,
-            #                            update_right=not self.update_right,
-            #                            warmstarted_cont_MAGICS=False,
-            #                            matchups=matchups,
-            #                            envs_per_matchup=self.envs_per_matchup
-            #                            )
-            # overwrite.rollout_buffer.n_envs = self.n_env_per_adv
-            # adversary_buffers.append(overwrite.rollout_buffer)
-            adversary_buffers.append(self.rollout_buffer_class(self.n_steps,
-            self.observation_space,
-            self.action_space,
-            device=self.device,
-            gamma=self.gamma,
-            gae_lambda=self.gae_lambda,
-            n_envs=self.envs_per_matchup,
-            #dstb_action_space=self.dstb_action_space
-        ))
-        self.adversary_buffers = adversary_buffers
+        if self.num_adversaries is not None:
+            for i in range(self.num_adversaries):
+                # overwrite = dtss("AACCnnPolicy",
+                #                            self.env,
+                #                            device=self.device,
+                #                            verbose=self.verbose,
+                #                            n_steps=self.n_steps,
+                #                            batch_size=self.batch_size // self.n_envs,  # 512,
+                #                            n_epochs=self.n_epochs,
+                #                            gamma=self.gamma,
+                #                            v_learning_rate=v_learning_rate, c_learning_rate=c_learning_rate,
+                #                            d_learning_rate=d_learning_rate, v_learning_rate_decay=v_learning_rate_decay,
+                #                            c_learning_rate_decay=c_learning_rate_decay,
+                #                            d_learning_rate_decay=d_learning_rate_decay,
+                #                            clip_range=self.clip_range,
+                #                            tensorboard_log=self.tensorboard_log,
+                #                            seed=self.seed,
+                #                            ent_coef=self.ent_coef,
+                #                            dstb_ent_coef=self.dstb_ent_coef,
+                #                            update_left=not self.update_left,
+                #                            update_right=not self.update_right,
+                #                            warmstarted_cont_MAGICS=False,
+                #                            matchups=matchups,
+                #                            envs_per_matchup=self.envs_per_matchup
+                #                            )
+                # overwrite.rollout_buffer.n_envs = self.n_env_per_adv
+                # adversary_buffers.append(overwrite.rollout_buffer)
+                adversary_buffers.append(self.rollout_buffer_class(self.n_steps,
+                self.observation_space,
+                self.action_space,
+                device=self.device,
+                gamma=self.gamma,
+                gae_lambda=self.gae_lambda,
+                n_envs=self.envs_per_matchup,
+                #dstb_action_space=self.dstb_action_space
+            ))
+            self.adversary_buffers = adversary_buffers
         self.env.num_envs = self.n_envs
+        self.use_mirror = use_mirror
+        self.num_workers = num_workers
+
+        #Create learning rate schedulers
 
     def _setup_model(self) -> None:
+        assert self.state_list is not None
+        assert self.num_adversaries is not None
+        assert self.envs_per_matchup is not None
         #super()._setup_model()
         self._setup_lr_schedule()
         self.set_random_seed(self.seed)
@@ -268,8 +281,44 @@ class CleanDerivativeFreeSPAR(PPO):
         )
 
         self.policy = self.policy.to(self.device)
+        self.ctrl_scheduler = ReduceLROnPlateau(self.policy.ctrl_optimizer, factor=0.5, patience=10)
+        self.dstb_scheduler = ReduceLROnPlateau(self.policy.dstb_optimizer, factor=0.5, patience=10)
+        self.value_scheduler = ReduceLROnPlateau(self.policy.value_optimizer, factor=0.5, patience=10)
     
-    def collect_rollouts(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True) -> bool:
+    def _update_schedulers(self , step_ego, step_adv, step_val):
+        """This functinon updates all schedulers and makes sure that ego_lr <= adv_lr <= value_lr is satisfied."""
+        rew_std = np.std([ep_info["r"] for ep_info in self.ep_info_buffer])
+        if step_ego:
+            self.ctrl_scheduler.step(rew_std)
+        if step_adv:
+            self.dstb_scheduler.step(rew_std)
+        if step_val:
+            self.value_scheduler.step(rew_std)
+
+        # do we need to multiply by 3 here cause train standard is called twice and
+        # train derivative free is called once?
+
+        ego_lr = self.policy.ctrl_optimizer.param_groups[0]['lr']
+        adv_lr = self.policy.dstb_optimizer.param_groups[0]['lr']
+        value_lr = self.policy.value_optimizer.param_groups[0]['lr']
+        
+        #TODO: Justin - I don't know if this is the rule you want - please go over it and change it if necessary.
+        # Clamp to maintain ordering
+        ego_lr = min(ego_lr, adv_lr, value_lr)
+        adv_lr = min(max(ego_lr, adv_lr), value_lr)
+        value_lr = max(ego_lr, adv_lr, value_lr)
+        
+        self.policy.ctrl_optimizer.param_groups[0]['lr'] = ego_lr
+        self.policy.dstb_optimizer.param_groups[0]['lr'] = adv_lr
+        self.policy.value_optimizer.param_groups[0]['lr'] = value_lr
+
+    def collect_rollouts(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True, use_mirror: bool = False) -> bool:
+        if self.use_mirror:
+            return self.collect_rollouts_mirror(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, update_ego, update_adversary)
+        else:
+            return self.collect_rollouts_standard(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, update_ego, update_adversary)
+    
+    def collect_rollouts_standard(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True) -> bool:
         assert self._last_obs is not None, "No previous observation was provided"
         # Switch to eval mode (this affects batch norm / dropout)
         self.policy.set_training_mode(False)
@@ -367,6 +416,162 @@ class CleanDerivativeFreeSPAR(PPO):
         with th.no_grad():
             # Compute value for the last timestep
             values = self.policy.value_forward(obs_as_tensor(new_obs, self.device))
+            #values_other = rollout_policy_other.predict_values(obs_as_tensor(new_obs, self.device))
+
+        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+        for i in range(self.num_adversaries):
+            adversary_buffers[i].compute_returns_and_advantage(last_values=-values[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], dones=dones[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv])
+        #if self.update_right:
+        #    rollout_buffer_other.compute_returns_and_advantage(last_values=values_other, dones=dones)
+
+        callback.on_rollout_end()
+
+        rollout_buffer.prepare_data_for_training()
+        for i in range(len(adversary_buffers)):
+            adversary_buffers[i].prepare_data_for_training()
+
+        return True
+    
+    def collect_rollouts_mirror(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True) -> bool:
+        assert self.use_mirror is True, "Use mirror is not True"
+        assert self._last_obs is not None, "No previous observation was provided"
+        self.policy.set_training_mode(False)
+
+        n_steps = 0
+        rollout_buffer.reset()
+        for i in range(self.num_adversaries):
+            adversary_buffers[i].reset()
+
+        callback.on_rollout_start()
+        #np.random.seed(0)
+        #random.seed(0)
+        #torch.manual_seed(0)
+        while n_steps < n_rollout_steps:
+            if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+                # Sample a new noise matrix
+                self.policy.reset_noise(env.num_envs)
+
+            with th.no_grad():
+                # Convert to pytorch tensor or to TensorDict
+                obs_tensor = obs_as_tensor(self._last_obs, self.device)
+                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values = self.policy(obs_tensor, deterministic=False, ego_forward=update_ego, adv_forward=update_adversary)
+                
+                # The value network predicts value from the left player's perspective.
+                # In mirrored rollouts, the ego is on the right for the second half of envs.
+                # Thus, `values` contains ego values for the top half and adversary values for the bottom half.
+                # `other_values` is computed to hold adversary values for the top and ego values for the bottom.
+                # We first negate, then use `mirror_flip_attributes` to swap the bottom halves,
+                # consolidating all ego values in `values` and all adversary values in `other_values`.
+                other_values = -values
+
+            actions = ego_actions.cpu().numpy()
+            actions_other = adv_actions.cpu().numpy()
+
+            # Rescale and perform action
+
+            mirror_master_copy_actions = deepcopy(actions)
+            mirror_master_copy_adv_actions = deepcopy(adv_actions)
+
+            # upper half, lower half
+
+            
+            # print("SINGLE TRAIN EXTRACTOR MIRROR")
+
+            '''
+            assume wlog Ehonda is the prot.
+
+            action right now is:                  adv_action right now is:
+            EHonda left                                              Sagat    right
+            EHonda left                                              Sagat    right
+            EHonda left                                             MBison    right
+            EHonda left                                             MBison    right
+
+            EHonda v Sagat       0
+            Sagat v. EHonda      1
+            EHonda v. MBison     2
+            MBison v. EHonda     3
+
+            action[odds] needs to go to the other side because our design makes prot actions left
+
+            same with adversary[odds] -- adversary is on the right so adv[ods] is backwards
+
+            '''
+            halfway = actions.shape[0] // 2 #halfway split between upper & lower + left & right
+            actions, actions_other = mirror_flip_attributes(actions, actions_other)
+            ego_log_probs, adv_log_probs = mirror_flip_attributes(ego_log_probs, adv_log_probs)
+            values, other_values = mirror_flip_attributes(values, other_values)
+                
+                
+                
+
+            clipped_actions = np.hstack([actions, actions_other])
+            # print(clipped_actions, flush=True)
+            # print(np.shape(clipped_actions),flush=True)
+            # Clip the actions to avoid out of bound error
+            if isinstance(self.action_space, spaces.Box):
+                clipped_actions = np.clip(np.hstack([actions, actions_other]), self.action_space.low,
+                                          self.action_space.high)
+
+            new_obs, rewards, rewards_other, dones, infos = env.step(clipped_actions)
+            #rewards[halfway:] = -rewards[halfway:]
+            rewards, rewards_other = mirror_flip_attributes(rewards, rewards_other)
+            #np.random.seed(0)
+            #random.seed(0)
+            #torch.manual_seed(0)
+
+            self.num_timesteps += env.num_envs
+
+            # Give access to local variables
+            callback.update_locals(locals())
+            if callback.on_step() is False:
+                return False
+
+            self._update_info_buffer(infos)
+            n_steps += 1
+
+            if isinstance(self.action_space, spaces.Discrete):
+                # Reshape in case of discrete action
+                actions = actions.reshape(-1, 1)
+                actions_other = actions_other.reshape(-1, 1)
+            
+            # Handle timeout by bootstraping with value function
+            # see GitHub issue #633
+            # for idx, done in enumerate(dones):
+            #     if (
+            #             done
+            #             and coordinate_fn is not None
+            #     ):
+            #         coordinate_fn(infos[idx]["outcome"])
+            #     if (
+            #             done
+            #             and infos[idx].get("terminal_observation") is not None
+            #             and infos[idx].get("TimeLimit.truncated", False)
+            #     ):
+            #         # print(f"[PPO] idx: {idx}, done: {done}, outcome: {infos[idx]['outcome']}", flush=True)
+            #         terminal_obs = rollout_policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
+            #         terminal_obs_other = rollout_policy_other.obs_to_tensor(infos[idx]["terminal_observation"])[0]
+            #         with th.no_grad():
+            #             terminal_value = rollout_policy.predict_values(terminal_obs)[0]
+            #             terminal_value_other = rollout_policy_other.predict_values(terminal_obs_other)[0]
+            #         rewards[idx] += self.gamma * terminal_value
+            #         rewards_other[idx] += self.gamma * terminal_value_other
+
+                    # from IPython import embed; embed()
+            rollout_buffer.add(self._last_obs.copy(), actions, rewards, self._last_episode_starts, values,
+                                   ego_log_probs)
+            for i in range(self.num_adversaries):
+                adversary_buffers[i].add(self._last_obs[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv].copy(), actions_other[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], rewards_other[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], self._last_episode_starts[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], other_values[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv],
+                                         adv_log_probs[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv])
+            #for i in range(self.num_adversaries):
+            #    adversary_buffers[i].add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts, values_other,
+            #                             adv_log_probs)
+            self._last_obs = new_obs
+            self._last_episode_starts = dones
+
+        with th.no_grad():
+            # Compute value for the last timestep
+            values = self.policy.value_forward(obs_as_tensor(new_obs, self.device))
+            values[halfway:] = -values[halfway:]
             #values_other = rollout_policy_other.predict_values(obs_as_tensor(new_obs, self.device))
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
@@ -630,7 +835,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 
                 optimizer = self.policy.ctrl_optimizer if ego else self.policy.dstb_optimizer
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                optimizer.step()                
+                optimizer.step()
                 with torch.no_grad():
                     log_prob, _ = self.policy.evaluate_ego_actions(ori_buf.observations, ori_buf.actions) if ego else self.policy.evaluate_adv_actions(ori_buf[0].observations, ori_buf[0].actions, buf_num=[i])
                     log_ratio = log_prob - ori_buf.log_probs if ego else log_prob - ori_buf[0].log_probs
@@ -639,6 +844,7 @@ class CleanDerivativeFreeSPAR(PPO):
                     approx_kl_divs_all.append(approx_kl_div)
 
         self._n_updates += self.n_epochs
+        self._update_schedulers(step_ego=ego, step_adv=(not ego), step_val=False)
         if hasattr(self.rollout_buffer, 'values') and self.rollout_buffer.values is not None and self.rollout_buffer.returns is not None:
              explained_var = explained_variance(self.rollout_buffer.values.flatten().detach().cpu().numpy(), self.rollout_buffer.returns.flatten().detach().cpu().numpy())
         else:
@@ -826,7 +1032,8 @@ class CleanDerivativeFreeSPAR(PPO):
 
                 if not continue_training:
                     break
-
+        self._update_schedulers(step_ego=update_ego, step_adv=(not update_ego), step_val=True)
+        # check location in train derivative free
         self._n_updates += self.n_epochs
         if th.is_tensor(buf.values):
             explained_var = explained_variance(buf.values.flatten().cpu().numpy(), buf.returns.flatten().cpu().numpy())
@@ -930,7 +1137,6 @@ class CleanDerivativeFreeSPAR(PPO):
             self.adversary_buffers, self.batch_size, self.max_grad_norm,
             self.n_epochs, self.n_env_per_adv, self.first_run, self.envs_per_matchup
         )
-
         valid_results = [r for r in results if r is not None]
         if not valid_results:
             warnings.warn("No results from value function update workers.")
