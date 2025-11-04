@@ -325,7 +325,7 @@ class FileQueueTriggerCallback(CheckpointCallback):
         """
         This method is called by the CheckpointCallback after a checkpoint is saved.
         """
-        def _submit_br_worker(i: int, output_log: str, error_log: str, time: int, eval_prot: bool, use_mirror: bool) -> str:
+        def _submit_br_worker(i: int, time: int, eval_prot: bool, use_mirror: bool) -> str:
             """Submit a br_worker job and return JobID."""
             wrap = ["python", "br_worker.py"]
             if eval_prot:
@@ -333,17 +333,55 @@ class FileQueueTriggerCallback(CheckpointCallback):
             if use_mirror:
                 wrap.append("--use_mirror")
 
+            python_command = " ".join(wrap)
+
+            script_body = f"""#!/bin/bash
+WORKDIR=/n/fs/magics
+JOBID=$SLURM_JOB_ID
+mkdir -p $WORKDIR/$JOBID
+cd $WORKDIR/$JOBID
+cp -r $HOME/FightLadder ./
+cd FightLadder
+module purge
+__conda_setup="$('/usr/local/anaconda3/2024.02/bin/conda' 'shell.bash' 'hook' 2> /dev/null)"
+if [ $? -eq 0 ]; then
+    eval "$__conda_setup"
+else
+    if [ -f "/usr/local/anaconda3/2024.02/etc/profile.d/conda.sh" ]; then
+        . "/usr/local/anaconda3/2024.02/etc/profile.d/conda.sh"
+    else
+        export PATH="/usr/local/anaconda3/2024.02/bin:$PATH"
+    fi
+fi
+unset __conda_setup
+conda activate fightladder
+cd main
+{python_command}
+"""
+
             cmd = [
-                "sbatch", "--parsable",
-                "--job-name", f"br_worker_{i}",
-                "--output", f"{output_log}_{i}.log",
-                "--error", f"{error_log}_{i}.err",
-                "--time", str(time),
-                "--wrap", " ".join(wrap),
-                "--gres", "gpu:1"
+                "sbatch",
+                "--parsable",
+                "--job-name",
+                f"br_worker_{i}",
+                "--nodes=1",
+                "--ntasks=1",
+                "--cpus-per-task=24",
+                "--mem-per-cpu=10G",
+                f"--output=slurm-%j.out",
+                "--mail-type=begin,end",
+                "--mail-user=jw4406@princeton.edu",
+                "--time",
+                str(time),
+                "--gres",
+                "gpu:1",
+                "--wrap",
+                script_body,
             ]
 
+
             #TODO: These lines are commented for debugging purposes - uncomment when done
+            print(cmd)
             # result = subprocess.run(cmd,check=True, capture_output=True, text=True)
             # return result.stdout.strip()
 
@@ -358,16 +396,13 @@ class FileQueueTriggerCallback(CheckpointCallback):
             try:
                 os.rename(checkpoint_path, task_filepath)
                 #TODO: Justin - time, output_log and error_lag are placeholders. Should probably be inputs. Note that _submit_br_worker has a return value (SLURM ID) that currently isn't used.
-                time =8640 
-                log_dir = "~" #TODO: Justin - this should probably be an input, or at the very least, change it to whatever you want
-                output_log = os.path.join(log_dir, "log")
-                error_log = os.path.join(log_dir, "error")
+                time = 8640
                 for i in range(self.num_workers):
                     if self.use_mirror:
-                        _submit_br_worker(i=i, output_log=output_log, error_log=error_log, time=time, eval_prot=True, use_mirror=True)
-                        _submit_br_worker(i=i, output_log=output_log, error_log=error_log, time=time, eval_prot=False, use_mirror=True)
+                        _submit_br_worker(i=i, time=time, eval_prot=True, use_mirror=True)
+                        _submit_br_worker(i=i, time=time, eval_prot=False, use_mirror=True)
                     else:
-                        _submit_br_worker(i=i, output_log=output_log, error_log=error_log, time=time, eval_prot=False, use_mirror=False)                   
+                        _submit_br_worker(i=i, time=time, eval_prot=False, use_mirror=False)
                 #with open(task_filepath, 'w') as f:
                 #    f.write(checkpoint_path)
                 print(f"CALLBACK: Successfully created task file for {os.path.basename(checkpoint_path)}")
