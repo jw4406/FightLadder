@@ -1195,6 +1195,10 @@ class LeaguePPO(IPPO):
 
     def set_opponent_character(self, opponent_character: str) -> None:
         """Recreate environment with new opponent character if needed."""
+        # Right-side agents don't need to switch opponents - they're character-specific TODO: Justin, is this assumption valid also in mirror? If not, we need to come up with a better check.
+        if self.side == "right":
+            return
+
         if hasattr(self, 'current_opponent') and self.current_opponent == opponent_character:
             return
         

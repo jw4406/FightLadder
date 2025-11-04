@@ -158,24 +158,25 @@ def main():
         #TODO: DEBUGGING ONLY!!! This is serial method for debugging instead of multipcroessing.
         #For some reason, it works but the parallel version doesn't.
         #After the debugging is done, return to multiprocessing.
-        for idx in range(league.size()):
-            player = league.get_player(idx)
-            learner = Learner(player)
-            worker(idx, learner, args.total_steps, args.rollout_opponent_num)
-        
-        # TODO: This is the parallel version that doesn't work for some reason. Uncomment this block when done debugging the serial version.
-        # processes = []
         # for idx in range(league.size()):
         #     player = league.get_player(idx)
-        #     # player.constructor_fn = constructor #TODO: Delete when done
         #     learner = Learner(player)
-        #     process = Process(target=worker, args=(idx, learner, args.total_steps, args.rollout_opponent_num))
-        #     # process.daemon=True  # all processes closed when the main stops
-        #     processes.append(process)
-        # for p in processes:
-        #     p.start()
-        # for p in processes:
-        #     p.join()
+        #     worker(idx, learner, args.total_steps, args.rollout_opponent_num)
+        
+        # TODO: This is the parallel version that doesn't work for some reason. Uncomment this block when done debugging the serial version.
+        processes = []
+        for idx in range(league.size()):
+            player = league.get_player(idx)
+            # player.constructor_fn = constructor #TODO: Delete when done
+            learner = Learner(player)
+            process = Process(target=worker, args=(idx, learner, args.total_steps, args.rollout_opponent_num))
+            # process.daemon=True  # all processes closed when the main stops
+            processes.append(process)
+        for p in processes:
+            p.start()
+        for p in processes:
+            p.join()
+    pass #TODO: DEBUG ONLY! Remove whend one.
 
 
 def restore():
