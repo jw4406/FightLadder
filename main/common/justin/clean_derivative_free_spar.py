@@ -316,13 +316,13 @@ class CleanDerivativeFreeSPAR(PPO):
         self.policy.dstb_optimizer.param_groups[0]['lr'] = adv_lr
         self.policy.value_optimizer.param_groups[0]['lr'] = value_lr
 
-    def collect_rollouts(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True, use_mirror: bool = False) -> bool:
+    def collect_rollouts(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, run_ego_forward:bool, run_adv_forward:bool, use_mirror: bool, zero_ego_action, zero_adv_action) -> bool:
         if self.use_mirror:
-            return self.collect_rollouts_mirror(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, update_ego, update_adversary)
+            return self.collect_rollouts_mirror(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action)
         else:
-            return self.collect_rollouts_standard(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, update_ego, update_adversary)
+            return self.collect_rollouts_standard(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action)
     
-    def collect_rollouts_standard(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True) -> bool:
+    def collect_rollouts_standard(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, run_ego_forward: bool = True, run_adv_forward: bool = True, zero_ego_action=False, zero_adv_action=False) -> bool:
         assert self._last_obs is not None, "No previous observation was provided"
         # Switch to eval mode (this affects batch norm / dropout)
         self.policy.set_training_mode(False)
@@ -348,7 +348,7 @@ class CleanDerivativeFreeSPAR(PPO):
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values = self.policy(obs_tensor, deterministic=False, ego_forward=update_ego, adv_forward=update_adversary)
+                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values = self.policy(obs_tensor, deterministic=False, ego_forward=run_ego_forward, adv_forward=run_adv_forward, zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action)
                 other_values = -values
 
             actions = ego_actions.cpu().numpy()
@@ -600,8 +600,12 @@ class CleanDerivativeFreeSPAR(PPO):
         tb_log_name: str = "OnPolicyAlgorithm",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
+        run_ego_forward = True,
+        run_adv_forward = True,
         update_ego: bool = True,
         update_adversary: bool = False,
+        zero_ego_action: bool = False,
+        zero_adv_action: bool = False,
         num_perturbs: int = 1,
     ):
         try:
@@ -627,13 +631,13 @@ class CleanDerivativeFreeSPAR(PPO):
                 self._create_all_perturbed_agents(num_perturbs)
                 self._initialize_parallel_updater()                
 
+                #continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action) #TODO: This is sequential - remove when done.
                 with ThreadPoolExecutor(max_workers=num_perturbs + 1) as executor:
-                    futures = [executor.submit(perturbed_agent.env_perturb_params, update_ego, update_adversary) for perturbed_agent in self.perturbed_agents]
+                    futures = [executor.submit(perturbed_agent.env_perturb_params, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action) for perturbed_agent in self.perturbed_agents]
                     perturbed_bufs, perturbed_adv_bufs = zip(*[future.result() for future in futures])
-                    future_standard = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, update_ego, update_adversary)
+                    future_standard = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward,self.use_mirror, zero_ego_action, zero_adv_action)
                     continue_training = future_standard.result()
 
-                #continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, update_ego, update_adversary) #TODO: This is sequential - remove when done.
                 self.perturbed_bufs = list(perturbed_bufs)
                 self.perturbed_adv_bufs = list(perturbed_adv_bufs)
                 self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in self.perturbed_agents]
@@ -1078,7 +1082,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 count = count + torch.numel(p)
         return
     
-    def env_perturb_params(self, update_ego=True, update_adversary=True):
+    def env_perturb_params(self, update_ego=True, update_adversary=True, zero_ego_action=False, zero_adv_action=False):
         buf = self.rollout_buffer_class(self.n_steps,
             self.observation_space,
             self.action_space,
@@ -1097,7 +1101,7 @@ class CleanDerivativeFreeSPAR(PPO):
             gae_lambda=self.gae_lambda,
             n_envs= self.n_env_per_adv) for i in range(self.num_adversaries)]
         #[adv_buf[i].reset() for i in range(len(adv_buf))]
-        self.collect_rollouts(self.env, self.callback, buf, adv_buf, n_rollout_steps=self.n_steps, update_ego=update_ego, update_adversary=update_adversary)
+        self.collect_rollouts(self.env, self.callback, buf, adv_buf, n_rollout_steps=self.n_steps, run_ego_forward=update_ego, run_adv_forward=update_adversary, use_mirror=self.use_mirror, zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action)
         
         #buf.prepare_data_for_training()
         #for i in range(len(adv_buf)):

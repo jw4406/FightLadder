@@ -304,10 +304,10 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             values[i * latents_per_adv : (i+1) * latents_per_adv, :] = self.value_net[key](latent_vf[i * latents_per_adv : (i+1) * latents_per_adv, :])
         return values
 
-    def forward(self, obs, deterministic=False, ego_forward=False, adv_forward=False, network_keys=None) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+    def forward(self, obs, deterministic=False, ego_forward=False, adv_forward=False, network_keys=None, zero_ego_action=False, zero_adv_action=False) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
         if ego_forward:
             ego_actions, ego_log_prob = self.ego_forward(obs, deterministic)
-        else:
+        if zero_ego_action: 
             ego_actions = th.zeros(self.num_adversaries * self.envs_per_matchup, self.action_space.shape[0])
             ego_log_prob = th.zeros(self.num_adversaries * self.envs_per_matchup)
             #ego_entropy = th.zeros()
@@ -315,7 +315,7 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             adv_actions, adv_log_prob = self.adv_forward(obs, deterministic)
             #adv_actions = adv_actions[0]
             #adv_log_prob = adv_log_prob[0]
-        else:
+        if zero_adv_action:
             adv_actions = th.zeros_like(ego_actions)
             adv_log_prob = th.zeros_like(ego_log_prob)
             #adv_entropy = th.zeros()
