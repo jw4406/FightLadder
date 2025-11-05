@@ -515,7 +515,7 @@ def main(PLAYER):
         finetune_model = IPPO(
             "CnnPolicy",
             finetune_env,
-            device="cuda",
+            device="cuda:0",
             verbose=1,
             n_steps=192,
             batch_size=384,  # 512,
@@ -853,7 +853,8 @@ def main(PLAYER):
             model.learn(
                 total_timesteps=args.total_steps,
                 num_perturbs = args.num_perturbs,
-                callback=[checkpoint_callback, file_queue_callback], update_ego=True, update_adversary=True
+                callback=[checkpoint_callback, file_queue_callback], update_ego=True, update_adversary=False, run_ego_forward=True, run_adv_forward=True,
+                zero_ego_action=False, zero_adv_action=False
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)
         # for i in range(len(model.adversaries)):
