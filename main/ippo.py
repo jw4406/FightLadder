@@ -396,7 +396,7 @@ def main(PLAYER):
     parser.add_argument("--num_perturbs", type=int, help="Number of perturbed policies to be created.", default=10)
     parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-4)
     parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=7e-4)
-    parser.add_argument("--v_lr", type=float, help="value learning rate", default=7e-4)
+    parser.add_argument("--v_lr", type=float, help="value learning rate", default=1e-3)
     parser.add_argument("--use_mirror", action='store_true', help='Use mirror')
     parser.add_argument("--num_workers", type=int, help="Number of workers", default=5)
     parser.add_argument("--load_path", type=str, help="Path to load the model from", default=None)

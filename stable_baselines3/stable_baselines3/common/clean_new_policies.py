@@ -182,8 +182,17 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             raise NotImplementedError(f"Unsupported distribution '{self.action_dist}'.")
         
         self.value_net = nn.ModuleDict()
+        self.q_value_net = nn.ModuleDict()
         for i in range(self.num_adversaries):
             matchup_key = select_matchup_env(self.matchups, i, self.envs_per_matchup)
+            self.q_value_net[matchup_key] = nn.Sequential(
+                nn.LSTM(input_size=self.mlp_extractor.latent_dim_vf, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
+                SelectLastLSTMOutput(),
+                nn.Linear(lstm_hidden_size, lstm_hidden_size),
+                self.activation_fn(),
+                nn.Linear(lstm_hidden_size, lstm_hidden_size),
+                self.activation_fn(),
+                nn.Linear(lstm_hidden_size, 1))
             self.value_net[matchup_key] = nn.Sequential(
                 nn.LSTM(input_size=self.mlp_extractor.latent_dim_vf, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
                 SelectLastLSTMOutput(),
@@ -238,7 +247,7 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             #    itertools.chain(self.mlp_extractor.value_net.parameters(), self.vf_features_extractor.parameters(), itertools.chain.from_iterable([self.value_net[i].parameters() for i in range(self.num_adversaries)])),
             #    joint_schedule[2](1), **self.optimizer_kwargs)
             self.value_optimizer = self.optimizer_class(
-                itertools.chain(self.mlp_extractor.value_net.parameters(), self.vf_features_extractor.parameters(), self.value_net.parameters()),
+                itertools.chain(self.mlp_extractor.q_value_net.parameters(), self.vf_features_extractor.parameters(), self.q_value_net.parameters(), self.mlp_extractor.action_extractor.parameters()),
                 joint_schedule[2](1), **self.optimizer_kwargs)
             #self.value_targ = [copy.deepcopy(self.vf_features_extractor).requires_grad_(False).to('cuda'),
             #                   copy.deepcopy(self.mlp_extractor.value_net).requires_grad_(False).to('cuda'),
@@ -321,7 +330,7 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             #adv_entropy = th.zeros()
         
 
-        values = self.value_forward(obs)
+        values = self.value_forward(obs, ego_actions, adv_actions)
         return ego_actions, ego_log_prob, adv_actions, adv_log_prob, values
 
     def evaluate_ego_actions(self, obs, ego_actions) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:

@@ -42,6 +42,7 @@ TIMING = False
 DEBUG = False
 PARALLEL_CALC_F = True
 SAVE_TEST = True
+USE_PERTURBED = True
 class DummyCallback(BaseCallback):
     def __init__(self):
         super().__init__()
@@ -627,21 +628,20 @@ class CleanDerivativeFreeSPAR(PPO):
             callback.on_training_start(locals(), globals())
 
             while self.num_timesteps < total_timesteps:
-
-                self._create_all_perturbed_agents(num_perturbs)
-                self._initialize_parallel_updater()                
-
-                #continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action) #TODO: This is sequential - remove when done.
-                with ThreadPoolExecutor(max_workers=num_perturbs + 1) as executor:
-                    futures = [executor.submit(perturbed_agent.env_perturb_params, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action) for perturbed_agent in self.perturbed_agents]
-                    perturbed_bufs, perturbed_adv_bufs = zip(*[future.result() for future in futures])
-                    future_standard = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward,self.use_mirror, zero_ego_action, zero_adv_action)
-                    continue_training = future_standard.result()
-
-                self.perturbed_bufs = list(perturbed_bufs)
-                self.perturbed_adv_bufs = list(perturbed_adv_bufs)
-                self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in self.perturbed_agents]
-
+                if USE_PERTURBED:
+                    self._create_all_perturbed_agents(num_perturbs)
+                    self._initialize_parallel_updater()                
+                if not USE_PERTURBED:
+                    continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward, self.use_mirror, zero_ego_action, zero_adv_action) #TODO: This is sequential - remove when done.
+                else:
+                    with ThreadPoolExecutor(max_workers=num_perturbs + 1) as executor:
+                        futures = [executor.submit(perturbed_agent.env_perturb_params, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action) for perturbed_agent in self.perturbed_agents]
+                        perturbed_bufs, perturbed_adv_bufs = zip(*[future.result() for future in futures])
+                        future_standard = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward,self.use_mirror, zero_ego_action, zero_adv_action)
+                        continue_training = future_standard.result()
+                    self.perturbed_bufs = list(perturbed_bufs)
+                    self.perturbed_adv_bufs = list(perturbed_adv_bufs)
+                    self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in self.perturbed_agents]
                 if continue_training is False:
                     break
 
@@ -666,11 +666,12 @@ class CleanDerivativeFreeSPAR(PPO):
 
                 self.train(update_ego=update_ego, update_adversary=update_adversary)
                 # uncomment perturbed agents
-                [perturbed_agent.env.close() for perturbed_agent in self.perturbed_agents]
-                self.perturbed_agents.clear()
-                self.perturbed_bufs.clear()
-                self.perturbed_adv_bufs.clear()
-                self.perturbed_agents_policy.clear()
+                if USE_PERTURBED:
+                    [perturbed_agent.env.close() for perturbed_agent in self.perturbed_agents]
+                    self.perturbed_agents.clear()
+                    self.perturbed_bufs.clear()
+                    self.perturbed_adv_bufs.clear()
+                    self.perturbed_agents_policy.clear()
 
 
                 gc.collect()
@@ -696,7 +697,8 @@ class CleanDerivativeFreeSPAR(PPO):
         if update_adversary:
             self.train_standard(update_ego=False, update_adversary=True)
         #self.train_standard(update_ego, update_adversary)
-        self.train_derivative_free(update_ego, update_adversary)
+        if USE_PERTURBED:
+            self.train_derivative_free(update_ego, update_adversary)
     
     def train_derivative_free(self, update_ego: bool = True, update_adversary: bool = True) -> None:
         self.policy.set_training_mode(True)
@@ -705,6 +707,8 @@ class CleanDerivativeFreeSPAR(PPO):
         #self.dummy_policy_update(update_ego, update_adversary)
         
         [self._update_value_functions(perturbed_agent, perturbed_adv_buf) for perturbed_agent, perturbed_adv_buf in zip(self.perturbed_agents, self.perturbed_adv_bufs)]
+        for policy, perturbed_buf, perturbed_buf_adv in zip(self.perturbed_agents_policy, self.perturbed_bufs, self.perturbed_adv_bufs):
+            self._update_advantages(policy, perturbed_buf, perturbed_buf_adv)
         futures = []
         # with ThreadPoolExecutor(max_workers=len(self.perturbed_bufs)) as executor:
         #     for policy, perturbed_buf, perturbed_buf_adv in zip(self.perturbed_agents_policy, self.perturbed_bufs, self.perturbed_adv_bufs):
@@ -1387,7 +1391,7 @@ class CleanDerivativeFreeSPAR(PPO):
                     values = values.flatten()
                     # Normalize advantage
                     advantages = rollout_data.advantages
-                    self.normalize_advantage = True
+                    self.normalize_advantage =False 
                     # Normalization does not make sense if mini batchsize == 1, see GH issue #325
                     if self.normalize_advantage and len(advantages) > 1:
                         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)

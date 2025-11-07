@@ -14,6 +14,7 @@ from main.common.justin.clean_derivative_free_spar import CleanDerivativeFreeSPA
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.utils import safe_mean
 from main.utils import state2matchup, mirror_flip_attributes
+from main.common.justin.calc_F import _compute_grads
 from main.common.const import *
 import wandb
 
@@ -186,3 +187,30 @@ class TestAdvantageValueRewardsSign(unittest.TestCase):
         self.assertTrue(np.allclose(halfway_actions[1], np.array([[7, 8, 9], [4, 5, 6]])))
         self.assertTrue(np.allclose(halfway_rewards[0], np.array([13, 14, 15, -16, -17, -18])))
         self.assertTrue(np.allclose(halfway_rewards[1], np.array([-13, -14, -15, 16, 17, 18])))
+    
+    def test_calc_F(self):
+        env = env_generator()
+        model = CleanDerivativeFreeSPAR(
+            policy="AACCnnPolicy",
+            env=env,
+            n_steps=self.n_steps,
+            batch_size=self.batch_size,
+            n_epochs=self.n_epochs,
+            num_adversaries=num_adversaries,
+            n_env_per_adv=n_env_per_adv,
+            state_list=STATE,
+            envs_per_matchup=envs_per_matchup,
+            env_generator_func=env_generator,
+            dstb_action_space=MultiBinary(15),
+            verbose=1
+        )
+        d = 2
+        delta = .5
+        ego_v = torch.tensor([1.0, 2.0])
+        adv_v = torch.tensor([3.0, 4.0])
+        policy_loss = torch.tensor([5.0])
+        perturbed_policy_loss = torch.tensor([7.0])
+        F_grad_ego = _compute_grads(d, delta, ego_v, adv_v, policy_loss, perturbed_policy_loss, True, 0)
+        F_grad_adv = _compute_grads(d, delta, ego_v, adv_v, policy_loss, perturbed_policy_loss, False, 0)
+        self.assertTrue(np.allclose(F_grad_ego, np.array([8.0, 16.0])))
+        self.assertTrue(np.allclose(F_grad_adv, np.array([24.0, 32.0])))

@@ -311,13 +311,15 @@ class MlpExtractorAdv(nn.Module):
         activation_fn: Type[nn.Module],
         device: Union[th.device, str] = "auto",
         adversarial:bool = False,
-        context_dim=None
+        context_dim=None,
+        action_dim=16
     ) -> None:
         super().__init__()
         device = get_device(device)
         policy_net: List[nn.Module] = []
         dstb_net: List[nn.Module] = []
         value_net: List[nn.Module] = []
+        q_value_net: List[nn.Module] = []
         last_layer_dim_pi = feature_dim
         last_layer_dim_vf = feature_dim
 
@@ -341,9 +343,15 @@ class MlpExtractorAdv(nn.Module):
             last_layer_dim_pi = curr_layer_dim
             count = count + 1
         # Iterate through the value layers and build the value net
+        count = 0
         for curr_layer_dim in vf_layers_dims:
+            if count == 0:
+                q_value_net.append(nn.Linear(last_layer_dim_vf + action_dim, curr_layer_dim))
+            else:
+                q_value_net.append(nn.Linear(last_layer_dim_vf, curr_layer_dim))
             value_net.append(nn.Linear(last_layer_dim_vf, curr_layer_dim))
             value_net.append(activation_fn())
+            q_value_net.append(activation_fn())
             last_layer_dim_vf = curr_layer_dim
 
         # Save dim, used to create the distributions
@@ -356,20 +364,22 @@ class MlpExtractorAdv(nn.Module):
         self.value_net = nn.Sequential(*value_net).to(device)
 
         self.dstb_net = nn.Sequential(*dstb_net).to(device)
-
-    def forward(self, ctrl_features: th.Tensor, dstb_features: th.Tensor) -> Tuple[th.Tensor, th.Tensor]:
+        self.q_value_net = nn.Sequential(*q_value_net).to(device)
+        self.action_extractor = nn.Sequential(nn.Linear(12, action_dim), activation_fn())
+    def forward(self, ctrl_features: th.Tensor, dstb_features: th.Tensor, actions: th.Tensor) -> Tuple[th.Tensor, th.Tensor]:
         """
         :return: latent_policy, latent_value of the specified network.
             If all layers are shared, then ``latent_policy == latent_value``
         """
-        return self.forward_actor(ctrl_features), self.forward_critic(dstb_features)
+        return self.forward_actor(ctrl_features), self.q_value_forward(dstb_features, actions)
 
     def forward_actor(self, ctrl_features: th.Tensor, dstb_features: th.Tensor = None) -> [th.Tensor, th.Tensor]:
         if dstb_features is None:
             return self.policy_net(ctrl_features)
         else:
             return self.policy_net(ctrl_features), self.dstb_net(dstb_features)
-    
+    def q_value_forward(self, dstb_features: th.Tensor, actions: th.Tensor) -> th.Tensor:
+        return self.q_value_net([dstb_features, self.action_extractor(actions)])
     def adv_forward(self, dstb_features: th.Tensor) -> th.Tensor:
         return self.dstb_net(dstb_features)
 
@@ -377,7 +387,7 @@ class MlpExtractorAdv(nn.Module):
         return self.policy_net(ctrl_features)
 
     def forward_critic(self, vf_features: th.Tensor) -> th.Tensor:
-        return self.value_net(vf_features)
+        return self.q_value_net(vf_features)
 
 
 class IPPOMlpExtractorAdv(nn.Module):
