@@ -247,7 +247,7 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             #    itertools.chain(self.mlp_extractor.value_net.parameters(), self.vf_features_extractor.parameters(), itertools.chain.from_iterable([self.value_net[i].parameters() for i in range(self.num_adversaries)])),
             #    joint_schedule[2](1), **self.optimizer_kwargs)
             self.value_optimizer = self.optimizer_class(
-                itertools.chain(self.mlp_extractor.q_value_net.parameters(), self.vf_features_extractor.parameters(), self.q_value_net.parameters(), self.mlp_extractor.action_extractor.parameters()),
+                itertools.chain(self.mlp_extractor.q_value_net.parameters(), self.vf_features_extractor.parameters(), self.q_value_net.parameters(), self.mlp_extractor.ego_action_extractor.parameters(), self.mlp_extractor.adv_action_extractor.parameters()),
                 joint_schedule[2](1), **self.optimizer_kwargs)
             #self.value_targ = [copy.deepcopy(self.vf_features_extractor).requires_grad_(False).to('cuda'),
             #                   copy.deepcopy(self.mlp_extractor.value_net).requires_grad_(False).to('cuda'),
@@ -301,16 +301,16 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         #dstb_log_prob = test
         return dstb_actions, dstb_log_prob
 
-    def value_forward(self, obs) -> Tuple[th.Tensor, th.Tensor]:
+    def value_forward(self, obs, ego_actions, adv_actions) -> Tuple[th.Tensor, th.Tensor]:
         new_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
         vf_features = self.vf_features_extractor(new_obs)
-        latent_vf = self.mlp_extractor.forward_critic(vf_features)
+        latent_vf = self.mlp_extractor.q_value_forward(vf_features, ego_actions, adv_actions)
         latents_per_adv = latent_vf.shape[0] // self.num_adversaries
         values = th.zeros((latent_vf.shape[0], 1), device=self.device)
         for i in range(self.num_adversaries):
             # need to test
             key = select_matchup_env(self.matchups, i, self.envs_per_matchup)
-            values[i * latents_per_adv : (i+1) * latents_per_adv, :] = self.value_net[key](latent_vf[i * latents_per_adv : (i+1) * latents_per_adv, :])
+            values[i * latents_per_adv : (i+1) * latents_per_adv, :] = self.q_value_net[key](latent_vf[i * latents_per_adv : (i+1) * latents_per_adv, :])
         return values
 
     def forward(self, obs, deterministic=False, ego_forward=False, adv_forward=False, network_keys=None, zero_ego_action=False, zero_adv_action=False) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
@@ -357,12 +357,12 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         #dstb_entropy = th.vstack(dstb_entropy)
         return dstb_log_prob, dstb_entropy
 
-    def evaluate_states(self, obs, buf_num, env_indices=None) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+    def evaluate_states(self, obs, ego_actions, adv_actions, buf_num, env_indices=None) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
         if len(buf_num) != 1:
             assert self.num_adversaries > 1
         preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
         features = self.vf_features_extractor(preprocessed_obs)
-        latent_vf = self.mlp_extractor.forward_critic(features)
+        latent_vf = self.mlp_extractor.forward_critic(features, ego_actions, adv_actions)
         latents_per_adv = latent_vf.shape[0] // self.num_adversaries
         values = th.zeros((latent_vf.shape[0], 1), device=self.device)
         env_ids = env_indices // self.envs_per_matchup

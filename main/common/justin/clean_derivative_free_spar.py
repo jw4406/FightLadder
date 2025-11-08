@@ -19,7 +19,7 @@ from stable_baselines3.common.policies import BasePolicy, ActorCriticPolicy
 from stable_baselines3.common.clean_new_policies import CleanActorActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import get_schedule_fn
-from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer, ReplayBuffer, AdvRolloutBuffer
+from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer, ReplayBuffer, AdvRolloutBuffer, Q_RolloutBuffer
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean, explained_variance
 from common.justin.Doubly_TSS_SPAR import Doubly_TSS_SPAR as dtss
 from stable_baselines3.common.vec_env import VecEnv
@@ -42,7 +42,7 @@ TIMING = False
 DEBUG = False
 PARALLEL_CALC_F = True
 SAVE_TEST = True
-USE_PERTURBED = True
+USE_PERTURBED = False
 class DummyCallback(BaseCallback):
     def __init__(self):
         super().__init__()
@@ -254,7 +254,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 assert self.clip_range_vf > 0, "`clip_range_vf` must be positive, " "pass `None` to deactivate vf clipping"
 
             self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
-        buffer_cls = DictRolloutBuffer if isinstance(self.observation_space, spaces.Dict) else RolloutBuffer
+        buffer_cls = DictRolloutBuffer if isinstance(self.observation_space, spaces.Dict) else Q_RolloutBuffer
         self.rollout_buffer_class = buffer_cls
         self.rollout_buffer = buffer_cls(
             self.n_steps,
@@ -407,25 +407,24 @@ class CleanDerivativeFreeSPAR(PPO):
             #         rewards_other[idx] += self.gamma * terminal_value_other
 
                     # from IPython import embed; embed()
-            rollout_buffer.add(self._last_obs.copy(), actions, rewards, self._last_episode_starts, values,
+            rollout_buffer.add(self._last_obs.copy(), actions, actions_other, rewards, new_obs, self._last_episode_starts, values,
                                    ego_log_probs)
             for i in range(self.num_adversaries):
-                adversary_buffers[i].add(self._last_obs[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv].copy(), actions_other[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], rewards_other[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], self._last_episode_starts[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], other_values[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv],
-                                         adv_log_probs[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv])
-            #for i in range(self.num_adversaries):
-            #    adversary_buffers[i].add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts, values_other,
-            #                             adv_log_probs)
+                indices = slice(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
+                adversary_buffers[i].add(self._last_obs[indices].copy(), actions[indices], actions_other[indices], rewards_other[indices], new_obs[indices], self._last_episode_starts[indices], other_values[indices], adv_log_probs[indices])
             self._last_obs = new_obs
             self._last_episode_starts = dones
 
         with th.no_grad():
             # Compute value for the last timestep
-            values = self.policy.value_forward(obs_as_tensor(new_obs, self.device))
+            ego_actions, ego_log_probs, adv_actions, adv_log_probs, values = self.policy(obs_as_tensor(new_obs, self.device), deterministic=False, ego_forward=run_ego_forward, adv_forward=run_adv_forward, zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action)
+            other_values = -values
+            #values = self.policy.value_forward(obs_as_tensor(new_obs, self.device))
             #values_other = rollout_policy_other.predict_values(obs_as_tensor(new_obs, self.device))
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
         for i in range(self.num_adversaries):
-            adversary_buffers[i].compute_returns_and_advantage(last_values=-values[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], dones=dones[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv])
+            adversary_buffers[i].compute_returns_and_advantage(last_values=other_values[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], dones=dones[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv])
         #if self.update_right:
         #    rollout_buffer_other.compute_returns_and_advantage(last_values=values_other, dones=dones)
 
@@ -943,9 +942,9 @@ class CleanDerivativeFreeSPAR(PPO):
                         log_prob, entropy = self.policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=[i])
                         #entropy = adv_entropy
                     if update_ego:
-                        values = self.policy.evaluate_states(rollout_data.observations, env_indices=rollout_data.env_indices, buf_num=[i for i in range(self.num_adversaries)])
+                        values = self.policy.evaluate_states(rollout_data.observations, rollout_data.actions, rollout_data.adv_actions, env_indices=rollout_data.env_indices, buf_num=[i for i in range(self.num_adversaries)])
                     else:
-                        values = self.policy.evaluate_states(rollout_data.observations, env_indices=rollout_data.env_indices, buf_num=[i])
+                        values = self.policy.evaluate_states(rollout_data.observations, rollout_data.actions, rollout_data.adv_actions, env_indices=rollout_data.env_indices, buf_num=[i])
                     if update_adversary:
                         values = -values
                     values = values.flatten()
