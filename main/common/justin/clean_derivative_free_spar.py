@@ -19,7 +19,7 @@ from stable_baselines3.common.policies import BasePolicy, ActorCriticPolicy
 from stable_baselines3.common.clean_new_policies import CleanActorActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import get_schedule_fn
-from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer, ReplayBuffer, AdvRolloutBuffer
+from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer, ReplayBuffer, AdvRolloutBuffer, Q_RolloutBuffer
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean, explained_variance
 from common.justin.Doubly_TSS_SPAR import Doubly_TSS_SPAR as dtss
 from stable_baselines3.common.vec_env import VecEnv
@@ -42,6 +42,7 @@ TIMING = False
 DEBUG = False
 PARALLEL_CALC_F = True
 SAVE_TEST = True
+USE_PERTURBED = False
 class DummyCallback(BaseCallback):
     def __init__(self):
         super().__init__()
@@ -253,7 +254,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 assert self.clip_range_vf > 0, "`clip_range_vf` must be positive, " "pass `None` to deactivate vf clipping"
 
             self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
-        buffer_cls = DictRolloutBuffer if isinstance(self.observation_space, spaces.Dict) else RolloutBuffer
+        buffer_cls = DictRolloutBuffer if isinstance(self.observation_space, spaces.Dict) else Q_RolloutBuffer
         self.rollout_buffer_class = buffer_cls
         self.rollout_buffer = buffer_cls(
             self.n_steps,
@@ -406,11 +407,16 @@ class CleanDerivativeFreeSPAR(PPO):
             #         rewards_other[idx] += self.gamma * terminal_value_other
 
                     # from IPython import embed; embed()
-            rollout_buffer.add(self._last_obs.copy(), actions, rewards, self._last_episode_starts, values,
-                                   ego_log_probs)
+            #rollout_buffer.add(self._last_obs.copy(), actions, rewards, self._last_episode_starts, values,
+            #                       ego_log_probs)
+            rollout_buffer.add(self._last_obs.copy(), actions, actions_other, rewards, new_obs, self._last_episode_starts, values,
+                                    ego_log_probs)
             for i in range(self.num_adversaries):
-                adversary_buffers[i].add(self._last_obs[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv].copy(), actions_other[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], rewards_other[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], self._last_episode_starts[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], other_values[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv],
-                                         adv_log_probs[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv])
+                indices = slice(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
+                #adversary_buffers[i].add(self._last_obs[indices].copy(), actions_other[indices], rewards_other[indices], self._last_episode_starts[indices], other_values[indices],
+                #                         adv_log_probs[indices])
+                adversary_buffers[i].add(self._last_obs[indices].copy(), actions[indices], actions_other[indices], rewards_other[indices], new_obs[indices], self._last_episode_starts[indices], other_values[indices],
+                                         adv_log_probs[indices])
             #for i in range(self.num_adversaries):
             #    adversary_buffers[i].add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts, values_other,
             #                             adv_log_probs)
@@ -631,16 +637,17 @@ class CleanDerivativeFreeSPAR(PPO):
                 self._create_all_perturbed_agents(num_perturbs)
                 self._initialize_parallel_updater()                
 
-                #continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action) #TODO: This is sequential - remove when done.
-                with ThreadPoolExecutor(max_workers=num_perturbs + 1) as executor:
-                    futures = [executor.submit(perturbed_agent.env_perturb_params, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action) for perturbed_agent in self.perturbed_agents]
-                    perturbed_bufs, perturbed_adv_bufs = zip(*[future.result() for future in futures])
-                    future_standard = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward,self.use_mirror, zero_ego_action, zero_adv_action)
-                    continue_training = future_standard.result()
+                continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward, self.use_mirror,zero_ego_action, zero_adv_action) #TODO: This is sequential - remove when done.
+                if USE_PERTURBED:
+                    with ThreadPoolExecutor(max_workers=num_perturbs + 1) as executor:
+                        futures = [executor.submit(perturbed_agent.env_perturb_params, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action) for perturbed_agent in self.perturbed_agents]
+                        perturbed_bufs, perturbed_adv_bufs = zip(*[future.result() for future in futures])
+                        future_standard = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward,self.use_mirror, zero_ego_action, zero_adv_action)
+                        continue_training = future_standard.result()
 
-                self.perturbed_bufs = list(perturbed_bufs)
-                self.perturbed_adv_bufs = list(perturbed_adv_bufs)
-                self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in self.perturbed_agents]
+                    self.perturbed_bufs = list(perturbed_bufs)
+                    self.perturbed_adv_bufs = list(perturbed_adv_bufs)
+                    self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in self.perturbed_agents]
 
                 if continue_training is False:
                     break
@@ -666,11 +673,12 @@ class CleanDerivativeFreeSPAR(PPO):
 
                 self.train(update_ego=update_ego, update_adversary=update_adversary)
                 # uncomment perturbed agents
-                [perturbed_agent.env.close() for perturbed_agent in self.perturbed_agents]
-                self.perturbed_agents.clear()
-                self.perturbed_bufs.clear()
-                self.perturbed_adv_bufs.clear()
-                self.perturbed_agents_policy.clear()
+                if USE_PERTURBED:
+                    [perturbed_agent.env.close() for perturbed_agent in self.perturbed_agents]
+                    self.perturbed_agents.clear()
+                    self.perturbed_bufs.clear()
+                    self.perturbed_adv_bufs.clear()
+                    self.perturbed_agents_policy.clear()
 
 
                 gc.collect()
@@ -696,7 +704,8 @@ class CleanDerivativeFreeSPAR(PPO):
         if update_adversary:
             self.train_standard(update_ego=False, update_adversary=True)
         #self.train_standard(update_ego, update_adversary)
-        self.train_derivative_free(update_ego, update_adversary)
+        if USE_PERTURBED:
+            self.train_derivative_free(update_ego, update_adversary)
     
     def train_derivative_free(self, update_ego: bool = True, update_adversary: bool = True) -> None:
         self.policy.set_training_mode(True)
@@ -921,7 +930,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 approx_kl_divs = []
                 # Do a complete pass on the rollout buffer
                 for rollout_data in buf.get(self.batch_size):
-                    actions = rollout_data.actions
+                    actions = rollout_data.actions if update_ego else rollout_data.adv_actions
                     if isinstance(self.action_space, spaces.Discrete):
                         # Convert discrete action from float to long
                         actions = rollout_data.actions.long().flatten()
