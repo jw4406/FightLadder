@@ -349,7 +349,7 @@ class CleanDerivativeFreeSPAR(PPO):
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values = self.policy(obs_tensor, deterministic=False, ego_forward=run_ego_forward, adv_forward=run_adv_forward, zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action)
+                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values, q_values = self.policy(obs_tensor, deterministic=False, ego_forward=run_ego_forward, adv_forward=run_adv_forward, zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action)
                 other_values = -values
 
             actions = ego_actions.cpu().numpy()
@@ -930,7 +930,10 @@ class CleanDerivativeFreeSPAR(PPO):
                 approx_kl_divs = []
                 # Do a complete pass on the rollout buffer
                 for rollout_data in buf.get(self.batch_size):
-                    actions = rollout_data.actions if update_ego else rollout_data.adv_actions
+                    if update_ego and not update_adversary:
+                        actions = rollout_data.actions
+                    else:
+                        actions = rollout_data.adv_actions
                     if isinstance(self.action_space, spaces.Discrete):
                         # Convert discrete action from float to long
                         actions = rollout_data.actions.long().flatten()

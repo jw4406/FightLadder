@@ -853,7 +853,7 @@ def main(PLAYER):
             model.learn(
                 total_timesteps=args.total_steps,
                 num_perturbs = args.num_perturbs,
-                callback=[checkpoint_callback, file_queue_callback], update_ego=True, update_adversary=False, run_ego_forward=True, run_adv_forward=True,
+                callback=[checkpoint_callback, file_queue_callback], update_ego=False, update_adversary=True, run_ego_forward=True, run_adv_forward=True,
                 zero_ego_action=False, zero_adv_action=False
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)

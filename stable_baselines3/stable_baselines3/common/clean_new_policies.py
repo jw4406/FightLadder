@@ -182,8 +182,17 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             raise NotImplementedError(f"Unsupported distribution '{self.action_dist}'.")
         
         self.value_net = nn.ModuleDict()
+        self.q_value_net = nn.ModuleDict()
         for i in range(self.num_adversaries):
             matchup_key = select_matchup_env(self.matchups, i, self.envs_per_matchup)
+            self.q_value_net[matchup_key] = nn.Sequential(
+                nn.LSTM(input_size=self.mlp_extractor.latent_dim_vf, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
+                SelectLastLSTMOutput(),
+                nn.Linear(lstm_hidden_size, lstm_hidden_size),
+                self.activation_fn(),
+                nn.Linear(lstm_hidden_size, lstm_hidden_size),
+                self.activation_fn(),
+                nn.Linear(lstm_hidden_size, 1))
             self.value_net[matchup_key] = nn.Sequential(
                 nn.LSTM(input_size=self.mlp_extractor.latent_dim_vf, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
                 SelectLastLSTMOutput(),
@@ -243,6 +252,9 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             #self.value_targ = [copy.deepcopy(self.vf_features_extractor).requires_grad_(False).to('cuda'),
             #                   copy.deepcopy(self.mlp_extractor.value_net).requires_grad_(False).to('cuda'),
             #                   [copy.deepcopy(self.value_net)[i].requires_grad_(False).to('cuda') for i in range(len(self.value_net))]]
+            self.q_value_optimizer = self.optimizer_class(
+                itertools.chain(self.mlp_extractor.q_value_net.parameters(), self.vf_features_extractor.parameters(), self.q_value_net.parameters(), self.mlp_extractor.ego_action_extractor.parameters(), self.mlp_extractor.adv_action_extractor.parameters()),
+                joint_schedule[2](1), **self.optimizer_kwargs)
 
     def _get_ego_action_dist_from_latent(self, latent_pi) -> Tuple[Distribution, Distribution]:
         mean_actions = self.action_net(latent_pi)
@@ -303,7 +315,18 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             key = select_matchup_env(self.matchups, i, self.envs_per_matchup)
             values[i * latents_per_adv : (i+1) * latents_per_adv, :] = self.value_net[key](latent_vf[i * latents_per_adv : (i+1) * latents_per_adv, :])
         return values
-
+    
+    def q_value_forward(self, obs, ego_actions, adv_actions) -> Tuple[th.Tensor, th.Tensor]:
+        new_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
+        vf_features = self.vf_features_extractor(new_obs)
+        latent_vf = self.mlp_extractor.forward_q_value(vf_features, ego_actions, adv_actions)
+        latents_per_adv = latent_vf.shape[0] // self.num_adversaries
+        q_values = th.zeros((latent_vf.shape[0], 1), device=self.device)
+        for i in range(self.num_adversaries):
+            key = select_matchup_env(self.matchups, i, self.envs_per_matchup)
+            q_values[i * latents_per_adv : (i+1) * latents_per_adv, :] = self.q_value_net[key](latent_vf[i * latents_per_adv : (i+1) * latents_per_adv, :])
+        return q_values
+    
     def forward(self, obs, deterministic=False, ego_forward=False, adv_forward=False, network_keys=None, zero_ego_action=False, zero_adv_action=False) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
         if ego_forward:
             ego_actions, ego_log_prob = self.ego_forward(obs, deterministic)
@@ -322,7 +345,8 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         
 
         values = self.value_forward(obs)
-        return ego_actions, ego_log_prob, adv_actions, adv_log_prob, values
+        q_values = self.q_value_forward(obs, ego_actions, adv_actions)
+        return ego_actions, ego_log_prob, adv_actions, adv_log_prob, values, q_values
 
     def evaluate_ego_actions(self, obs, ego_actions) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
         preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)

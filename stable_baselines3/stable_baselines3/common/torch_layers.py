@@ -311,15 +311,21 @@ class MlpExtractorAdv(nn.Module):
         activation_fn: Type[nn.Module],
         device: Union[th.device, str] = "auto",
         adversarial:bool = False,
-        context_dim=None
+        context_dim=None,
+        ego_action_dim=12,
+        adv_action_dim=12,
+
     ) -> None:
         super().__init__()
         device = get_device(device)
         policy_net: List[nn.Module] = []
         dstb_net: List[nn.Module] = []
         value_net: List[nn.Module] = []
+        q_value_net: List[nn.Module] = []
         last_layer_dim_pi = feature_dim
         last_layer_dim_vf = feature_dim
+        self.ego_action_dim = ego_action_dim
+        self.adv_action_dim = adv_action_dim
 
         # save dimensions of layers in policy and value nets
         if isinstance(net_arch, dict):
@@ -341,10 +347,17 @@ class MlpExtractorAdv(nn.Module):
             last_layer_dim_pi = curr_layer_dim
             count = count + 1
         # Iterate through the value layers and build the value net
+        count = 0
         for curr_layer_dim in vf_layers_dims:
+            if count == 0:
+                q_value_net.append(nn.Linear(last_layer_dim_vf + ego_action_dim + adv_action_dim, curr_layer_dim))
+            else:
+                q_value_net.append(nn.Linear(last_layer_dim_vf, curr_layer_dim))
+            q_value_net.append(activation_fn())
             value_net.append(nn.Linear(last_layer_dim_vf, curr_layer_dim))
             value_net.append(activation_fn())
             last_layer_dim_vf = curr_layer_dim
+            count = count + 1
 
         # Save dim, used to create the distributions
         self.latent_dim_pi = last_layer_dim_pi
@@ -354,7 +367,17 @@ class MlpExtractorAdv(nn.Module):
         # If the list of layers is empty, the network will just act as an Identity module
         self.policy_net = nn.Sequential(*policy_net).to(device)
         self.value_net = nn.Sequential(*value_net).to(device)
-
+        self.q_value_net = nn.Sequential(*q_value_net).to(device)
+        self.ego_action_extractor = nn.Sequential(
+            nn.Linear(ego_action_dim, ego_action_dim),
+            activation_fn(),
+            nn.Linear(ego_action_dim, ego_action_dim),
+        )
+        self.adv_action_extractor = nn.Sequential(
+            nn.Linear(adv_action_dim, adv_action_dim),
+            activation_fn(),
+            nn.Linear(adv_action_dim, adv_action_dim)
+        )
         self.dstb_net = nn.Sequential(*dstb_net).to(device)
 
     def forward(self, ctrl_features: th.Tensor, dstb_features: th.Tensor) -> Tuple[th.Tensor, th.Tensor]:
@@ -378,6 +401,11 @@ class MlpExtractorAdv(nn.Module):
 
     def forward_critic(self, vf_features: th.Tensor) -> th.Tensor:
         return self.value_net(vf_features)
+
+    def forward_q_value(self, vf_features: th.Tensor, ego_actions: th.Tensor, adv_actions: th.Tensor) -> th.Tensor:
+        ego_actions_transformed = self.ego_action_extractor(ego_actions)
+        adv_actions_transformed = self.adv_action_extractor(adv_actions)
+        return self.q_value_net(vf_features, ego_actions_transformed, adv_actions_transformed)
 
 
 class IPPOMlpExtractorAdv(nn.Module):
