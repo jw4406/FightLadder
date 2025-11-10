@@ -79,3 +79,60 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
         value_loss.backward()
         th.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
         policy.value_optimizer.step()
+
+def _update_single_q_function(batch_size: int, max_grad_norm: float, policy, buffer, adversary_index: int, num_envs: int, device: torch.device, tag: str="", envs_per_matchup: int=None):
+    """
+    This function has to be placed outside of the object to enable parallel calls.
+    TODO: Complete the docstring.
+    TODO: Complete static types
+    """
+    #device='cpu'
+    def _prep_rollout_data_actions(batch_size: int, buffer) -> tuple:
+        """
+        This is a helper function that gets all the rollout data and actions once instead of batch by batch.
+        """
+        all_rollout_data = list(buffer.get(batch_size))
+        all_ego_actions = []
+        all_adv_actions = []
+        #all_dstb_actions = []
+        all_observations = []
+        all_next_observations = []
+        all_returns = []
+        all_rewards = []
+        all_env_indices = []
+
+        for rollout_data in all_rollout_data:
+            all_ego_actions.append(torch.Tensor(rollout_data.ego_actions))
+            all_adv_actions.append(torch.Tensor(rollout_data.adv_actions))
+            all_observations.append(rollout_data.observations)
+            all_next_observations.append(rollout_data.next_observations)
+            all_returns.append(torch.Tensor(rollout_data.returns))
+            all_rewards.append(torch.Tensor(rollout_data.rewards))
+            all_env_indices.extend(rollout_data.env_indices)
+        
+        ego_actions_batch = torch.cat(all_ego_actions).to(device)
+        adv_actions_batch = torch.cat(all_adv_actions).to(device)
+        observations_batch = torch.cat(all_observations).to(device)
+        next_observations_batch = torch.cat(all_next_observations).to(device)
+        returns_batch = torch.cat(all_returns).to(device)
+        rewards_batch = torch.cat(all_rewards).to(device)
+        return ego_actions_batch, adv_actions_batch, observations_batch, next_observations_batch, returns_batch, np.array([env_ind.cpu() for env_ind in all_env_indices]), rewards_batch
+    
+    # buffer.device = device
+
+    #Process all rollout data and actions at once instead of batch by batch.
+    ego_actions_batch, adv_actions_batch, observations_batch, next_observations_batch, returns_batch, all_env_indices, rewards_batch = _prep_rollout_data_actions(batch_size, buffer)
+    policy.num_global_env = num_envs
+    policy.num_adv = 1
+    for i in range(len(returns_batch) // batch_size):
+        # do i need to rewrite the value prediciton to q here?
+        values = policy.evaluate_states(
+            observations_batch[i * batch_size:(i + 1) * batch_size],
+            buf_num=[adversary_index],
+            env_indices=all_env_indices[i * batch_size:(i + 1) * batch_size]
+            )
+        values = -values.flatten()
+        value_loss = F.mse_loss(values, returns_batch[i * batch_size:(i + 1) * batch_size])
+        policy.value_optimizer.zero_grad()
+        value_loss.backward()
+        th.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)

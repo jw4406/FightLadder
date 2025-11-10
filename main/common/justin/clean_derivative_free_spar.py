@@ -42,7 +42,7 @@ TIMING = False
 DEBUG = False
 PARALLEL_CALC_F = True
 SAVE_TEST = True
-USE_PERTURBED = False
+USE_PERTURBED = True
 class DummyCallback(BaseCallback):
     def __init__(self):
         super().__init__()

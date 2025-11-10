@@ -56,8 +56,9 @@ class Q_RolloutBufferSamples(NamedTuple):
     old_log_prob: th.Tensor
     advantages: th.Tensor
     returns: th.Tensor
-    env_indices: np.ndarray
     q_values: np.ndarray
+    env_indices: np.ndarray
+    rewards: np.ndarray
 
 class DictRolloutBufferSamples(NamedTuple):
     observations: TensorDict

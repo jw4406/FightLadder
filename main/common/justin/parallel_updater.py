@@ -11,7 +11,7 @@ from torch.multiprocessing import Process, Queue
 import torch.nn.functional as F
 
 from utils import move_policy, select_device, get_n_workers, state2matchup, select_matchup_env, unpickle_policy
-from .update_value_functions import _update_single_value_function, shard_indices
+from .update_value_functions import _update_single_value_function, shard_indices, _update_single_q_function
 from .calc_F import _get_buffers_and_keys, _calculate_policy_loss, _compute_grads, calc_F_grad_single
 
 # def _update_single_value_function(batch_size: int, max_grad_norm: float, policy, buffer, adversary_index: int, num_envs: int, device: torch.device, tag: str="", envs_per_matchup: int=None):
@@ -266,11 +266,11 @@ class ParallelUpdater:
                 torch.cuda.empty_cache()
             for i in i_list:
                 for epoch in range(n_epochs):
-                    _update_single_value_function(
+                    _update_single_q_function(
                         batch_size, max_grad_norm, derivative_free_SPAR_policy, 
                         adversary_buffers[i], i, n_env_per_adv, device, envs_per_matchup=envs_per_matchup
                     )
-                    _update_single_value_function(
+                    _update_single_q_function(
                         batch_size, max_grad_norm, perturbed_agent_policy, 
                         perturbed_adv_buf[i], i, n_env_per_pert, device, envs_per_matchup=envs_per_matchup
                     )
