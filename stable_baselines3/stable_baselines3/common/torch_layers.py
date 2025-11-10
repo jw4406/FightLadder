@@ -405,7 +405,7 @@ class MlpExtractorAdv(nn.Module):
     def forward_q_value(self, vf_features: th.Tensor, ego_actions: th.Tensor, adv_actions: th.Tensor) -> th.Tensor:
         ego_actions_transformed = self.ego_action_extractor(ego_actions)
         adv_actions_transformed = self.adv_action_extractor(adv_actions)
-        return self.q_value_net(vf_features, ego_actions_transformed, adv_actions_transformed)
+        return self.q_value_net(th.cat([vf_features, ego_actions_transformed, adv_actions_transformed], dim=1))
 
 
 class IPPOMlpExtractorAdv(nn.Module):

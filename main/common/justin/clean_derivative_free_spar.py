@@ -410,13 +410,13 @@ class CleanDerivativeFreeSPAR(PPO):
             #rollout_buffer.add(self._last_obs.copy(), actions, rewards, self._last_episode_starts, values,
             #                       ego_log_probs)
             rollout_buffer.add(self._last_obs.copy(), actions, actions_other, rewards, new_obs, self._last_episode_starts, values,
-                                    ego_log_probs)
+                                    ego_log_probs, q_values)
             for i in range(self.num_adversaries):
                 indices = slice(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
                 #adversary_buffers[i].add(self._last_obs[indices].copy(), actions_other[indices], rewards_other[indices], self._last_episode_starts[indices], other_values[indices],
                 #                         adv_log_probs[indices])
                 adversary_buffers[i].add(self._last_obs[indices].copy(), actions[indices], actions_other[indices], rewards_other[indices], new_obs[indices], self._last_episode_starts[indices], other_values[indices],
-                                         adv_log_probs[indices])
+                                         adv_log_probs[indices], q_values[indices])
             #for i in range(self.num_adversaries):
             #    adversary_buffers[i].add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts, values_other,
             #                             adv_log_probs)
