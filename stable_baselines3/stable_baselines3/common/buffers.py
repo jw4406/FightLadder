@@ -767,7 +767,8 @@ class Q_RolloutBuffer(RolloutBuffer):
                 "advantages",
                 "returns",
                 "q_values",
-                "env_indices"
+                "env_indices",
+                "rewards"
             ]
 
             for tensor in _tensor_names:
@@ -794,7 +795,8 @@ class Q_RolloutBuffer(RolloutBuffer):
             self.advantages[batch_inds].flatten(),
             self.returns[batch_inds].flatten(),
             self.q_values[batch_inds].flatten(),
-            self.env_indices[batch_inds].flatten()
+            self.env_indices[batch_inds].flatten(),
+            self.rewards[batch_inds].flatten()
         )
         return Q_RolloutBufferSamples(*tuple(map(self.to_torch, data))) 
     def prepare_data_for_training(self) -> None:
@@ -813,7 +815,8 @@ class Q_RolloutBuffer(RolloutBuffer):
                 "log_probs",
                 "advantages",
                 "returns",
-                "q_values"
+                "q_values",
+                "rewards"
             ]
             for tensor_name in _torch_tensor_names:
                 tensor = self.__dict__[tensor_name]
