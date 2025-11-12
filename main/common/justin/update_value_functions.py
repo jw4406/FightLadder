@@ -145,8 +145,8 @@ def _update_single_q_function(batch_size: int, max_grad_norm: float, policy, buf
                 next_adv_actions,
                 )
         actual_q_values = rewards_batch[i * batch_size:(i + 1) * batch_size] + policy.gamma * (1-dones_batch[i * batch_size:(i + 1) * batch_size]) *  next_q_values.flatten()
-        values = -values.flatten()
-        value_loss = F.mse_loss(values, returns_batch[i * batch_size:(i + 1) * batch_size])
-        policy.value_optimizer.zero_grad()
-        value_loss.backward()
+        #values = -values.flatten()
+        q_loss = F.mse_loss(actual_q_values, curr_q_values.flatten())
+        policy.q_value_optimizer.zero_grad()
+        q_loss.backward()
         th.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
