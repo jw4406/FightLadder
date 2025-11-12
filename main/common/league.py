@@ -695,10 +695,10 @@ class PSROPlayer(Player):
 
     def get_match(self):
         historical_opponents, mixed_weights = self._payoff.get_historical_nash("right") if self.side == "left" else self._payoff.get_historical_nash("left")
-        opponent = self.get_player_by_name(np.random.choice(
+        opponent, is_training = self.get_player_by_name(np.random.choice(
             historical_opponents, p=mixed_weights)), True
-        is_training = True
-        return opponent, opponent.character_name, is_training
+        character_name = getattr(opponent, "character_name", "")
+        return opponent, character_name, is_training
 
     def ready_to_checkpoint(self):
         steps_passed = self.agent.get_steps() - self._checkpoint_step
@@ -766,11 +766,20 @@ class PSROLeague(League):
         else:
             self._payoff = payoff
         self._learning_agents = []
-        for side in initial_agents:
-            for idx in range(main_agents):
-                main_agent = PSROPlayer(f"PSRO{idx}_{side}", side, constructor, args, initial_agents[side], self._payoff)
-                self._learning_agents.append(main_agent)
-                self.add_player_with_evaluation(main_agent.checkpoint())
+        for side in initial_agents:        
+            if isinstance(initial_agents[side], dict):
+                # Multiple character-specific agents
+                for char, agent in initial_agents[side].items():
+                    for idx in range(main_agents):
+                        main_agent = PSROPlayer(f"PSRO{idx}_{side}_{char}", side, constructor, args, agent, self._payoff)
+                        self._learning_agents.append(main_agent)
+                        self.add_player_with_evaluation(main_agent.checkpoint())
+            else:
+                # Single agent
+                for idx in range(main_agents):
+                    main_agent = PSROPlayer(f"PSRO{idx}_{side}", side, constructor, args, initial_agents[side], self._payoff)
+                    self._learning_agents.append(main_agent)
+                    self.add_player_with_evaluation(main_agent.checkpoint())
         for player in self._learning_agents:
             self.add_player(player)
     

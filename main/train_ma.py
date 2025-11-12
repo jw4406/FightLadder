@@ -176,7 +176,6 @@ def main():
             p.start()
         for p in processes:
             p.join()
-    pass #TODO: DEBUG ONLY! Remove whend one.
 
 
 def restore():

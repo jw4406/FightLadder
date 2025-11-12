@@ -96,8 +96,6 @@ def find_character_name(s: str) -> str:
             if res:
                 warnings.warn(f"Found multiple character names in {s}.")
             res = character
-    if not res:
-        warnings.warn(f"Could not find a character name in {s}.")
     return res
 
 def unpickle_policy(policy: Any) -> torch.nn.Module:
