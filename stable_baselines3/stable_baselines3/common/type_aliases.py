@@ -59,6 +59,7 @@ class Q_RolloutBufferSamples(NamedTuple):
     q_values: np.ndarray
     env_indices: np.ndarray
     rewards: np.ndarray
+    dones: np.ndarray
 
 class DictRolloutBufferSamples(NamedTuple):
     observations: TensorDict
