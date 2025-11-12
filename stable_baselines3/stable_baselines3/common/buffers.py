@@ -736,14 +736,16 @@ class Q_RolloutBuffer(RolloutBuffer):
         self.log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.q_values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.dones = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.generator_ready = False
         super().reset()
-    def add(self, obs: np.ndarray, action: np.ndarray, adv_action: np.ndarray, reward: np.ndarray, next_obs: np.ndarray, episode_start: np.ndarray, value: th.Tensor, log_prob: th.Tensor, q_value: th.Tensor) -> None:
+    def add(self, obs: np.ndarray, action: np.ndarray, adv_action: np.ndarray, reward: np.ndarray, next_obs: np.ndarray, dones, episode_start: np.ndarray, value: th.Tensor, log_prob: th.Tensor, q_value: th.Tensor) -> None:
         self.observations[self.pos] = np.array(obs).copy()
         self.ego_actions[self.pos] = np.array(action).copy()
         self.adv_actions[self.pos] = np.array(adv_action).copy()
         self.rewards[self.pos] = np.array(reward).copy()
         self.next_observations[self.pos] = np.array(next_obs).copy()
+        self.dones[self.pos] = np.array(dones).copy()
         self.episode_starts[self.pos] = np.array(episode_start).copy()
         self.values[self.pos] = value.clone().cpu().numpy().flatten()
         self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
@@ -768,7 +770,8 @@ class Q_RolloutBuffer(RolloutBuffer):
                 "returns",
                 "q_values",
                 "env_indices",
-                "rewards"
+                "rewards",
+                "dones"
             ]
 
             for tensor in _tensor_names:
@@ -796,7 +799,8 @@ class Q_RolloutBuffer(RolloutBuffer):
             self.returns[batch_inds].flatten(),
             self.q_values[batch_inds].flatten(),
             self.env_indices[batch_inds].flatten(),
-            self.rewards[batch_inds].flatten()
+            self.rewards[batch_inds].flatten(),
+            self.dones[batch_inds].flatten()
         )
         return Q_RolloutBufferSamples(*tuple(map(self.to_torch, data))) 
     def prepare_data_for_training(self) -> None:
@@ -816,7 +820,8 @@ class Q_RolloutBuffer(RolloutBuffer):
                 "advantages",
                 "returns",
                 "q_values",
-                "rewards"
+                "rewards",
+                "dones"
             ]
             for tensor_name in _torch_tensor_names:
                 tensor = self.__dict__[tensor_name]

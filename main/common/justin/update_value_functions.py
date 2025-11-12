@@ -92,6 +92,7 @@ def _update_single_q_function(batch_size: int, max_grad_norm: float, policy, buf
         This is a helper function that gets all the rollout data and actions once instead of batch by batch.
         """
         all_rollout_data = list(buffer.get(batch_size))
+        # need dones
         all_ego_actions = []
         all_adv_actions = []
         #all_dstb_actions = []
@@ -100,15 +101,17 @@ def _update_single_q_function(batch_size: int, max_grad_norm: float, policy, buf
         all_returns = []
         all_rewards = []
         all_env_indices = []
+        all_dones = []
 
         for rollout_data in all_rollout_data:
-            all_ego_actions.append(torch.Tensor(rollout_data.ego_actions))
+            all_ego_actions.append(torch.Tensor(rollout_data.actions))
             all_adv_actions.append(torch.Tensor(rollout_data.adv_actions))
             all_observations.append(rollout_data.observations)
             all_next_observations.append(rollout_data.next_observations)
             all_returns.append(torch.Tensor(rollout_data.returns))
             all_rewards.append(torch.Tensor(rollout_data.rewards))
             all_env_indices.extend(rollout_data.env_indices)
+            all_dones.append(torch.Tensor(rollout_data.dones))
         
         ego_actions_batch = torch.cat(all_ego_actions).to(device)
         adv_actions_batch = torch.cat(all_adv_actions).to(device)
@@ -116,21 +119,32 @@ def _update_single_q_function(batch_size: int, max_grad_norm: float, policy, buf
         next_observations_batch = torch.cat(all_next_observations).to(device)
         returns_batch = torch.cat(all_returns).to(device)
         rewards_batch = torch.cat(all_rewards).to(device)
-        return ego_actions_batch, adv_actions_batch, observations_batch, next_observations_batch, returns_batch, np.array([env_ind.cpu() for env_ind in all_env_indices]), rewards_batch
+        dones_batch = torch.cat(all_dones).to(device)
+        return ego_actions_batch, adv_actions_batch, observations_batch, next_observations_batch, returns_batch, np.array([env_ind.cpu() for env_ind in all_env_indices]), rewards_batch, dones_batch
     
     # buffer.device = device
 
     #Process all rollout data and actions at once instead of batch by batch.
-    ego_actions_batch, adv_actions_batch, observations_batch, next_observations_batch, returns_batch, all_env_indices, rewards_batch = _prep_rollout_data_actions(batch_size, buffer)
+    ego_actions_batch, adv_actions_batch, observations_batch, next_observations_batch, returns_batch, all_env_indices, rewards_batch, dones_batch = _prep_rollout_data_actions(batch_size, buffer)
     policy.num_global_env = num_envs
     policy.num_adv = 1
     for i in range(len(returns_batch) // batch_size):
         # do i need to rewrite the value prediciton to q here?
-        values = policy.evaluate_states(
+        curr_q_values = policy.q_value_forward(
             observations_batch[i * batch_size:(i + 1) * batch_size],
-            buf_num=[adversary_index],
-            env_indices=all_env_indices[i * batch_size:(i + 1) * batch_size]
-            )
+            ego_actions_batch[i * batch_size:(i + 1) * batch_size],
+            adv_actions_batch[i * batch_size:(i + 1) * batch_size],)
+            # buf_num=[adversary_index],
+            # env_indices=all_env_indices[i * batch_size:(i + 1) * batch_size]
+            # )
+        with th.no_grad():
+            (next_ego_actions, next_ego_log_prob), (next_adv_actions, next_adv_log_prob) = policy.predict(next_observations_batch[i * batch_size:(i + 1) * batch_size])
+            next_q_values = policy.q_value_forward(
+                next_observations_batch[i * batch_size:(i + 1) * batch_size],
+                next_ego_actions,
+                next_adv_actions,
+                )
+        actual_q_values = rewards_batch[i * batch_size:(i + 1) * batch_size] + policy.gamma * (1-dones_batch[i * batch_size:(i + 1) * batch_size]) *  next_q_values.flatten()
         values = -values.flatten()
         value_loss = F.mse_loss(values, returns_batch[i * batch_size:(i + 1) * batch_size])
         policy.value_optimizer.zero_grad()

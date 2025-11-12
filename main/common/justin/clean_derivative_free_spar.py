@@ -281,6 +281,7 @@ class CleanDerivativeFreeSPAR(PPO):
             use_sde=self.use_sde,
             **self.policy_kwargs  # pytype:disable=not-instantiable
         )
+        self.policy.gamma = self.gamma
 
         self.policy = self.policy.to(self.device)
         #self.ctrl_scheduler = ReduceLROnPlateau(self.policy.ctrl_optimizer, factor=0.5, patience=10)
@@ -409,13 +410,13 @@ class CleanDerivativeFreeSPAR(PPO):
                     # from IPython import embed; embed()
             #rollout_buffer.add(self._last_obs.copy(), actions, rewards, self._last_episode_starts, values,
             #                       ego_log_probs)
-            rollout_buffer.add(self._last_obs.copy(), actions, actions_other, rewards, new_obs, self._last_episode_starts, values,
+            rollout_buffer.add(self._last_obs.copy(), actions, actions_other, rewards, new_obs,dones, self._last_episode_starts, values,
                                     ego_log_probs, q_values)
             for i in range(self.num_adversaries):
                 indices = slice(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
                 #adversary_buffers[i].add(self._last_obs[indices].copy(), actions_other[indices], rewards_other[indices], self._last_episode_starts[indices], other_values[indices],
                 #                         adv_log_probs[indices])
-                adversary_buffers[i].add(self._last_obs[indices].copy(), actions[indices], actions_other[indices], rewards_other[indices], new_obs[indices], self._last_episode_starts[indices], other_values[indices],
+                adversary_buffers[i].add(self._last_obs[indices].copy(), actions[indices], actions_other[indices], rewards_other[indices], new_obs[indices], dones[indices], self._last_episode_starts[indices], other_values[indices],
                                          adv_log_probs[indices], q_values[indices])
             #for i in range(self.num_adversaries):
             #    adversary_buffers[i].add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts, values_other,
