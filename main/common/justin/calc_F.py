@@ -63,6 +63,44 @@ def _calculate_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, e
     
     return policy_loss, log_prob, entropy
 
+def calculate_q_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, ego: bool, clip_range: float, use_sde: bool, device: torch.device, batch_size: int, envs_per_matchup: int, network_keys = None, perturbed=False):
+    #TODO: Complete docstring
+    actions = torch.Tensor(rollout_data.actions).to(device)
+    #dstb_actions = torch.Tensor(rollout_data.dstb_actions).to(device)
+
+    if use_sde:
+        policy.reset_noise(batch_size)
+
+    #with torch.no_grad():
+    if not DEBUG:
+        with torch.no_grad():
+            if ego:
+                old_log_prob = rollout_data.old_log_prob
+                log_prob, entropy = policy.evaluate_ego_actions(rollout_data.observations, actions)
+            else:
+                old_log_prob = rollout_data.old_log_prob
+                log_prob, entropy = policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=network_keys)
+    else:
+        if ego:
+            old_log_prob = rollout_data.old_log_prob
+            log_prob, entropy = policy.evaluate_ego_actions(rollout_data.observations, actions)
+        else:
+            old_log_prob = rollout_data.old_log_prob
+            log_prob, entropy = policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=network_keys)
+    
+    advantages = rollout_data.q_values# if ego else -rollout_data.advantages
+    #print(f"[DEBUG @ policy_loss]: Adv advantages mean in minibatch: {advantages.mean().item():.4f}")
+
+    ratio = torch.exp(log_prob - old_log_prob.clone().detach().to(device))
+    if not perturbed:
+        #assert torch.allclose(log_prob, old_log_prob), "leader_grads, Log probabilities do not match between collection and training."
+        pass
+    
+    policy_loss_1 = advantages * ratio
+    policy_loss_2 = advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)
+    policy_loss = -torch.min(policy_loss_1, policy_loss_2).mean()
+    
+    return policy_loss, log_prob, entropy
 def _compute_grads(d: int, delta: float, ego_v: torch.Tensor, adv_v: torch.Tensor, policy_loss: torch.Tensor, perturbed_policy_loss: torch.Tensor, ego: bool, adv_num=None) -> torch.Tensor:
     if ego is False:
         assert adv_num is not None

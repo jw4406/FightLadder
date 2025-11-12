@@ -25,7 +25,7 @@ from common.justin.Doubly_TSS_SPAR import Doubly_TSS_SPAR as dtss
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.callbacks import BaseCallback
 from common.justin.derivative_free_spar import ParallelUpdater
-from .calc_F import _get_buffers_and_keys, _calculate_policy_loss, _compute_grads, calc_F_grad_single
+from .calc_F import _get_buffers_and_keys, _calculate_policy_loss, _compute_grads, calc_F_grad_single, calculate_q_policy_loss
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
@@ -417,7 +417,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 #adversary_buffers[i].add(self._last_obs[indices].copy(), actions_other[indices], rewards_other[indices], self._last_episode_starts[indices], other_values[indices],
                 #                         adv_log_probs[indices])
                 adversary_buffers[i].add(self._last_obs[indices].copy(), actions[indices], actions_other[indices], rewards_other[indices], new_obs[indices], dones[indices], self._last_episode_starts[indices], other_values[indices],
-                                         adv_log_probs[indices], q_values[indices])
+                                         adv_log_probs[indices], -q_values[indices])
             #for i in range(self.num_adversaries):
             #    adversary_buffers[i].add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts, values_other,
             #                             adv_log_probs)
@@ -855,7 +855,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 optimizer.step()
                 with torch.no_grad():
-                    log_prob, _ = self.policy.evaluate_ego_actions(ori_buf.observations, ori_buf.actions) if ego else self.policy.evaluate_adv_actions(ori_buf[0].observations, ori_buf[0].actions, buf_num=[i])
+                    log_prob, _ = self.policy.evaluate_ego_actions(ori_buf.observations, ori_buf.actions) if ego else self.policy.evaluate_adv_actions(ori_buf[0].observations, ori_buf[0].adv_actions, buf_num=[i])
                     log_ratio = log_prob - ori_buf.log_probs if ego else log_prob - ori_buf[0].log_probs
                     # 0 bug
                     approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
@@ -1226,6 +1226,7 @@ class CleanDerivativeFreeSPAR(PPO):
         
         # Create a new agent instance with the perturbed parameters
         perturbed_agent = self.copy_constructor()
+        perturbed_agent.policy.gamma = self.gamma
         with torch.no_grad():
             for i in range(len(perturbed_agent.policy.dstb_optimizer.param_groups[0]['params'])):
                 #perturbed_agent.policy.ctrl_optimizer.param_groups[0]['params'][i].copy_(other_ego[i])
