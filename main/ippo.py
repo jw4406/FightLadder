@@ -496,7 +496,7 @@ def main(PLAYER):
         return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
 
-    checkpoint_interval = 100 # checkpoint_interval * num_envs = total_steps_per_checkpoint
+    checkpoint_interval = 100000 # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
                                  other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
@@ -853,7 +853,7 @@ def main(PLAYER):
             model.learn(
                 total_timesteps=args.total_steps,
                 num_perturbs = args.num_perturbs,
-                callback=[checkpoint_callback, file_queue_callback], update_ego=False, update_adversary=True, run_ego_forward=True, run_adv_forward=True,
+                callback=[checkpoint_callback, file_queue_callback], update_ego=True, update_adversary=False, run_ego_forward=True, run_adv_forward=True,
                 zero_ego_action=False, zero_adv_action=False
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)

@@ -25,7 +25,7 @@ from common.justin.Doubly_TSS_SPAR import Doubly_TSS_SPAR as dtss
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.callbacks import BaseCallback
 from common.justin.derivative_free_spar import ParallelUpdater
-from .calc_F import _get_buffers_and_keys, _calculate_policy_loss, _compute_grads, calc_F_grad_single, calculate_q_policy_loss
+from .calc_F import _get_buffers_and_keys, _calculate_policy_loss, _compute_grads, calc_F_grad_single, _calculate_q_policy_loss
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
@@ -410,7 +410,7 @@ class CleanDerivativeFreeSPAR(PPO):
                     # from IPython import embed; embed()
             #rollout_buffer.add(self._last_obs.copy(), actions, rewards, self._last_episode_starts, values,
             #                       ego_log_probs)
-            rollout_buffer.add(self._last_obs.copy(), actions, actions_other, rewards, new_obs,dones, self._last_episode_starts, values,
+            rollout_buffer.add(self._last_obs.copy(), actions, actions_other, rewards, new_obs, dones, self._last_episode_starts, values,
                                     ego_log_probs, q_values)
             for i in range(self.num_adversaries):
                 indices = slice(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
