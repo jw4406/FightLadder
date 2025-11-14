@@ -20,6 +20,7 @@ from common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P
 from stable_baselines3.common.callbacks import CheckpointCallback, ExploiterCheckpointCallback
 from stable_baselines3.common.save_util import load_from_zip_file
 from utils import agent_win, select_device
+from train_ma import constructor
 # --- Configuration ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 print(current_dir)
@@ -465,7 +466,7 @@ def exploiter_env_generator():
     #         seed=0)
     return VecTransposeImage2P(SubprocVecEnv2P(env))
 # --- Worker Logic ---
-def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool) -> None:
+def train_best_response(args, task_file_path: str, eval_prot: bool, use_mirror: bool) -> None:
     """
     The core logic for a single best-response training run.
 
@@ -519,6 +520,7 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool) 
     env = env_generator()
     env.num_envs = 1 # HACKY FOR NOW!
     try:
+        ftm = constructor(args, "left", log_name=None, single_env=True)
         ftm = Derivative_Free_SPAR.load(checkpoint_path, env=env)
         if ftm.policy.num_env_per_adv is None:
             ftm.policy.num_env_per_adv = ftm.envs_per_matchup
@@ -646,6 +648,22 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval_prot", action="store_true")
     parser.add_argument("--use_mirror", action="store_true")
+    parser.add_argument('--reset', choices=['round', 'match', 'game'], help='Reset stats for a round, a match, or the whole game', default='round')
+    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/ma")
+    parser.add_argument('--log-dir', help='The directory to save logs', default="logs/ma")
+    parser.add_argument('--side', help='The side for AI to control. By default both', default='both', choices=['left', 'right', 'both'])
+    parser.add_argument('--render', action='store_true', help='Whether to render the game screen')
+    parser.add_argument('--num-env', type=int, help='How many envirorments to create', default=24)
+    parser.add_argument('--total-steps', type=int, help='How many total steps to train', default=int(1e10)) # 1e5
+    parser.add_argument('--enable-combo', action='store_true', help='Enable special move action space for environment')
+    parser.add_argument('--null-combo', action='store_true', help='Null action space for special move')
+    parser.add_argument('--transform-action', action='store_true', help='Transform action space to MultiDiscrete')
+    parser.add_argument('--seed', type=int, help='Seed', default=0)
+    parser.add_argument('--left-model-file', help='The left model to continue to learn from')
+    parser.add_argument('--right-model-file', help='The right model to continue to learn from')
+    parser.add_argument('--rollout-opponent-num', type=int, help='Numbers of opponents to interact for each update', default=5) # 2
+    parser.add_argument('--fsp-league', action='store_true', help='Fictitious self-play league')
+    parser.add_argument('--psro-league', action='store_true', help='PSRO league')
     args = parser.parse_args()
 
 
@@ -684,7 +702,7 @@ if __name__ == "__main__":
             os.rename(todo_path, processing_path)
 
             # Now that we've claimed it, process it
-            train_best_response(processing_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror)
+            train_best_response(args, processing_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror)
 
             # Move it to 'done' when finished
             done_path = os.path.join(done_dir, task_filename)
