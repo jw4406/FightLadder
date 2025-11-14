@@ -63,9 +63,10 @@ def _calculate_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, e
     
     return policy_loss, log_prob, entropy
 
-def calculate_q_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, ego: bool, clip_range: float, use_sde: bool, device: torch.device, batch_size: int, envs_per_matchup: int, network_keys = None, perturbed=False):
+def _calculate_q_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, ego: bool, clip_range: float, use_sde: bool, device: torch.device, batch_size: int, envs_per_matchup: int, network_keys = None, perturbed=False):
     #TODO: Complete docstring
     actions = torch.Tensor(rollout_data.actions).to(device)
+    adv_actions = torch.Tensor(rollout_data.adv_actions).to(device)
     #dstb_actions = torch.Tensor(rollout_data.dstb_actions).to(device)
 
     if use_sde:
@@ -79,14 +80,14 @@ def calculate_q_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, 
                 log_prob, entropy = policy.evaluate_ego_actions(rollout_data.observations, actions)
             else:
                 old_log_prob = rollout_data.old_log_prob
-                log_prob, entropy = policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=network_keys)
+                log_prob, entropy = policy.evaluate_adv_actions(rollout_data.observations, adv_actions, buf_num=network_keys)
     else:
         if ego:
             old_log_prob = rollout_data.old_log_prob
             log_prob, entropy = policy.evaluate_ego_actions(rollout_data.observations, actions)
         else:
             old_log_prob = rollout_data.old_log_prob
-            log_prob, entropy = policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=network_keys)
+            log_prob, entropy = policy.evaluate_adv_actions(rollout_data.observations, adv_actions, buf_num=network_keys)
     
     advantages = rollout_data.q_values# if ego else -rollout_data.advantages
     #print(f"[DEBUG @ policy_loss]: Adv advantages mean in minibatch: {advantages.mean().item():.4f}")
@@ -140,13 +141,13 @@ def calc_F_grad_single(
     perturbed_policy = unpickle_policy(perturbed_policy)
     network_keys, curr_buf, curr_perturbed_buf = _get_buffers_and_keys(ori_buf, perturbed_buf, ego, i, num_adversaries)
     for ori_rollout_data, perturbed_rollout_data in zip(curr_buf.get(batch_size), curr_perturbed_buf.get(batch_size)):                    
-        policy_loss, log_prob, entropy = _calculate_policy_loss(
+        policy_loss, log_prob, entropy = _calculate_q_policy_loss(
             ori_rollout_data, ori_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys, perturbed=False
         )
         pg_losses.append(policy_loss.item())
         entropy_losses.append(entropy.mean().item())
 
-        perturbed_policy_loss, _, _ = _calculate_policy_loss(
+        perturbed_policy_loss, _, _ = _calculate_q_policy_loss(
             perturbed_rollout_data, perturbed_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys, perturbed=True
         )
 
@@ -168,7 +169,7 @@ def calc_F_grad_single(
                 #shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=envs_per_matchup
             #)
             else:
-                log_prob, entropy = ori_policy.evaluate_adv_actions(ori_rollout_data.observations, ori_rollout_data.actions, buf_num=[i])
+                log_prob, entropy = ori_policy.evaluate_adv_actions(ori_rollout_data.observations, ori_rollout_data.adv_actions, buf_num=[i])
                 #_, _, _, log_prob, entropy = ori_policy.evaluate_actions(
                     #ori_rollout_data.observations.clone().detach().to(device), ori_rollout_data.actions.clone().detach().to(device), ori_rollout_data.dstb_actions.clone().detach().to(device),
                     #shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=envs_per_matchup

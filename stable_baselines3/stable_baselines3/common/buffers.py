@@ -809,9 +809,11 @@ class Q_RolloutBuffer(RolloutBuffer):
         This is a one-time operation that should be called after collecting rollouts.
         """
         #print("--- AdvRolloutBuffer PREPARED ---")
+        self.actions = self.ego_actions
         if not self.generator_ready:
             _torch_tensor_names = [
                 "observations",
+                "actions",
                 "ego_actions",
                 "adv_actions",
                 "next_observations",
