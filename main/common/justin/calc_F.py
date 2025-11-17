@@ -140,6 +140,7 @@ def calc_F_grad_single(
     pg_losses = []
     entropy_losses = []
     approx_kl_divs_epoch = []
+    F_grads = []
     break_signal = False
     
     perturbed_policy = unpickle_policy(perturbed_policy)
@@ -148,7 +149,7 @@ def calc_F_grad_single(
         policy_loss, log_prob, entropy = _calculate_policy_loss(
             ori_rollout_data, ori_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys, perturbed=False
         )
-        pg_losses.append(policy_loss.item())
+        pg_losses.append(policy_loss)
         entropy_losses.append(entropy.mean().item())
 
         perturbed_policy_loss, _, _ = _calculate_q_policy_loss(
@@ -158,6 +159,7 @@ def calc_F_grad_single(
         if DEBUG:
             F_grad = autograd.grad(policy_loss, ori_policy.ctrl_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True) if ego else \
                 autograd.grad(policy_loss, ori_policy.dstb_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True, allow_unused=True)
+            F_grads.append(F_grad)
             #F_grad = torch.hstack([t.flatten() for t in F_grad])
         else:
             F_grad = _compute_grads(d, delta, ego_v, adv_v, policy_loss, perturbed_policy_loss, ego, i)# if ego else 0
@@ -190,4 +192,4 @@ def calc_F_grad_single(
     if target_kl is not None and np.mean(approx_kl_divs_epoch) > 1.5 * target_kl:
         break_signal = True
 
-    return F_grad, pg_losses, entropy_losses, [], break_signal
+    return F_grads, pg_losses, entropy_losses, [], break_signal
