@@ -754,9 +754,10 @@ class Q_RolloutBuffer(RolloutBuffer):
         if self.pos == self.buffer_size:
             self.full = True
     def get(self, batch_size: Optional[int] = None) -> Generator[RolloutBufferSamples, None, None]:
-        assert self.full, ""
+        assert self.full, "Buffer is not full"
+        np.random.seed(67)
         indices = np.random.permutation(self.buffer_size * self.n_envs)
-
+        #indices = [12, 14, 28, 38, 91, 92, 93, 94, 95, 96, 97, 98, 99, 17]
         #indices = list(range(self.buffer_size * self.n_envs))
         # Prepare the data
         if not self.generator_ready:
