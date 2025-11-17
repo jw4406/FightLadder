@@ -1042,8 +1042,10 @@ class CleanDerivativeFreeSPAR(PPO):
                     self.policy.dstb_optimizer.zero_grad()
                     self.policy.value_optimizer.zero_grad()
                     loss.backward()
+
+                    self.ego_grads_autograd_order = [self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params']))]
                     # Clip grad norm
-                    th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                    #th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                     if update_ego:
                         #self.policy.ctrl_optimizer.step()
                         pass
