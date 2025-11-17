@@ -40,7 +40,7 @@ from .parallel_updater import ParallelUpdater
 
 TIMING = False
 DEBUG = False
-PARALLEL_CALC_F = True
+PARALLEL_CALC_F = False
 SAVE_TEST = True
 USE_PERTURBED = True
 class DummyCallback(BaseCallback):
@@ -702,6 +702,7 @@ class CleanDerivativeFreeSPAR(PPO):
     def train(self, update_ego: bool = True, update_adversary: bool = True) -> None:
         if update_ego:
             self.train_standard(update_ego=True, update_adversary=False)
+            pass
         if update_adversary:
             self.train_standard(update_ego=False, update_adversary=True)
         #self.train_standard(update_ego, update_adversary)
@@ -812,6 +813,7 @@ class CleanDerivativeFreeSPAR(PPO):
                                 break
                     else:
                         if not DEBUG:
+                            num_actual_bufs = len(self.perturbed_agents)
                             F_grad = F_grad_curr
                         else:
                             F_grad += F_grad_curr
@@ -826,17 +828,17 @@ class CleanDerivativeFreeSPAR(PPO):
                 if DEBUG:
                     F_grad = F_grad_curr
                 else:
-                    F_grad /= (num_actual_bufs+1) #num_actual_bufs counts how many buffers participated to take the correct average, in case of early stopping.
+                    F_grad = [F_grad[i]/(num_actual_bufs) for i in range(len(F_grad))]#num_actual_bufs counts how many buffers participated to take the correct average, in case of early stopping.
                     #F_grad = F_grad_curr
                 param_list = self.policy.ctrl_optimizer.param_groups[0]['params'] if ego else self.policy.dstb_optimizer.param_groups[0]['params']
                 size_lists = [list(x.shape) for x in param_list]
                 
-                reshaped_grad = []
-                count = 0
-                for k in range(len(size_lists)):
-                    numel = np.prod(size_lists[k])
-                    reshaped_grad.append(torch.reshape(F_grad[count: count + numel], size_lists[k]))
-                    count += numel
+                # reshaped_grad = []
+                # count = 0
+                # for k in range(len(size_lists)):
+                #     numel = np.prod(size_lists[k])
+                #     reshaped_grad.append(torch.reshape(F_grad[count: count + numel], size_lists[k]))
+                #     count += numel
                 if ego is False:
                     # heads_start_index = self.policy.extractor_and_trunk_length
                     # trunk_extractor_indices = [i for i in range(heads_start_index)]
@@ -844,12 +846,12 @@ class CleanDerivativeFreeSPAR(PPO):
                     # all_indices = trunk_extractor_indices + this_adv_indices
                     self.policy.dstb_optimizer.zero_grad()
 
-                    for k in range(len(reshaped_grad)):
-                        self.policy.dstb_optimizer.param_groups[0]['params'][k].grad = reshaped_grad[k].float().detach()
+                    for k in range(len(F_grad)):
+                        self.policy.dstb_optimizer.param_groups[0]['params'][k].grad = F_grad[k]
                 else:
                     self.policy.ctrl_optimizer.zero_grad()
-                    for k in range(len(size_lists)):
-                        param_list[k].grad = reshaped_grad[k].float().detach()
+                    for k in range(len(F_grad)):
+                        self.policy.ctrl_optimizer.param_groups[0]['params'][k].grad = F_grad[k]
                 
                 optimizer = self.policy.ctrl_optimizer if ego else self.policy.dstb_optimizer
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
@@ -1012,6 +1014,8 @@ class CleanDerivativeFreeSPAR(PPO):
 
                     entropy_losses.append(entropy_loss.item())
                     pl = policy_loss#_ego if update_ego else policy_loss_adv
+                    self.ego_grads_test = autograd.grad(pl, self.policy.ctrl_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True)
+                    self.ego_params = self.policy.ctrl_optimizer.param_groups[0]['params']
                     loss = pl + self.ent_coef * entropy_loss + self.vf_coef * value_loss
 
                     # Calculate approximate form of reverse KL Divergence for early stopping
@@ -1041,7 +1045,8 @@ class CleanDerivativeFreeSPAR(PPO):
                     # Clip grad norm
                     th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                     if update_ego:
-                        self.policy.ctrl_optimizer.step()
+                        #self.policy.ctrl_optimizer.step()
+                        pass
                     else:
                         self.policy.dstb_optimizer.step()
                     self.policy.value_optimizer.step()
