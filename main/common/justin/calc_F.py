@@ -8,7 +8,7 @@ import torch.autograd as autograd
 from stable_baselines3.common.buffers import AdvRolloutBuffer
 from stable_baselines3.common.policies import BasePolicy
 from utils import move_policy, select_device, get_n_workers, state2matchup, select_matchup_env, unpickle_policy
-DEBUG =False 
+DEBUG = True
 def _get_buffers_and_keys(ori_buf: AdvRolloutBuffer, perturbed_buf: AdvRolloutBuffer, ego: bool, index: int, num_adversaries: int) -> tuple:
     #TODO: Add docstring
     if ego:
@@ -50,6 +50,10 @@ def _calculate_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, e
             log_prob, entropy = policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=network_keys)
     
     advantages = rollout_data.advantages# if ego else -rollout_data.advantages
+    normalize_advantage = True
+    # Normalization does not make sense if mini batchsize == 1, see GH issue #325
+    if normalize_advantage and len(advantages) > 1:
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
     #print(f"[DEBUG @ policy_loss]: Adv advantages mean in minibatch: {advantages.mean().item():.4f}")
 
     ratio = torch.exp(log_prob - old_log_prob.clone().detach().to(device))
@@ -141,7 +145,7 @@ def calc_F_grad_single(
     perturbed_policy = unpickle_policy(perturbed_policy)
     network_keys, curr_buf, curr_perturbed_buf = _get_buffers_and_keys(ori_buf, perturbed_buf, ego, i, num_adversaries)
     for ori_rollout_data, perturbed_rollout_data in zip(curr_buf.get(batch_size), curr_perturbed_buf.get(batch_size)):                    
-        policy_loss, log_prob, entropy = _calculate_q_policy_loss(
+        policy_loss, log_prob, entropy = _calculate_policy_loss(
             ori_rollout_data, ori_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys, perturbed=False
         )
         pg_losses.append(policy_loss.item())
@@ -154,7 +158,7 @@ def calc_F_grad_single(
         if DEBUG:
             F_grad = autograd.grad(policy_loss, ori_policy.ctrl_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True) if ego else \
                 autograd.grad(policy_loss, ori_policy.dstb_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True, allow_unused=True)
-            F_grad = torch.hstack([t.flatten() for t in F_grad])
+            #F_grad = torch.hstack([t.flatten() for t in F_grad])
         else:
             F_grad = _compute_grads(d, delta, ego_v, adv_v, policy_loss, perturbed_policy_loss, ego, i)# if ego else 0
 

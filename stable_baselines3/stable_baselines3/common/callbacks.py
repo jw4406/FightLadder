@@ -381,9 +381,9 @@ cd main
 
 
             #TODO: These lines are commented for debugging purposes - uncomment when done
-            print(cmd)
-            result = subprocess.run(cmd,check=True, capture_output=True, text=True)
-            return result.stdout.strip()
+            #print(cmd)
+            #result = subprocess.run(cmd,check=True, capture_output=True, text=True)
+            #return result.stdout.strip()
 
         # The path to the checkpoint that was just saved
         if self.n_calls % self.save_freq == 0:
