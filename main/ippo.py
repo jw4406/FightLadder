@@ -388,7 +388,7 @@ def main(PLAYER):
     parser.add_argument('--fsp', action='store_true', help='Fictitious self-play')
     parser.add_argument('--fsp-threshold', type=float, help='Fictitious self-play threshold', default=0.5)
     parser.add_argument('--async-update', action='store_true', help='Update left and right asynchronously')
-    parser.add_argument('--num_env_steps', type=int, help='Number of env steps to run', default=10)
+    parser.add_argument('--num_env_steps', type=int, help='Number of env steps to run', default=12)
     #parser.add_argument("--player", type=str, required=True)
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
     parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
@@ -605,7 +605,7 @@ def main(PLAYER):
             v_learning_rate=args.v_lr,
             verbose=2,
             n_steps=args.num_env_steps,
-            batch_size=5,
+            batch_size=2,
             n_epochs=1,
             state_list=state_list,
             envs_per_matchup=args.envs_per_matchup,

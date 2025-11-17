@@ -738,7 +738,7 @@ class CleanDerivativeFreeSPAR(PPO):
                      ego: bool=True) -> None:
         """TODO: Complete the docstring."""
         ori_policy = unpickle_policy(ori_policy)
-        
+        F_grad_temp = []
         if ego is True:
             print("Ego is true", flush=True)
         else:
@@ -827,8 +827,12 @@ class CleanDerivativeFreeSPAR(PPO):
 
                 if DEBUG:
                     F_grad = F_grad_curr
+                    for i in range(len(F_grad)):
+                        assert th.max(th.abs(self.ego_grads_autograd_order[i] - F_grad[i])) < 1e-6, "Gradient mismatch"
                 else:
                     F_grad = [F_grad[i]/(num_actual_bufs) for i in range(len(F_grad))]#num_actual_bufs counts how many buffers participated to take the correct average, in case of early stopping.
+                    for i in range(len(F_grad)):
+                        assert th.max(th.abs(self.ego_grads_autograd_order[i] - F_grad[i])) < 1e-6, "Gradient mismatch"
                     #F_grad = F_grad_curr
                 param_list = self.policy.ctrl_optimizer.param_groups[0]['params'] if ego else self.policy.dstb_optimizer.param_groups[0]['params']
                 size_lists = [list(x.shape) for x in param_list]
@@ -897,6 +901,7 @@ class CleanDerivativeFreeSPAR(PPO):
         pass
 
     def train_standard(self, update_ego: bool = True, update_adversary: bool = True) -> None:
+        self.ego_grads_autograd_order = []
         first = True
 
         # afk test!
@@ -1014,7 +1019,6 @@ class CleanDerivativeFreeSPAR(PPO):
 
                     entropy_losses.append(entropy_loss.item())
                     pl = policy_loss#_ego if update_ego else policy_loss_adv
-                    self.ego_grads_test = autograd.grad(pl, self.policy.ctrl_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True)
                     self.ego_params = self.policy.ctrl_optimizer.param_groups[0]['params']
                     loss = pl + self.ent_coef * entropy_loss + self.vf_coef * value_loss
 
@@ -1043,7 +1047,7 @@ class CleanDerivativeFreeSPAR(PPO):
                     self.policy.value_optimizer.zero_grad()
                     loss.backward()
 
-                    self.ego_grads_autograd_order = [self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params']))]
+                    self.ego_grads_autograd_order.append([self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params']))])
                     # Clip grad norm
                     #th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                     if update_ego:
