@@ -701,7 +701,7 @@ class CleanDerivativeFreeSPAR(PPO):
     
     def train(self, update_ego: bool = True, update_adversary: bool = True) -> None:
         if update_ego:
-            self.train_standard(update_ego=True, update_adversary=False)
+            #self.train_standard(update_ego=True, update_adversary=False)
             pass
         if update_adversary:
             self.train_standard(update_ego=False, update_adversary=True)
