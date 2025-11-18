@@ -394,7 +394,7 @@ def main(PLAYER):
     parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
     parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=12)
     parser.add_argument("--num_perturbs", type=int, help="Number of perturbed policies to be created.", default=1)
-    parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-4)
+    parser.add_argument("--c_lr", type=float, help="ego learning rate", default=999999)
     parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=7e-4)
     parser.add_argument("--v_lr", type=float, help="value learning rate", default=7e-4)
     parser.add_argument("--use_mirror", action='store_true', help='Use mirror')
