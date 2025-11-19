@@ -375,7 +375,7 @@ def main(PLAYER):
                         help='Initial level to load from. By default 0, starting from pretrain', default=0)
     parser.add_argument('--resume-epoch', type=int, help='Resume epoch. By default 0, starting from pretrain',
                         default=0)
-    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=1)
+    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=4)
     parser.add_argument('--enable-combo', action='store_true', help='Enable special move action space for environment')
     parser.add_argument('--null-combo', action='store_true', help='Null action space for special move')
     parser.add_argument('--transform-action', action='store_true', help='Transform action space to MultiDiscrete')
@@ -388,13 +388,13 @@ def main(PLAYER):
     parser.add_argument('--fsp', action='store_true', help='Fictitious self-play')
     parser.add_argument('--fsp-threshold', type=float, help='Fictitious self-play threshold', default=0.5)
     parser.add_argument('--async-update', action='store_true', help='Update left and right asynchronously')
-    parser.add_argument('--num_env_steps', type=int, help='Number of env steps to run', default=12)
+    parser.add_argument('--num_env_steps', type=int, help='Number of env steps to run', default=300)
     #parser.add_argument("--player", type=str, required=True)
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
     parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
-    parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=12)
-    parser.add_argument("--num_perturbs", type=int, help="Number of perturbed policies to be created.", default=1)
-    parser.add_argument("--c_lr", type=float, help="ego learning rate", default=999999)
+    parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=100)
+    parser.add_argument("--num_perturbs", type=int, help="Number of perturbed policies to be created.", default=2)
+    parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-4)
     parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=7e-4)
     parser.add_argument("--v_lr", type=float, help="value learning rate", default=7e-4)
     parser.add_argument("--use_mirror", action='store_true', help='Use mirror')
@@ -515,7 +515,7 @@ def main(PLAYER):
         finetune_model = IPPO(
             "CnnPolicy",
             finetune_env,
-            device="cuda",
+            device="cpu",
             verbose=1,
             n_steps=192,
             batch_size=384,  # 512,
@@ -599,14 +599,14 @@ def main(PLAYER):
         finetune_model = CleanDerivativeFreeSPAR(
             "AACCnnPolicy",
             finetune_env,
-            device="cpu",
+            device="cuda:0",
             c_learning_rate=args.c_lr,
             d_learning_rate=args.d_lr,
             v_learning_rate=args.v_lr,
             verbose=2,
             n_steps=args.num_env_steps,
-            batch_size=2,
-            n_epochs=1,
+            batch_size=256,
+            n_epochs=4,
             state_list=state_list,
             envs_per_matchup=args.envs_per_matchup,
             env_generator_func=env_generator,

@@ -1,9 +1,48 @@
 import torch
-from typing import List, Any
+from typing import List, Any, Tuple
 import numpy as np
 
 import torch
 import torch.autograd as autograd
+
+def average_tensor_tuples(list_of_tuples: List[Tuple[torch.Tensor, ...]]) -> Tuple[torch.Tensor, ...]:
+    """
+    Average across a list of tuples of tensors while preserving the shape.
+    
+    Args:
+        list_of_tuples: List of tuples, where each tuple contains tensors of the same shape.
+                        For example: [(t1_1, t1_2, ..., t1_n), (t2_1, t2_2, ..., t2_n), ...]
+    
+    Returns:
+        A tuple of averaged tensors: (avg(t1_1, t2_1, ...), avg(t1_2, t2_2, ...), ...)
+    
+    Example:
+        >>> list_of_tuples = [(torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0])),
+        ...                   (torch.tensor([5.0, 6.0]), torch.tensor([7.0, 8.0]))]
+        >>> result = average_tensor_tuples(list_of_tuples)
+        >>> # result = (tensor([3.0, 4.0]), tensor([5.0, 6.0]))
+    """
+    if not list_of_tuples:
+        raise ValueError("list_of_tuples cannot be empty")
+    
+    # Get the number of tensors per tuple (assuming all tuples have the same length)
+    num_tensors = len(list_of_tuples[0])
+    
+    # Verify all tuples have the same length
+    if not all(len(tup) == num_tensors for tup in list_of_tuples):
+        raise ValueError("All tuples must have the same length")
+    
+    # Group corresponding tensors together and average them
+    averaged_tensors = []
+    for i in range(num_tensors):
+        # Collect the i-th tensor from each tuple
+        tensors_to_average = [tup[i] for tup in list_of_tuples]
+        # Stack and average
+        stacked = torch.stack(tensors_to_average, dim=0)
+        averaged = torch.mean(stacked, dim=0)
+        averaged_tensors.append(averaged)
+    
+    return tuple(averaged_tensors)
 
 from stable_baselines3.common.buffers import AdvRolloutBuffer
 from stable_baselines3.common.policies import BasePolicy
@@ -118,11 +157,12 @@ def _compute_grads(d: int, delta: float, ego_v: torch.Tensor, adv_v: torch.Tenso
 
 def calc_F_grad_single(
         ori_policy: BasePolicy,
-        perturbed_policy: BasePolicy,
+        perturbed_policies: List[BasePolicy],
         ori_buf: AdvRolloutBuffer,
-        perturbed_buf: AdvRolloutBuffer,
+        perturbed_bufs: List[AdvRolloutBuffer],
         ego: bool,
         i: int,
+        perturbed_buf_num: int,
         num_adversaries: int,
         batch_size: int,
         clip_range: float,
@@ -143,13 +183,16 @@ def calc_F_grad_single(
     F_grads = []
     break_signal = False
     
-    perturbed_policy = unpickle_policy(perturbed_policy)
-    network_keys, curr_buf, curr_perturbed_buf = _get_buffers_and_keys(ori_buf, perturbed_buf, ego, i, num_adversaries)
-    for ori_rollout_data, perturbed_rollout_data in zip(curr_buf.get(batch_size), curr_perturbed_buf.get(batch_size)):                    
+    perturbed_policies = [unpickle_policy(perturbed_policies[i]) for i in range(len(perturbed_policies))]
+    #for ori_rollout_data, perturbed_rollout_data in zip(curr_buf.get(batch_size), curr_perturbed_buf.get(batch_size)):                    
+    for perturbed_buf, perturbed_policy in zip(perturbed_bufs, perturbed_policies):
+        network_keys, curr_buf, curr_perturbed_buf = _get_buffers_and_keys(ori_buf, perturbed_buf, ego, i, num_adversaries)
+        ori_rollout_data = list(curr_buf.get(batch_size))[perturbed_buf_num]
+        perturbed_rollout_data = list(perturbed_buf.get(batch_size))[perturbed_buf_num]
         policy_loss, log_prob, entropy = _calculate_policy_loss(
             ori_rollout_data, ori_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys, perturbed=False
         )
-        pg_losses.append(policy_loss)
+        pg_losses.append(policy_loss.item())
         entropy_losses.append(entropy.mean().item())
 
         perturbed_policy_loss, _, _ = _calculate_q_policy_loss(
@@ -163,6 +206,7 @@ def calc_F_grad_single(
             #F_grad = torch.hstack([t.flatten() for t in F_grad])
         else:
             F_grad = _compute_grads(d, delta, ego_v, adv_v, policy_loss, perturbed_policy_loss, ego, i)# if ego else 0
+            F_grads.append(F_grad)
 
         # #assert improvement > 0, "CRITICAL BUG: Policy is making good actions LESS likely!"
         with torch.no_grad():
@@ -191,5 +235,5 @@ def calc_F_grad_single(
     
     if target_kl is not None and np.mean(approx_kl_divs_epoch) > 1.5 * target_kl:
         break_signal = True
-
-    return F_grads, pg_losses, entropy_losses, [], break_signal
+    F_grads_averaged = average_tensor_tuples(F_grads)
+    return F_grads_averaged, pg_losses, entropy_losses, [], break_signal

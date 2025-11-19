@@ -701,7 +701,7 @@ class CleanDerivativeFreeSPAR(PPO):
     
     def train(self, update_ego: bool = True, update_adversary: bool = True) -> None:
         if update_ego:
-            #self.train_standard(update_ego=True, update_adversary=False)
+            self.train_standard(update_ego=True, update_adversary=False)
             pass
         if update_adversary:
             self.train_standard(update_ego=False, update_adversary=True)
@@ -751,17 +751,18 @@ class CleanDerivativeFreeSPAR(PPO):
             for i in range(num_runs_count):
                 # i bug
                 F_grad = 0
-                with ThreadPoolExecutor(max_workers=len(perturbed_bufs)) as executor:
-                    futures = []
-                    for perturbed_buf, perturbed_policy in zip(perturbed_bufs, perturbed_policies): #TODO: This should be parallelizabl
+                futures = []
+                for perturbed_buf_num in range(self.n_envs * self.n_steps // self.batch_size):
+                    with ThreadPoolExecutor(max_workers=len(perturbed_bufs)) as executor:
                         if PARALLEL_CALC_F:
                             future = executor.submit(calc_F_grad_single,
                                                 ori_policy=ori_policy,
-                                                perturbed_policy=perturbed_policy,
+                                                perturbed_policies=perturbed_policies,
                                                 ori_buf=ori_buf,
-                                                perturbed_buf=perturbed_buf,
+                                                perturbed_bufs=perturbed_bufs,
                                                 ego=ego,
                                                 i=i,
+                                                perturbed_buf_num=perturbed_buf_num,
                                                 num_adversaries=self.num_adversaries,
                                                 batch_size=self.batch_size,
                                                 clip_range=clip_range,
@@ -779,11 +780,12 @@ class CleanDerivativeFreeSPAR(PPO):
                         else:
 
                             F_grad_curr, pg_losses_curr, entropy_losses_curr, approx_kl_divs_curr, break_signal = calc_F_grad_single(ori_policy=ori_policy,
-                                                perturbed_policy=perturbed_policy,
+                                                perturbed_policies=perturbed_policies,
                                                 ori_buf=ori_buf,
-                                                perturbed_buf=perturbed_buf,
+                                                perturbed_bufs=perturbed_bufs,
                                                 ego=ego,
                                                 i=i,
+                                                perturbed_buf_num=perturbed_buf_num,
                                                 num_adversaries=self.num_adversaries,
                                                 batch_size=self.batch_size,
                                                 clip_range=clip_range,
@@ -798,19 +800,17 @@ class CleanDerivativeFreeSPAR(PPO):
                                                 first_epoch=(j == 0),
                                                 )
 
-                    # Collect results
+                        # Collect results
                     if PARALLEL_CALC_F:
                         for num_actual_bufs, future in enumerate(futures):
                             F_grad_curr, pg_losses_curr, entropy_losses_curr, approx_kl_divs_curr, break_signal = future.result()
-                            if DEBUG:
-                                F_grad = F_grad_curr
-                            else:
-                                F_grad += F_grad_curr
+                            F_grad = F_grad_curr
                             pg_losses.extend(pg_losses_curr)
                             entropy_losses.extend(entropy_losses_curr)
                             approx_kl_divs_all.extend(approx_kl_divs_curr)
                             if break_signal:
                                 break
+                        num_actual_bufs = num_actual_bufs + 1
                     else:
                         if not DEBUG:
                             num_actual_bufs = len(self.perturbed_agents)
@@ -825,47 +825,48 @@ class CleanDerivativeFreeSPAR(PPO):
                     
 
 
-                if DEBUG:
-                    F_grad = F_grad_curr
-                    for i in range(len(F_grad)):
-                        assert th.max(th.abs(self.ego_grads_autograd_order[i] - F_grad[i])) < 1e-6, "Gradient mismatch"
-                else:
-                    F_grad = [F_grad[i]/(num_actual_bufs) for i in range(len(F_grad))]#num_actual_bufs counts how many buffers participated to take the correct average, in case of early stopping.
-                    for i in range(len(F_grad)):
-                        assert th.max(th.abs(self.ego_grads_autograd_order[i] - F_grad[i])) < 1e-6, "Gradient mismatch"
-                    #F_grad = F_grad_curr
-                param_list = self.policy.ctrl_optimizer.param_groups[0]['params'] if ego else self.policy.dstb_optimizer.param_groups[0]['params']
-                size_lists = [list(x.shape) for x in param_list]
-                
-                # reshaped_grad = []
-                # count = 0
-                # for k in range(len(size_lists)):
-                #     numel = np.prod(size_lists[k])
-                #     reshaped_grad.append(torch.reshape(F_grad[count: count + numel], size_lists[k]))
-                #     count += numel
-                if ego is False:
-                    # heads_start_index = self.policy.extractor_and_trunk_length
-                    # trunk_extractor_indices = [i for i in range(heads_start_index)]
-                    # this_adv_indices = [i for i in range(heads_start_index + self.policy.head_length * adv_num , heads_start_index + self.policy.head_length * (adv_num + 1))]
-                    # all_indices = trunk_extractor_indices + this_adv_indices
-                    self.policy.dstb_optimizer.zero_grad()
+                    if DEBUG:
+                        F_grad = F_grad_curr
+                        for i in range(len(F_grad)):
+                            assert th.max(th.abs(self.ego_grads_autograd_order[i] - F_grad[i])) < 1e-6, "Gradient mismatch"
+                    else:
+                        #F_grad = [F_grad[0][i]/(num_actual_bufs) for i in range(len(F_grad[0]))]#num_actual_bufs counts how many buffers participated to take the correct average, in case of early stopping.
+                        #for i in range(len(F_grad)):
+                        #    assert th.max(th.abs(self.ego_grads_autograd_order[perturbed_buf_num][i] - F_grad[i])) < 1e-6, "Gradient mismatch"
+                        #F_grad = F_grad_curr
+                        pass
+                    param_list = self.policy.ctrl_optimizer.param_groups[0]['params'] if ego else self.policy.dstb_optimizer.param_groups[0]['params']
+                    size_lists = [list(x.shape) for x in param_list]
+                    
+                    # reshaped_grad = []
+                    # count = 0
+                    # for k in range(len(size_lists)):
+                    #     numel = np.prod(size_lists[k])
+                    #     reshaped_grad.append(torch.reshape(F_grad[count: count + numel], size_lists[k]))
+                    #     count += numel
+                    if ego is False:
+                        # heads_start_index = self.policy.extractor_and_trunk_length
+                        # trunk_extractor_indices = [i for i in range(heads_start_index)]
+                        # this_adv_indices = [i for i in range(heads_start_index + self.policy.head_length * adv_num , heads_start_index + self.policy.head_length * (adv_num + 1))]
+                        # all_indices = trunk_extractor_indices + this_adv_indices
+                        self.policy.dstb_optimizer.zero_grad()
 
-                    for k in range(len(F_grad)):
-                        self.policy.dstb_optimizer.param_groups[0]['params'][k].grad = F_grad[k]
-                else:
-                    self.policy.ctrl_optimizer.zero_grad()
-                    for k in range(len(F_grad)):
-                        self.policy.ctrl_optimizer.param_groups[0]['params'][k].grad = F_grad[k]
-                
-                optimizer = self.policy.ctrl_optimizer if ego else self.policy.dstb_optimizer
-                th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                optimizer.step()
-                with torch.no_grad():
-                    log_prob, _ = self.policy.evaluate_ego_actions(ori_buf.observations, ori_buf.actions) if ego else self.policy.evaluate_adv_actions(ori_buf[0].observations, ori_buf[0].adv_actions, buf_num=[i])
-                    log_ratio = log_prob - ori_buf.log_probs if ego else log_prob - ori_buf[0].log_probs
-                    # 0 bug
-                    approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
-                    approx_kl_divs_all.append(approx_kl_div)
+                        for k in range(len(F_grad)):
+                            self.policy.dstb_optimizer.param_groups[0]['params'][k].grad = F_grad[k]
+                    else:
+                        self.policy.ctrl_optimizer.zero_grad()
+                        for k in range(len(F_grad)):
+                            self.policy.ctrl_optimizer.param_groups[0]['params'][k].grad = F_grad[k]
+                    
+                    optimizer = self.policy.ctrl_optimizer if ego else self.policy.dstb_optimizer
+                    th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                    optimizer.step()
+                    with torch.no_grad():
+                        log_prob, _ = self.policy.evaluate_ego_actions(ori_buf.observations, ori_buf.actions) if ego else self.policy.evaluate_adv_actions(ori_buf[0].observations, ori_buf[0].adv_actions, buf_num=[i])
+                        log_ratio = log_prob - ori_buf.log_probs if ego else log_prob - ori_buf[0].log_probs
+                        # 0 bug
+                        approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
+                        approx_kl_divs_all.append(approx_kl_div)
 
         self._n_updates += self.n_epochs
         self._update_schedulers(step_ego=ego, step_adv=(not ego), step_val=True)
