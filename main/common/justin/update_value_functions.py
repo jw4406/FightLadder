@@ -64,21 +64,24 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
     # buffer.device = device
 
     #Process all rollout data and actions at once instead of batch by batch.
-    actions_batch, observations_batch, returns_batch, all_env_indices = _prep_rollout_data_actions(batch_size, buffer)
-    policy.num_global_env = num_envs
-    policy.num_adv = 1
-    for i in range(len(returns_batch) // batch_size):
+    #actions_batch, observations_batch, returns_batch, all_env_indices = _prep_rollout_data_actions(batch_size, buffer)
+    grad_check = []
+    for rollout_data in buffer.get(batch_size):
+        policy.num_global_env = num_envs
+        policy.num_adv = 1
         values = policy.evaluate_states(
-            observations_batch[i * batch_size:(i + 1) * batch_size],
+            rollout_data.observations,
             buf_num=[adversary_index],
-            env_indices=all_env_indices[i * batch_size:(i + 1) * batch_size]
+            env_indices=rollout_data.env_indices
             )
         values = -values.flatten()
-        value_loss = F.mse_loss(returns_batch[i * batch_size:(i + 1) * batch_size], values)
+        value_loss = F.mse_loss(rollout_data.returns, values) * 0.5
         policy.value_optimizer.zero_grad()
         value_loss.backward()
+        grad_check.append([policy.value_optimizer.param_groups[0]['params'][i].grad for i in range(len(policy.value_optimizer.param_groups[0]['params']))])
         th.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
         policy.value_optimizer.step()
+    #print(grad_check)
 
 def _update_single_q_function(batch_size: int, max_grad_norm: float, policy, buffer, adversary_index: int, num_envs: int, device: torch.device, tag: str="", envs_per_matchup: int=None):
     """

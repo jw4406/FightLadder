@@ -393,10 +393,10 @@ def main(PLAYER):
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
     parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
     parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=100)
-    parser.add_argument("--num_perturbs", type=int, help="Number of perturbed policies to be created.", default=2)
-    parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-4)
+    parser.add_argument("--num_perturbs", type=int, help="Number of perturbed policies to be created.", default=1)
+    parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-5)
     parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=7e-4)
-    parser.add_argument("--v_lr", type=float, help="value learning rate", default=7e-4)
+    parser.add_argument("--v_lr", type=float, help="value learning rate", default=2e-5)
     parser.add_argument("--use_mirror", action='store_true', help='Use mirror')
     parser.add_argument("--num_workers", type=int, help="Number of workers", default=5)
     parser.add_argument("--load_path", type=str, help="Path to load the model from", default=None)
@@ -613,7 +613,7 @@ def main(PLAYER):
             num_adversaries=num_adversary,
             n_env_per_adv=args.num_env // num_adversary,
             seed= 0,
-            target_kl=0.025,
+            target_kl=None,
             use_mirror=use_mirror
         )
 
