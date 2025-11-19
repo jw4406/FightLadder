@@ -821,6 +821,7 @@ class CleanDerivativeFreeSPAR(PPO):
                         entropy_losses.extend(entropy_losses_curr)
                         approx_kl_divs_all.extend(approx_kl_divs_curr)
                         if break_signal:
+                            print("Early stopping due to KL divergence", flush=True)
                             break 
                     
 
@@ -903,6 +904,8 @@ class CleanDerivativeFreeSPAR(PPO):
 
     def train_standard(self, update_ego: bool = True, update_adversary: bool = True) -> None:
         self.ego_grads_autograd_order = []
+        self.policy.value_grads_autograd_order = []
+        self.policy.value_loss = []
         first = True
 
         # afk test!
@@ -1049,6 +1052,8 @@ class CleanDerivativeFreeSPAR(PPO):
                     loss.backward()
 
                     self.ego_grads_autograd_order.append([self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params']))])
+                    self.policy.value_grads_autograd_order.append([self.policy.value_optimizer.param_groups[0]['params'][i].grad for i in range(len(self.policy.value_optimizer.param_groups[0]['params']))])
+                    self.policy.value_loss.append(value_loss)
                     # Clip grad norm
                     #th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                     if update_ego:
@@ -1056,7 +1061,7 @@ class CleanDerivativeFreeSPAR(PPO):
                         pass
                     else:
                         self.policy.dstb_optimizer.step()
-                    self.policy.value_optimizer.step()
+                    #self.policy.value_optimizer.step()
 
                 if not continue_training:
                     break
