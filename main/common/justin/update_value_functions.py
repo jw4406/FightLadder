@@ -74,7 +74,7 @@ def _update_single_value_function(batch_size: int, max_grad_norm: float, policy,
             env_indices=all_env_indices[i * batch_size:(i + 1) * batch_size]
             )
         values = -values.flatten()
-        value_loss = F.mse_loss(values, returns_batch[i * batch_size:(i + 1) * batch_size])
+        value_loss = F.mse_loss(returns_batch[i * batch_size:(i + 1) * batch_size], values)
         policy.value_optimizer.zero_grad()
         value_loss.backward()
         th.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
