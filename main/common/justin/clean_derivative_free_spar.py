@@ -645,9 +645,9 @@ class CleanDerivativeFreeSPAR(PPO):
                         perturbed_bufs, perturbed_adv_bufs = zip(*[future.result() for future in futures])
                         future_standard = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward,self.use_mirror, zero_ego_action, zero_adv_action)
                         continue_training = future_standard.result()
-
                     self.perturbed_bufs = list(perturbed_bufs)
                     self.perturbed_adv_bufs = list(perturbed_adv_bufs)
+
                     self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in self.perturbed_agents]
 
                 if continue_training is False:
@@ -769,7 +769,7 @@ class CleanDerivativeFreeSPAR(PPO):
                                                 use_sde=self.use_sde,
                                                 device=self.device,
                                                 envs_per_matchup=self.envs_per_matchup,
-                                                d=self.d,
+                                                d=self.ego_d if ego else self.adv_d,
                                                 delta=self.delta,
                                                 ego_v=self.ego_v,
                                                 adv_v=self.adv_v,
@@ -792,7 +792,7 @@ class CleanDerivativeFreeSPAR(PPO):
                                                 use_sde=self.use_sde,
                                                 device=self.device,
                                                 envs_per_matchup=self.envs_per_matchup,
-                                                d=self.d,
+                                                d=self.ego_d if ego else self.adv_d,
                                                 delta=self.delta,
                                                 ego_v=self.ego_v,
                                                 adv_v=self.adv_v,
@@ -853,7 +853,7 @@ class CleanDerivativeFreeSPAR(PPO):
                         self.policy.dstb_optimizer.zero_grad()
 
                         for k in range(len(F_grad)):
-                            self.policy.dstb_optimizer.param_groups[0]['params'][k].grad = F_grad[k]
+                            self.policy.dstb_optimizer.param_groups[0]['params'][k].grad = F_grad[k].float().detach()
                     else:
                         self.policy.ctrl_optimizer.zero_grad()
                         for k in range(len(F_grad)):
@@ -904,6 +904,8 @@ class CleanDerivativeFreeSPAR(PPO):
 
     def train_standard(self, update_ego: bool = True, update_adversary: bool = True) -> None:
         self.ego_grads_autograd_order = []
+        self.adv_grads_autograd_order = []
+        self.policy.adv_grads_autograd_order = []
         self.policy.value_grads_autograd_order = []
         self.policy.value_loss = []
         first = True
@@ -1052,6 +1054,7 @@ class CleanDerivativeFreeSPAR(PPO):
                     loss.backward()
 
                     self.ego_grads_autograd_order.append([self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params']))])
+                    self.policy.adv_grads_autograd_order.append([self.policy.dstb_optimizer.param_groups[0]['params'][i].grad for i in range(len(self.policy.dstb_optimizer.param_groups[0]['params']))])
                     self.policy.value_grads_autograd_order.append([self.policy.value_optimizer.param_groups[0]['params'][i].grad for i in range(len(self.policy.value_optimizer.param_groups[0]['params']))])
                     self.policy.value_loss.append(value_loss)
                     # Clip grad norm
@@ -1060,7 +1063,8 @@ class CleanDerivativeFreeSPAR(PPO):
                         #self.policy.ctrl_optimizer.step()
                         pass
                     else:
-                        self.policy.dstb_optimizer.step()
+                        #self.policy.dstb_optimizer.step()
+                        pass
                     #self.policy.value_optimizer.step()
 
                 if not continue_training:
@@ -1104,7 +1108,10 @@ class CleanDerivativeFreeSPAR(PPO):
             self.adv_v = v
         # this works because we call leader_grads TWICE, once for ego and once for adv, so 
         # each time, we use a diff v and update each param list, so no need to double d here.
-        self.d = count
+        if ego:
+            self.ego_d = count
+        else:
+            self.adv_d = count
         count = 0
         with torch.no_grad():
             for p in param_list:
