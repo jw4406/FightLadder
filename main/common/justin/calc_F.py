@@ -1,7 +1,7 @@
 import torch
 from typing import List, Any, Tuple
 import numpy as np
-
+from concurrent.futures import ThreadPoolExecutor
 import torch
 import torch.autograd as autograd
 
@@ -48,6 +48,7 @@ from stable_baselines3.common.buffers import AdvRolloutBuffer
 from stable_baselines3.common.policies import BasePolicy
 from utils import move_policy, select_device, get_n_workers, state2matchup, select_matchup_env, unpickle_policy
 DEBUG = True
+PARALLEL_CALC_F = True
 def _get_buffers_and_keys(ori_buf: AdvRolloutBuffer, perturbed_buf: AdvRolloutBuffer, ego: bool, index: int, num_adversaries: int) -> tuple:
     #TODO: Add docstring
     if ego:
@@ -157,6 +158,68 @@ def _compute_grads(d: int, delta: float, ego_v: torch.Tensor, adv_v: torch.Tenso
     F_grad = d / delta * (perturbed_policy_loss - policy_loss) * multiplier
     return F_grad    
 
+def per_batch_calc_F_grad_single(perturbed_buf: AdvRolloutBuffer, perturbed_policy: BasePolicy, ori_buf: AdvRolloutBuffer, ori_policy: BasePolicy, ego: bool, i: int, perturbed_buf_num: int, num_adversaries: int, batch_size: int, clip_range: float, use_sde: bool, device: torch.device, envs_per_matchup: int, d: int, delta: float, ego_v: torch.Tensor, adv_v: torch.Tensor, pg_losses: List[float], entropy_losses: List[float], approx_kl_divs_epoch):
+    network_keys, curr_buf, curr_perturbed_buf = _get_buffers_and_keys(ori_buf, perturbed_buf, ego, i, num_adversaries)
+    ori_rollout_data = list(curr_buf.get(batch_size))[perturbed_buf_num]
+
+    # this might introduce a bug for ego
+
+    perturbed_rollout_data = list(curr_perturbed_buf.get(batch_size))[perturbed_buf_num]
+    policy_loss, log_prob, entropy = _calculate_q_policy_loss(
+        ori_rollout_data, ori_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys, perturbed=False
+    )
+    pg_losses.append(policy_loss.item())
+    entropy_losses.append(entropy.mean().item())
+
+    perturbed_policy_loss, _, _ = _calculate_q_policy_loss(
+        perturbed_rollout_data, perturbed_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys, perturbed=True
+    )
+
+    if DEBUG:
+        F_grad = autograd.grad(perturbed_policy_loss, perturbed_policy.ctrl_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True) if ego else \
+            autograd.grad(perturbed_policy_loss, perturbed_policy.dstb_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True, allow_unused=True)
+        F_grad = torch.hstack([t.flatten() for t in F_grad])
+    else:
+        F_grad = _compute_grads(d, delta, ego_v, adv_v, policy_loss, perturbed_policy_loss, ego, i)# if ego else 0
+
+    reshaped_grad = []
+    count = 0
+    size_lists = [list(x.shape) for x in ori_policy.ctrl_optimizer.param_groups[0]['params']] if ego else [list(x.shape) for x in ori_policy.dstb_optimizer.param_groups[0]['params']]
+    for k in range(len(size_lists)):
+        numel = np.prod(size_lists[k])
+        reshaped_grad.append(torch.reshape(F_grad[count: count + numel], size_lists[k]))
+        count += numel
+    
+    #F_grads.append(reshaped_grad)
+        
+
+    # #assert improvement > 0, "CRITICAL BUG: Policy is making good actions LESS likely!"
+    with torch.no_grad():
+        old_log_prob_tensor = ori_rollout_data.old_log_prob
+        #run forward pass to get the log_prob
+        if ego:
+            log_prob, entropy = ori_policy.evaluate_ego_actions(ori_rollout_data.observations, ori_rollout_data.actions)
+            #log_prob, entropy = ori_policy.evaluate_actions(
+            #ori_rollout_data.observations.clone().detach().to(device), ori_rollout_data.actions.clone().detach().to(device), ori_rollout_data.dstb_actions.clone().detach().to(device),
+            #shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=envs_per_matchup
+        #)
+        else:
+            log_prob, entropy = ori_policy.evaluate_adv_actions(ori_rollout_data.observations, ori_rollout_data.adv_actions, buf_num=[i])
+            #_, _, _, log_prob, entropy = ori_policy.evaluate_actions(
+                #ori_rollout_data.observations.clone().detach().to(device), ori_rollout_data.actions.clone().detach().to(device), ori_rollout_data.dstb_actions.clone().detach().to(device),
+                #shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=envs_per_matchup
+            #)
+        #) 
+        #run forward pass to get the log_prob
+        with torch.no_grad():
+            _, log_prob = ori_policy.ego_forward(ori_rollout_data.observations, deterministic=False)
+        log_ratio = log_prob - old_log_prob_tensor
+        approx_kl_div = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
+        approx_kl_divs_epoch.append(approx_kl_div)
+
+
+    return reshaped_grad,policy_loss, perturbed_policy_loss, log_prob, entropy, approx_kl_div, pg_losses, entropy_losses, approx_kl_divs_epoch
+
 def calc_F_grad_single(
         ori_policy: BasePolicy,
         perturbed_policies: List[BasePolicy],
@@ -188,68 +251,23 @@ def calc_F_grad_single(
         #perturbed_bufs = perturbed_bufs[0]
         pass
     perturbed_policies = [unpickle_policy(perturbed_policies[i]) for i in range(len(perturbed_policies))]
-    #for ori_rollout_data, perturbed_rollout_data in zip(curr_buf.get(batch_size), curr_perturbed_buf.get(batch_size)):                    
-    for perturbed_buf, perturbed_policy in zip(perturbed_bufs, perturbed_policies):
-        network_keys, curr_buf, curr_perturbed_buf = _get_buffers_and_keys(ori_buf, perturbed_buf, ego, i, num_adversaries)
-        ori_rollout_data = list(curr_buf.get(batch_size))[perturbed_buf_num]
-
-        # this might introduce a bug for ego
-
-        perturbed_rollout_data = list(curr_perturbed_buf.get(batch_size))[perturbed_buf_num]
-        policy_loss, log_prob, entropy = _calculate_policy_loss(
-            ori_rollout_data, ori_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys, perturbed=False
-        )
-        pg_losses.append(policy_loss.item())
-        entropy_losses.append(entropy.mean().item())
-
-        perturbed_policy_loss, _, _ = _calculate_policy_loss(
-            perturbed_rollout_data, perturbed_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys, perturbed=True
-        )
-
-        if DEBUG:
-            F_grad = autograd.grad(policy_loss, ori_policy.ctrl_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True) if ego else \
-                autograd.grad(policy_loss, ori_policy.dstb_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True, allow_unused=True)
-            F_grad = torch.hstack([t.flatten() for t in F_grad])
-        else:
-            F_grad = _compute_grads(d, delta, ego_v, adv_v, policy_loss, perturbed_policy_loss, ego, i)# if ego else 0
-
-        reshaped_grad = []
-        count = 0
-        size_lists = [list(x.shape) for x in ori_policy.ctrl_optimizer.param_groups[0]['params']] if ego else [list(x.shape) for x in ori_policy.dstb_optimizer.param_groups[0]['params']]
-        for k in range(len(size_lists)):
-            numel = np.prod(size_lists[k])
-            reshaped_grad.append(torch.reshape(F_grad[count: count + numel], size_lists[k]))
-            count += numel
-        
-        F_grads.append(reshaped_grad)
-            
-
-        # #assert improvement > 0, "CRITICAL BUG: Policy is making good actions LESS likely!"
-        with torch.no_grad():
-            old_log_prob_tensor = ori_rollout_data.old_log_prob
-            #run forward pass to get the log_prob
-            if ego:
-                log_prob, entropy = ori_policy.evaluate_ego_actions(ori_rollout_data.observations, ori_rollout_data.actions)
-                #log_prob, entropy = ori_policy.evaluate_actions(
-                #ori_rollout_data.observations.clone().detach().to(device), ori_rollout_data.actions.clone().detach().to(device), ori_rollout_data.dstb_actions.clone().detach().to(device),
-                #shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=envs_per_matchup
-            #)
+    #for ori_rollout_data, perturbed_rollout_data in zip(curr_buf.get(batch_size), curr_perturbed_buf.get(batch_size)):  
+    futures = []   
+    with ThreadPoolExecutor(max_workers=len(perturbed_bufs)) as executor:
+        for perturbed_buf, perturbed_policy in zip(perturbed_bufs, perturbed_policies):
+            if PARALLEL_CALC_F:
+                    future = executor.submit(per_batch_calc_F_grad_single, perturbed_buf, perturbed_policy, ori_buf, ori_policy, ego, i, perturbed_buf_num, num_adversaries, batch_size, clip_range, use_sde, device, envs_per_matchup, d, delta, ego_v, adv_v, pg_losses, entropy_losses, approx_kl_divs_epoch)
+                    futures.append(future)
             else:
-                log_prob, entropy = ori_policy.evaluate_adv_actions(ori_rollout_data.observations, ori_rollout_data.adv_actions, buf_num=[i])
-                #_, _, _, log_prob, entropy = ori_policy.evaluate_actions(
-                    #ori_rollout_data.observations.clone().detach().to(device), ori_rollout_data.actions.clone().detach().to(device), ori_rollout_data.dstb_actions.clone().detach().to(device),
-                    #shuffle_keys=ori_rollout_data.env_indices, network_keys=network_keys, envs_per_matchup=envs_per_matchup
-                #)
-            #) 
-            #run forward pass to get the log_prob
-            with torch.no_grad():
-                _, log_prob = ori_policy.ego_forward(ori_rollout_data.observations, deterministic=False)
-            log_ratio = log_prob - old_log_prob_tensor
-            approx_kl_div = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
-            approx_kl_divs_epoch.append(approx_kl_div)
+                F_grads_test, policy_loss_test, perturbed_policy_loss_test, log_prob_test, entropy_test, approx_kl_div_test, pg_losses_test, entropy_losses_test, approx_kl_divs_epoch_test = per_batch_calc_F_grad_single(perturbed_buf, perturbed_policy, ori_buf, ori_policy, ego, i, perturbed_buf_num, num_adversaries, batch_size, clip_range, use_sde, device, envs_per_matchup, d, delta, ego_v, adv_v, pg_losses, entropy_losses, approx_kl_divs_epoch)
+                F_grads.append(F_grads_test)
+        if PARALLEL_CALC_F:
+            for future in futures:
+                F_grads_test, policy_loss_test, perturbed_policy_loss_test, log_prob_test, entropy_test, approx_kl_div_test, pg_losses_test, entropy_losses_test, approx_kl_divs_epoch_test = future.result()
+                F_grads.append(F_grads_test)
 
-    
     if target_kl is not None and np.mean(approx_kl_divs_epoch) > 1.5 * target_kl:
         break_signal = True
     F_grads_averaged = average_tensor_tuples(F_grads)
+
     return F_grads_averaged, pg_losses, entropy_losses, [], break_signal

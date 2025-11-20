@@ -753,76 +753,40 @@ class CleanDerivativeFreeSPAR(PPO):
                 F_grad = 0
                 futures = []
                 for perturbed_buf_num in range(self.n_envs * self.n_steps // self.batch_size):
-                    with ThreadPoolExecutor(max_workers=len(perturbed_bufs)) as executor:
-                        if PARALLEL_CALC_F:
-                            future = executor.submit(calc_F_grad_single,
-                                                ori_policy=ori_policy,
-                                                perturbed_policies=perturbed_policies,
-                                                ori_buf=ori_buf,
-                                                perturbed_bufs=perturbed_bufs,
-                                                ego=ego,
-                                                i=i,
-                                                perturbed_buf_num=perturbed_buf_num,
-                                                num_adversaries=self.num_adversaries,
-                                                batch_size=self.batch_size,
-                                                clip_range=clip_range,
-                                                use_sde=self.use_sde,
-                                                device=self.device,
-                                                envs_per_matchup=self.envs_per_matchup,
-                                                d=self.ego_d if ego else self.adv_d,
-                                                delta=self.delta,
-                                                ego_v=self.ego_v,
-                                                adv_v=self.adv_v,
-                                                target_kl=self.target_kl,
-                                                first_epoch=(j == 0),
-                                                )
-                            futures.append(future)
-                        else:
-
-                            F_grad_curr, pg_losses_curr, entropy_losses_curr, approx_kl_divs_curr, break_signal = calc_F_grad_single(ori_policy=ori_policy,
-                                                perturbed_policies=perturbed_policies,
-                                                ori_buf=ori_buf,
-                                                perturbed_bufs=perturbed_bufs,
-                                                ego=ego,
-                                                i=i,
-                                                perturbed_buf_num=perturbed_buf_num,
-                                                num_adversaries=self.num_adversaries,
-                                                batch_size=self.batch_size,
-                                                clip_range=clip_range,
-                                                use_sde=self.use_sde,
-                                                device=self.device,
-                                                envs_per_matchup=self.envs_per_matchup,
-                                                d=self.ego_d if ego else self.adv_d,
-                                                delta=self.delta,
-                                                ego_v=self.ego_v,
-                                                adv_v=self.adv_v,
-                                                target_kl=self.target_kl,
-                                                first_epoch=(j == 0),
-                                                )
+                    F_grad_curr, pg_losses_curr, entropy_losses_curr, approx_kl_divs_curr, break_signal = calc_F_grad_single(ori_policy=ori_policy,
+                                        perturbed_policies=perturbed_policies,
+                                        ori_buf=ori_buf,
+                                        perturbed_bufs=perturbed_bufs,
+                                        ego=ego,
+                                        i=i,
+                                        perturbed_buf_num=perturbed_buf_num,
+                                        num_adversaries=self.num_adversaries,
+                                        batch_size=self.batch_size,
+                                        clip_range=clip_range,
+                                        use_sde=self.use_sde,
+                                        device=self.device,
+                                        envs_per_matchup=self.envs_per_matchup,
+                                        d=self.ego_d if ego else self.adv_d,
+                                        delta=self.delta,
+                                        ego_v=self.ego_v,
+                                        adv_v=self.adv_v,
+                                        target_kl=self.target_kl,
+                                        first_epoch=(j == 0),
+                                        )
 
                         # Collect results
-                    if PARALLEL_CALC_F:
-                        for num_actual_bufs, future in enumerate(futures):
-                            F_grad_curr, pg_losses_curr, entropy_losses_curr, approx_kl_divs_curr, break_signal = future.result()
-                            F_grad = F_grad_curr
-                            pg_losses.extend(pg_losses_curr)
-                            entropy_losses.extend(entropy_losses_curr)
-                            approx_kl_divs_all.extend(approx_kl_divs_curr)
-                            if break_signal:
-                                break
-                        num_actual_bufs = num_actual_bufs + 1
+                    
+                    if not DEBUG:
+                        num_actual_bufs = len(self.perturbed_agents)
+                        F_grad = F_grad_curr
                     else:
-                        if not DEBUG:
-                            num_actual_bufs = len(self.perturbed_agents)
-                            F_grad = F_grad_curr
-                        else:
-                            F_grad += F_grad_curr
-                        pg_losses.extend(pg_losses_curr)
-                        entropy_losses.extend(entropy_losses_curr)
-                        approx_kl_divs_all.extend(approx_kl_divs_curr)
-                        if break_signal:
-                            print("Early stopping due to KL divergence", flush=True)
-                            break 
+                        F_grad += F_grad_curr
+                    pg_losses.extend(pg_losses_curr)
+                    entropy_losses.extend(entropy_losses_curr)
+                    approx_kl_divs_all.extend(approx_kl_divs_curr)
+                    if break_signal:
+                        print("Early stopping due to KL divergence", flush=True)
+                        break 
                     
 
 
