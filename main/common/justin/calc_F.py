@@ -66,6 +66,8 @@ def _get_buffers_and_keys(ori_buf: AdvRolloutBuffer, perturbed_buf: AdvRolloutBu
 def _calculate_policy_loss(rollout_data: AdvRolloutBuffer, policy: BasePolicy, ego: bool, clip_range: float, use_sde: bool, device: torch.device, batch_size: int, envs_per_matchup: int, network_keys = None, perturbed=False):
     #TODO: Complete docstring
     actions = torch.Tensor(rollout_data.actions).to(device)
+    if ego is False:
+        actions = torch.Tensor(rollout_data.adv_actions).to(device)
     #dstb_actions = torch.Tensor(rollout_data.dstb_actions).to(device)
 
     if use_sde:
@@ -182,31 +184,45 @@ def calc_F_grad_single(
     approx_kl_divs_epoch = []
     F_grads = []
     break_signal = False
-    
+    if type(perturbed_bufs) == tuple or type(perturbed_bufs) == list:
+        #perturbed_bufs = perturbed_bufs[0]
+        pass
     perturbed_policies = [unpickle_policy(perturbed_policies[i]) for i in range(len(perturbed_policies))]
     #for ori_rollout_data, perturbed_rollout_data in zip(curr_buf.get(batch_size), curr_perturbed_buf.get(batch_size)):                    
     for perturbed_buf, perturbed_policy in zip(perturbed_bufs, perturbed_policies):
         network_keys, curr_buf, curr_perturbed_buf = _get_buffers_and_keys(ori_buf, perturbed_buf, ego, i, num_adversaries)
         ori_rollout_data = list(curr_buf.get(batch_size))[perturbed_buf_num]
-        perturbed_rollout_data = list(perturbed_buf.get(batch_size))[perturbed_buf_num]
+
+        # this might introduce a bug for ego
+
+        perturbed_rollout_data = list(curr_perturbed_buf.get(batch_size))[perturbed_buf_num]
         policy_loss, log_prob, entropy = _calculate_policy_loss(
             ori_rollout_data, ori_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys, perturbed=False
         )
         pg_losses.append(policy_loss.item())
         entropy_losses.append(entropy.mean().item())
 
-        perturbed_policy_loss, _, _ = _calculate_q_policy_loss(
+        perturbed_policy_loss, _, _ = _calculate_policy_loss(
             perturbed_rollout_data, perturbed_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys, perturbed=True
         )
 
         if DEBUG:
             F_grad = autograd.grad(policy_loss, ori_policy.ctrl_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True) if ego else \
                 autograd.grad(policy_loss, ori_policy.dstb_optimizer.param_groups[0]['params'], create_graph=True, retain_graph=True, allow_unused=True)
-            F_grads.append(F_grad)
-            #F_grad = torch.hstack([t.flatten() for t in F_grad])
+            F_grad = torch.hstack([t.flatten() for t in F_grad])
         else:
             F_grad = _compute_grads(d, delta, ego_v, adv_v, policy_loss, perturbed_policy_loss, ego, i)# if ego else 0
-            F_grads.append(F_grad)
+
+        reshaped_grad = []
+        count = 0
+        size_lists = [list(x.shape) for x in ori_policy.ctrl_optimizer.param_groups[0]['params']] if ego else [list(x.shape) for x in ori_policy.dstb_optimizer.param_groups[0]['params']]
+        for k in range(len(size_lists)):
+            numel = np.prod(size_lists[k])
+            reshaped_grad.append(torch.reshape(F_grad[count: count + numel], size_lists[k]))
+            count += numel
+        
+        F_grads.append(reshaped_grad)
+            
 
         # #assert improvement > 0, "CRITICAL BUG: Policy is making good actions LESS likely!"
         with torch.no_grad():
