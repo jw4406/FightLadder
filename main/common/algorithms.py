@@ -5388,11 +5388,12 @@ class Exploiter(PPO):
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 actions, values, log_probs, = self.policy(obs_tensor)
-                ego_id = self.exploited.opp_list.index(self.exploited.player)
+                #ego_id = self.exploited.opp_list.index(self.exploited.player)
                 if self.exploiting == "ego":
-                    EXPLOITED_ACTIONS, _, _, _, _ = self.exploited.policy(obs_tensor, network_keys=[ego_id])
+                    EXPLOITED_ACTIONS, _, _, _, _, _ = self.exploited.policy(obs_tensor)
+                    # modify to add q_values for new forward signature
                 else:
-                    _, _, _, EXPLOITED_ACTIONS, _ = self.exploited.policy(obs_tensor, network_keys=[ego_id])
+                    _, _, _, EXPLOITED_ACTIONS, _, _ = self.exploited.policy(obs_tensor)
 
             actions = actions.cpu().numpy()
             EXPLOITED_ACTIONS = EXPLOITED_ACTIONS.cpu().numpy()

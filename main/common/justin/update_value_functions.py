@@ -128,26 +128,24 @@ def _update_single_q_function(batch_size: int, max_grad_norm: float, policy, buf
     # buffer.device = device
 
     #Process all rollout data and actions at once instead of batch by batch.
-    ego_actions_batch, adv_actions_batch, observations_batch, next_observations_batch, returns_batch, all_env_indices, rewards_batch, dones_batch = _prep_rollout_data_actions(batch_size, buffer)
+    #ego_actions_batch, adv_actions_batch, observations_batch, next_observations_batch, returns_batch, all_env_indices, rewards_batch, dones_batch = _prep_rollout_data_actions(batch_size, buffer)
     policy.num_global_env = num_envs
     policy.num_adv = 1
-    for i in range(len(returns_batch) // batch_size):
+    for rollout_data in buffer.get(batch_size):
         # do i need to rewrite the value prediciton to q here?
         curr_q_values = policy.q_value_forward(
-            observations_batch[i * batch_size:(i + 1) * batch_size],
-            ego_actions_batch[i * batch_size:(i + 1) * batch_size],
-            adv_actions_batch[i * batch_size:(i + 1) * batch_size],)
-            # buf_num=[adversary_index],
-            # env_indices=all_env_indices[i * batch_size:(i + 1) * batch_size]
-            # )
+            rollout_data.observations,
+            rollout_data.actions,
+            rollout_data.adv_actions,
+        )
         with th.no_grad():
-            (next_ego_actions, next_ego_log_prob), (next_adv_actions, next_adv_log_prob) = policy.predict(next_observations_batch[i * batch_size:(i + 1) * batch_size])
+            (next_ego_actions, next_ego_log_prob), (next_adv_actions, next_adv_log_prob) = policy.predict(rollout_data.next_observations)
             next_q_values = policy.q_value_forward(
-                next_observations_batch[i * batch_size:(i + 1) * batch_size],
+                rollout_data.next_observations,
                 next_ego_actions,
                 next_adv_actions,
                 )
-            actual_q_values = rewards_batch[i * batch_size:(i + 1) * batch_size] + policy.gamma * (1-dones_batch[i * batch_size:(i + 1) * batch_size]) *  next_q_values.flatten()
+            actual_q_values = rollout_data.rewards + policy.gamma * (1-rollout_data.dones) *  next_q_values.flatten()
         #values = -values.flatten()
         q_loss = F.mse_loss(actual_q_values, curr_q_values.flatten())
         policy.q_value_optimizer.zero_grad()
