@@ -821,7 +821,7 @@ class CleanDerivativeFreeSPAR(PPO):
                     else:
                         self.policy.ctrl_optimizer.zero_grad()
                         for k in range(len(F_grad)):
-                            self.policy.ctrl_optimizer.param_groups[0]['params'][k].grad = F_grad[k]
+                            self.policy.ctrl_optimizer.param_groups[0]['params'][k].grad = F_grad[k].float().detach()
                     
                     optimizer = self.policy.ctrl_optimizer if ego else self.policy.dstb_optimizer
                     th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
@@ -1024,12 +1024,10 @@ class CleanDerivativeFreeSPAR(PPO):
                     # Clip grad norm
                     #th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                     if update_ego:
-                        #self.policy.ctrl_optimizer.step()
-                        pass
+                        self.policy.ctrl_optimizer.step()
                     else:
-                        #self.policy.dstb_optimizer.step()
-                        pass
-                    #self.policy.value_optimizer.step()
+                        self.policy.dstb_optimizer.step()
+                    self.policy.value_optimizer.step()
 
                 if not continue_training:
                     break

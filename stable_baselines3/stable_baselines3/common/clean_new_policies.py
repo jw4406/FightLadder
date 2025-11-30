@@ -327,7 +327,10 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             q_values[i * latents_per_adv : (i+1) * latents_per_adv, :] = self.q_value_net[key](latent_vf[i * latents_per_adv : (i+1) * latents_per_adv, :])
         return q_values
     
-    def forward(self, obs, deterministic=False, ego_forward=False, adv_forward=False, network_keys=None, zero_ego_action=False, zero_adv_action=False) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+    def forward(self, obs, deterministic=False, ego_forward=True, adv_forward=True, network_keys=None, zero_ego_action=False, zero_adv_action=False) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+
+        # by default, we run both ego and adv forward
+
         if ego_forward:
             ego_actions, ego_log_prob = self.ego_forward(obs, deterministic)
         if zero_ego_action: 

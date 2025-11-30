@@ -266,11 +266,11 @@ class ParallelUpdater:
                 torch.cuda.empty_cache()
             for i in i_list:
                 for epoch in range(n_epochs):
-                    _update_single_value_function(
+                    _update_single_q_function(
                         batch_size, max_grad_norm, derivative_free_SPAR_policy, 
                         adversary_buffers[i], i, n_env_per_adv, device, envs_per_matchup=envs_per_matchup
                     )
-                    _update_single_value_function(
+                    _update_single_q_function(
                         batch_size, max_grad_norm, perturbed_agent_policy, 
                         perturbed_adv_buf[i], i, n_env_per_pert, device, envs_per_matchup=envs_per_matchup
                     )
