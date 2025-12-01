@@ -25,6 +25,7 @@ wandb/*
 wandb/
 *.log
 main/*.out
+main/nohup.out
 main/common/justin/derivative_free_spar_parallel.py
 main/common/justin/parallel_rollout_utils.py
 mainmyfile.txt
