@@ -432,7 +432,7 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool) 
 
     # 4. Train the BR agent
     br_model_name = f"br_to_{os.path.splitext(os.path.basename(checkpoint_path))[0]}.zip"
-    exploiter_callback = ExploiterCheckpointCallback(save_freq=100, save_path=BR_MODEL_DIR, name_prefix=br_model_name)
+    exploiter_callback = ExploiterCheckpointCallback(save_freq=100000, save_path=BR_MODEL_DIR, name_prefix=br_model_name)
     br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
 
     # eval BR against ego right here! both models are already in namespace.
