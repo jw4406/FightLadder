@@ -300,6 +300,7 @@ class CleanDerivativeFreeSPAR(PPO):
             self.dstb_scheduler.step()
         if step_val:
             self.value_scheduler.step()
+            
 
         # do we need to multiply by 3 here cause train standard is called twice and
         # train derivative free is called once?

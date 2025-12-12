@@ -344,7 +344,7 @@ def main(PLAYER):
         OPPONENT_LIST = ["Guile"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
-        OPPONENT_LIST = ["Guile"]#, "Sagat","ChunLi", "MBison"]#, "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
+        OPPONENT_LIST = ["Guile", "Sagat","ChunLi", "MBison"]#, "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
     
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'],
@@ -393,10 +393,10 @@ def main(PLAYER):
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
     parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
     parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=100)
-    parser.add_argument("--num_perturbs", type=int, help="Number of perturbed policies to be created.", default=2)
+    parser.add_argument("--num_perturbs", type=int, help="Number of perturbed policies to be created.", default=32)
     parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-5)
-    parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=7e-4)
-    parser.add_argument("--v_lr", type=float, help="value learning rate", default=2e-5)
+    parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=2e-5)
+    parser.add_argument("--v_lr", type=float, help="value learning rate", default=1e-4)
     parser.add_argument("--use_mirror", action='store_true', help='Use mirror')
     parser.add_argument("--num_workers", type=int, help="Number of workers", default=5)
     parser.add_argument("--load_path", type=str, help="Path to load the model from", default=None)
@@ -599,7 +599,7 @@ def main(PLAYER):
         finetune_model = CleanDerivativeFreeSPAR(
             "AACCnnPolicy",
             finetune_env,
-            device="cuda:0",
+            device="cuda",
             c_learning_rate=args.c_lr,
             d_learning_rate=args.d_lr,
             v_learning_rate=args.v_lr,
@@ -850,10 +850,11 @@ def main(PLAYER):
                        config={"eval_rew": 0,
                                "epochs": 0})
             #test = CleanDerivativeFreeSPAR.load("/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/ppo_Guile_32000_steps.task")
+            model.policy.to(model.device)
             model.learn(
                 total_timesteps=args.total_steps,
                 num_perturbs = args.num_perturbs,
-                callback=[checkpoint_callback, file_queue_callback], update_ego=False, update_adversary=True, run_ego_forward=True, run_adv_forward=True,
+                callback=[checkpoint_callback, file_queue_callback], update_ego=True, update_adversary=True, run_ego_forward=True, run_adv_forward=True,
                 zero_ego_action=False, zero_adv_action=False
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)
