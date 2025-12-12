@@ -47,7 +47,7 @@ def average_tensor_tuples(list_of_tuples: List[Tuple[torch.Tensor, ...]]) -> Tup
 from stable_baselines3.common.buffers import AdvRolloutBuffer
 from stable_baselines3.common.policies import BasePolicy
 from utils import move_policy, select_device, get_n_workers, state2matchup, select_matchup_env, unpickle_policy
-DEBUG = True
+DEBUG = False
 PARALLEL_CALC_F = True
 def _get_buffers_and_keys(ori_buf: AdvRolloutBuffer, perturbed_buf: AdvRolloutBuffer, ego: bool, index: int, num_adversaries: int) -> tuple:
     #TODO: Add docstring
@@ -165,13 +165,13 @@ def per_batch_calc_F_grad_single(perturbed_buf: AdvRolloutBuffer, perturbed_poli
     # this might introduce a bug for ego
 
     perturbed_rollout_data = list(curr_perturbed_buf.get(batch_size))[perturbed_buf_num]
-    policy_loss, log_prob, entropy = _calculate_q_policy_loss(
+    policy_loss, log_prob, entropy = _calculate_policy_loss(
         ori_rollout_data, ori_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys, perturbed=False
     )
     pg_losses.append(policy_loss.item())
     entropy_losses.append(entropy.mean().item())
 
-    perturbed_policy_loss, _, _ = _calculate_q_policy_loss(
+    perturbed_policy_loss, _, _ = _calculate_policy_loss(
         perturbed_rollout_data, perturbed_policy, ego, clip_range, use_sde, device, batch_size, envs_per_matchup, network_keys=network_keys, perturbed=True
     )
 

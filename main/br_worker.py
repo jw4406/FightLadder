@@ -25,6 +25,7 @@ from utils import agent_win, select_device
 current_dir = os.path.dirname(os.path.abspath(__file__))
 print(current_dir)
 TASK_DIR = os.path.join(current_dir, "trained_models/tasks")
+TASK_DIR = '/n/fs/magics/2415498/FightLadder/main/trained_models/tasks/'
 PROCESSING_DIR = os.path.join(current_dir, "trained_models/tasks/processing")
 DONE_DIR = os.path.join(current_dir, "trained_models/tasks/done")
 ERROR_DIR = os.path.join(current_dir, "trained_models/tasks/error")
