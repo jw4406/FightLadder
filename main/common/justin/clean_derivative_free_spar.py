@@ -753,7 +753,8 @@ class CleanDerivativeFreeSPAR(PPO):
                 # i bug
                 F_grad = 0
                 futures = []
-                for perturbed_buf_num in range(self.n_envs * self.n_steps // self.batch_size):
+                num_bufs = self.n_envs * self.n_steps // self.batch_size if ego else self.n_env_per_adv * self.n_steps // self.batch_size
+                for perturbed_buf_num in range(num_bufs):
                     F_grad_curr, pg_losses_curr, entropy_losses_curr, approx_kl_divs_curr, break_signal = calc_F_grad_single(ori_policy=ori_policy,
                                         perturbed_policies=perturbed_policies,
                                         ori_buf=ori_buf,
