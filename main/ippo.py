@@ -344,7 +344,7 @@ def main(PLAYER):
         OPPONENT_LIST = ["Guile"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
-        OPPONENT_LIST = ["Guile", "Sagat","ChunLi", "MBison"]#, "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
+        OPPONENT_LIST = ["Guile", "Sagat"]#,"ChunLi", "MBison"]#, "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
     
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'],
@@ -375,7 +375,7 @@ def main(PLAYER):
                         help='Initial level to load from. By default 0, starting from pretrain', default=0)
     parser.add_argument('--resume-epoch', type=int, help='Resume epoch. By default 0, starting from pretrain',
                         default=0)
-    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=4)
+    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=2)
     parser.add_argument('--enable-combo', action='store_true', help='Enable special move action space for environment')
     parser.add_argument('--null-combo', action='store_true', help='Null action space for special move')
     parser.add_argument('--transform-action', action='store_true', help='Transform action space to MultiDiscrete')
@@ -605,7 +605,7 @@ def main(PLAYER):
             v_learning_rate=args.v_lr,
             verbose=2,
             n_steps=args.num_env_steps,
-            batch_size=256,
+            batch_size=150,
             n_epochs=4,
             state_list=state_list,
             envs_per_matchup=args.envs_per_matchup,
