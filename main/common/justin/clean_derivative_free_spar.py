@@ -829,8 +829,8 @@ class CleanDerivativeFreeSPAR(PPO):
                     th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                     optimizer.step()
                     with torch.no_grad():
-                        log_prob, _ = self.policy.evaluate_ego_actions(ori_buf.observations, ori_buf.actions) if ego else self.policy.evaluate_adv_actions(ori_buf[0].observations, ori_buf[0].adv_actions, buf_num=[i])
-                        log_ratio = log_prob - ori_buf.log_probs if ego else log_prob - ori_buf[0].log_probs
+                        log_prob, _ = self.policy.evaluate_ego_actions(ori_buf.observations, ori_buf.actions) if ego else self.policy.evaluate_adv_actions(ori_buf[i].observations, ori_buf[i].adv_actions, buf_num=[i])
+                        log_ratio = log_prob - ori_buf.log_probs if ego else log_prob - ori_buf[i].log_probs
                         # 0 bug
                         approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
                         approx_kl_divs_all.append(approx_kl_div)
