@@ -137,3 +137,20 @@ def move_optimizer_to_device(optimizer: torch.optim.Optimizer, device: torch.dev
         for k, v in state.items():
             if isinstance(v, torch.Tensor):
                 state[k] = v.to(device)
+
+def merge_models(primary, secondary):
+    # assume primary holds left model and secondary holds right model
+    # also merge V and Q networks
+
+    primary.policy.value_net = secondary.policy.value_net
+    primary.policy.vf_features_extractor = secondary.policy.vf_features_extractor
+    primary.policy.dstb_action_net = secondary.policy.dstb_action_net
+    primary.policy.dstb_action_dist = secondary.policy.dstb_action_dist
+    primary.policy.q_value_net = secondary.policy.q_value_net
+    primary.policy.pi_dstb_features_extractor = secondary.policy.pi_dstb_features_extractor
+    primary.policy.mlp_extractor.adv_action_extractor = secondary.policy.mlp_extractor.adv_action_extractor
+    primary.policy.mlp_extractor.dstb_net = secondary.policy.mlp_extractor.dstb_net
+    primary.policy.dstb_optimizer = secondary.policy.dstb_optimizer
+    primary.policy.q_value_optimizer = secondary.policy.q_value_optimizer
+    primary.policy.value_optimizer = secondary.policy.value_optimizer
+    return primary
