@@ -21,11 +21,12 @@ from common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P
 from stable_baselines3.common.callbacks import CheckpointCallback, ExploiterCheckpointCallback
 from stable_baselines3.common.save_util import load_from_zip_file
 from utils import agent_win, select_device
+import subprocess
 # --- Configuration ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 print(current_dir)
 TASK_DIR = os.path.join(current_dir, "trained_models/tasks")
-TASK_DIR = '/n/fs/magics/2415498/FightLadder/main/trained_models/tasks/'
+#TASK_DIR = '/n/fs/magics/2415498/FightLadder/main/trained_models/tasks/'
 PROCESSING_DIR = os.path.join(current_dir, "trained_models/tasks/processing")
 DONE_DIR = os.path.join(current_dir, "trained_models/tasks/done")
 ERROR_DIR = os.path.join(current_dir, "trained_models/tasks/error")
@@ -48,10 +49,11 @@ BR_TRAINING_STEPS = 100
 BR_TRAINING_STEPS = 10000000
 
 PLAYER = "Guile"
+OPPONENT_LIST = ["Guile"]
 SIDE = "left"
 player_folder_name = PLAYER + '_' + SIDE
-video_dir = 'videos/spar_spar_%s' % PLAYER
-STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name, PLAYER, PLAYER) for i in range(1)]
+video_dir = 'videos/single_1v2_%s' % PLAYER
+STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name, PLAYER, OPPONENT_LIST[i]) for i in range(len(OPPONENT_LIST))]
 
 # TODO: this is static right now. need to make this dynamic based on the state list from the task file.
 
@@ -105,7 +107,7 @@ def save_episode_video(curr_state, video_log: list, name: str, worker_number: in
     container.mux(remain_packets)
     container.close()
 
-def evaluate_single_iter(curr_state: str, use_mirror: bool, model: torch.nn.Module,record: bool, env_index: int, exploiter_model: torch.nn.Module = None, greedy: int=0, eval_prot: bool = False)-> bool:
+def evaluate_single_iter(curr_state: str, use_mirror: bool, model: torch.nn.Module,record: bool, env_index: int, exploiter_model: torch.nn.Module = None, greedy: int=0, eval_prot: bool = False, video_dir: str = None)-> bool:
     # flag checks
 
     # cases:
@@ -126,12 +128,14 @@ def evaluate_single_iter(curr_state: str, use_mirror: bool, model: torch.nn.Modu
         print("playing default: prot against adv")
     if use_mirror is False and exploiter_model is None and eval_prot is True:
         raise ValueError("Eval prot should not be used when use_mirror is False and exploiter model is None")
-
+    if record:
+        if video_dir is None:
+            raise ValueError("Video directory is not set but record is True")
     env = env_generator()
     obs = env.reset()
     done = False
     video_log = []
-    left_rew = 0
+    left_rew = np.zeros(len(OPPONENT_LIST))
     while not np.any(done):
         obs_tensor = obs_as_tensor(obs, model.device)
         if exploiter_model is not None:
@@ -167,10 +171,11 @@ def evaluate_single_iter(curr_state: str, use_mirror: bool, model: torch.nn.Modu
         left_rew += reward
         if record:
             video_log.append(Image.fromarray(env.render(mode="rgb_array")))
-    return agent_win(info[0]), left_rew
+    
+    return [agent_win(info[i]) for i in range(len(OPPONENT_LIST))], left_rew, video_log
 
 
-def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, return_list: DictProxy, pid: int, episodes: int, greedy: int=0, record: bool=False, eval_prot: bool = False):
+def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module, exploiter_model: torch.nn.Module, env_index: int, return_list: DictProxy, pid: int, episodes: int, greedy: int=0, record: bool=False, eval_prot: bool = False, video_dir: str = None):
     try:
         device = select_device()
         model.eval().to(device)
@@ -179,12 +184,15 @@ def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module
         else:
             exploiter_model = None
 
-        win_count = 0
+        win_count = np.zeros(len(OPPONENT_LIST))
         rew_arr = []
+        video_log = []
         for ep_num in range(episodes):
-            joined_win_rew = evaluate_single_iter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record, eval_prot=eval_prot)
+            exploiter_model = None if use_mirror is True else exploiter_model
+            joined_win_rew = evaluate_single_iter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record, eval_prot=eval_prot, video_dir=video_dir)
             win_count += joined_win_rew[0]
             rew_arr.append(joined_win_rew[1])
+            video_log.append(joined_win_rew[2])
             # if type(model) is type(exploiter_model):
             #     joined_win_rew = evaluate_single_iter_exploiter(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
             #     win_count += joined_win_rew[0]
@@ -201,12 +209,12 @@ def evaluate_sa_worker(curr_state: str, use_mirror: bool, model: torch.nn.Module
             #     win_count += joined_win_rew[0]
             #     rew_arr.append(joined_win_rew[1])
             #     #win_count += evaluate_single_iter_prot_adv(curr_state=curr_state, use_mirror=use_mirror, model=model, exploiter_model=exploiter_model, env_index=env_index, greedy=greedy, record=record)
-        return_list[pid] = [win_count, rew_arr]
+        return_list[pid] = [win_count, rew_arr, video_log]
     except Exception as e:
         print(f"Worker {pid} failed with exception {e}")
         raise
 
-def evaluate_sa_parallel(curr_state: str, model: Generalist_SPAR, exploiter_model: Exploiter, env_index: int, greedy: int=0, record: bool=False, num_episodes: int=50, num_workers: int=10, use_mirror: bool=False, eval_prot: bool = False) -> float:
+def evaluate_sa_parallel(curr_state: str, model: Generalist_SPAR, exploiter_model: Exploiter, env_index: int, greedy: int=0, record: bool=False, num_episodes: int=50, num_workers: int=10, use_mirror: bool=False, eval_prot: bool = False, video_dir: str = None) -> float:
     #Set up multiprocessing
     if __name__=="__main__":
         mp.set_start_method("spawn", force=True)
@@ -227,18 +235,24 @@ def evaluate_sa_parallel(curr_state: str, model: Generalist_SPAR, exploiter_mode
         exploiter_policy_copy = gen_dummy_policy(exploiter_model)
         
         #The following line can be used for serial debugging
-        evaluate_sa_worker(curr_state, model.use_mirror, policy_copy, exploiter_policy_copy, env_index, return_list, pid, episodes, greedy, record, eval_prot)
-        # p = mp.Process(
-        #         target=evaluate_sa_worker,
-        #         args=(curr_state, use_mirror, policy_copy, exploiter_policy_copy, env_index, return_list, pid, episodes, greedy, record, eval_prot)
-        #         )
-        # p.start()
-        # processes.append(p)
+        #evaluate_sa_worker(curr_state, use_mirror, policy_copy, exploiter_policy_copy, env_index, return_list, pid, episodes, greedy, record, eval_prot, video_dir)
+        p = mp.Process(
+                target=evaluate_sa_worker,
+                args=(curr_state, use_mirror, policy_copy, exploiter_policy_copy, env_index, return_list, pid, episodes, greedy, record, eval_prot, video_dir)
+                )
+        p.start()
+        processes.append(p)
 
     for p in processes:
         p.join()
     rew_list = []
     total_wins = sum(return_list.values()[i][0] for i in range(len(return_list)))
+    video_logs = [return_list.values()[i][2] for i in range(len(return_list))]
+    count = 0
+    for i in range(len(video_logs)):
+        for j in range(len(video_logs[i])):
+            save_episode_video(curr_state, video_logs[i][j], PLAYER, worker_number=i, episode_number=j)
+            count += 1
     rew_list.extend(return_list.values()[i][1] for i in range(len(return_list)))
     flat_rew_list = [item for sublist in rew_list for item in sublist]
     avg_rew = sum(flat_rew_list) / len(flat_rew_list)
@@ -303,7 +317,7 @@ def env_generator():
 
 def exploiter_env_generator():
     # STATE
-    each_env_count = 4
+    each_env_count = 1
     env = []
     for i in range(len(STATE)):
         for j in range(each_env_count):
@@ -317,7 +331,7 @@ def exploiter_env_generator():
     #         seed=0)
     return VecTransposeImage2P(SubprocVecEnv2P(env))
 # --- Worker Logic ---
-def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool) -> None:
+def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool, eval_only: bool) -> None:
     """
     The core logic for a single best-response training run.
 
@@ -395,7 +409,7 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool) 
             use_mirror=False
         )
         ftm.set_parameters(params, exact_match=True, device=ftm.device)
-    use_mirror = ftm.use_mirror
+    
     
     #OVERRIDEN HERE
     
@@ -420,8 +434,11 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool) 
                 entity='jw4406',
                 group="br_workers",
                 config={"eval_rew": 0,
+                        "exploiter_rew": 0,
                         "epochs": 0,
-                        "br_wr": 0})
+                        "br_wr": 0,
+                        "main_training_epoch": 0,
+                        })
     # 2. Create your environment, passing the frozen opponent to it
     #    so the BR agent can play against it.
     # env = YourStreetFighterEnv(opponent_policy=fixed_opponent)
@@ -432,12 +449,17 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool) 
 
     # 4. Train the BR agent
     br_model_name = f"br_to_{os.path.splitext(os.path.basename(checkpoint_path))[0]}.zip"
-    exploiter_callback = ExploiterCheckpointCallback(save_freq=100000, save_path=BR_MODEL_DIR, name_prefix=br_model_name)
-    br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
-
+    exploiter_callback = ExploiterCheckpointCallback(save_freq=100, save_path=BR_MODEL_DIR, name_prefix=br_model_name)
+     
+    if eval_only == False:
+        print("eval_only was passed as False. Training the BR agent.")
+        br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
+        subprocess.Popen(["python", "main/aggregate_to_wandb.py", "&"])
     # eval BR against ego right here! both models are already in namespace.
 
-    wr, mean_rew = evaluate_sa_parallel(curr_state=STATE[0], model=ftm, exploiter_model=br_agent, env_index=0, record=True, use_mirror=use_mirror, eval_prot=eval_prot)
+    """ wr, mean_rew = evaluate_sa_parallel(curr_state=STATE[0], model=ftm, exploiter_model=br_agent, env_index=0, record=True, use_mirror=use_mirror, eval_prot=eval_prot, video_dir=video_dir)
+    # delete this line this is hacky. we should use command flags to determine what agents to video
+
     
     if ego_timestep is not None:
         wr_filename = os.path.join(WR_STATS_DIR, f"{ego_timestep}.txt")
@@ -470,7 +492,7 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool) 
     # br_agent.save(os.path.join(BR_MODEL_DIR, br_model_name))
     # -------------------------------------------------
 
-    print(f"WORKER [{worker_id}]: Successfully trained and saved {br_model_name}")
+    print(f"WORKER [{worker_id}]: Successfully trained and saved {br_model_name}") """
     wandb.finish()
 
     # except Exception as e:
@@ -483,9 +505,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval_prot", action="store_true")
     parser.add_argument("--use_mirror", action="store_true")
+    parser.add_argument("--eval_only", choices=['True', 'False'], default='False', required=True)
     args = parser.parse_args()
 
-
+    if args.eval_only == 'True':
+        print("WARNING!")
+        print("This is an EVAL ONLY run. No exploiter training will be performed.")
+        print("WARNING!")
+    args.eval_only = args.eval_only == 'True'
     wandb.login(key='d95a51c4001b862123a34a3853fe0306906d2f07')
     todo_dir = os.path.join(TASK_DIR, "todo")
     processing_dir = os.path.join(TASK_DIR, "processing")
@@ -521,7 +548,7 @@ if __name__ == "__main__":
             os.rename(todo_path, processing_path)
 
             # Now that we've claimed it, process it
-            train_best_response(processing_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror)
+            train_best_response(processing_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror, eval_only=args.eval_only)
 
             # Move it to 'done' when finished
             done_path = os.path.join(done_dir, task_filename)

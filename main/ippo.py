@@ -10,7 +10,7 @@ from PIL import Image
 import copy
 from common.justin.bare_derivative_free_spar import BareDerivativeFreeSPAR
 from common.justin.clean_derivative_free_spar import CleanDerivativeFreeSPAR
-
+from utils import merge_models
 import retro
 from stable_baselines3.common.callbacks import CheckpointCallback, SACheckpointCallback, FileQueueTriggerCallback
 from stable_baselines3.common.buffers import AdvRolloutBuffer
@@ -400,9 +400,14 @@ def main(PLAYER):
     parser.add_argument("--use_mirror", action='store_true', help='Use mirror')
     parser.add_argument("--num_workers", type=int, help="Number of workers", default=5)
     parser.add_argument("--load_path", type=str, help="Path to load the model from", default=None)
+    #parser.add_argument("--left_model_file", type=str, help="Path to load the left model from", default=None)
+    #parser.add_argument("--right_model_file", type=str, help="Path to load the right model from", default=None)
+    parser.add_argument("--training_style", type=str, required=True, help="Training style", default="L3", choices=["L3", "L2", "L1"])
+    parser.add_argument("--continue_training", help='Continue training', default=False)
     args = parser.parse_args()
-
-
+    if args.training_style not in ["L3", "L2"]:
+        if args.load_path is None:
+            raise ValueError("Load path is required for training style L2 or L3")
     SIDE = "left"  # "right"
     player_folder_name = [PLAYER[i] + '_' + SIDE for i in range(len(PLAYER))]
     if REMOVAL is not None:
@@ -617,7 +622,7 @@ def main(PLAYER):
             use_mirror=use_mirror
         )
 
-        if args.load_path:
+        if args.load_path and args.continue_training:
             from stable_baselines3.common.save_util import load_from_zip_file
             from utils import state2matchup
             try:
@@ -631,11 +636,26 @@ def main(PLAYER):
                     assert matchups == finetune_model.matchups
                 else:
                     finetune_model = CleanDerivativeFreeSPAR.load(path=args.load_path, env=finetune_env, num_perturbed=1)
+                    finetune_model.policy.ctrl_optimizer.defaults['lr'] = args.c_lr
+                    finetune_model.policy.dstb_optimizer.defaults['lr'] = args.d_lr
+                    finetune_model.policy.value_optimizer.defaults['lr'] = args.v_lr
+                    finetune_model.ctrl_scheduler.base_lrs = [args.c_lr]
+                    finetune_model.dstb_scheduler.base_lrs = [args.d_lr]
+                    finetune_model.value_scheduler.base_lrs = [args.v_lr]
             except Exception as e:
                 data, params, pytorch_variables = load_from_zip_file(
                     args.load_path)
                 finetune_model.set_parameters(params, exact_match=True, device=finetune_model.device)
                 finetune_model.__dict__.update(data)
+        else:
+            # need to load two models here
+            # because curriculum is training the models individually
+            # load left and then right and then make the left model the correct model
+            # and point at the right model's parameters
+            left_model = CleanDerivativeFreeSPAR.load(path=args.left_model_file, env=finetune_env, num_perturbed=1)
+            right_model = CleanDerivativeFreeSPAR.load(path=args.right_model_file, env=finetune_env, num_perturbed=1)
+            finetune_model = merge_models(left_model, right_model)
+            # TODO: Make the left model the correct model and point at the right model's parameters
 
         #TODO: This is commented out per Justin's comment - should be uncommented in the future.
         # finetune_model = Specialized_Agent_IPPO("IPPOAACCnnPolicy",
@@ -743,9 +763,9 @@ def main(PLAYER):
                                      clip_range_schedule=clip_range_schedule)
     if REMOVAL is not None:
         model.REMOVAL = REMOVAL
-    if args.left_model_file and args.right_model_file:
-        print("load model from " + args.left_model_file + " and " + args.right_model_file)
-        model.set_parameters_2p(args.left_model_file, args.right_model_file)
+    # if args.left_model_file and args.right_model_file:
+    #     print("load model from " + args.left_model_file + " and " + args.right_model_file)
+    #     model.set_parameters_2p(args.left_model_file, args.right_model_file)
 
     checkpoint_callback = SACheckpointCallback(save_freq=checkpoint_interval, save_path=args.save_dir,
                                                name_prefix=f"{args.model_name_prefix}") if hasattr(model,
@@ -885,6 +905,10 @@ if __name__ == "__main__":
     parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=7e-4)
     parser.add_argument("--v_lr", type=float, help="value learning rate", default=7e-4)
     parser.add_argument("--load_path", type=str, help="Path to load the model from", default=None)
+    parser.add_argument("--left-model-file", type=str, help="Path to load the left model from", default=None)
+    parser.add_argument("--right-model-file", type=str, help="Path to load the right model from", default=None)
+    parser.add_argument("--training_style", type=str, required=True, help="Training style", default="L3", choices=["L3", "L2", "L1"])
+    parser.add_argument("--continue_training", choices=['True', 'False'], help='Continue training', default=False)
     args = parser.parse_args()
 
     PLAYER = args.player
