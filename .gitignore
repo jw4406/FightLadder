@@ -36,3 +36,4 @@ plots/
 *.pth
 main/common/*.pt
 *.out
+videos/*

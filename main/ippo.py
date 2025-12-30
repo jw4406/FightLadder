@@ -344,7 +344,7 @@ def main(PLAYER):
         OPPONENT_LIST = ["Guile"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
-        OPPONENT_LIST = ["Guile", "Sagat"]#,"ChunLi", "MBison"]#, "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
+        OPPONENT_LIST = ["Guile"]#, "Sagat"]#,"ChunLi", "MBison"]#, "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
     
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'],
@@ -610,7 +610,7 @@ def main(PLAYER):
             v_learning_rate=args.v_lr,
             verbose=2,
             n_steps=args.num_env_steps,
-            batch_size=150,
+            batch_size=300,
             n_epochs=4,
             state_list=state_list,
             envs_per_matchup=args.envs_per_matchup,
@@ -647,15 +647,15 @@ def main(PLAYER):
                     args.load_path)
                 finetune_model.set_parameters(params, exact_match=True, device=finetune_model.device)
                 finetune_model.__dict__.update(data)
-        else:
-            # need to load two models here
-            # because curriculum is training the models individually
-            # load left and then right and then make the left model the correct model
-            # and point at the right model's parameters
-            left_model = CleanDerivativeFreeSPAR.load(path=args.left_model_file, env=finetune_env, num_perturbed=1)
-            right_model = CleanDerivativeFreeSPAR.load(path=args.right_model_file, env=finetune_env, num_perturbed=1)
-            finetune_model = merge_models(left_model, right_model)
-            # TODO: Make the left model the correct model and point at the right model's parameters
+            # else:
+            #     # need to load two models here
+            #     # because curriculum is training the models individually
+            #     # load left and then right and then make the left model the correct model
+            #     # and point at the right model's parameters
+            #     left_model = CleanDerivativeFreeSPAR.load(path=args.left_model_file, env=finetune_env, num_perturbed=1)
+            #     right_model = CleanDerivativeFreeSPAR.load(path=args.right_model_file, env=finetune_env, num_perturbed=1)
+            #     finetune_model = merge_models(left_model, right_model)
+            #     # TODO: Make the left model the correct model and point at the right model's parameters
 
         #TODO: This is commented out per Justin's comment - should be uncommented in the future.
         # finetune_model = Specialized_Agent_IPPO("IPPOAACCnnPolicy",
