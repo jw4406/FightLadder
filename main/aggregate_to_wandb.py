@@ -1,12 +1,17 @@
 import wandb
 import pandas as pd
-
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--upload_proj_name", type=str, required=True)
+args = parser.parse_args()
+UPLOAD_PROJECT_NAME = args.upload_proj_name
+PROJECT_NAME = 'eepy_test'
 # 1. Setup your entity/project
 ENTITY = "jw4406"
-PROJECT = "exploiter"
+#PROJECT = "exploiter"
 
 api = wandb.Api()
-runs = api.runs(f"{ENTITY}/{PROJECT}")
+runs = api.runs(f"{ENTITY}/{PROJECT_NAME}")
 
 data = []
 
@@ -25,7 +30,7 @@ df = pd.DataFrame(data, columns=["main_training_epoch", "exploiter_rew"])
 df = df.sort_values("main_training_epoch")
 
 # 4. Initialize a specific "Summary" run to hold this plot
-with wandb.init(project=PROJECT, name="Analysis_Line_Plot", job_type="analysis"):
+with wandb.init(project=UPLOAD_PROJECT_NAME, name="Analysis_Line_Plot", job_type="analysis"):
     
     # Create a native WandB table
     table = wandb.Table(dataframe=df)
