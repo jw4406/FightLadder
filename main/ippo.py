@@ -344,7 +344,7 @@ def main(PLAYER):
         OPPONENT_LIST = ["Guile"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
-        OPPONENT_LIST = ["Guile"]#, "Sagat"]#,"ChunLi", "MBison"]#, "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
+        OPPONENT_LIST = ["Ryu"]#, "Sagat"]#,"ChunLi", "MBison"]#, "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
     
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'],
@@ -405,6 +405,7 @@ def main(PLAYER):
     parser.add_argument("--training_style", type=str, required=True, help="Training style", default="L3", choices=["L3", "L2", "L1"])
     parser.add_argument("--continue_training", help='Continue training', default=False)
     args = parser.parse_args()
+    use_mirror = args.use_mirror
     if args.training_style not in ["L3", "L2"]:
         if args.load_path is None:
             raise ValueError("Load path is required for training style L2 or L3")
@@ -909,6 +910,7 @@ if __name__ == "__main__":
     parser.add_argument("--right-model-file", type=str, help="Path to load the right model from", default=None)
     parser.add_argument("--training_style", type=str, required=True, help="Training style", default="L3", choices=["L3", "L2", "L1"])
     parser.add_argument("--continue_training", choices=['True', 'False'], help='Continue training', default=False)
+    parser.add_argument("--use_mirror", action='store_true', help='Use mirror')
     args = parser.parse_args()
 
     PLAYER = args.player

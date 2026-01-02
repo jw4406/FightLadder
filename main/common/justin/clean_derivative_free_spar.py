@@ -444,7 +444,7 @@ class CleanDerivativeFreeSPAR(PPO):
 
         return True
     
-    def collect_rollouts_mirror(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True) -> bool:
+    def collect_rollouts_mirror(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, run_ego_forward: bool = True, run_adv_forward: bool = True, zero_ego_action=False, zero_adv_action=False) -> bool:
         assert self.use_mirror is True, "Use mirror is not True"
         assert self._last_obs is not None, "No previous observation was provided"
         self.policy.set_training_mode(False)
@@ -466,7 +466,7 @@ class CleanDerivativeFreeSPAR(PPO):
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values = self.policy(obs_tensor, deterministic=False, ego_forward=update_ego, adv_forward=update_adversary)
+                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values, q_values = self.policy(obs_tensor, deterministic=False, ego_forward=run_ego_forward, adv_forward=run_adv_forward, zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action)
                 
                 # The value network predicts value from the left player's perspective.
                 # In mirrored rollouts, the ego is on the right for the second half of envs.
@@ -475,6 +475,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 # We first negate, then use `mirror_flip_attributes` to swap the bottom halves,
                 # consolidating all ego values in `values` and all adversary values in `other_values`.
                 other_values = -values
+                other_q_values = -q_values
 
             actions = ego_actions.cpu().numpy()
             actions_other = adv_actions.cpu().numpy()
@@ -482,7 +483,7 @@ class CleanDerivativeFreeSPAR(PPO):
             # Rescale and perform action
 
             mirror_master_copy_actions = deepcopy(actions)
-            mirror_master_copy_adv_actions = deepcopy(adv_actions)
+            mirror_master_copy_adv_actions = deepcopy(actions_other)
 
             # upper half, lower half
 
@@ -510,8 +511,9 @@ class CleanDerivativeFreeSPAR(PPO):
             '''
             halfway = actions.shape[0] // 2 #halfway split between upper & lower + left & right
             actions, actions_other = mirror_flip_attributes(actions, actions_other)
-            ego_log_probs, adv_log_probs = mirror_flip_attributes(ego_log_probs, adv_log_probs)
+            #ego_log_probs, adv_log_probs = mirror_flip_attributes(ego_log_probs, adv_log_probs)
             values, other_values = mirror_flip_attributes(values, other_values)
+            q_values, other_q_values = mirror_flip_attributes(q_values, other_q_values)
                 
                 
                 
@@ -569,11 +571,13 @@ class CleanDerivativeFreeSPAR(PPO):
             #         rewards_other[idx] += self.gamma * terminal_value_other
 
                     # from IPython import embed; embed()
-            rollout_buffer.add(self._last_obs.copy(), actions, rewards, self._last_episode_starts, values,
-                                   ego_log_probs)
+            rollout_buffer.add(self._last_obs.copy(), mirror_master_copy_actions, rewards, self._last_episode_starts, values,
+                                   ego_log_probs, q_values)
+            
             for i in range(self.num_adversaries):
-                adversary_buffers[i].add(self._last_obs[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv].copy(), actions_other[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], rewards_other[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], self._last_episode_starts[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], other_values[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv],
-                                         adv_log_probs[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv])
+                indices = slice(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
+                adversary_buffers[i].add(self._last_obs[indices].copy(), mirror_master_copy_adv_actions[indices], rewards_other[indices], self._last_episode_starts[indices], other_values[indices],
+                                         adv_log_probs[indices], other_q_values[indices])
             #for i in range(self.num_adversaries):
             #    adversary_buffers[i].add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts, values_other,
             #                             adv_log_probs)
@@ -582,13 +586,14 @@ class CleanDerivativeFreeSPAR(PPO):
 
         with th.no_grad():
             # Compute value for the last timestep
-            values = self.policy.value_forward(obs_as_tensor(new_obs, self.device))
-            values[halfway:] = -values[halfway:]
+            last_values = self.policy.value_forward(obs_as_tensor(new_obs, self.device))
+            other_last_values = -last_values
+            last_values, other_last_values = mirror_flip_attributes(last_values, other_last_values)
             #values_other = rollout_policy_other.predict_values(obs_as_tensor(new_obs, self.device))
 
-        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+        rollout_buffer.compute_returns_and_advantage(last_values=last_values, dones=dones)
         for i in range(self.num_adversaries):
-            adversary_buffers[i].compute_returns_and_advantage(last_values=-values[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], dones=dones[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv])
+            adversary_buffers[i].compute_returns_and_advantage(last_values=other_last_values[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], dones=dones[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv])
         #if self.update_right:
         #    rollout_buffer_other.compute_returns_and_advantage(last_values=values_other, dones=dones)
 
