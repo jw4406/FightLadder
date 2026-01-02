@@ -430,7 +430,7 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool, 
     # --- This is where your specific BR logic goes ---
     # 1. Load the frozen opponent
     # fixed_opponent = PPO.load(checkpoint_path)
-    wandb.init(project="eepy_test",
+    wandb.init(project="exploiter_guile_1v1",
                 entity='jw4406',
                 group="br_workers",
                 config={"eval_rew": 0,
@@ -449,7 +449,7 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool, 
 
     # 4. Train the BR agent
     br_model_name = f"br_to_{os.path.splitext(os.path.basename(checkpoint_path))[0]}.zip"
-    exploiter_callback = ExploiterCheckpointCallback(save_freq=100, save_path=BR_MODEL_DIR, name_prefix=br_model_name)
+    exploiter_callback = ExploiterCheckpointCallback(save_freq=100000, save_path=BR_MODEL_DIR, name_prefix=br_model_name)
      
     if eval_only == False:
         print("eval_only was passed as False. Training the BR agent.")
