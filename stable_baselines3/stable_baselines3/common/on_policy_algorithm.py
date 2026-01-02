@@ -257,7 +257,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             progress_bar,
         )
 
-        window = 30
+        window =100 
         tolerance = .05 # movable
         rews = []
 
@@ -267,7 +267,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
             if isinstance(self, Exploiter):
-                if len(rews) > 50:
+                if len(rews) > 4000:
                     if (max(rews[-window:]) - min(rews[-window:])) <= tolerance * 1.5:
                         print(f"Exploiter reward is stable at {safe_mean(rews[-window:])}")
                         continue_training = False
