@@ -527,6 +527,10 @@ class CleanDerivativeFreeSPAR(PPO):
                                           self.action_space.high)
 
             new_obs, rewards, rewards_other, dones, infos = env.step(clipped_actions)
+            for idx, info in enumerate(infos):
+                if 'episode' in info:
+                    if idx >= halfway:
+                        info['episode']['r'] = -info['episode']['r']
             #rewards[halfway:] = -rewards[halfway:]
             rewards, rewards_other = mirror_flip_attributes(rewards, rewards_other)
             #np.random.seed(0)
@@ -571,12 +575,12 @@ class CleanDerivativeFreeSPAR(PPO):
             #         rewards_other[idx] += self.gamma * terminal_value_other
 
                     # from IPython import embed; embed()
-            rollout_buffer.add(self._last_obs.copy(), mirror_master_copy_actions, rewards, self._last_episode_starts, values,
+            rollout_buffer.add(self._last_obs.copy(), mirror_master_copy_actions, mirror_master_copy_adv_actions, rewards, new_obs, dones, self._last_episode_starts, values,
                                    ego_log_probs, q_values)
             
             for i in range(self.num_adversaries):
                 indices = slice(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
-                adversary_buffers[i].add(self._last_obs[indices].copy(), mirror_master_copy_adv_actions[indices], rewards_other[indices], self._last_episode_starts[indices], other_values[indices],
+                adversary_buffers[i].add(self._last_obs[indices].copy(),mirror_master_copy_actions[indices], mirror_master_copy_adv_actions[indices], rewards_other[indices], new_obs[indices], dones[indices], self._last_episode_starts[indices], other_values[indices],
                                          adv_log_probs[indices], other_q_values[indices])
             #for i in range(self.num_adversaries):
             #    adversary_buffers[i].add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts, values_other,
@@ -644,7 +648,6 @@ class CleanDerivativeFreeSPAR(PPO):
                 self._create_all_perturbed_agents(num_perturbs)
                 self._initialize_parallel_updater()                
 
-                continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward, self.use_mirror,zero_ego_action, zero_adv_action) #TODO: This is sequential - remove when done.
                 if USE_PERTURBED:
                     with ThreadPoolExecutor(max_workers=num_perturbs + 1) as executor:
                         futures = [executor.submit(perturbed_agent.env_perturb_params, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action) for perturbed_agent in self.perturbed_agents]
@@ -655,7 +658,9 @@ class CleanDerivativeFreeSPAR(PPO):
                     self.perturbed_adv_bufs = list(perturbed_adv_bufs)
 
                     self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in self.perturbed_agents]
+                else:
 
+                    continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward, self.use_mirror,zero_ego_action, zero_adv_action) #TODO: This is sequential - remove when done.
                 if continue_training is False:
                     break
 

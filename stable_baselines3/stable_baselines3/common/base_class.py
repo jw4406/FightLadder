@@ -567,6 +567,7 @@ class BaseAlgorithm(ABC):
             maybe_ep_info = info.get("episode")
             maybe_is_success = info.get("is_success")
             if maybe_ep_info is not None:
+                maybe_ep_info['idx'] = idx
                 self.ep_info_buffer.extend([maybe_ep_info])
             if maybe_is_success is not None and dones[idx]:
                 self.ep_success_buffer.append(maybe_is_success)
