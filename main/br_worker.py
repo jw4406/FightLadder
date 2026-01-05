@@ -46,7 +46,7 @@ if not os.listdir(TASK_DIR):
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
 BR_TRAINING_STEPS = 100
-BR_TRAINING_STEPS = 10000000
+#BR_TRAINING_STEPS = 10000000
 
 PLAYER = "Guile"
 OPPONENT_LIST = ["Guile"]
@@ -454,7 +454,8 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool, 
     if eval_only == False:
         print("eval_only was passed as False. Training the BR agent.")
         br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
-        subprocess.Popen(["python", "main/aggregate_to_wandb.py", "--upload_proj_name", "eepy_exploiter_test"])
+        agg_file = os.path.join(current_dir, "aggregate_to_wandb.py")
+        subprocess.Popen(["python", agg_file, "--upload_proj_name", "eepy_exploiter_test"])
     # eval BR against ego right here! both models are already in namespace.
 
     """ wr, mean_rew = evaluate_sa_parallel(curr_state=STATE[0], model=ftm, exploiter_model=br_agent, env_index=0, record=True, use_mirror=use_mirror, eval_prot=eval_prot, video_dir=video_dir)
