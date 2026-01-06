@@ -42,7 +42,7 @@ TIMING = False
 DEBUG = False
 PARALLEL_CALC_F = False
 SAVE_TEST = True
-USE_PERTURBED = True
+USE_PERTURBED = False
 class DummyCallback(BaseCallback):
     def __init__(self):
         super().__init__()
@@ -635,9 +635,9 @@ class CleanDerivativeFreeSPAR(PPO):
             callback.on_training_start(locals(), globals())
 
             while self.num_timesteps < total_timesteps:
-
-                self._create_all_perturbed_agents(num_perturbs)
-                self._initialize_parallel_updater()                
+                if USE_PERTURBED:
+                    self._create_all_perturbed_agents(num_perturbs)
+                    self._initialize_parallel_updater()                
 
                 continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward, self.use_mirror,zero_ego_action, zero_adv_action) #TODO: This is sequential - remove when done.
                 if USE_PERTURBED:
@@ -1043,21 +1043,22 @@ class CleanDerivativeFreeSPAR(PPO):
         self.policy.num_adversaries = self.num_adversaries
 
         # Logs
-        self.logger.record("train/entropy_loss", np.mean(entropy_losses))
-        self.logger.record("train/policy_gradient_loss", np.mean(pg_losses))
+        #self.logger.record("train/entropy_loss", np.mean(entropy_losses))
+        #self.logger.record("train/policy_gradient_loss", np.mean(pg_losses))
         self.logger.record("train/value_loss", np.mean(value_losses))
-        self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
-        self.logger.record("train/clip_fraction", np.mean(clip_fractions))
-        self.logger.record("train/loss", loss.item())
-        self.logger.record("train/explained_variance", explained_var)
-        if hasattr(self.policy, "log_std"):
-            self.logger.record("train/std", th.exp(self.policy.log_std).mean().item())
+        #self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
+        #self.logger.record("train/clip_fraction", np.mean(clip_fractions))
+        #self.logger.record("train/loss", loss.item())
+        #self.logger.record("train/explained_variance", explained_var)
+        #if hasattr(self.policy, "log_std"):
+        #    self.logger.record("train/std", th.exp(self.policy.log_std).mean().item())
 
-        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
-        self.logger.record("train/clip_range", clip_range)
-        if self.clip_range_vf is not None:
-            self.logger.record("train/clip_range_vf", clip_range_vf)
-    
+        #self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        #self.logger.record("train/clip_range", clip_range)
+        #if self.clip_range_vf is not None:
+        #    self.logger.record("train/clip_range_vf", clip_range_vf)
+        
+        self._log_leader_metrics(update_ego, entropy_losses, pg_losses, approx_kl_divs, explained_var, clip_range)
     def perturb_params(self, param_list, ego=True):
         count = 0
         for i in range(len(param_list)):
