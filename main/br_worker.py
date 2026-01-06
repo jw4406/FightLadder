@@ -49,7 +49,7 @@ BR_TRAINING_STEPS = 100
 #BR_TRAINING_STEPS = 10000000
 
 PLAYER = "Guile"
-OPPONENT_LIST = ["Guile"]
+OPPONENT_LIST = ["EHonda"]
 SIDE = "left"
 player_folder_name = PLAYER + '_' + SIDE
 video_dir = 'videos/single_1v2_%s' % PLAYER
@@ -382,6 +382,11 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool, 
         player=PLAYER,
         use_mirror=False
     ) """
+    data, _, _ = load_from_zip_file(checkpoint_path)
+    # get the saved matchups -- make this automated so that we dont hit stupid user errors
+    #matchups = data['matchups']
+    uniques = list(dict.fromkeys(data['state_list']).keys())
+    STATE = uniques
     env = env_generator()
     env.num_envs = 1 # HACKY FOR NOW!
     try:
