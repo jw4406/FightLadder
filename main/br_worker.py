@@ -46,7 +46,7 @@ if not os.listdir(TASK_DIR):
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
 BR_TRAINING_STEPS = 100
-#BR_TRAINING_STEPS = 10000000
+BR_TRAINING_STEPS = 10000000
 
 PLAYER = "Guile"
 OPPONENT_LIST = ["EHonda"]

@@ -51,7 +51,7 @@ else:
 
 # STATE = "Champion.RyuVsRyu.2Player.align"
 global REMOVAL
-global STATE
+#global STATE
 #torch.backends.cudnn.enabled = False
 '''
 PLAYER = "Blanka" # "Blanka
@@ -344,7 +344,7 @@ def main(PLAYER):
         OPPONENT_LIST = ["Guile"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
-        OPPONENT_LIST = ["Guile"]#, "Sagat","ChunLi", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
+        OPPONENT_LIST = ["Guile"]# "Sagat","ChunLi", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
     
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'],
@@ -452,7 +452,8 @@ def main(PLAYER):
     os.makedirs(args.finetune_dir, exist_ok=True)
     #args.model_name_prefix = 
     # Set up the environment and model
-    def env_generator(max_envs: int = 0, i_start: int = 0, j_start: int = 0):
+    def env_generator(max_envs: int = 0, i_start: int = 0, j_start: int = 0, STATE=None):
+        #global STATE
         """
         TODO: Complete the docstring
 
@@ -501,16 +502,16 @@ def main(PLAYER):
         return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
 
-    checkpoint_interval = 100000 # checkpoint_interval * num_envs = total_steps_per_checkpoint
+    checkpoint_interval = 10 # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
                                  other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
-                                 clip_range_schedule=linear_schedule(0.075, 0.025)):
+                                 clip_range_schedule=linear_schedule(0.075, 0.025), STATE=None):
         REMOVAL
         np.random.seed(0)
         random.seed(0)
         torch.manual_seed(0)
-        finetune_env = env_generator()
+        finetune_env = env_generator(STATE=STATE)
         np.random.seed(0)
         random.seed(0)
         torch.manual_seed(0)
@@ -635,7 +636,10 @@ def main(PLAYER):
                     matchups = [state2matchup(state) for state in state_list]
                     assert matchups == finetune_model.matchups
                 else:
-                    finetune_model = CleanDerivativeFreeSPAR.load(path=args.load_path, env=finetune_env, num_perturbed=1)
+                    #global STATE
+                    STATE = data['state_list']
+                    my_env_test = env_generator(STATE=STATE)
+                    finetune_model = CleanDerivativeFreeSPAR.load(path=args.load_path, env=my_env_test, num_perturbed=1)
                     finetune_model.policy.ctrl_optimizer.defaults['lr'] = args.c_lr
                     finetune_model.policy.dstb_optimizer.defaults['lr'] = args.d_lr
                     finetune_model.policy.value_optimizer.defaults['lr'] = args.v_lr
@@ -749,7 +753,7 @@ def main(PLAYER):
     other_lr_schedule = 1e-4  # if args.async_update else linear_schedule(2.5e-4/args.other_timescale, 2.5e-6/args.other_timescale)
     clip_range_schedule = 0.1  # if args.async_update else linear_schedule(0.15, 0.025)
     if REMOVAL is None:
-        temp_env = env_generator()
+        temp_env = env_generator(STATE=STATE)
         args.num_env = temp_env.num_envs
         temp_env.close()
     else:
@@ -760,7 +764,7 @@ def main(PLAYER):
             assert isinstance(REMOVAL, list)
             args.num_env = (12 - len(REMOVAL)) * 4
     model = finetune_model_generator(args.model_file, lr_schedule=lr_schedule, other_lr_schedule=other_lr_schedule,
-                                     clip_range_schedule=clip_range_schedule)
+                                     clip_range_schedule=clip_range_schedule, STATE=STATE)
     if REMOVAL is not None:
         model.REMOVAL = REMOVAL
     # if args.left_model_file and args.right_model_file:
