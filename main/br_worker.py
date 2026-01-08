@@ -434,7 +434,7 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool, 
     # --- This is where your specific BR logic goes ---
     # 1. Load the frozen opponent
     # fixed_opponent = PPO.load(checkpoint_path)
-    wandb.init(project="exploiter_guile_1v1",
+    wandb.init(project="exploiter_guile_1v1_noanneal",
                 entity='jw4406',
                 group="br_workers",
                 config={"eval_rew": 0,
@@ -449,7 +449,7 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool, 
     env = exploiter_env_generator(STATE=STATE)
 
     # 3. Create a new agent to be the best response
-    br_agent = Exploiter('CnnPolicy', exploiter_env_generator(), device='cuda', exploited=ftm, n_steps=1024, batch_size=512, n_epochs=10, exploiting='ego')
+    br_agent = Exploiter('CnnPolicy', exploiter_env_generator(STATE=STATE), device='cuda', exploited=ftm, n_steps=1024, batch_size=512, n_epochs=10, exploiting='ego')
 
     # 4. Train the BR agent
     br_model_name = f"br_to_{os.path.splitext(os.path.basename(checkpoint_path))[0]}.zip"
