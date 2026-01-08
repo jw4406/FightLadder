@@ -605,7 +605,7 @@ def main(PLAYER):
         finetune_model = CleanDerivativeFreeSPAR(
             "AACCnnPolicy",
             finetune_env,
-            device="cpu",
+            device="cuda",
             c_learning_rate=args.c_lr,
             d_learning_rate=args.d_lr,
             v_learning_rate=args.v_lr,

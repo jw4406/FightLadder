@@ -5,7 +5,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--upload_proj_name", type=str, required=True)
 args = parser.parse_args()
 UPLOAD_PROJECT_NAME = args.upload_proj_name
-PROJECT_NAME = 'eepy_test'
+PROJECT_NAME = 'exploiter_guile_1v1'
 # 1. Setup your entity/project
 ENTITY = "jw4406"
 #PROJECT = "exploiter"
