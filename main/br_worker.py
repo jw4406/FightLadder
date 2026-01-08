@@ -315,7 +315,7 @@ def env_generator():
     #         seed=0)
     return VecTransposeImage2P(SubprocVecEnv2P(env))
 
-def exploiter_env_generator():
+def exploiter_env_generator(STATE=None):
     # STATE
     each_env_count = 1
     env = []
@@ -447,7 +447,7 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool, 
     # 2. Create your environment, passing the frozen opponent to it
     #    so the BR agent can play against it.
     # env = YourStreetFighterEnv(opponent_policy=fixed_opponent)
-    env = exploiter_env_generator()
+    env = exploiter_env_generator(STATE=STATE)
 
     # 3. Create a new agent to be the best response
     br_agent = Exploiter('CnnPolicy', exploiter_env_generator(), device='cuda', exploited=ftm, n_steps=1024, batch_size=512, n_epochs=10, exploiting='ego')
