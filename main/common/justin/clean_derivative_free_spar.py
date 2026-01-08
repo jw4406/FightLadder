@@ -291,7 +291,9 @@ class CleanDerivativeFreeSPAR(PPO):
         self.dstb_scheduler = ExponentialLR(self.policy.dstb_optimizer, gamma=0.995)
         self.value_scheduler = ExponentialLR(self.policy.value_optimizer, gamma=0.995)
     
-    def _update_schedulers(self , step_ego, step_adv, step_val):
+    def _update_schedulers(self , step_ego, step_adv, step_val, skip=False):
+        if skip:
+            return
         """This functinon updates all schedulers and makes sure that ego_lr <= adv_lr <= value_lr is satisfied."""
         rew_std = np.std([ep_info["r"] for ep_info in self.ep_info_buffer])
         if step_ego:
@@ -836,7 +838,7 @@ class CleanDerivativeFreeSPAR(PPO):
                         approx_kl_divs_all.append(approx_kl_div)
 
         self._n_updates += self.n_epochs
-        self._update_schedulers(step_ego=ego, step_adv=(not ego), step_val=True)
+        self._update_schedulers(step_ego=ego, step_adv=(not ego), step_val=True, skip=True)
         if hasattr(self.rollout_buffer, 'values') and self.rollout_buffer.values is not None and self.rollout_buffer.returns is not None:
              explained_var = explained_variance(self.rollout_buffer.values.flatten().detach().cpu().numpy(), self.rollout_buffer.returns.flatten().detach().cpu().numpy())
         else:
@@ -1033,7 +1035,7 @@ class CleanDerivativeFreeSPAR(PPO):
 
                 if not continue_training:
                     break
-        self._update_schedulers(step_ego=update_ego, step_adv=(not update_ego), step_val=True)
+        self._update_schedulers(step_ego=update_ego, step_adv=(not update_ego), step_val=True, skip=True)
         # check location in train derivative free
         self._n_updates += self.n_epochs
         if th.is_tensor(buf.values):

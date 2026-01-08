@@ -48,7 +48,7 @@ POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
 BR_TRAINING_STEPS = 10000000
 
 PLAYER = "Guile"
-OPPONENT_LIST = ["EHonda"]
+OPPONENT_LIST = ["Guile"]
 SIDE = "left"
 player_folder_name = PLAYER + '_' + SIDE
 video_dir = 'videos/single_1v2_%s' % PLAYER
