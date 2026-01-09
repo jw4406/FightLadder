@@ -90,6 +90,8 @@ class CleanDerivativeFreeSPAR(PPO):
             c_learning_rate_decay: Union[float, Schedule] = 1e-4,
             d_learning_rate_decay: Union[float, Schedule] = 2e-4,
             v_learning_rate_decay: Union[float, Schedule] = 7e-4,
+            use_lr_annealing: bool = False,
+            lr_anneal_coeff: float = 0.995,
             n_steps: int = 2048,
             batch_size: int = 64,
             n_epochs: int = 1,
@@ -154,6 +156,8 @@ class CleanDerivativeFreeSPAR(PPO):
         self.update_right = update_right
         self.learning_rate = [c_learning_rate, d_learning_rate, v_learning_rate]
         self.learning_rate_decay_phase = [c_learning_rate_decay, d_learning_rate_decay, v_learning_rate_decay]
+        self.use_lr_annealing = use_lr_annealing
+        self.lr_anneal_coeff = lr_anneal_coeff
         # Sanity check, otherwise it will lead to noisy gradient and NaN
         # because of the advantage normalization
         if normalize_advantage:
@@ -287,9 +291,9 @@ class CleanDerivativeFreeSPAR(PPO):
         #self.ctrl_scheduler = ReduceLROnPlateau(self.policy.ctrl_optimizer, factor=0.5, patience=10)
         #self.dstb_scheduler = ReduceLROnPlateau(self.policy.dstb_optimizer, factor=0.5, patience=10)
         #self.value_scheduler = ReduceLROnPlateau(self.policy.value_optimizer, factor=0.5, patience=10)
-        self.ctrl_scheduler = ExponentialLR(self.policy.ctrl_optimizer, gamma=0.995)
-        self.dstb_scheduler = ExponentialLR(self.policy.dstb_optimizer, gamma=0.995)
-        self.value_scheduler = ExponentialLR(self.policy.value_optimizer, gamma=0.995)
+        self.ctrl_scheduler = ExponentialLR(self.policy.ctrl_optimizer, gamma=self.lr_anneal_coeff)
+        self.dstb_scheduler = ExponentialLR(self.policy.dstb_optimizer, gamma=self.lr_anneal_coeff)
+        self.value_scheduler = ExponentialLR(self.policy.value_optimizer, gamma=self.lr_anneal_coeff)
     
     def _update_schedulers(self , step_ego, step_adv, step_val, skip=False):
         if skip:
@@ -641,7 +645,6 @@ class CleanDerivativeFreeSPAR(PPO):
                     self._create_all_perturbed_agents(num_perturbs)
                     self._initialize_parallel_updater()                
 
-                continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward, self.use_mirror,zero_ego_action, zero_adv_action) #TODO: This is sequential - remove when done.
                 if USE_PERTURBED:
                     with ThreadPoolExecutor(max_workers=num_perturbs + 1) as executor:
                         futures = [executor.submit(perturbed_agent.env_perturb_params, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action) for perturbed_agent in self.perturbed_agents]
@@ -652,6 +655,9 @@ class CleanDerivativeFreeSPAR(PPO):
                     self.perturbed_adv_bufs = list(perturbed_adv_bufs)
 
                     self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in self.perturbed_agents]
+                else:
+                    continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward, self.use_mirror, zero_ego_action, zero_adv_action)
+
 
                 if continue_training is False:
                     break
@@ -838,7 +844,7 @@ class CleanDerivativeFreeSPAR(PPO):
                         approx_kl_divs_all.append(approx_kl_div)
 
         self._n_updates += self.n_epochs
-        self._update_schedulers(step_ego=ego, step_adv=(not ego), step_val=True, skip=True)
+        self._update_schedulers(step_ego=ego, step_adv=(not ego), step_val=True, skip=not self.use_lr_annealing)
         if hasattr(self.rollout_buffer, 'values') and self.rollout_buffer.values is not None and self.rollout_buffer.returns is not None:
              explained_var = explained_variance(self.rollout_buffer.values.flatten().detach().cpu().numpy(), self.rollout_buffer.returns.flatten().detach().cpu().numpy())
         else:
@@ -1035,7 +1041,7 @@ class CleanDerivativeFreeSPAR(PPO):
 
                 if not continue_training:
                     break
-        self._update_schedulers(step_ego=update_ego, step_adv=(not update_ego), step_val=True, skip=True)
+        self._update_schedulers(step_ego=update_ego, step_adv=(not update_ego), step_val=True, skip=not self.use_lr_annealing)
         # check location in train derivative free
         self._n_updates += self.n_epochs
         if th.is_tensor(buf.values):

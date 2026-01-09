@@ -404,6 +404,9 @@ def main(PLAYER):
     #parser.add_argument("--right_model_file", type=str, help="Path to load the right model from", default=None)
     parser.add_argument("--training_style", type=str, required=True, help="Training style", default="L3", choices=["L3", "L2", "L1"])
     parser.add_argument("--continue_training", help='Continue training', default=False)
+    parser.add_argument("--use_lr_annealing", choices=['True', 'False'], help='Use lr annealing', default=True)
+    parser.add_argument("--lr_anneal_coeff", type=float, help="Learning rate anneal coefficient", default=0.995)
+    parser.add_argument("--checkpoint_interval", type=int, help="Checkpoint interval", default=10000)
     args = parser.parse_args()
     if args.training_style not in ["L3", "L2"]:
         if args.load_path is None:
@@ -502,7 +505,7 @@ def main(PLAYER):
         return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
 
-    checkpoint_interval = 100000 # checkpoint_interval * num_envs = total_steps_per_checkpoint
+    checkpoint_interval = args.checkpoint_interval # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
                                  other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
@@ -620,7 +623,9 @@ def main(PLAYER):
             n_env_per_adv=args.num_env // num_adversary,
             seed= 0,
             target_kl=None,
-            use_mirror=use_mirror
+            use_mirror=use_mirror,
+            use_lr_annealing=args.use_lr_annealing,
+            lr_anneal_coeff=args.lr_anneal_coeff
         )
 
         if args.load_path and args.continue_training:
@@ -913,6 +918,9 @@ if __name__ == "__main__":
     parser.add_argument("--right-model-file", type=str, help="Path to load the right model from", default=None)
     parser.add_argument("--training_style", type=str, required=True, help="Training style", default="L3", choices=["L3", "L2", "L1"])
     parser.add_argument("--continue_training", choices=['True', 'False'], help='Continue training', default=False)
+    parser.add_argument("--use_lr_annealing", choices=['True', 'False'], help='Use lr annealing', default=True)
+    parser.add_argument("--lr_anneal_coeff", type=float, help="Learning rate anneal coefficient", default=0.995)
+    parser.add_argument("--checkpoint_interval", type=int, help="Checkpoint interval", default=10000)
     args = parser.parse_args()
 
     PLAYER = args.player
