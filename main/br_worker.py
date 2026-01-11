@@ -330,7 +330,7 @@ def exploiter_env_generator(STATE=None):
     #         seed=0)
     return VecTransposeImage2P(SubprocVecEnv2P(env))
 # --- Worker Logic ---
-def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool, eval_only: bool) -> None:
+def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool, eval_only: bool, proj_name: str) -> None:
     """
     The core logic for a single best-response training run.
 
@@ -434,7 +434,7 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool, 
     # --- This is where your specific BR logic goes ---
     # 1. Load the frozen opponent
     # fixed_opponent = PPO.load(checkpoint_path)
-    wandb.init(project="exploiter_guile_1v1_noanneal",
+    wandb.init(project=proj_name,
                 entity='jw4406',
                 group="br_workers",
                 config={"eval_rew": 0,
@@ -511,6 +511,7 @@ if __name__ == "__main__":
     parser.add_argument("--eval_prot", action="store_true")
     parser.add_argument("--use_mirror", action="store_true")
     parser.add_argument("--eval_only", choices=['True', 'False'], default='False', required=True)
+    parser.add_argument("--proj_name", type=str, required=True)
     args = parser.parse_args()
 
     if args.eval_only == 'True':
@@ -553,7 +554,7 @@ if __name__ == "__main__":
             os.rename(todo_path, processing_path)
 
             # Now that we've claimed it, process it
-            train_best_response(processing_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror, eval_only=args.eval_only)
+            train_best_response(processing_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror, eval_only=args.eval_only, proj_name=args.proj_name)
 
             # Move it to 'done' when finished
             done_path = os.path.join(done_dir, task_filename)
