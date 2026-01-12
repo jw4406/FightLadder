@@ -4,6 +4,9 @@ import os
 from annotated_types import Ge
 import time, av
 import copy
+from train_ma import constructor
+import types
+from common.league import PayoffManager, League, FSPLeague, PSROLeague, Learner
 import random
 import retro
 from PIL import Image
@@ -56,6 +59,68 @@ STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_n
 
 # TODO: this is static right now. need to make this dynamic based on the state list from the task file.
 
+def load_league_models(character_names: list, model_dir: str = None) -> dict:
+    """
+    Load model checkpoint files from trained_models/ma directory, separated by player type (LE, MA, ME)
+    and side (left, right). Includes all LE, MA, and ME files regardless of whether they contain character names.
+    
+    Args:
+        character_names: List of character names (e.g., ["ryu", "bison", "guile"]). 
+                         Currently not used for filtering - all LE/MA/ME files are included.
+        model_dir: Directory to search for model files. Defaults to trained_models/ma relative to current_dir.
+    
+    Returns:
+        Nested dictionary with structure:
+        {
+            'LE': {'left': [...], 'right': [...]},
+            'MA': {'left': [...], 'right': [...]},
+            'ME': {'left': [...], 'right': [...]}
+        }
+        Each list contains full file paths to model checkpoint files.
+    """
+    if model_dir is None:
+        model_dir = os.path.join(current_dir, "trained_models", "ma")
+    
+    if not os.path.exists(model_dir):
+        raise FileNotFoundError(f"Model directory not found: {model_dir}")
+    
+    # Separate files by player type and side
+    model_files = {
+        'LE': {'left': [], 'right': []},  # League Exploiters
+        'MA': {'left': [], 'right': []},  # Main Agents
+        'ME': {'left': [], 'right': []}   # Main Exploiters
+    }
+    
+    # Get all .pt files in the directory
+    for filename in os.listdir(model_dir):
+        if not filename.endswith('.pt'):
+            continue
+        
+        # Skip payoff files
+        if filename.startswith('payoff_'):
+            continue
+        
+        full_path = os.path.join(model_dir, filename)
+        
+        # Determine side (left or right)
+        if '_left_' in filename:
+            side = 'left'
+        elif '_right_' in filename:
+            side = 'right'
+        else:
+            # Skip files that don't have a clear left/right designation
+            continue
+        
+        # Categorize by prefix - include ALL LE, MA, ME files
+        # (both with and without character names)
+        if filename.startswith('LE'):
+            model_files['LE'][side].append(full_path)
+        elif filename.startswith('MA'):
+            model_files['MA'][side].append(full_path)
+        elif filename.startswith('ME'):
+            model_files['ME'][side].append(full_path)
+    
+    return model_files
 def gen_dummy_policy(exploiter_model: Exploiter) -> torch.nn.Module:
     """
     This function creates a dummy copy of exploiter_model.
@@ -330,6 +395,40 @@ def exploiter_env_generator(STATE=None):
     #         seed=0)
     return VecTransposeImage2P(SubprocVecEnv2P(env))
 # --- Worker Logic ---
+def tbr_league(files, character_names: list):
+    opponent_names = character_names
+    right_models = {}
+    args = types.SimpleNamespace()
+    args.enable_combo = False
+    args.null_combo = False
+    args.transform_action = False
+    args.seed = 0
+    args.fsp_league = False
+    args.psro_league = False
+    args.num_env = 1
+    args.side = "both"
+    args.reset = "round"
+    args.render = False
+    args.log_dir = os.path.join(current_dir, "trained_models", "br_logs")
+    args.save_dir = os.path.join(current_dir, "trained_models", "br_payoffs")
+    for opponent in opponent_names:
+        right_models[opponent] = constructor(args, "right", log_name=None, single_env=True, opponent=opponent)
+    left_model = constructor(args, "left", log_name=None, single_env=True)
+    initial_agents = {'left': left_model, 'right': right_models}
+
+    with PayoffManager() as manager:
+        shared_payoff = manager.Payoff(args.save_dir)
+        if args.fsp_league:
+            league = FSPLeague(args=args, initial_agents=initial_agents, constructor=constructor, payoff=shared_payoff, main_agents=1)
+        elif args.psro_league:
+            league = PSROLeague(args=args, initial_agents=initial_agents, constructor=constructor, payoff=shared_payoff, main_agents=1)
+        else:
+            league = League(args=args, initial_agents=initial_agents, constructor=constructor, payoff=shared_payoff, main_agents=1, main_exploiters=1, league_exploiters=2)
+        processes = []
+        for idx in range(league.size()):
+            player = league.get_player(idx)
+            player.load(model_files[player.name])
+        shared_payoff.load(payoff_file)
 def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool, eval_only: bool, proj_name: str) -> None:
     """
     The core logic for a single best-response training run.
@@ -512,6 +611,8 @@ if __name__ == "__main__":
     parser.add_argument("--use_mirror", action="store_true")
     parser.add_argument("--eval_only", choices=['True', 'False'], default='False', required=True)
     parser.add_argument("--proj_name", type=str, required=True)
+    parser.add_argument("--is_league", choices=['True', 'False'], default='False', required=True)
+    parser.add_argument("--model_dir", type=str, required=True)
     args = parser.parse_args()
 
     if args.eval_only == 'True':
@@ -535,40 +636,43 @@ if __name__ == "__main__":
     #     print("myfile.txt does not exist")
 
     print(f"WORKER [{os.getpid()}]: Starting. Watching {todo_dir} for tasks.")
+    if args.is_league == 'False':
+        while not os.path.exists(stop_file):
+            tasks = [f for f in os.listdir(todo_dir) if f.endswith(".task")]
 
-    while not os.path.exists(stop_file):
-        tasks = [f for f in os.listdir(todo_dir) if f.endswith(".task")]
+            if not tasks:
+                time.sleep(POLL_INTERVAL)
+                continue
 
-        if not tasks:
-            time.sleep(POLL_INTERVAL)
-            continue
+            # Grab a random task to reduce the chance of multiple workers grabbing the same one
+            task_filename = random.choice(tasks)
+            todo_path = os.path.join(todo_dir, task_filename)
+            processing_path = os.path.join(processing_dir, task_filename)
+            error_path = os.path.join(error_dir, task_filename)
 
-        # Grab a random task to reduce the chance of multiple workers grabbing the same one
-        task_filename = random.choice(tasks)
-        todo_path = os.path.join(todo_dir, task_filename)
-        processing_path = os.path.join(processing_dir, task_filename)
-        error_path = os.path.join(error_dir, task_filename)
-
-        try:
-            # Atomically move the task file to claim it
-            os.rename(todo_path, processing_path)
-
-            # Now that we've claimed it, process it
-            train_best_response(processing_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror, eval_only=args.eval_only, proj_name=args.proj_name)
-
-            # Move it to 'done' when finished
-            done_path = os.path.join(done_dir, task_filename)
-            os.rename(processing_path, done_path)
-
-        except FileNotFoundError:
-            # Another worker grabbed this file first. No problem.
-            continue
-        except Exception as e:
-            print(f"WORKER [{os.getpid()}]: A critical error occurred. Error: {e}")
-            # Move the failed task back to todo or to an error folder
             try:
-                os.rename(processing_path, error_path)
-            except:
-                pass
+                # Atomically move the task file to claim it
+                os.rename(todo_path, processing_path)
 
+                # Now that we've claimed it, process it
+                train_best_response(processing_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror, eval_only=args.eval_only, proj_name=args.proj_name)
+
+                # Move it to 'done' when finished
+                done_path = os.path.join(done_dir, task_filename)
+                os.rename(processing_path, done_path)
+
+            except FileNotFoundError:
+                # Another worker grabbed this file first. No problem.
+                continue
+            except Exception as e:
+                print(f"WORKER [{os.getpid()}]: A critical error occurred. Error: {e}")
+                # Move the failed task back to todo or to an error folder
+                try:
+                    os.rename(processing_path, error_path)
+                except:
+                    pass
+    else:
+        model_files = load_league_models(model_dir=args.model_dir, character_names=["ryu", "bison", "guile"])
+        tbr_league(model_files, character_names=["ryu", "bison", "guile"])
     print(f"WORKER [{os.getpid()}]: Stop file detected. Shutting down.")
+
