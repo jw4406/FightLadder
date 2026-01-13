@@ -5390,7 +5390,10 @@ class Exploiter(PPO):
                 actions, values, log_probs, = self.policy(obs_tensor)
                 #ego_id = self.exploited.opp_list.index(self.exploited.player)
                 if self.exploiting == "ego":
-                    EXPLOITED_ACTIONS, _, _, _, _, _ = self.exploited.policy(obs_tensor)
+                    if self.is_spar:
+                        EXPLOITED_ACTIONS, _, _, _, _, _ = self.exploited.policy(obs_tensor)
+                    else:
+                        EXPLOITED_ACTIONS, DEAD_VALUES, DEAD_LOG_PROBS = self.exploited.policy(obs_tensor)
                     # modify to add q_values for new forward signature
                 else:
                     _, _, _, EXPLOITED_ACTIONS, _, _ = self.exploited.policy(obs_tensor)

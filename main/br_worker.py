@@ -72,11 +72,13 @@ def load_league_models(character_names: list, model_dir: str = None) -> dict:
     Returns:
         Nested dictionary with structure:
         {
-            'LE': {'left': [...], 'right': [...]},
-            'MA': {'left': [...], 'right': [...]},
-            'ME': {'left': [...], 'right': [...]}
+            'LE': {'left': {...}, 'right': {...}},
+            'MA': {'left': {...}, 'right': {...}},
+            'ME': {'left': {...}, 'right': {...}},
+            'payoff': <latest payoff file path or None>
         }
-        Each list contains full file paths to model checkpoint files.
+        Keys are filenames without .pt extension (trailing step removed, prefix/index normalized),
+        values are full file paths.
     """
     if model_dir is None:
         model_dir = os.path.join(current_dir, "trained_models", "ma")
@@ -84,23 +86,54 @@ def load_league_models(character_names: list, model_dir: str = None) -> dict:
     if not os.path.exists(model_dir):
         raise FileNotFoundError(f"Model directory not found: {model_dir}")
     
-    # Separate files by player type and side
+    # Separate files by player type and side; track latest payoff
     model_files = {
-        'LE': {'left': [], 'right': []},  # League Exploiters
-        'MA': {'left': [], 'right': []},  # Main Agents
-        'ME': {'left': [], 'right': []}   # Main Exploiters
+        'LE': {'left': {}, 'right': {}},  # League Exploiters
+        'MA': {'left': {}, 'right': {}},  # Main Agents
+        'ME': {'left': {}, 'right': {}},  # Main Exploiters
+        'payoff': None,
     }
+    latest_payoff_mtime = 0
     
     # Get all .pt files in the directory
     for filename in os.listdir(model_dir):
         if not filename.endswith('.pt'):
             continue
         
-        # Skip payoff files
+        # Track latest payoff file
         if filename.startswith('payoff_'):
+            payoff_path = os.path.join(model_dir, filename)
+            mtime = os.path.getmtime(payoff_path)
+            if mtime > latest_payoff_mtime:
+                latest_payoff_mtime = mtime
+                model_files['payoff'] = payoff_path
             continue
         
         full_path = os.path.join(model_dir, filename)
+        
+        # Build key from filename:
+        # - Strip '.pt'
+        # - Remove trailing segment (typically a step index like '_0')
+        # - Split the first token into prefix letters and index digits
+        #   e.g. 'LE1_left_0' -> ['LE1', 'left', '0']
+        #        'LE1' -> prefix='LE', idx='1' -> 'LE_1_left'
+        base_name = filename[:-3]  # Remove '.pt'
+        parts = base_name.split('_')
+        if len(parts) < 2:
+            # Fallback: just use base_name
+            file_key = base_name
+        else:
+            # Drop the last segment (trailing numeric step)
+            core_parts = parts[:-1]
+            first = core_parts[0]
+            prefix = ''.join(ch for ch in first if ch.isalpha())
+            index = ''.join(ch for ch in first if ch.isdigit())
+            if prefix and index:
+                # e.g. 'MA0' -> prefix='MA', index='0' -> 'MA0'
+                new_first = f"{prefix}{index}"
+            else:
+                new_first = first
+            file_key = '_'.join([new_first] + core_parts[1:])
         
         # Determine side (left or right)
         if '_left_' in filename:
@@ -114,13 +147,14 @@ def load_league_models(character_names: list, model_dir: str = None) -> dict:
         # Categorize by prefix - include ALL LE, MA, ME files
         # (both with and without character names)
         if filename.startswith('LE'):
-            model_files['LE'][side].append(full_path)
+            model_files['LE'][side][file_key] = full_path
         elif filename.startswith('MA'):
-            model_files['MA'][side].append(full_path)
+            model_files['MA'][side][file_key] = full_path
         elif filename.startswith('ME'):
-            model_files['ME'][side].append(full_path)
+            model_files['ME'][side][file_key] = full_path
     
-    return model_files
+    return model_files, payoff_path
+
 def gen_dummy_policy(exploiter_model: Exploiter) -> torch.nn.Module:
     """
     This function creates a dummy copy of exploiter_model.
@@ -395,7 +429,7 @@ def exploiter_env_generator(STATE=None):
     #         seed=0)
     return VecTransposeImage2P(SubprocVecEnv2P(env))
 # --- Worker Logic ---
-def tbr_league(files, character_names: list):
+def instantiate_league_models(files, character_names: list):
     opponent_names = character_names
     right_models = {}
     args = types.SimpleNamespace()
@@ -411,6 +445,8 @@ def tbr_league(files, character_names: list):
     args.render = False
     args.log_dir = os.path.join(current_dir, "trained_models", "br_logs")
     args.save_dir = os.path.join(current_dir, "trained_models", "br_payoffs")
+    os.makedirs(args.save_dir, exist_ok=True)
+    os.makedirs(args.log_dir, exist_ok=True)
     for opponent in opponent_names:
         right_models[opponent] = constructor(args, "right", log_name=None, single_env=True, opponent=opponent)
     left_model = constructor(args, "left", log_name=None, single_env=True)
@@ -424,18 +460,34 @@ def tbr_league(files, character_names: list):
             league = PSROLeague(args=args, initial_agents=initial_agents, constructor=constructor, payoff=shared_payoff, main_agents=1)
         else:
             league = League(args=args, initial_agents=initial_agents, constructor=constructor, payoff=shared_payoff, main_agents=1, main_exploiters=1, league_exploiters=2)
+        # Create a flat lookup dictionary from the nested structure
+        # Maps player name (filename without .pt) to full file path
+        model_files_flat = {}
+        for player_type in ['LE', 'MA', 'ME']:
+            for side in ['left', 'right']:
+                model_files_flat.update(files[player_type][side])
+        
         processes = []
         for idx in range(league.size()):
             player = league.get_player(idx)
-            player.load(model_files[player.name])
-        shared_payoff.load(payoff_file)
-def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool, eval_only: bool, proj_name: str) -> None:
-    """
-    The core logic for a single best-response training run.
+            if player.name in model_files_flat:
+                player.load(model_files_flat[player.name])
 
-    Args:
-        TODO: Complete this.
-    """
+            else:
+                print(f"Warning: No checkpoint file found for player {player.name}")
+        
+        print(f"Loaded models for players: {list(model_files_flat.keys())}\n")
+        # Load latest payoff file if available
+        payoff_file = files.get('payoff')
+        if payoff_file:
+            shared_payoff.load(payoff_file)
+        else:
+            print("Warning: No payoff file found to load.")
+        [league.get_player(i).construct_agent() for i in range(league.size())]
+        print("hello")
+        return league
+
+def load_spar_model(task_file_path: str) -> None:
     worker_id = os.getpid()
     print(f"WORKER [{worker_id}]: Processing task: {os.path.basename(task_file_path)}")
 
@@ -512,24 +564,16 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool, 
             use_mirror=False
         )
         ftm.set_parameters(params, exact_match=True, device=ftm.device)
-    
-    
-    #OVERRIDEN HERE
-    
-    
-    # Read the path of the frozen policy from the task file
-    #data, params, pytorch_variables = load_from_zip_file(
-    #    checkpoint_path)
+    return ftm
+def train_best_response(model_to_exploit, task_file_path: str, eval_prot: bool, use_mirror: bool, eval_only: bool, proj_name: str, is_spar: bool = False) -> None:
+    """
+    The core logic for a single best-response training run.
 
-    #del params['policy.ctrl_optimizer']
-    #del params['policy.value_optimizer']
-    #del params['policy.dstb_optimizer']
-    # finetune_model.warmstarted_cont_MAGICS = True
-    # finetune_model.warmstart_setup(finetune_model.lr_schedule)
-    #finetune_model.set_parameters(params, exact_match=False, device=finetune_model.device)
-    if not os.path.exists(checkpoint_path):
-        raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
-
+    Args:
+        TODO: Complete this.
+    """
+    checkpoint_path = task_file_path
+    ftm = model_to_exploit
     # --- This is where your specific BR logic goes ---
     # 1. Load the frozen opponent
     # fixed_opponent = PPO.load(checkpoint_path)
@@ -549,7 +593,7 @@ def train_best_response(task_file_path: str, eval_prot: bool, use_mirror: bool, 
 
     # 3. Create a new agent to be the best response
     br_agent = Exploiter('CnnPolicy', exploiter_env_generator(STATE=STATE), device='cuda', exploited=ftm, n_steps=1024, batch_size=512, n_epochs=10, exploiting='ego')
-
+    br_agent.is_spar = is_spar # TODO: This is a stupid hack to get the BR agent to know if it is a SPAR model or not. Remove this once we have a better way to do this.
     # 4. Train the BR agent
     br_model_name = f"br_to_{os.path.splitext(os.path.basename(checkpoint_path))[0]}.zip"
     exploiter_callback = ExploiterCheckpointCallback(save_freq=100000, save_path=BR_MODEL_DIR, name_prefix=br_model_name)
@@ -655,7 +699,8 @@ if __name__ == "__main__":
                 os.rename(todo_path, processing_path)
 
                 # Now that we've claimed it, process it
-                train_best_response(processing_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror, eval_only=args.eval_only, proj_name=args.proj_name)
+                loaded_model = load_spar_model(processing_path)
+                train_best_response(loaded_model,processing_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror, eval_only=args.eval_only, proj_name=args.proj_name, is_spar=True)
 
                 # Move it to 'done' when finished
                 done_path = os.path.join(done_dir, task_filename)
@@ -672,7 +717,9 @@ if __name__ == "__main__":
                 except:
                     pass
     else:
-        model_files = load_league_models(model_dir=args.model_dir, character_names=["ryu", "bison", "guile"])
-        tbr_league(model_files, character_names=["ryu", "bison", "guile"])
+        model_files, payoff_path = load_league_models(model_dir=args.model_dir, character_names=["ryu", "bison", "guile"])
+        loaded_league = instantiate_league_models(model_files, character_names=["ryu", "bison", "guile"])
+        main_agent_left = loaded_league.get_player(0).agent
+        train_best_response(main_agent_left, payoff_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror, eval_only=args.eval_only, proj_name=args.proj_name, is_spar=False)
     print(f"WORKER [{os.getpid()}]: Stop file detected. Shutting down.")
 

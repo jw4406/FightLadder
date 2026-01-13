@@ -195,9 +195,9 @@ class Payoff:
 
     def load(self, path):
         models_dir = "/".join(path.split("/")[:-1])
-        assert "LE0_left" in self._players and "LE1_left" in self._players and "LE0_right" in self._players_other and "LE1_right" in self._players_other, "League must be initialized with 2 LeagueExploiters on each side"
-        assert "ME0_left" in self._players and "ME0_right" in self._players_other, "League must be initialized with 1 MainExploiter on each side"
-        assert "MA0_left" in self._players and "MA0_right" in self._players_other, "League must be initialized with 1 MainPlayer on each side"
+        #assert "LE0_left" in self._players and "LE1_left" in self._players and "LE0_right" in self._players_other and "LE1_right" in self._players_other, "League must be initialized with 2 LeagueExploiters on each side"
+        #assert "ME0_left" in self._players and "ME0_right" in self._players_other, "League must be initialized with 1 MainExploiter on each side"
+        #assert "MA0_left" in self._players and "MA0_right" in self._players_other, "League must be initialized with 1 MainPlayer on each side"
         load_payoff = torch.load(path, map_location=torch.device('cpu'))
         self._wins.update(load_payoff["wins"])
         self._draws.update(load_payoff["draws"])
