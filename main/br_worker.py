@@ -565,7 +565,7 @@ def load_spar_model(task_file_path: str) -> None:
         )
         ftm.set_parameters(params, exact_match=True, device=ftm.device)
     return ftm
-def train_best_response(model_to_exploit, task_file_path: str, eval_prot: bool, use_mirror: bool, eval_only: bool, proj_name: str, is_spar: bool = False) -> None:
+def train_best_response(model_to_exploit, task_file_path: str, eval_prot: bool, use_mirror: bool, eval_only: bool, proj_name: str, analysis_upload_proj_name: str, is_spar: bool = False) -> None:
     """
     The core logic for a single best-response training run.
 
@@ -602,7 +602,7 @@ def train_best_response(model_to_exploit, task_file_path: str, eval_prot: bool, 
         print("eval_only was passed as False. Training the BR agent.")
         br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
         agg_file = os.path.join(current_dir, "aggregate_to_wandb.py")
-        subprocess.Popen(["python", agg_file, "--upload_proj_name", "eepy_exploiter_test"])
+        subprocess.Popen(["python", agg_file, "--read_from_proj_name", proj_name, "--upload_to_proj_name", analysis_upload_proj_name])
     # eval BR against ego right here! both models are already in namespace.
 
     """ wr, mean_rew = evaluate_sa_parallel(curr_state=STATE[0], model=ftm, exploiter_model=br_agent, env_index=0, record=True, use_mirror=use_mirror, eval_prot=eval_prot, video_dir=video_dir)
@@ -655,6 +655,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_mirror", action="store_true")
     parser.add_argument("--eval_only", choices=['True', 'False'], default='False', required=True)
     parser.add_argument("--proj_name", type=str, required=True)
+    parser.add_argument("--analysis_upload_proj_name", type=str, required=True)
     parser.add_argument("--is_league", choices=['True', 'False'], default='False', required=True)
     parser.add_argument("--model_dir", type=str, required=True)
     args = parser.parse_args()
@@ -700,7 +701,7 @@ if __name__ == "__main__":
 
                 # Now that we've claimed it, process it
                 loaded_model = load_spar_model(processing_path)
-                train_best_response(loaded_model,processing_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror, eval_only=args.eval_only, proj_name=args.proj_name, is_spar=True)
+                train_best_response(loaded_model,processing_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror, eval_only=args.eval_only, proj_name=args.proj_name, is_spar=True, analysis_upload_proj_name=args.analysis_upload_proj_name)
 
                 # Move it to 'done' when finished
                 done_path = os.path.join(done_dir, task_filename)
@@ -720,6 +721,6 @@ if __name__ == "__main__":
         model_files, payoff_path = load_league_models(model_dir=args.model_dir, character_names=["ryu", "bison", "guile"])
         loaded_league = instantiate_league_models(model_files, character_names=["ryu", "bison", "guile"])
         main_agent_left = loaded_league.get_player(0).agent
-        train_best_response(main_agent_left, payoff_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror, eval_only=args.eval_only, proj_name=args.proj_name, is_spar=False)
+        train_best_response(main_agent_left, payoff_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror, eval_only=args.eval_only, proj_name=args.proj_name, is_spar=False, analysis_upload_proj_name=args.analysis_upload_proj_name)
     print(f"WORKER [{os.getpid()}]: Stop file detected. Shutting down.")
 

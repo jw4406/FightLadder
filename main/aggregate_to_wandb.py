@@ -2,16 +2,17 @@ import wandb
 import pandas as pd
 import argparse
 parser = argparse.ArgumentParser()
-parser.add_argument("--upload_proj_name", type=str, required=True)
+parser.add_argument("--read_from_proj_name", type=str, required=True)
+parser.add_argument("--upload_to_proj_name", type=str, required=True)
 args = parser.parse_args()
 UPLOAD_PROJECT_NAME = args.upload_proj_name
-PROJECT_NAME = 'exploiter_guile_1v1'
+READ_FROM_PROJECT_NAME = args.read_from_proj_name
 # 1. Setup your entity/project
 ENTITY = "jw4406"
 #PROJECT = "exploiter"
 
 api = wandb.Api()
-runs = api.runs(f"{ENTITY}/{PROJECT_NAME}")
+runs = api.runs(f"{ENTITY}/{READ_FROM_PROJECT_NAME}")
 
 data = []
 
