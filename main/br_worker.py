@@ -658,7 +658,7 @@ if __name__ == "__main__":
     parser.add_argument("--proj_name", type=str, required=True)
     parser.add_argument("--analysis_upload_proj_name", type=str, required=True)
     parser.add_argument("--is_league", choices=['True', 'False'], default='False', required=True)
-    parser.add_argument("--model_dir", type=str, required=True)
+    parser.add_argument("--league_model_dir", type=str, required=True)
     parser.add_argument("--load_br", choices=['True', 'False'], default='False', required=True)
     args = parser.parse_args()
 
@@ -720,7 +720,7 @@ if __name__ == "__main__":
                 except:
                     pass
     elif args.is_league == 'True' and args.load_br == 'False':
-        model_files, payoff_path = load_league_models(model_dir=args.model_dir, character_names=["ryu", "bison", "guile"])
+        model_files, payoff_path = load_league_models(model_dir=args.league_model_dir, character_names=["ryu", "bison", "guile"])
         loaded_league = instantiate_league_models(model_files, character_names=["ryu", "bison", "guile"])
         main_agent_left = loaded_league.get_player(0).agent
         train_best_response(main_agent_left, payoff_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror, eval_only=args.eval_only, proj_name=args.proj_name, is_spar=False, analysis_upload_proj_name=args.analysis_upload_proj_name)
