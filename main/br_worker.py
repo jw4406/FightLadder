@@ -33,7 +33,7 @@ TASK_DIR = os.path.join(current_dir, "trained_models/tasks")
 PROCESSING_DIR = os.path.join(current_dir, "trained_models/tasks/processing")
 DONE_DIR = os.path.join(current_dir, "trained_models/tasks/done")
 ERROR_DIR = os.path.join(current_dir, "trained_models/tasks/error")
-BR_MODEL_DIR = os.path.join(current_dir, "trained_models/br_models")
+BR_MODEL_DIR = os.path.join(current_dir, "trained_models/tasks/br_models")
 WR_STATS_DIR = os.path.join(current_dir, "trained_models/wr_stats")
 MEAN_REW_STATS_DIR = os.path.join(current_dir, "trained_models/mean_rew_stats")
 os.makedirs(BR_MODEL_DIR, exist_ok=True)
@@ -49,6 +49,7 @@ if not os.listdir(TASK_DIR):
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
 BR_TRAINING_STEPS = 10000000
+BR_TRAINING_STEPS = 100
 
 PLAYER = "Guile"
 OPPONENT_LIST = ["Guile"]
@@ -397,7 +398,7 @@ def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=N
 
     return _init
 
-def env_generator():
+def env_generator(STATE=None):
     # STATE
     each_env_count = 1
     env = []
@@ -537,7 +538,7 @@ def load_spar_model(task_file_path: str) -> None:
     #matchups = data['matchups']
     uniques = list(dict.fromkeys(data['state_list']).keys())
     STATE = uniques
-    env = env_generator()
+    env = env_generator(STATE=STATE)
     env.num_envs = 1 # HACKY FOR NOW!
     try:
         ftm = CleanDerivativeFreeSPAR.load(path=checkpoint_path, env=env, num_perturbed=1)
@@ -658,6 +659,7 @@ if __name__ == "__main__":
     parser.add_argument("--analysis_upload_proj_name", type=str, required=True)
     parser.add_argument("--is_league", choices=['True', 'False'], default='False', required=True)
     parser.add_argument("--model_dir", type=str, required=True)
+    parser.add_argument("--load_br", choices=['True', 'False'], default='False', required=True)
     args = parser.parse_args()
 
     if args.eval_only == 'True':
@@ -681,7 +683,7 @@ if __name__ == "__main__":
     #     print("myfile.txt does not exist")
 
     print(f"WORKER [{os.getpid()}]: Starting. Watching {todo_dir} for tasks.")
-    if args.is_league == 'False':
+    if args.is_league == 'False' and args.load_br == 'False':
         while not os.path.exists(stop_file):
             tasks = [f for f in os.listdir(todo_dir) if f.endswith(".task")]
 
@@ -717,10 +719,28 @@ if __name__ == "__main__":
                     os.rename(processing_path, error_path)
                 except:
                     pass
-    else:
+    elif args.is_league == 'True' and args.load_br == 'False':
         model_files, payoff_path = load_league_models(model_dir=args.model_dir, character_names=["ryu", "bison", "guile"])
         loaded_league = instantiate_league_models(model_files, character_names=["ryu", "bison", "guile"])
         main_agent_left = loaded_league.get_player(0).agent
         train_best_response(main_agent_left, payoff_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror, eval_only=args.eval_only, proj_name=args.proj_name, is_spar=False, analysis_upload_proj_name=args.analysis_upload_proj_name)
+    else:
+        while not os.path.exists(stop_file):
+            tasks = [f for f in os.listdir(BR_MODEL_DIR) if f.endswith(".task")]
+
+            if not tasks:
+                time.sleep(POLL_INTERVAL)
+                continue
+            ep_info_buffers = []
+            rew_arr = np.zeros(len(tasks))
+            # Grab a random task to reduce the chance of multiple workers grabbing the same one
+            for i in range(len(tasks)):
+                loaded_model = Exploiter.load(os.path.join(BR_MODEL_DIR, tasks[i]), env=exploiter_env_generator(STATE=STATE))
+                ep_info_buffers.append(loaded_model.ep_info_buffer)
+                for j in range(len(loaded_model.ep_info_buffer)):
+                    rew_arr[i] = rew_arr[i] + loaded_model.ep_info_buffer[j]['r']
+                rew_arr[i] = rew_arr[i] / len(loaded_model.ep_info_buffer)
+            
+            print("hello")
     print(f"WORKER [{os.getpid()}]: Stop file detected. Shutting down.")
 

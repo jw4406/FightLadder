@@ -1287,7 +1287,7 @@ class CleanDerivativeFreeSPAR(PPO):
         """Create a new environment instance using the stored generator function"""
         if self.env_generator_func is None:
             raise ValueError("No environment generator function provided")
-        new_env = self.env_generator_func(STATE=self.state_list)
+        new_env = self.env_generator_func()
         new_env.reset()
         return new_env
 

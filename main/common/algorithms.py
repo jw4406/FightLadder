@@ -5314,7 +5314,7 @@ class Exploiter(PPO):
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
         exploited: Union[Specialized_Agent, Specialized_Agent_IPPO]=None,
-        exploiting = None
+        exploiting = 'ego'
     ):
 
         super().__init__(policy=policy,

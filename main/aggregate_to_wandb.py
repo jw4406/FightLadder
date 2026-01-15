@@ -5,7 +5,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--read_from_proj_name", type=str, required=True)
 parser.add_argument("--upload_to_proj_name", type=str, required=True)
 args = parser.parse_args()
-UPLOAD_PROJECT_NAME = args.upload_proj_name
+UPLOAD_PROJECT_NAME = args.upload_to_proj_name
 READ_FROM_PROJECT_NAME = args.read_from_proj_name
 # 1. Setup your entity/project
 ENTITY = "jw4406"
