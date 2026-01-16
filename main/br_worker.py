@@ -49,7 +49,6 @@ if not os.listdir(TASK_DIR):
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
 BR_TRAINING_STEPS = 10000000
-BR_TRAINING_STEPS = 100
 
 PLAYER = "Guile"
 OPPONENT_LIST = ["Guile"]
@@ -590,10 +589,14 @@ def train_best_response(model_to_exploit, task_file_path: str, eval_prot: bool, 
     # 2. Create your environment, passing the frozen opponent to it
     #    so the BR agent can play against it.
     # env = YourStreetFighterEnv(opponent_policy=fixed_opponent)
-    env = exploiter_env_generator(STATE=STATE)
+    if is_spar == True:
+        env = exploiter_env_generator(STATE=ftm.state_list)
+    else:
+        # NOT SURE WHAT TO DO HERE ABOUT LEAGUE MODELS
+        env = env_generator(STATE=STATE)
 
     # 3. Create a new agent to be the best response
-    br_agent = Exploiter('CnnPolicy', exploiter_env_generator(STATE=STATE), device='cuda', exploited=ftm, n_steps=1024, batch_size=512, n_epochs=10, exploiting='ego')
+    br_agent = Exploiter('CnnPolicy', env, device='cuda', exploited=ftm, n_steps=2048, batch_size=512, n_epochs=5, exploiting='ego')
     br_agent.is_spar = is_spar # TODO: This is a stupid hack to get the BR agent to know if it is a SPAR model or not. Remove this once we have a better way to do this.
     # 4. Train the BR agent
     br_model_name = f"br_to_{os.path.splitext(os.path.basename(checkpoint_path))[0]}.zip"
