@@ -12,6 +12,17 @@ import gym
 import numpy as np
 import torch as th
 from gym import spaces
+# Also import gymnasium.spaces for backwards compatibility with gymnasium environments
+try:
+    import gymnasium
+    from gymnasium import spaces as gymnasium_spaces
+    # Create tuples that work with both gym.spaces and gymnasium.spaces
+    _BoxTypes = (spaces.Box, gymnasium_spaces.Box)
+    _DictTypes = (spaces.Dict, gymnasium_spaces.Dict)
+except ImportError:
+    # If gymnasium is not installed, just use gym
+    _BoxTypes = spaces.Box
+    _DictTypes = spaces.Dict
 
 from stable_baselines3.common import utils
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList, ConvertCallback, ProgressBarCallback
@@ -167,7 +178,27 @@ class BaseAlgorithm(ABC):
             self.env = env
 
             if supported_action_spaces is not None:
-                assert isinstance(self.action_space, supported_action_spaces), (
+                # Expand supported_action_spaces to include both gym and gymnasium versions
+                expanded_spaces = list(supported_action_spaces)
+                try:
+                    import gymnasium
+                    from gymnasium import spaces as gymnasium_spaces
+                    # For each gym space type, also check for gymnasium equivalent
+                    for space_type in supported_action_spaces:
+                        if space_type == spaces.Box and gymnasium_spaces.Box not in expanded_spaces:
+                            expanded_spaces.append(gymnasium_spaces.Box)
+                        elif space_type == spaces.Discrete and gymnasium_spaces.Discrete not in expanded_spaces:
+                            expanded_spaces.append(gymnasium_spaces.Discrete)
+                        elif space_type == spaces.MultiDiscrete and gymnasium_spaces.MultiDiscrete not in expanded_spaces:
+                            expanded_spaces.append(gymnasium_spaces.MultiDiscrete)
+                        elif space_type == spaces.MultiBinary and gymnasium_spaces.MultiBinary not in expanded_spaces:
+                            expanded_spaces.append(gymnasium_spaces.MultiBinary)
+                        elif space_type == spaces.Dict and gymnasium_spaces.Dict not in expanded_spaces:
+                            expanded_spaces.append(gymnasium_spaces.Dict)
+                except ImportError:
+                    pass  # gymnasium not available, use original
+                
+                assert isinstance(self.action_space, tuple(expanded_spaces)), (
                     f"The algorithm only supports {supported_action_spaces} as action spaces "
                     f"but {self.action_space} was provided"
                 )
@@ -178,13 +209,13 @@ class BaseAlgorithm(ABC):
                 )
 
             # Catch common mistake: using MlpPolicy/CnnPolicy instead of MultiInputPolicy
-            if policy in ["MlpPolicy", "CnnPolicy"] and isinstance(self.observation_space, spaces.Dict):
+            if policy in ["MlpPolicy", "CnnPolicy"] and isinstance(self.observation_space, _DictTypes):
                 raise ValueError(f"You must use `MultiInputPolicy` when working with dict observation space, not {policy}")
 
-            if self.use_sde and not isinstance(self.action_space, spaces.Box):
+            if self.use_sde and not isinstance(self.action_space, _BoxTypes):
                 raise ValueError("generalized State-Dependent Exploration (gSDE) can only be used with continuous actions.")
 
-            if isinstance(self.action_space, spaces.Box):
+            if isinstance(self.action_space, _BoxTypes):
                 assert np.all(
                     np.isfinite(np.array([self.action_space.low, self.action_space.high]))
                 ), "Continuous action space must have a finite lower and upper bound"
@@ -215,7 +246,7 @@ class BaseAlgorithm(ABC):
 
         if not is_vecenv_wrapped(env, VecTransposeImage):
             wrap_with_vectranspose = False
-            if isinstance(env.observation_space, spaces.Dict):
+            if isinstance(env.observation_space, _DictTypes):
                 # If even one of the keys is a image-space in need of transpose, apply transpose
                 # If the image spaces are not consistent (for instance one is channel first,
                 # the other channel last), VecTransposeImage will throw an error
@@ -677,10 +708,18 @@ class BaseAlgorithm(ABC):
         if seed is None:
             return
         set_random_seed(seed, using_cuda=self.device.type == th.device("cuda").type)
-        self.action_space.seed(seed)
+        # seed() method is deprecated in gymnasium - try calling it, catch any errors
+        try:
+            self.action_space.seed(seed)
+        except (AttributeError, TypeError):
+            pass  # For gymnasium, seeding is handled via reset(seed=...)
         # self.env is always a VecEnv
         if self.env is not None:
-            self.env.seed(seed)
+            # seed() method is deprecated in gymnasium - try calling it, catch any errors
+            try:
+                self.env.seed(seed)
+            except (AttributeError, TypeError):
+                pass  # For gymnasium, seeding is handled via reset(seed=...)
 
     def set_parameters(
         self,

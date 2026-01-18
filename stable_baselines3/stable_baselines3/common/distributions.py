@@ -6,6 +6,21 @@ from typing import Any, Dict, List, Optional, Tuple, TypeVar, Union
 import numpy as np
 import torch as th
 from gym import spaces
+# Also import gymnasium.spaces for backwards compatibility with gymnasium environments
+try:
+    import gymnasium
+    from gymnasium import spaces as gymnasium_spaces
+    # Create tuples that work with both gym.spaces and gymnasium.spaces
+    _BoxTypes = (spaces.Box, gymnasium_spaces.Box)
+    _DiscreteTypes = (spaces.Discrete, gymnasium_spaces.Discrete)
+    _MultiDiscreteTypes = (spaces.MultiDiscrete, gymnasium_spaces.MultiDiscrete)
+    _MultiBinaryTypes = (spaces.MultiBinary, gymnasium_spaces.MultiBinary)
+except ImportError:
+    # If gymnasium is not installed, just use gym
+    _BoxTypes = spaces.Box
+    _DiscreteTypes = spaces.Discrete
+    _MultiDiscreteTypes = spaces.MultiDiscrete
+    _MultiBinaryTypes = spaces.MultiBinary
 from torch import nn
 from torch.distributions import Bernoulli, Categorical, Normal
 
@@ -672,14 +687,14 @@ def make_proba_distribution(
     if dist_kwargs is None:
         dist_kwargs = {}
 
-    if isinstance(action_space, spaces.Box):
+    if isinstance(action_space, _BoxTypes):
         cls = StateDependentNoiseDistribution if use_sde else DiagGaussianDistribution
         return cls(get_action_dim(action_space), **dist_kwargs)
-    elif isinstance(action_space, spaces.Discrete):
+    elif isinstance(action_space, _DiscreteTypes):
         return CategoricalDistribution(action_space.n, **dist_kwargs)
-    elif isinstance(action_space, spaces.MultiDiscrete):
+    elif isinstance(action_space, _MultiDiscreteTypes):
         return MultiCategoricalDistribution(list(action_space.nvec), **dist_kwargs)
-    elif isinstance(action_space, spaces.MultiBinary):
+    elif isinstance(action_space, _MultiBinaryTypes):
         return BernoulliDistribution(action_space.n, **dist_kwargs)
     else:
         raise NotImplementedError(

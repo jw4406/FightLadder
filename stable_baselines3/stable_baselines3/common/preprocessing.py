@@ -4,6 +4,25 @@ from typing import Dict, Tuple, Union
 import numpy as np
 import torch as th
 from gym import spaces
+# Also import gymnasium.spaces for backwards compatibility with gymnasium environments
+try:
+    import gymnasium
+    from gymnasium import spaces as gymnasium_spaces
+    # Create tuples that work with both gym.spaces and gymnasium.spaces
+    _BoxTypes = (spaces.Box, gymnasium_spaces.Box)
+    _DiscreteTypes = (spaces.Discrete, gymnasium_spaces.Discrete)
+    _MultiDiscreteTypes = (spaces.MultiDiscrete, gymnasium_spaces.MultiDiscrete)
+    _MultiBinaryTypes = (spaces.MultiBinary, gymnasium_spaces.MultiBinary)
+    _DictTypes = (spaces.Dict, gymnasium_spaces.Dict)
+    _TupleTypes = (spaces.Tuple, gymnasium_spaces.Tuple)
+except ImportError:
+    # If gymnasium is not installed, just use gym
+    _BoxTypes = spaces.Box
+    _DiscreteTypes = spaces.Discrete
+    _MultiDiscreteTypes = spaces.MultiDiscrete
+    _MultiBinaryTypes = spaces.MultiBinary
+    _DictTypes = spaces.Dict
+    _TupleTypes = spaces.Tuple
 from torch.nn import functional as F
 
 
@@ -46,7 +65,7 @@ def is_image_space(
     :return:
     """
     check_dtype = check_bounds = not normalized_image
-    if isinstance(observation_space, spaces.Box) and len(observation_space.shape) == 3:
+    if isinstance(observation_space, _BoxTypes) and len(observation_space.shape) == 3:
         # Check the type
         if check_dtype and observation_space.dtype != np.uint8:
             return False
@@ -105,16 +124,16 @@ def preprocess_obs(
         (True by default)
     :return:
     """
-    if isinstance(observation_space, spaces.Box):
+    if isinstance(observation_space, _BoxTypes):
         if normalize_images and is_image_space(observation_space):
             return obs.float() / 255.0
         return obs.float()
 
-    elif isinstance(observation_space, spaces.Discrete):
+    elif isinstance(observation_space, _DiscreteTypes):
         # One hot encoding and convert to float to avoid errors
         return F.one_hot(obs.long(), num_classes=observation_space.n).float()
 
-    elif isinstance(observation_space, spaces.MultiDiscrete):
+    elif isinstance(observation_space, _MultiDiscreteTypes):
         # Tensor concatenation of one hot encodings of each Categorical sub-space
         return th.cat(
             [
@@ -124,10 +143,10 @@ def preprocess_obs(
             dim=-1,
         ).view(obs.shape[0], sum(observation_space.nvec))
 
-    elif isinstance(observation_space, spaces.MultiBinary):
+    elif isinstance(observation_space, _MultiBinaryTypes):
         return obs.float()
 
-    elif isinstance(observation_space, spaces.Dict):
+    elif isinstance(observation_space, _DictTypes):
         # Do not modify by reference the original observation
         assert isinstance(obs, Dict), f"Expected dict, got {type(obs)}"
         preprocessed_obs = {}
@@ -148,21 +167,21 @@ def get_obs_shape(
     :param observation_space:
     :return:
     """
-    if isinstance(observation_space, spaces.Box):
+    if isinstance(observation_space, _BoxTypes):
         return observation_space.shape
-    elif isinstance(observation_space, spaces.Discrete):
+    elif isinstance(observation_space, _DiscreteTypes):
         # Observation is an int
         return (1,)
-    elif isinstance(observation_space, spaces.MultiDiscrete):
+    elif isinstance(observation_space, _MultiDiscreteTypes):
         # Number of discrete features
         return (int(len(observation_space.nvec)),)
-    elif isinstance(observation_space, spaces.MultiBinary):
+    elif isinstance(observation_space, _MultiBinaryTypes):
         # Number of binary features
         if type(observation_space.n) in [tuple, list, np.ndarray]:
             return tuple(observation_space.n)
         else:
             return (int(observation_space.n),)
-    elif isinstance(observation_space, spaces.Dict):
+    elif isinstance(observation_space, _DictTypes):
         return {key: get_obs_shape(subspace) for (key, subspace) in observation_space.spaces.items()}  # type: ignore[misc]
 
     else:
@@ -181,11 +200,24 @@ def get_flattened_obs_dim(observation_space: spaces.Space) -> int:
     """
     # See issue https://github.com/openai/gym/issues/1915
     # it may be a problem for Dict/Tuple spaces too...
-    if isinstance(observation_space, spaces.MultiDiscrete):
+    if isinstance(observation_space, _MultiDiscreteTypes):
         return sum(observation_space.nvec)
+    elif isinstance(observation_space, _BoxTypes):
+        # For Box spaces, compute flattened dimension directly
+        return int(np.prod(observation_space.shape))
     else:
-        # Use Gym internal method
-        return spaces.utils.flatdim(observation_space)
+        # Try gym.utils.flatdim first, then gymnasium if that fails
+        try:
+            return spaces.utils.flatdim(observation_space)
+        except (AttributeError, ValueError):
+            # If gym doesn't recognize it, try gymnasium
+            try:
+                import gymnasium
+                from gymnasium import spaces as gymnasium_spaces
+                return gymnasium_spaces.utils.flatdim(observation_space)
+            except (ImportError, AttributeError, ValueError):
+                # Fallback: raise with helpful message
+                raise NotImplementedError(f"Unable to compute flattened dimension for space: {observation_space}")
 
 
 def get_action_dim(action_space: spaces.Space) -> int:
@@ -195,15 +227,15 @@ def get_action_dim(action_space: spaces.Space) -> int:
     :param action_space:
     :return:
     """
-    if isinstance(action_space, spaces.Box):
+    if isinstance(action_space, _BoxTypes):
         return int(np.prod(action_space.shape))
-    elif isinstance(action_space, spaces.Discrete):
+    elif isinstance(action_space, _DiscreteTypes):
         # Action is an int
         return 1
-    elif isinstance(action_space, spaces.MultiDiscrete):
+    elif isinstance(action_space, _MultiDiscreteTypes):
         # Number of discrete actions
         return int(len(action_space.nvec))
-    elif isinstance(action_space, spaces.MultiBinary):
+    elif isinstance(action_space, _MultiBinaryTypes):
         # Number of binary actions
         return int(action_space.n)
     else:
@@ -218,10 +250,10 @@ def check_for_nested_spaces(obs_space: spaces.Space):
     :param obs_space: an observation space
     :return:
     """
-    if isinstance(obs_space, (spaces.Dict, spaces.Tuple)):
-        sub_spaces = obs_space.spaces.values() if isinstance(obs_space, spaces.Dict) else obs_space.spaces
+    if isinstance(obs_space, (_DictTypes, _TupleTypes)):
+        sub_spaces = obs_space.spaces.values() if isinstance(obs_space, _DictTypes) else obs_space.spaces
         for sub_space in sub_spaces:
-            if isinstance(sub_space, (spaces.Dict, spaces.Tuple)):
+            if isinstance(sub_space, (_DictTypes, _TupleTypes)):
                 raise NotImplementedError(
                     "Nested observation spaces are not supported (Tuple/Dict space inside Tuple/Dict space)."
                 )

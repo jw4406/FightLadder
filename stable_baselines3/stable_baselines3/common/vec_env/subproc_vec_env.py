@@ -34,7 +34,12 @@ def _worker(
                     observation = env.reset()
                 remote.send((observation, reward, done, info))
             elif cmd == "seed":
-                remote.send(env.seed(data))
+                # seed() method is deprecated in gymnasium - try calling it, catch any errors
+                try:
+                    remote.send(env.seed(data))
+                except (AttributeError, TypeError):
+                    # For gymnasium, seeding is done via reset(seed=...), so we just return the seed
+                    remote.send(data)
             elif cmd == "reset":
                 observation = env.reset()
                 remote.send(observation)

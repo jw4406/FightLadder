@@ -17,6 +17,8 @@ from stable_baselines3.common.callbacks import ConvertCallback
 from torch.multiprocessing import Process, Queue
 from stable_baselines3.common.policies import BasePolicy, ActorCriticPolicy
 from stable_baselines3.common.clean_new_policies import CleanActorActorCriticPolicy
+from stable_baselines3.common.torch_layers import FlattenExtractor, NatureCNN
+from stable_baselines3.common.preprocessing import is_image_space
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import get_schedule_fn
 from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer, ReplayBuffer, AdvRolloutBuffer, Q_RolloutBuffer
@@ -32,7 +34,16 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau  #TODO: This can be changed to another scheduler.
 from torch.optim.lr_scheduler import ExponentialLR
 from anyio import value
-from gym import spaces
+from gymnasium import spaces
+# Also import gym.spaces for backwards compatibility with FightLadder environments
+try:
+    from gym import spaces as gym_spaces
+    # Create tuples for isinstance checks that work with both
+    _BoxTypes = (spaces.Box, gym_spaces.Box)
+    _DiscreteTypes = (spaces.Discrete, gym_spaces.Discrete)
+except ImportError:
+    _BoxTypes = spaces.Box
+    _DiscreteTypes = spaces.Discrete
 from stable_baselines3 import PPO
 from utils import select_matchup_env, select_device, get_n_workers, move_policy, unpickle_policy, state2matchup, mirror_flip_attributes
 from concurrent.futures import ThreadPoolExecutor
@@ -277,6 +288,12 @@ class CleanDerivativeFreeSPAR(PPO):
 
         self.policy_kwargs['matchups'] = self.matchups
         self.policy_kwargs['envs_per_matchup'] = self.envs_per_matchup
+        
+        # Set features_extractor_class based on whether observation space is an image
+        if is_image_space(self.observation_space):
+            self.policy_kwargs['features_extractor_class'] = NatureCNN
+        else:
+            self.policy_kwargs['features_extractor_class'] = FlattenExtractor
 
         self.policy = self.policy_class(  # pytype:disable=not-instantiable
             self.observation_space,
@@ -288,6 +305,8 @@ class CleanDerivativeFreeSPAR(PPO):
         self.policy.gamma = self.gamma
 
         self.policy = self.policy.to(self.device)
+        if hasattr(self.policy, 'dstb_log_std'):
+            self.policy.dstb_log_std = {key: self.policy.dstb_log_std[key].to(self.device) for key in self.policy.dstb_log_std}
         #self.ctrl_scheduler = ReduceLROnPlateau(self.policy.ctrl_optimizer, factor=0.5, patience=10)
         #self.dstb_scheduler = ReduceLROnPlateau(self.policy.dstb_optimizer, factor=0.5, patience=10)
         #self.value_scheduler = ReduceLROnPlateau(self.policy.value_optimizer, factor=0.5, patience=10)
@@ -368,7 +387,7 @@ class CleanDerivativeFreeSPAR(PPO):
             # print(clipped_actions, flush=True)
             # print(np.shape(clipped_actions),flush=True)
             # Clip the actions to avoid out of bound error
-            if isinstance(self.action_space, spaces.Box):
+            if isinstance(self.action_space, _BoxTypes):
                 clipped_actions = np.clip(np.hstack([actions, actions_other]), self.action_space.low,
                                           self.action_space.high)
 
@@ -387,7 +406,7 @@ class CleanDerivativeFreeSPAR(PPO):
             self._update_info_buffer(infos)
             n_steps += 1
 
-            if isinstance(self.action_space, spaces.Discrete):
+            if isinstance(self.action_space, _DiscreteTypes):
                 # Reshape in case of discrete action
                 actions = actions.reshape(-1, 1)
                 actions_other = actions_other.reshape(-1, 1)
@@ -526,7 +545,7 @@ class CleanDerivativeFreeSPAR(PPO):
             # print(clipped_actions, flush=True)
             # print(np.shape(clipped_actions),flush=True)
             # Clip the actions to avoid out of bound error
-            if isinstance(self.action_space, spaces.Box):
+            if isinstance(self.action_space, _BoxTypes):
                 clipped_actions = np.clip(np.hstack([actions, actions_other]), self.action_space.low,
                                           self.action_space.high)
 
@@ -547,7 +566,7 @@ class CleanDerivativeFreeSPAR(PPO):
             self._update_info_buffer(infos)
             n_steps += 1
 
-            if isinstance(self.action_space, spaces.Discrete):
+            if isinstance(self.action_space, _DiscreteTypes):
                 # Reshape in case of discrete action
                 actions = actions.reshape(-1, 1)
                 actions_other = actions_other.reshape(-1, 1)
@@ -922,7 +941,7 @@ class CleanDerivativeFreeSPAR(PPO):
                         actions = rollout_data.actions
                     else:
                         actions = rollout_data.adv_actions
-                    if isinstance(self.action_space, spaces.Discrete):
+                    if isinstance(self.action_space, _DiscreteTypes):
                         # Convert discrete action from float to long
                         actions = rollout_data.actions.long().flatten()
 
@@ -1375,7 +1394,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 # Do a complete pass on the rollout buffer
                 for rollout_data in buf.get(self.batch_size):
                     actions = rollout_data.actions
-                    if isinstance(self.action_space, spaces.Discrete):
+                    if isinstance(self.action_space, _DiscreteTypes):
                         # Convert discrete action from float to long
                         actions = rollout_data.actions.long().flatten()
 

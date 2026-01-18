@@ -66,7 +66,13 @@ class DummyVecEnv(VecEnv):
             seed = np.random.randint(0, 2**32 - 1)
         seeds = []
         for idx, env in enumerate(self.envs):
-            seeds.append(env.seed(seed + idx))
+            # seed() method is deprecated in gymnasium - try calling it, catch any errors
+            try:
+                result = env.seed(seed + idx)
+                seeds.append(result)
+            except (AttributeError, TypeError):
+                # For gymnasium, seeding is done via reset(seed=...), so we just return the seed
+                seeds.append(seed + idx)
         return seeds
 
     def reset(self) -> VecEnvObs:
@@ -102,7 +108,7 @@ class DummyVecEnv(VecEnv):
     def _save_obs(self, env_idx: int, obs: VecEnvObs) -> None:
         for key in self.keys:
             if key is None:
-                self.buf_obs[key][env_idx] = obs
+                self.buf_obs[key][env_idx] = obs[0] if isinstance(obs, tuple) else obs
             else:
                 self.buf_obs[key][env_idx] = obs[key]
 
