@@ -283,28 +283,74 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             return self.action_dist.proba_distribution(action_logits=mean_actions)
         raise ValueError("Invalid action distribution")
 
+    # def _get_adv_action_dist_from_latent(self, latent_pi_dstb, buf_num, evaluate=False) -> Tuple[Distribution, Distribution]:
+    #     if evaluate:
+    #         assert len(buf_num) == 1
+    #     dstb_actions = th.zeros((latent_pi_dstb.shape[0], self.dstb_action_space.shape[0])).to(self.device)
+    #     latents_per_adv = latent_pi_dstb.shape[0] // self.num_adversaries
+    #     for i in range(len(buf_num)):
+    #         key = select_matchup_env(self.matchups, buf_num[i], self.envs_per_matchup)
+    #         # Check if distribution is DiagGaussian (has mean/log_std structure) vs Bernoulli/Categorical
+    #         if isinstance(self.dstb_action_dist[buf_num[i]], DiagGaussianDistribution):
+    #             # For DiagGaussian, dstb_action_net contains the mean network directly
+    #             dstb_action_net_to_use = self.dstb_action_net[key]
+    #         else:
+    #             dstb_action_net_to_use = self.dstb_action_net[key]
+    #         if evaluate:
+    #             dstb_actions = dstb_action_net_to_use(latent_pi_dstb)
+    #             return self.dstb_action_dist[buf_num[0]].proba_distribution(action_logits=dstb_actions)
+    #         else:
+    #             dstb_actions[buf_num[i] * latents_per_adv : (buf_num[i]+1) * latents_per_adv, :] = dstb_action_net_to_use(latent_pi_dstb[buf_num[i] * latents_per_adv : (buf_num[i]+1) * latents_per_adv, :])
+    #     if isinstance(self.dstb_action_dist[buf_num[i]], BernoulliDistribution):
+    #         return [self.dstb_action_dist[buf_num[i]].proba_distribution(action_logits=dstb_actions[buf_num[i] * latents_per_adv : (buf_num[i]+1) * latents_per_adv, :]) for i in range(len(buf_num))] 
+    #     elif isinstance(self.dstb_action_dist[buf_num[i]], DiagGaussianDistribution):
+    #         return [self.dstb_action_dist[buf_num[i]].proba_distribution(mean_actions=dstb_actions[buf_num[i] * latents_per_adv : (buf_num[i]+1) * latents_per_adv, :], log_std=self.dstb_log_std[select_matchup_env(self.matchups, buf_num[i], self.envs_per_matchup)]) for i in range(len(buf_num))]
+    #     else:
+    #         raise ValueError("Invalid action distribution")
     def _get_adv_action_dist_from_latent(self, latent_pi_dstb, buf_num, evaluate=False) -> Tuple[Distribution, Distribution]:
         if evaluate:
             assert len(buf_num) == 1
-        dstb_actions = th.zeros((latent_pi_dstb.shape[0], self.dstb_action_space.shape[0])).to(self.device)
-        latents_per_adv = latent_pi_dstb.shape[0] // self.num_adversaries
+            num_adversaries = 1
+        else:
+            num_adversaries = self.num_adversaries
+        mean_or_logit_dstb_actions = th.zeros((latent_pi_dstb.shape[0], self.dstb_action_space.shape[0])).to(self.device)
+        latents_per_adv = latent_pi_dstb.shape[0] // num_adversaries
         for i in range(len(buf_num)):
+            chunk = slice(buf_num[i] * latents_per_adv, (buf_num[i]+1) * latents_per_adv)
+            if evaluate:
+                chunk = slice(0 * latents_per_adv, 1 * latents_per_adv)
             key = select_matchup_env(self.matchups, buf_num[i], self.envs_per_matchup)
             # Check if distribution is DiagGaussian (has mean/log_std structure) vs Bernoulli/Categorical
-            if isinstance(self.dstb_action_dist[buf_num[i]], DiagGaussianDistribution):
-                # For DiagGaussian, dstb_action_net contains the mean network directly
-                dstb_action_net_to_use = self.dstb_action_net[key]
-            else:
-                dstb_action_net_to_use = self.dstb_action_net[key]
-            if evaluate:
-                dstb_actions = dstb_action_net_to_use(latent_pi_dstb)
-                return self.dstb_action_dist[buf_num[0]].proba_distribution(action_logits=dstb_actions)
-            else:
-                dstb_actions[buf_num[i] * latents_per_adv : (buf_num[i]+1) * latents_per_adv, :] = dstb_action_net_to_use(latent_pi_dstb[buf_num[i] * latents_per_adv : (buf_num[i]+1) * latents_per_adv, :])
+            dstb_action_net_to_use = self.dstb_action_net[key]
+            mean_or_logit_dstb_actions[chunk] = dstb_action_net_to_use(latent_pi_dstb[chunk])
+            # if evaluate:
+            #     dstb_actions = dstb_action_net_to_use(latent_pi_dstb)
+            #     if isinstance(self.dstb_action_dist[buf_num[0]], DiagGaussianDistribution):
+            #         key = select_matchup_env(self.matchups, buf_num[0], self.envs_per_matchup)
+            #         return self.dstb_action_dist[buf_num[0]].proba_distribution(mean_actions=dstb_actions, log_std=self.dstb_log_std[key])
+            #     else:
+            #         return self.dstb_action_dist[buf_num[0]].proba_distribution(action_logits=dstb_actions)
+            # else:
+            #     dstb_actions[buf_num[i] * latents_per_adv : (buf_num[i]+1) * latents_per_adv, :] = dstb_action_net_to_use(latent_pi_dstb[buf_num[i] * latents_per_adv : (buf_num[i]+1) * latents_per_adv, :])
+        distributions = []
         if isinstance(self.dstb_action_dist[buf_num[i]], BernoulliDistribution):
-            return [self.dstb_action_dist[buf_num[i]].proba_distribution(action_logits=dstb_actions[buf_num[i] * latents_per_adv : (buf_num[i]+1) * latents_per_adv, :]) for i in range(len(buf_num))] 
+            for i in range(len(buf_num)):
+                chunk = slice(buf_num[i] * latents_per_adv, (buf_num[i]+1) * latents_per_adv)
+                if evaluate:
+                    chunk = slice(0 * latents_per_adv, 1 * latents_per_adv)
+                distributions.append(self.dstb_action_dist[buf_num[i]].proba_distribution(action_logits=mean_or_logit_dstb_actions[chunk]))
+            return distributions
+            #return [self.dstb_action_dist[buf_num[i]].proba_distribution(action_logits=dstb_actions[buf_num[i] * latents_per_adv : (buf_num[i]+1) * latents_per_adv, :]) for i in range(len(buf_num))] 
         elif isinstance(self.dstb_action_dist[buf_num[i]], DiagGaussianDistribution):
-            return [self.dstb_action_dist[buf_num[i]].proba_distribution(mean_actions=dstb_actions[buf_num[i] * latents_per_adv : (buf_num[i]+1) * latents_per_adv, :], log_std=self.dstb_log_std[select_matchup_env(self.matchups, buf_num[i], self.envs_per_matchup)]) for i in range(len(buf_num))]
+
+            for i in range(len(buf_num)):
+                key = select_matchup_env(self.matchups, buf_num[i], self.envs_per_matchup)
+                chunk = slice(buf_num[i] * latents_per_adv, (buf_num[i]+1) * latents_per_adv)
+                if evaluate:
+                    chunk = slice(0 * latents_per_adv, 1 * latents_per_adv)
+                distributions.append(self.dstb_action_dist[buf_num[i]].proba_distribution(mean_actions=mean_or_logit_dstb_actions[chunk], log_std=self.dstb_log_std[key]))
+            return distributions
+            #return [self.dstb_action_dist[buf_num[i]].proba_distribution(mean_actions=dstb_actions[buf_num[i] * latents_per_adv : (buf_num[i]+1) * latents_per_adv, :], log_std=self.dstb_log_std[select_matchup_env(self.matchups, buf_num[i], self.envs_per_matchup)]) for i in range(len(buf_num))]
         else:
             raise ValueError("Invalid action distribution")
         
@@ -365,7 +411,7 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         if ego_forward:
             ego_actions, ego_log_prob = self.ego_forward(obs, deterministic)
         if zero_ego_action: 
-            ego_actions = th.zeros(self.num_adversaries * self.envs_per_matchup, self.action_space.shape[0]).to(self.device)
+            ego_actions = th.ones(self.num_adversaries * self.envs_per_matchup, self.action_space.shape[0]).to(self.device)
             ego_log_prob = th.zeros(self.num_adversaries * self.envs_per_matchup).to(self.device)
             #ego_entropy = th.zeros()
         if adv_forward:
@@ -373,14 +419,14 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             #adv_actions = adv_actions[0]
             #adv_log_prob = adv_log_prob[0]
         if zero_adv_action:
-            adv_actions = th.zeros_like(ego_actions)
+            adv_actions = th.ones_like(ego_actions)
             adv_log_prob = th.zeros_like(ego_log_prob)
             #adv_entropy = th.zeros()
         
 
         values = self.value_forward(obs)
-        q_values = self.q_value_forward(obs, ego_actions, adv_actions)
-        return ego_actions, ego_log_prob, adv_actions, adv_log_prob, values, q_values
+        #q_values = self.q_value_forward(obs, ego_actions, adv_actions)
+        return ego_actions, ego_log_prob, adv_actions, adv_log_prob, values, th.zeros_like(values)
 
     def evaluate_ego_actions(self, obs, ego_actions) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
         preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
@@ -399,9 +445,9 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         latent_pi_dstb = self.mlp_extractor.adv_forward(features)
         dstb_distribution = self._get_adv_action_dist_from_latent(latent_pi_dstb, buf_num, evaluate=True)
         #dstb_log_prob = dstb_distribution.log_prob(adv_actions)
-        dstb_log_prob = dstb_distribution.log_prob(adv_actions)
+        dstb_log_prob = dstb_distribution[0].log_prob(adv_actions)
         #dstb_log_prob = th.vstack(dstb_log_prob)
-        dstb_entropy = dstb_distribution.entropy()
+        dstb_entropy = dstb_distribution[0].entropy()
         #dstb_entropy = th.hstack(dstb_entropy)
         #dstb_entropy = th.vstack(dstb_entropy)
         return dstb_log_prob, dstb_entropy

@@ -5,6 +5,8 @@ import sys
 import time
 import random
 import math
+import av
+from PIL import Image
 import pickle
 from venv import create
 import wandb
@@ -351,6 +353,8 @@ class CleanDerivativeFreeSPAR(PPO):
             return self.collect_rollouts_standard(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action)
     
     def collect_rollouts_standard(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, run_ego_forward: bool = True, run_adv_forward: bool = True, zero_ego_action=False, zero_adv_action=False) -> bool:
+       
+        video_log = [Image.fromarray(env.render(mode="rgb_array"))]
         assert self._last_obs is not None, "No previous observation was provided"
         # Switch to eval mode (this affects batch norm / dropout)
         self.policy.set_training_mode(False)
@@ -377,6 +381,9 @@ class CleanDerivativeFreeSPAR(PPO):
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 ego_actions, ego_log_probs, adv_actions, adv_log_probs, values, q_values = self.policy(obs_tensor, deterministic=False, ego_forward=run_ego_forward, adv_forward=run_adv_forward, zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action)
+                if th.any(adv_actions):
+                    #print("Adv actions are not all zeros")
+                    pass
                 other_values = -values
 
             actions = ego_actions.cpu().numpy()
@@ -392,6 +399,8 @@ class CleanDerivativeFreeSPAR(PPO):
                                           self.action_space.high)
 
             new_obs, rewards, rewards_other, dones, infos = env.step(clipped_actions)
+            video_log.append(Image.fromarray(env.render(mode="rgb_array")))
+            #env.render(mode="rgb_array")
             #np.random.seed(0)
             #random.seed(0)
             #torch.manual_seed(0)
@@ -467,6 +476,20 @@ class CleanDerivativeFreeSPAR(PPO):
         for i in range(len(adversary_buffers)):
             adversary_buffers[i].prepare_data_for_training()
 
+
+        height, width, layers = np.array(video_log[0]).shape
+        container = av.open(f"/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/videos" + "_episode_{i}.mp4", mode='w')
+        stream = container.add_stream('h264', rate=10)
+        stream.width = width
+        stream.height = height
+        stream.pix_fmt = 'yuv420p'
+        for img in video_log:
+            frame = av.VideoFrame.from_image(img)
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        remain_packets = stream.encode(None)
+        container.mux(remain_packets)
+        container.close()
         return True
     
     def collect_rollouts_mirror(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True) -> bool:
@@ -928,13 +951,17 @@ class CleanDerivativeFreeSPAR(PPO):
 
         # train for n_epochs epochs
         num_runs_count = 1 if update_ego else self.num_adversaries
+        approx_kl_divs = []
         for i in range(num_runs_count):
+            first = True
+            if i == 1:
+                pass
             if update_adversary:
                 buf = self.adversary_buffers[i]
             else:
                 buf = self.rollout_buffer
             for epoch in range(self.n_epochs):
-                approx_kl_divs = []
+                #approx_kl_divs = []
                 # Do a complete pass on the rollout buffer
                 for rollout_data in buf.get(self.batch_size):
                     if update_ego and not update_adversary:
@@ -1051,7 +1078,7 @@ class CleanDerivativeFreeSPAR(PPO):
                     self.policy.value_grads_autograd_order.append([self.policy.value_optimizer.param_groups[0]['params'][i].grad for i in range(len(self.policy.value_optimizer.param_groups[0]['params']))])
                     self.policy.value_loss.append(value_loss)
                     # Clip grad norm
-                    #th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                    th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                     if update_ego:
                         self.policy.ctrl_optimizer.step()
                     else:

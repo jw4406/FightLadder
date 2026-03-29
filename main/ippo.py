@@ -32,7 +32,7 @@ PRETRAIN = True
 FINETUNE = False
 EVAL = False
 SAVE_FREQ = 10000  # Save a checkpoint every 10,000 steps
-TOTAL_TIMESTEPS = 100_000
+TOTAL_TIMESTEPS = 100_000_000_000
 
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -332,7 +332,8 @@ def evaluate_cross(args, model1, model2, greedy=0.5, record=True):
     return win_rate
 
 
-def main(PLAYER):
+def main(args):
+    PLAYER = args.player
     # global REMOVAL
     # PLAYER = "Blanka"  # "Blanka
 
@@ -345,72 +346,71 @@ def main(PLAYER):
     else:
         #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
         OPPONENT_LIST = ["Guile", "Sagat","ChunLi", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega", "EHonda"]
-    
-    parser = argparse.ArgumentParser(description='Reset game stats')
-    parser.add_argument('--reset', choices=['round', 'match', 'game'],
-                        help='Reset stats for a round, a match, or the whole game', default='round')
-    parser.add_argument('--model-file', help='The model to continue to learn from')
-    parser.add_argument('--save-dir', help='The directory to save the trained models',
-                        default="trained_models/single_test_large_%s_%s" % (PLAYER, OPPONENT_LIST[0]))
+    player_short = ''.join(player[:2] for player in PLAYER)
+    opponent_short = ''.join(opponent[:2] for opponent in OPPONENT_LIST)
+    model_name_prefix = "ppo_%s_%s" % (player_short, opponent_short)
+    # parser = argparse.ArgumentParser(description='Reset game stats')
+    # parser.add_argument('--reset', choices=['round', 'match', 'game'],
+    #                     help='Reset stats for a round, a match, or the whole game', default='round')
+    # parser.add_argument('--model-file', help='The model to continue to learn from')
+    # parser.add_argument('--save-dir', help='The directory to save the trained models',
+    #                     default="trained_models/single_test_large_%s_%s" % (PLAYER, OPPONENT_LIST[0]))
 
-    #if use_mirror is True:
-    #    OPPONENT_LIST = ["Sagat", "EHonda"]# "MBison", "Blanka"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
-    #else:
-        #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
-    #    OPPONENT_LIST = ["Guile", "EHonda", "Sagat","ChunLi"]#, "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
-    parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
-    parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_%s" % '_'.join(PLAYER))
-    parser.add_argument('--state', help='The state file to load. By default Champion.Level1.RyuVsGuile',
-                        default=SF_DEFAULT_STATE)
-    parser.add_argument('--side', help='The side for AI to control. By default both', default='both',
-                        choices=['left', 'right', 'both'])
-    parser.add_argument('--render', action='store_true', help='Whether to render the game screen')
-    parser.add_argument('--num-env', type=int, help='How many envirorments to create', default=64)
-    parser.add_argument('--num-episodes', type=int, help='In evaluation, play how many episodes', default=20)
-    parser.add_argument('--num-epoch', type=int, help='Finetune how many epochs', default=50)
-    parser.add_argument('--total-steps', type=int, help='How many total steps to train', default=int(10e8))
-    parser.add_argument('--video-dir', help='The path to save videos', default='videos/spar_spar_%s' % '_'.join(PLAYER))
-    parser.add_argument('--finetune-dir', help='The path to save finetune results', default='finetune')
-    parser.add_argument('--init-level', type=int,
-                        help='Initial level to load from. By default 0, starting from pretrain', default=0)
-    parser.add_argument('--resume-epoch', type=int, help='Resume epoch. By default 0, starting from pretrain',
-                        default=0)
-    parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=2)
-    parser.add_argument('--enable-combo', action='store_true', help='Enable special move action space for environment')
-    parser.add_argument('--null-combo', action='store_true', help='Null action space for special move')
-    parser.add_argument('--transform-action', action='store_true', help='Transform action space to MultiDiscrete')
-    parser.add_argument('--seed', type=int, help='Seed', default=0)
-    parser.add_argument('--update-left', type=int, help='Update left policy', default=1)
-    parser.add_argument('--update-right', type=int, help='Update right policy', default=1)
-    parser.add_argument('--left-model-file', help='The left model to continue to learn from')
-    parser.add_argument('--right-model-file', help='The right model to continue to learn from')
-    parser.add_argument('--other-timescale', type=float, help='Other agent learning rate scale', default=1.0)
-    parser.add_argument('--fsp', action='store_true', help='Fictitious self-play')
-    parser.add_argument('--fsp-threshold', type=float, help='Fictitious self-play threshold', default=0.5)
-    parser.add_argument('--async-update', action='store_true', help='Update left and right asynchronously')
-    parser.add_argument('--num_env_steps', type=int, help='Number of env steps to run', default=300)
-    #parser.add_argument("--player", type=str, required=True)
-    parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
-    parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
-    parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=100)
-    parser.add_argument("--num_perturbs", type=int, help="Number of perturbed policies to be created.", default=32)
-    parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-5)
-    parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=2e-5)
-    parser.add_argument("--v_lr", type=float, help="value learning rate", default=1e-4)
-    parser.add_argument("--use_mirror", action='store_true', help='Use mirror')
-    parser.add_argument("--num_workers", type=int, help="Number of workers", default=5)
-    parser.add_argument("--load_path", type=str, help="Path to load the model from", default=None)
-    #parser.add_argument("--left_model_file", type=str, help="Path to load the left model from", default=None)
-    #parser.add_argument("--right_model_file", type=str, help="Path to load the right model from", default=None)
-    parser.add_argument("--training_style", type=str, required=True, help="Training style", default="L3", choices=["L3", "L2", "L1"])
-    parser.add_argument("--continue_training", help='Continue training', default=False)
-    parser.add_argument("--use_lr_annealing", choices=['True', 'False'], help='Use lr annealing', default=True)
-    parser.add_argument("--lr_anneal_coeff", type=float, help="Learning rate anneal coefficient", default=0.995)
-    parser.add_argument("--checkpoint_interval", type=int, help="Checkpoint interval", default=10000)
-    args = parser.parse_args()
-    if args.training_style not in ["L3", "L2"]:
-        if args.load_path is None:
-            raise ValueError("Load path is required for training style L2 or L3")
+    # #if use_mirror is True:
+    # #    OPPONENT_LIST = ["Sagat", "EHonda"]# "MBison", "Blanka"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
+    # #else:
+    #     #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
+    # #    OPPONENT_LIST = ["Guile", "EHonda", "Sagat","ChunLi"]#, "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega"]
+    # parser.add_argument('--log-dir', help='The directory to save logs', default="logs")
+    # parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_%s" % '_'.join(PLAYER))
+    # parser.add_argument('--state', help='The state file to load. By default Champion.Level1.RyuVsGuile',
+    #                     default=SF_DEFAULT_STATE)
+    # parser.add_argument('--side', help='The side for AI to control. By default both', default='both',
+    #                     choices=['left', 'right', 'both'])
+    # parser.add_argument('--render', action='store_true', help='Whether to render the game screen')
+    # parser.add_argument('--num-env', type=int, help='How many envirorments to create', default=64)
+    # parser.add_argument('--num-episodes', type=int, help='In evaluation, play how many episodes', default=20)
+    # parser.add_argument('--num-epoch', type=int, help='Finetune how many epochs', default=50)
+    # parser.add_argument('--total-steps', type=int, help='How many total steps to train', default=int(10e8))
+    # parser.add_argument('--video-dir', help='The path to save videos', default='videos/spar_spar_%s' % '_'.join(PLAYER))
+    # parser.add_argument('--finetune-dir', help='The path to save finetune results', default='finetune')
+    # parser.add_argument('--init-level', type=int,
+    #                     help='Initial level to load from. By default 0, starting from pretrain', default=0)
+    # parser.add_argument('--resume-epoch', type=int, help='Resume epoch. By default 0, starting from pretrain',
+    #                     default=0)
+    # parser.add_argument('--envs-per-matchup', type=int, help='How many environments to create per matchup', default=2)
+    # parser.add_argument('--enable-combo', action='store_true', help='Enable special move action space for environment')
+    # parser.add_argument('--null-combo', action='store_true', help='Null action space for special move')
+    # parser.add_argument('--transform-action', action='store_true', help='Transform action space to MultiDiscrete')
+    # parser.add_argument('--seed', type=int, help='Seed', default=0)
+    # parser.add_argument('--update-left', type=int, help='Update left policy', default=1)
+    # parser.add_argument('--update-right', type=int, help='Update right policy', default=1)
+    # parser.add_argument('--left-model-file', help='The left model to continue to learn from')
+    # parser.add_argument('--right-model-file', help='The right model to continue to learn from')
+    # parser.add_argument('--other-timescale', type=float, help='Other agent learning rate scale', default=1.0)
+    # parser.add_argument('--fsp', action='store_true', help='Fictitious self-play')
+    # parser.add_argument('--fsp-threshold', type=float, help='Fictitious self-play threshold', default=0.5)
+    # parser.add_argument('--async-update', action='store_true', help='Update left and right asynchronously')
+    # parser.add_argument('--num_env_steps', type=int, help='Number of env steps to run', default=300)
+    # #parser.add_argument("--player", type=str, required=True)
+    # parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
+    # parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
+    # parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=100)
+    # parser.add_argument("--num_perturbs", type=int, help="Number of perturbed policies to be created.", default=32)
+    # parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-5)
+    # parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=2e-5)
+    # parser.add_argument("--v_lr", type=float, help="value learning rate", default=1e-4)
+    # parser.add_argument("--use_mirror", action='store_true', help='Use mirror')
+    # parser.add_argument("--num_workers", type=int, help="Number of workers", default=5)
+    # parser.add_argument("--load_path", type=str, help="Path to load the model from", default=None)
+    # #parser.add_argument("--left_model_file", type=str, help="Path to load the left model from", default=None)
+    # #parser.add_argument("--right_model_file", type=str, help="Path to load the right model from", default=None)
+    # parser.add_argument("--training_style", type=str, required=True, help="Training style", default="L3", choices=["L3", "L2", "L1"])
+    # parser.add_argument("--continue_training", help='Continue training', default=False)
+    # parser.add_argument("--use_lr_annealing", choices=['True', 'False'], help='Use lr annealing', default=True)
+    # parser.add_argument("--lr_anneal_coeff", type=float, help="Learning rate anneal coefficient", default=0.995)
+    # parser.add_argument("--checkpoint_interval", type=int, help="Checkpoint interval", default=10000)
+    # args = parser.parse_args()
     SIDE = "left"  # "right"
     player_folder_name = [PLAYER[i] + '_' + SIDE for i in range(len(PLAYER))]
     if REMOVAL is not None:
@@ -446,13 +446,13 @@ def main(PLAYER):
 
     # PLAYER = args.player
 
-    args = parser.parse_args()
+    #args = parser.parse_args()
     print("command line args:" + str(args))
     num_steps = args.num_env_steps
     os.makedirs(args.save_dir, exist_ok=True)
-    os.makedirs(args.log_dir, exist_ok=True)
-    os.makedirs(args.video_dir, exist_ok=True)
-    os.makedirs(args.finetune_dir, exist_ok=True)
+    #os.makedirs(args.log_dir, exist_ok=True)
+    #os.makedirs(args.video_dir, exist_ok=True)
+    #os.makedirs(args.finetune_dir, exist_ok=True)
     #args.model_name_prefix = 
     # Set up the environment and model
     def env_generator(max_envs: int = 0, i_start: int = 0, j_start: int = 0, STATE=None):
@@ -532,10 +532,10 @@ def main(PLAYER):
             gamma=0.94,
             learning_rate=lr_schedule,
             clip_range=clip_range_schedule,
-            tensorboard_log=args.log_dir,
+            #tensorboard_log=args.log_dir,
             seed=args.seed,
-            update_left=bool(args.update_left),
-            update_right=bool(args.update_right),
+            update_left=True if args.ego_style == 'learning' else False,
+            update_right=True if args.adv_style == 'learning' else False,
             other_learning_rate=0.0
         )
 
@@ -628,34 +628,34 @@ def main(PLAYER):
             lr_anneal_coeff=args.lr_anneal_coeff
         )
 
-        if args.load_path and args.continue_training:
-            from stable_baselines3.common.save_util import load_from_zip_file
-            from utils import state2matchup
-            try:
-                data, params, pytorch_variables = load_from_zip_file(
-                    args.load_path)
-                if 'state_list' not in data.keys():
-                    print("WARNING: state_list not found in load_path. Using default state list with states %s" % (state_list))
-                    #data['state_list'] = state_list
-                    finetune_model = CleanDerivativeFreeSPAR.load(path=args.load_path, env=finetune_env, num_perturbed=1, state_list=state_list)
-                    matchups = [state2matchup(state) for state in state_list]
-                    assert matchups == finetune_model.matchups
-                else:
-                    #global STATE
-                    STATE = data['state_list']
-                    my_env_test = env_generator(STATE=STATE)
-                    finetune_model = CleanDerivativeFreeSPAR.load(path=args.load_path, env=my_env_test, num_perturbed=1)
-                    finetune_model.policy.ctrl_optimizer.defaults['lr'] = args.c_lr
-                    finetune_model.policy.dstb_optimizer.defaults['lr'] = args.d_lr
-                    finetune_model.policy.value_optimizer.defaults['lr'] = args.v_lr
-                    finetune_model.ctrl_scheduler.base_lrs = [args.c_lr]
-                    finetune_model.dstb_scheduler.base_lrs = [args.d_lr]
-                    finetune_model.value_scheduler.base_lrs = [args.v_lr]
-            except Exception as e:
-                data, params, pytorch_variables = load_from_zip_file(
-                    args.load_path)
-                finetune_model.set_parameters(params, exact_match=True, device=finetune_model.device)
-                finetune_model.__dict__.update(data)
+        # if args.load_path and args.continue_training:
+        #     from stable_baselines3.common.save_util import load_from_zip_file
+        #     from utils import state2matchup
+        #     try:
+        #         data, params, pytorch_variables = load_from_zip_file(
+        #             args.load_path)
+        #         if 'state_list' not in data.keys():
+        #             print("WARNING: state_list not found in load_path. Using default state list with states %s" % (state_list))
+        #             #data['state_list'] = state_list
+        #             finetune_model = CleanDerivativeFreeSPAR.load(path=args.load_path, env=finetune_env, num_perturbed=1, state_list=state_list)
+        #             matchups = [state2matchup(state) for state in state_list]
+        #             assert matchups == finetune_model.matchups
+        #         else:
+        #             #global STATE
+        #             STATE = data['state_list']
+        #             my_env_test = env_generator(STATE=STATE)
+        #             finetune_model = CleanDerivativeFreeSPAR.load(path=args.load_path, env=my_env_test, num_perturbed=1)
+        #             finetune_model.policy.ctrl_optimizer.defaults['lr'] = args.c_lr
+        #             finetune_model.policy.dstb_optimizer.defaults['lr'] = args.d_lr
+        #             finetune_model.policy.value_optimizer.defaults['lr'] = args.v_lr
+        #             finetune_model.ctrl_scheduler.base_lrs = [args.c_lr]
+        #             finetune_model.dstb_scheduler.base_lrs = [args.d_lr]
+        #             finetune_model.value_scheduler.base_lrs = [args.v_lr]
+        #     except Exception as e:
+        #         data, params, pytorch_variables = load_from_zip_file(
+        #             args.load_path)
+        #         finetune_model.set_parameters(params, exact_match=True, device=finetune_model.device)
+        #         finetune_model.__dict__.update(data)
             # else:
             #     # need to load two models here
             #     # because curriculum is training the models individually
@@ -753,7 +753,7 @@ def main(PLAYER):
         print("model generated")
         return finetune_model
 
-    finetune_epoch_model_path = os.path.join(args.save_dir, args.model_name_prefix + f"_final_steps")
+    #finetune_epoch_model_path = os.path.join(args.save_dir, args.model_name_prefix + f"_final_steps")
     lr_schedule = 1e-4  # if args.async_update else linear_schedule(2.5e-4, 2.5e-6)
     other_lr_schedule = 1e-4  # if args.async_update else linear_schedule(2.5e-4/args.other_timescale, 2.5e-6/args.other_timescale)
     clip_range_schedule = 0.1  # if args.async_update else linear_schedule(0.15, 0.025)
@@ -777,17 +777,17 @@ def main(PLAYER):
     #     model.set_parameters_2p(args.left_model_file, args.right_model_file)
 
     checkpoint_callback = SACheckpointCallback(save_freq=checkpoint_interval, save_path=args.save_dir,
-                                               name_prefix=f"{args.model_name_prefix}") if hasattr(model,
+                                               name_prefix=f"{model_name_prefix}") if hasattr(model,
                                                                                                    "num_adversaries") else CheckpointCallback(
-        save_freq=checkpoint_interval, save_path=args.save_dir, name_prefix=f"{args.model_name_prefix}")
+        save_freq=checkpoint_interval, save_path=args.save_dir, name_prefix=f"{model_name_prefix}")
 
     file_queue_callback = FileQueueTriggerCallback(
         task_dir=TASK_DIR,
         use_mirror=args.use_mirror,
-        num_workers=args.num_workers,
+        num_workers=1,
         save_freq=checkpoint_interval,
         save_path=args.save_dir,
-        name_prefix=f"{args.model_name_prefix}"
+        name_prefix=f"{model_name_prefix}"
     )
 
     if (FINETUNE is True) or (EVAL is True):
@@ -827,39 +827,6 @@ def main(PLAYER):
             del params['policy.value_optimizer']
             del params['policy.dstb_optimizer']
         finetune_model.set_parameters(params, exact_match=False, device=finetune_model.device)
-        #finetune_model.warmstarted_cont_MAGICS = True
-        #finetune_model.warmstart_setup(finetune_model.lr_schedule)
-        # finetune_model.load_state_dict(torch.load("/home/jw4406/codebase/FightLadder/main/trained_models/magics_test_%s_ft/ppo_%s_24000_steps.zip" % (PLAYER, PLAYER), weights_only=True))
-        # if FINETUNE is True:
-        #    finetune_model.warmstarted_cont_MAGICS = True
-        #    finetune_model.warmstart_setup(finetune_model.lr_schedule)
-        # for i in range(finetune_model.num_adversaries):
-        #    if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
-        #        finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
-        '''
-        for i in range(finetune_model.num_adversaries):
-            # data, params, pytorch_variables = load_from_zip_file(
-            #    "/home/jw4406/codebase/FightLadder/main/trained_models/neuronic_ippo/enemy_policy_%d.pt" % i)
-            # if FINETUNE is True:
-            #data, params, pytorch_variables = load_from_zip_file(
-            #    "/n/fs/magics/2141555/FightLadder/main/trained_models/magics_test_%s_ft_56789/enemy_policy_%s_102000_steps_%d.pt" % (
-            #    PLAYER, OPPONENT_LIST[i], i))
-            data, params, pytorch_variables = load_from_zip_file(
-
-                   "/home/jw4406/codebase/FightLadder/main/trained_models/enemy_policy_%s_4092000_steps_%d.pt" % (OPPONENT_LIST[i], i))
-
-
-            # enemy_policy_36000_steps_0.pt
-            if EVAL is True or FINETUNE is True:
-                del params['policy.ctrl_optimizer']
-                del params['policy.value_optimizer']
-                del params['policy.dstb_optimizer']
-            finetune_model.adversaries[i].set_parameters(params, exact_match=False, device=finetune_model.device)
-            if FINETUNE is True:
-                finetune_model.adversaries[i].warmstarted_cont_MAGICS = False
-                if finetune_model.adversaries[i].warmstarted_cont_MAGICS is True:
-                    finetune_model.adversaries[i].warmstart_setup(finetune_model.adversaries[i].lr_schedule)
-        '''
         model = finetune_model
 
     if not EVAL:
@@ -880,11 +847,35 @@ def main(PLAYER):
                                "epochs": 0})
             #test = CleanDerivativeFreeSPAR.load("/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/ppo_Guile_32000_steps.task")
             model.policy.to(model.device)
+
+            if args.ego_style == 'learning':
+                update_ego=True
+                zero_ego_action=False
+            elif args.ego_style == 'zero_action':
+                update_ego=False
+                zero_ego_action=True
+            elif args.ego_style == 'random_action':
+                update_ego=False
+                zero_ego_action=False
+            else:
+                raise ValueError(f"Invalid ego style: {args.ego_style}")
+            if args.adv_style == 'learning':
+                update_adversary=True
+                zero_adv_action=False
+            elif args.adv_style == 'zero_action':
+                update_adversary=False
+                zero_adv_action=True
+            elif args.adv_style == 'random_action':
+                update_adversary=False
+                zero_adv_action=False
+            else:
+                raise ValueError(f"Invalid adv style: {args.adv_style}")
+
             model.learn(
-                total_timesteps=args.total_steps,
+                total_timesteps=TOTAL_TIMESTEPS,
                 num_perturbs = args.num_perturbs,
-                callback=[checkpoint_callback, file_queue_callback], update_ego=True, update_adversary=True, run_ego_forward=True, run_adv_forward=True,
-                zero_ego_action=False, zero_adv_action=False
+                callback=[checkpoint_callback, file_queue_callback], update_ego=update_ego, update_adversary=update_adversary, run_ego_forward=True, run_adv_forward=True,
+                zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)
         # for i in range(len(model.adversaries)):
@@ -910,19 +901,42 @@ if __name__ == "__main__":
     parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
     parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=32)
     parser.add_argument("--num_perturbs", type=int, help="Number of perturbed policies to be created.", default=1)
-    parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-4)
-    parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=7e-4)
-    parser.add_argument("--v_lr", type=float, help="value learning rate", default=7e-4)
-    parser.add_argument("--load_path", type=str, help="Path to load the model from", default=None)
-    parser.add_argument("--left-model-file", type=str, help="Path to load the left model from", default=None)
-    parser.add_argument("--right-model-file", type=str, help="Path to load the right model from", default=None)
-    parser.add_argument("--training_style", type=str, required=True, help="Training style", default="L3", choices=["L3", "L2", "L1"])
-    parser.add_argument("--continue_training", choices=['True', 'False'], help='Continue training', default=False)
-    parser.add_argument("--use_lr_annealing", choices=['True', 'False'], help='Use lr annealing', default=True)
-    parser.add_argument("--lr_anneal_coeff", type=float, help="Learning rate anneal coefficient", default=0.995)
-    parser.add_argument("--checkpoint_interval", type=int, help="Checkpoint interval", default=10000)
+    parser.add_argument("--num_env_steps", type=int, help="Number of env steps to run", default=192, required=True)
+    parser.add_argument("--ego_style", type=str, help="Ego style", default="learning", required=True, choices=["learning", "zero_action", "random_action"])
+    parser.add_argument("--adv_style", type=str, help="Adv style", default="learning", required=True, choices=["learning", "zero_action", "random_action"])
+    parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-4, required=True)
+    parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=7e-4, required=True)
+    parser.add_argument("--v_lr", type=float, help="value learning rate", default=7e-4, required=True)
+    parser.add_argument("--checkpoint_interval", type=int, help="Checkpoint interval", default=10000, required=True)
+    parser.add_argument("--save_dir", type=str, help="Save directory", default="trained_models/ippo", required=True)
+    #parser.add_argument("--log_dir", type=str, help="Log directory", default="logs/ippo", required=True)
+    parser.add_argument("--envs_per_matchup", type=int, help="Number of envs per matchup", default=1, required=True)
+    parser.add_argument("--use_lr_annealing", choices=['True', 'False'], help='Use lr annealing', default=True, required=True)
+    parser.add_argument("--lr_anneal_coeff", type=float, help="Learning rate anneal coefficient", default=0.995, required=True)
+    parser.add_argument('--reset', choices=['round', 'match', 'game'],help='Reset stats for a round, a match, or the whole game', default='round')
+    parser.add_argument("--side", type=str, help="Side", default="left", required=True, choices=["left", "right", "both"])
+
+    parser.add_argument('--render', choices=['True', 'False'], help='Whether to render the game screen', default='False')
+    parser.add_argument('--enable_combo', choices=['True', 'False'], help='Enable special move action space for environment', default='True')
+    parser.add_argument('--null_combo', choices=['True', 'False'], help='Null action space for special move', default='False')
+    parser.add_argument('--transform_action', choices=['True', 'False'], help='Transform action space to MultiDiscrete', default='False')
+    parser.add_argument('--seed', type=int, help='Seed', default=0)
+    parser.add_argument('--model_file', type=str, help='Model file', default=None)
+    parser.add_argument('--use_mirror', choices=['True', 'False'], help='Use mirror', required=True, default='False')
+    parser.add_argument('--async_update', choices=['True', 'False'], help='Async update', required=True, default='False')
+    #parser.add_argument('--total_steps', type=int, help='How many total steps to train', default=int(1e8))
+    #parser.add_argument('--num_workers', type=int, help='Number of workers', default=5)
+    #parser.add_argument('--num_adversary', type=int, help='Number of adversaries', default=1)
+    #parser.add_argument('--n_global_env', type=int, help='Number of global environments', default=1)
     args = parser.parse_args()
+    args.async_update = True if args.async_update == 'True' else False
+    args.use_mirror = True if args.use_mirror == 'True' else False
+    args.render = True if args.render == 'True' else False
+    args.enable_combo = True if args.enable_combo == 'True' else False
+    args.null_combo = True if args.null_combo == 'True' else False
+    args.transform_action = True if args.transform_action == 'True' else False
+    args.use_lr_annealing = True if args.use_lr_annealing == 'True' else False
 
     PLAYER = args.player
     mp.set_start_method("spawn", force=True) #A lot of stable_baseline3 objects don't support the default "fork".
-    main(PLAYER)
+    main(args)
