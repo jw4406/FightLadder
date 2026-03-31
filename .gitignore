@@ -28,6 +28,8 @@ main/*.out
 main/nohup.out
 main/common/justin/derivative_free_spar_parallel.py
 main/common/justin/parallel_rollout_utils.py
+main/trained_models/*
+main/main/trained_models/*
 mainmyfile.txt
 main/myfile.txt
 main/nohup.out

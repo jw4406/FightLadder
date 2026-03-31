@@ -23,6 +23,40 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _extract_step_outputs(step_output):
+    """Handle both 2-player VecEnv step signatures and standard Gym-style signatures."""
+    if len(step_output) == 5:
+        obs, reward, _, done, info = step_output
+    else:
+        obs, reward, done, info = step_output
+    reward = np.asarray(reward).reshape(-1)
+    done = np.asarray(done).reshape(-1).astype(bool)
+    return obs, reward, done, info
+
+
+def _collect_episode_returns(model, target_episodes, action_fn):
+    """Collect per-episode returns from vectorized envs that finish asynchronously."""
+    obs = model.env.reset()
+    n_envs = model.env.num_envs
+    running_returns = np.zeros(n_envs, dtype=np.float32)
+    finished_returns = []
+
+    while len(finished_returns) < target_episodes:
+        clipped_action = action_fn(obs)
+        obs, reward, done, info = _extract_step_outputs(model.env.step(clipped_action))
+        running_returns += reward
+
+        done_indices = np.where(done)[0]
+        for idx in done_indices:
+            finished_returns.append(float(running_returns[idx]))
+            running_returns[idx] = 0.0
+            print(f"Episode {len(finished_returns)} completed", flush=True)
+            if len(finished_returns) >= target_episodes:
+                break
+
+    return finished_returns
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -87,39 +121,27 @@ def main() -> None:
 
     nr = 50
     exploiter_rewards, selfplay_rewards = [], []
-    for i in range(nr):
-        curr_reward = 0
-        obs = model.env.reset()
-        obs = np.expand_dims(obs, 0)
-        done = False
-        while not done:
-            with th.no_grad():
-                action, _, adv_action, _, _, _ = model.policy(obs_as_tensor(obs, model.device))
-                if args.exploiter_is_cds:
-                    left_br_action, left_br_log_probs, right_br_action, right_br_log_probs, values, q_values = br_model.policy(
-                        obs_as_tensor(obs, br_model.device),
-                        deterministic=False,
-                        ego_forward=True,
-                        adv_forward=True,
-                        zero_ego_action=False,
-                        zero_adv_action=True,
-                    )
-                    if args.eval_prot:
-                        action_br = right_br_action
-                    else:
-                        action_br = left_br_action
-                else:
-                    action_br, _, _ = br_model.policy(obs_as_tensor(obs, br_model.device))
-            action = action.cpu().numpy()
-            action_br = action_br.cpu().numpy()
-            if args.eval_prot:
-                clipped_action = np.hstack([action, action_br])
+
+    def exploiter_action_fn(obs):
+        with th.no_grad():
+            action, _, _, _, _, _ = model.policy(obs_as_tensor(obs, model.device))
+            if args.exploiter_is_cds:
+                left_br_action, _, right_br_action, _, _, _ = br_model.policy(
+                    obs_as_tensor(obs, br_model.device),
+                    deterministic=False,
+                    ego_forward=True,
+                    adv_forward=True,
+                    zero_ego_action=False,
+                    zero_adv_action=True,
+                )
+                action_br = right_br_action if args.eval_prot else left_br_action
             else:
-                clipped_action = np.hstack([action_br, action])
-            obs, reward, done, info = model.env.step(clipped_action)
-            curr_reward += reward
-        exploiter_rewards.append(curr_reward)
-        print(f"Episode {i+1} completed", flush=True)
+                action_br, _, _ = br_model.policy(obs_as_tensor(obs, br_model.device))
+        action = action.cpu().numpy()
+        action_br = action_br.cpu().numpy()
+        if args.eval_prot:
+            return np.hstack([action, action_br])
+        return np.hstack([action_br, action])
 # for i in range(nr):
 #     curr_reward = 0
 #     obs = model.env.reset()
@@ -140,22 +162,15 @@ def main() -> None:
 #     exploiting_adv_rewards.append(curr_reward)
 #     print(f"Episode {i+1} completed")
 
-    for i in range(nr):
-        selfplay_reward = 0
-        obs = model.env.reset()
-        obs = np.expand_dims(obs, 0)
-        done = False
-        while not done:
-            with th.no_grad():
-                action, _, adv_action, _, _, _ = model.policy(obs_as_tensor(obs, model.device))
-                # action_br, _, _ = br_model.policy(obs_as_tensor(obs, br_model.device))
-            action = action.cpu().numpy()
-            adv_action = adv_action.cpu().numpy()
-            clipped_action = np.hstack([action, adv_action])
-            obs, reward, done, info = model.env.step(clipped_action)
-            selfplay_reward += reward
-        selfplay_rewards.append(selfplay_reward)
-        print(f"Episode {i+1} completed", flush=True)
+    def selfplay_action_fn(obs):
+        with th.no_grad():
+            action, _, adv_action, _, _, _ = model.policy(obs_as_tensor(obs, model.device))
+        action = action.cpu().numpy()
+        adv_action = adv_action.cpu().numpy()
+        return np.hstack([action, adv_action])
+
+    exploiter_rewards = _collect_episode_returns(model, nr, exploiter_action_fn)
+    selfplay_rewards = _collect_episode_returns(model, nr, selfplay_action_fn)
 
     # TODO: write out to a file and then aggregate the results and plot
     # os.makedirs(rewards_folder, exist_ok=True)
