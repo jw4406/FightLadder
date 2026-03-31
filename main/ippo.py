@@ -331,7 +331,47 @@ def evaluate_cross(args, model1, model2, greedy=0.5, record=True):
     print("Winning rate: {}".format(win_rate))
     return win_rate
 
+def env_generator(args, max_envs: int = 0, i_start: int = 0, j_start: int = 0, STATE=None, n_envs: int = 1):
+        #global STATE
+        """
+        TODO: Complete the docstring
 
+        Args:
+            max_envs (int):
+                Maximum environments to generator. If 0, unbounded.
+            i_start (int):
+                Index of state to start at.
+            j_start (int):
+                index of env_count to start at.
+        """
+        def exceed_max_envs(env_count: int, max_envs: int) -> bool:
+            """
+            This is a helper function that returns True if max_envs is active (not 0) and count exceeds it.
+            """
+            if max_envs == 0:
+                return False
+            return env_count >= max_envs
+        
+        # STATE
+        each_env_count = n_envs
+        print("Generating %d envs per character matchup:" % each_env_count)
+        env = []
+        env_count = 0
+        for i in range(i_start, len(STATE)):
+            if exceed_max_envs(env_count, max_envs):
+                break
+            env.append(
+                make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render,
+                            enable_combo=args.enable_combo, null_combo=args.null_combo,
+                            transform_action=args.transform_action, seed=0))
+            env_count += 1
+            if exceed_max_envs(env_count, max_envs):
+                break
+        # env = [make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=0) for i in range(args.num_env)]
+        # env = make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render,
+        #         enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action,
+        #         seed=0)
+        return VecTransposeImage2P(SubprocVecEnv2P(env))
 def main(args):
     PLAYER = args.player
     # global REMOVAL
@@ -455,47 +495,47 @@ def main(args):
     #os.makedirs(args.finetune_dir, exist_ok=True)
     #args.model_name_prefix = 
     # Set up the environment and model
-    def env_generator(max_envs: int = 0, i_start: int = 0, j_start: int = 0, STATE=None):
-        #global STATE
-        """
-        TODO: Complete the docstring
+    # def env_generator(max_envs: int = 0, i_start: int = 0, j_start: int = 0, STATE=None):
+    #     #global STATE
+    #     """
+    #     TODO: Complete the docstring
 
-        Args:
-            max_envs (int):
-                Maximum environments to generator. If 0, unbounded.
-            i_start (int):
-                Index of state to start at.
-            j_start (int):
-                index of env_count to start at.
-        """
-        def exceed_max_envs(env_count: int, max_envs: int) -> bool:
-            """
-            This is a helper function that returns True if max_envs is active (not 0) and count exceeds it.
-            """
-            if max_envs == 0:
-                return False
-            return env_count >= max_envs
+    #     Args:
+    #         max_envs (int):
+    #             Maximum environments to generator. If 0, unbounded.
+    #         i_start (int):
+    #             Index of state to start at.
+    #         j_start (int):
+    #             index of env_count to start at.
+    #     """
+    #     def exceed_max_envs(env_count: int, max_envs: int) -> bool:
+    #         """
+    #         This is a helper function that returns True if max_envs is active (not 0) and count exceeds it.
+    #         """
+    #         if max_envs == 0:
+    #             return False
+    #         return env_count >= max_envs
         
-        # STATE
-        each_env_count = args.envs_per_matchup
-        print("Generating %d envs per character matchup:" % each_env_count)
-        env = []
-        env_count = 0
-        for i in range(i_start, len(STATE)):
-            if exceed_max_envs(env_count, max_envs):
-                break
-            env.append(
-                make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render,
-                            enable_combo=args.enable_combo, null_combo=args.null_combo,
-                            transform_action=args.transform_action, seed=0))
-            env_count += 1
-            if exceed_max_envs(env_count, max_envs):
-                break
-        # env = [make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=0) for i in range(args.num_env)]
-        # env = make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render,
-        #         enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action,
-        #         seed=0)
-        return VecTransposeImage2P(SubprocVecEnv2P(env))
+    #     # STATE
+    #     each_env_count = args.envs_per_matchup
+    #     print("Generating %d envs per character matchup:" % each_env_count)
+    #     env = []
+    #     env_count = 0
+    #     for i in range(i_start, len(STATE)):
+    #         if exceed_max_envs(env_count, max_envs):
+    #             break
+    #         env.append(
+    #             make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render,
+    #                         enable_combo=args.enable_combo, null_combo=args.null_combo,
+    #                         transform_action=args.transform_action, seed=0))
+    #         env_count += 1
+    #         if exceed_max_envs(env_count, max_envs):
+    #             break
+    #     # env = [make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=0) for i in range(args.num_env)]
+    #     # env = make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render,
+    #     #         enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action,
+    #     #         seed=0)
+    #     return VecTransposeImage2P(SubprocVecEnv2P(env))
         # return SubprocVecEnv2P(env)
 
     def many_char_env_generator():
@@ -514,7 +554,7 @@ def main(args):
         np.random.seed(0)
         random.seed(0)
         torch.manual_seed(0)
-        finetune_env = env_generator(STATE=STATE)
+        finetune_env = env_generator(args, STATE=STATE, n_envs=args.envs_per_matchup)
         np.random.seed(0)
         random.seed(0)
         torch.manual_seed(0)
@@ -758,7 +798,7 @@ def main(args):
     other_lr_schedule = 1e-4  # if args.async_update else linear_schedule(2.5e-4/args.other_timescale, 2.5e-6/args.other_timescale)
     clip_range_schedule = 0.1  # if args.async_update else linear_schedule(0.15, 0.025)
     if REMOVAL is None:
-        temp_env = env_generator(STATE=STATE)
+        temp_env = env_generator(args, STATE=STATE)
         args.num_env = temp_env.num_envs
         temp_env.close()
     else:
