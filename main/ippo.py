@@ -378,10 +378,12 @@ def main(args):
     # PLAYER = "Blanka"  # "Blanka
 
     global REMOVAL
-    use_mirror = False
+    use_mirror = args.use_mirror
     
     REMOVAL = None
-    if use_mirror is True:
+    if args.opponents:
+        OPPONENT_LIST = args.opponents
+    elif use_mirror is True:
         OPPONENT_LIST = ["Guile"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
@@ -938,6 +940,7 @@ if __name__ == "__main__":
     wandb.login(key='d95a51c4001b862123a34a3853fe0306906d2f07')
     #parser.add_argument("--player", type=str, required=True)
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
+    parser.add_argument("--opponents", type=str, nargs='+', required=False, default=None, help="One or more opponents.")
     parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
     parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=32)
     parser.add_argument("--num_perturbs", type=int, help="Number of perturbed policies to be created.", default=1)
