@@ -1333,7 +1333,7 @@ class CleanDerivativeFreeSPAR(PPO):
         """Create a new environment instance using the stored generator function"""
         if self.env_generator_func is None:
             raise ValueError("No environment generator function provided")
-        new_env = self.env_generator_func(STATE=self.state_list)
+        new_env = self.env_generator_func(args=self.game_args, STATE=self.state_list)
         new_env.reset()
         return new_env
 
@@ -1504,6 +1504,6 @@ class CleanDerivativeFreeSPAR(PPO):
     @classmethod
     def load(cls, path: str, num_perturbed: int, **kwargs):
         model = super().load(path, **kwargs)
-        model._create_all_perturbed_agents(num_perturbed)
+        #model._create_all_perturbed_agents(num_perturbed)
         #TODO: Add a function that creates a callback and assigns it to self. Something like model._create_callback or passed in as an argument.
         return model

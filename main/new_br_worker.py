@@ -64,9 +64,18 @@ def load_spar_model(game_args: dict, task_file_path: str, n_envs: int = 2) -> No
     #matchups = data['matchups']
     uniques = list(dict.fromkeys(data['state_list']).keys())
     # need to get the strengths as well
-    STATE = uniques
+    STATE = [state for state in uniques for _ in range(n_envs)]
     game_args = argparse.Namespace(**game_args)
-    env = env_generator(game_args, STATE=STATE, n_envs=n_envs)
+    
+
+    # argument to STATE should be the master list of states, including repeats for repeated matchups.
+    # we should always follow this convention -- when there is a discrepancy
+    # we should default to STATE.
+
+    
+
+
+    env = env_generator(game_args, STATE=STATE)
     #env.num_envs = 1 # HACKY FOR NOW!
     try:
         ftm = CleanDerivativeFreeSPAR.load(path=checkpoint_path, env=env, game_args=game_args, num_perturbed=1)
@@ -164,9 +173,10 @@ def train_best_response(
         else:
             # if eval prot is True we are training an optimal adversary so we need to update the adversary
             # if eval prot is False we are training an optimal ego against the current adversary so we need to update the ego
-            ftm.envs_per_matchup = len(env.envs)
-            ftm.policy.num_env_per_adv = len(env.envs)
-            ftm.policy.envs_per_matchup = len(env.envs)
+            ftm.env = env # this is new (17:16)
+            ftm.envs_per_matchup = ftm.envs_per_matchup
+            ftm.policy.num_env_per_adv = ftm.envs_per_matchup
+            ftm.policy.envs_per_matchup = ftm.envs_per_matchup
             ftm.exploited = None
             ftm.training_br = True
             ftm.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback, update_ego=not eval_prot, update_adversary=eval_prot)
