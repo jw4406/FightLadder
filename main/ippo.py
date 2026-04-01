@@ -385,7 +385,7 @@ def main(args):
         OPPONENT_LIST = ["Guile"]#, "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
     else:
         #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
-        OPPONENT_LIST = ["Guile", "Sagat","ChunLi", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega", "EHonda"]
+        OPPONENT_LIST = ["Guile", "Sagat"]#,"ChunLi", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega", "EHonda"]
     player_short = ''.join(player[:2] for player in PLAYER)
     opponent_short = ''.join(opponent[:2] for opponent in OPPONENT_LIST)
     model_name_prefix = "ppo_%s_%s" % (player_short, opponent_short)
@@ -654,7 +654,7 @@ def main(args):
             v_learning_rate=args.v_lr,
             verbose=2,
             n_steps=args.num_env_steps,
-            batch_size=300,
+            batch_size=100,
             n_epochs=4,
             state_list=state_list,
             envs_per_matchup=args.envs_per_matchup,

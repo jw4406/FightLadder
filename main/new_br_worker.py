@@ -37,7 +37,7 @@ if not os.listdir(TASK_DIR):
     print("Warning: The TASK_DIR is empty. Please run ippo.py --player PLAYER to generate a task file.")
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
-BR_TRAINING_STEPS = 120000
+BR_TRAINING_STEPS = 10000
 
 
 def load_spar_model(game_args: dict, task_file_path: str, n_envs: int = 2) -> None:
@@ -486,7 +486,7 @@ if __name__ == "__main__":
 
                 # Move it to 'done' when finished
                 done_path = os.path.join(done_dir, task_filename)
-                os.rename(processing_path, done_path)
+                #os.rename(processing_path, done_path)
 
             except FileNotFoundError:
                 # Another worker grabbed this file first. No problem.
