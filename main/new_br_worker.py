@@ -119,6 +119,9 @@ def train_best_response(
     br_index: int = 0,
     from_scratch: bool = False,
     exploiter_save_freq: int = 100000,
+    br_tracker_patience: int = 10,
+    br_tracker_tolerance: float = 1e-4,
+    br_tracker_window_size: int = 50,
 ) -> None:
     """
     The core logic for a single best-response training run.
@@ -160,7 +163,19 @@ def train_best_response(
         env = env_generator(STATE=STATE)
 
     # 3. Create a new agent to be the best response
-    br_agent = Exploiter('CnnPolicy' if is_image_space(env.observation_space) else 'MlpPolicy', env, device='cuda', exploited=ftm, n_steps=2048, batch_size=512, n_epochs=5, exploiting='ego' if eval_prot is True else 'adv')
+    br_agent = Exploiter(
+        'CnnPolicy' if is_image_space(env.observation_space) else 'MlpPolicy',
+        env,
+        device='cuda',
+        exploited=ftm,
+        n_steps=2048,
+        batch_size=512,
+        n_epochs=5,
+        exploiting='ego' if eval_prot is True else 'adv',
+        br_tracker_patience=br_tracker_patience,
+        br_tracker_tolerance=br_tracker_tolerance,
+        br_tracker_window_size=br_tracker_window_size,
+    )
     br_agent.is_spar = is_spar # TODO: This is a stupid hack to get the BR agent to know if it is a SPAR model or not. Remove this once we have a better way to do this.
     # 4. Train the BR agent
     br_model_name = f"br{br_index}_to_{os.path.splitext(os.path.basename(checkpoint_path))[0]}_exploiting_{'ego' if eval_prot is True else 'adv'}.zip"
@@ -179,6 +194,9 @@ def train_best_response(
             ftm.policy.envs_per_matchup = ftm.envs_per_matchup
             ftm.exploited = None
             ftm.training_br = True
+            ftm.br_tracker_patience = br_tracker_patience
+            ftm.br_tracker_tolerance = br_tracker_tolerance
+            ftm.br_tracker_window_size = br_tracker_window_size
             ftm.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback, update_ego=not eval_prot, update_adversary=eval_prot)
         #br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
 
@@ -214,6 +232,9 @@ def run_br_for_task_in_subprocess(
     br_index: int,
     from_scratch: bool = False,
     exploiter_save_freq: int = 100000,
+    br_tracker_patience: int = 10,
+    br_tracker_tolerance: float = 1e-4,
+    br_tracker_window_size: int = 50,
 ) -> None:
     """
     Worker function for running a single BR training instance in a separate process.
@@ -252,6 +273,9 @@ def run_br_for_task_in_subprocess(
         br_index=br_index,
         from_scratch = from_scratch,
         exploiter_save_freq=exploiter_save_freq,
+        br_tracker_patience=br_tracker_patience,
+        br_tracker_tolerance=br_tracker_tolerance,
+        br_tracker_window_size=br_tracker_window_size,
     )
 
 
@@ -275,6 +299,9 @@ if __name__ == "__main__":
     parser.add_argument("--dedicated_exploiter", choices=['True', 'False'], default='False', required=True)
     parser.add_argument("--continue_exploiters", choices=['True', 'False'], default='False', required=True)
     parser.add_argument("--exploiter_save_freq", type=int, required=True, default=100000, help="Frequency of exploiter checkpoint saves.")
+    parser.add_argument("--br_tracker_patience", type=int, default=10, help="Patience (in checks) for BR convergence early stopping.")
+    parser.add_argument("--br_tracker_tolerance", type=float, default=1e-4, help="Tolerance for BR convergence stagnation checks.")
+    parser.add_argument("--br_tracker_window_size", type=int, default=50, help="Window size used to smooth BR convergence metric.")
 
     parser.add_argument('--reset', choices=['round', 'match', 'game'],help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument("--side", type=str, help="Side", default="left", required=True, choices=["left", "right", "both"])
@@ -395,6 +422,9 @@ if __name__ == "__main__":
                                 br_idx,
                                 from_scratch,
                                 args.exploiter_save_freq,
+                                args.br_tracker_patience,
+                                args.br_tracker_tolerance,
+                                args.br_tracker_window_size,
                             )
                             if args.DEBUG:
                                 print(f"DEBUG: Running BR {br_idx} for task {task_filename}")
@@ -420,6 +450,9 @@ if __name__ == "__main__":
                                 br_idx,
                                 from_scratch,
                                 args.exploiter_save_freq,
+                                args.br_tracker_patience,
+                                args.br_tracker_tolerance,
+                                args.br_tracker_window_size,
                             )
                             if args.DEBUG:
                                 print(f"DEBUG: Running BR {br_idx} for task {task_filename}")
@@ -446,6 +479,9 @@ if __name__ == "__main__":
                                 br_idx,
                                 from_scratch,
                                 args.exploiter_save_freq,
+                                args.br_tracker_patience,
+                                args.br_tracker_tolerance,
+                                args.br_tracker_window_size,
                             )
                             if args.DEBUG:
                                 print(f"DEBUG: Running BR {br_idx} for task {task_filename}")
@@ -471,6 +507,9 @@ if __name__ == "__main__":
                                 br_idx,
                                 from_scratch,
                                 args.exploiter_save_freq,
+                                args.br_tracker_patience,
+                                args.br_tracker_tolerance,
+                                args.br_tracker_window_size,
                             )
                             if args.DEBUG:
                                 print(f"DEBUG: Running BR {br_idx} for task {task_filename}")

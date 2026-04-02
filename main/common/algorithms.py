@@ -44,6 +44,7 @@ from stable_baselines3.common.vec_env import VecEnv
 
 from .const import *
 from .nash import compute_nash
+from br_tracker import BRConvergenceTracker
 
 import itertools
 
@@ -5314,7 +5315,10 @@ class Exploiter(PPO):
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
         exploited: Union[Specialized_Agent, Specialized_Agent_IPPO]=None,
-        exploiting = 'ego'
+        exploiting = 'ego',
+        br_tracker_patience: int = 10,
+        br_tracker_tolerance: float = 1e-4,
+        br_tracker_window_size: int = 50,
     ):
 
         super().__init__(policy=policy,
@@ -5345,6 +5349,14 @@ class Exploiter(PPO):
         assert exploiting == "ego" or exploiting == "adv"
         self.exploiting = exploiting
         self.exploited = exploited
+        self.br_tracker_patience = br_tracker_patience
+        self.br_tracker_tolerance = br_tracker_tolerance
+        self.br_tracker_window_size = br_tracker_window_size
+        self.br_convergence_tracker = BRConvergenceTracker(
+            patience=self.br_tracker_patience,
+            tolerance=self.br_tracker_tolerance,
+            window_size=self.br_tracker_window_size,
+        )
 
     def collect_rollouts(
         self,
@@ -5467,5 +5479,12 @@ class Exploiter(PPO):
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
         callback.on_rollout_end()
+
+        if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
+            # Use negative reward so "lower is better", matching tracker semantics.
+            exploitability_proxy = -safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])
+            if self.br_convergence_tracker.check(exploitability_proxy):
+                print("Exploiter convergence tracker triggered early stopping.")
+                return False
 
         return True

@@ -50,6 +50,7 @@ from stable_baselines3 import PPO
 from utils import select_matchup_env, select_device, get_n_workers, move_policy, unpickle_policy, state2matchup, mirror_flip_attributes
 from concurrent.futures import ThreadPoolExecutor
 from .parallel_updater import ParallelUpdater
+from br_tracker import BRConvergenceTracker
 
 TIMING = False
 DEBUG = False
@@ -666,6 +667,13 @@ class CleanDerivativeFreeSPAR(PPO):
     ):
         try:
             iteration = 0
+            convergence_tracker = None
+            if getattr(self, "training_br", False):
+                convergence_tracker = BRConvergenceTracker(
+                    patience=getattr(self, "br_tracker_patience", 10),
+                    tolerance=getattr(self, "br_tracker_tolerance", 1e-4),
+                    window_size=getattr(self, "br_tracker_window_size", 50),
+                )
             #from common.algorithms import Exploiter
             total_timesteps, callback = self._setup_learn(
                 total_timesteps,
@@ -721,6 +729,16 @@ class CleanDerivativeFreeSPAR(PPO):
                     self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
                     self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
                     self.logger.dump(step=self.num_timesteps)
+                if (
+                    convergence_tracker is not None
+                    and len(self.ep_info_buffer) > 0
+                    and len(self.ep_info_buffer[0]) > 0
+                ):
+                    # Use negative mean reward as an exploitability proxy (lower is better).
+                    br_metric = -safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])
+                    if convergence_tracker.check(br_metric):
+                        print("BR convergence tracker triggered early stopping.")
+                        break
             
 
                 self.train(update_ego=update_ego, update_adversary=update_adversary)
