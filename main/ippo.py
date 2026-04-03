@@ -461,23 +461,26 @@ def main(args):
     # files  = os.listdir
 
     if use_mirror is True:
+        # Full STATE (with envs_per_matchup replication) is used by env_generator;
+        # keep that semantics intact.
         STATE_prot_left = [
-            "two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name[i], PLAYER[i], OPPONENT_LIST[j]) for i in range(len(PLAYER)) for j in range(len(OPPONENT_LIST)) for k in range(args.envs_per_matchup)]
+            "two_player/%s/Champion.Level1.%sVs%s.2Player.state"
+            % (player_folder_name[i], PLAYER[i], OPPONENT_LIST[j])
+            for i in range(len(PLAYER))
+            for j in range(len(OPPONENT_LIST))
+            for _ in range(args.envs_per_matchup)
+        ]
 
-        opp_left_folder_name = []
-        for i in range(len(OPPONENT_LIST)):
-            opp_left_folder_name.append(OPPONENT_LIST[i] + "_" + SIDE)
+        opp_left_folder_name = [opponent + "_" + SIDE for opponent in OPPONENT_LIST]
         STATE_prot_right = [
-            "two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (opp_left_folder_name[i], OPPONENT_LIST[i], PLAYER[j])
-            for i in range(len(OPPONENT_LIST)) for j in range(len(PLAYER)) for k in range(args.envs_per_matchup)]
-        # STATE = STATE_prot_left + STATE_prot_right
+            "two_player/%s/Champion.Level1.%sVs%s.2Player.state"
+            % (opp_left_folder_name[i], OPPONENT_LIST[i], PLAYER[j])
+            for i in range(len(OPPONENT_LIST))
+            for j in range(len(PLAYER))
+            for _ in range(args.envs_per_matchup)
+        ]
 
-        # chunking requires same adversaries to be next to each other
-
-        # interleave
         STATE = STATE_prot_left + STATE_prot_right
-        #STATE = STATE_prot_right
-
     else:
 
         STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name[i], PLAYER[i], OPPONENT_LIST[j])
