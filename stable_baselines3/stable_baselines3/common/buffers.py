@@ -721,6 +721,13 @@ class RolloutBuffer(BaseBuffer):
             self.generator_ready = True
 
 
+def _numpy_cpu(x: Union[np.ndarray, th.Tensor]) -> np.ndarray:
+    """Coerce rollout inputs to CPU numpy for buffer storage (avoids CUDA arrays in the buffer)."""
+    if isinstance(x, th.Tensor):
+        return x.detach().cpu().numpy()
+    return np.asarray(x)
+
+
 class Q_RolloutBuffer(RolloutBuffer):
     def __init__(self, buffer_size: int, observation_space: spaces.Space, action_space: spaces.Space, device: Union[th.device, str] = "auto", gae_lambda: float = 1, gamma: float = 0.99, n_envs: int = 1):
         super().__init__(buffer_size, observation_space, action_space, device, gae_lambda, gamma, n_envs)
@@ -740,13 +747,13 @@ class Q_RolloutBuffer(RolloutBuffer):
         self.generator_ready = False
         super().reset()
     def add(self, obs: np.ndarray, action: np.ndarray, adv_action: np.ndarray, reward: np.ndarray, next_obs: np.ndarray, dones, episode_start: np.ndarray, value: th.Tensor, log_prob: th.Tensor, q_value: th.Tensor) -> None:
-        self.observations[self.pos] = np.array(obs).copy()
-        self.ego_actions[self.pos] = np.array(action).copy()
-        self.adv_actions[self.pos] = np.array(adv_action).copy()
-        self.rewards[self.pos] = np.array(reward).copy()
-        self.next_observations[self.pos] = np.array(next_obs).copy()
-        self.dones[self.pos] = np.array(dones).copy()
-        self.episode_starts[self.pos] = np.array(episode_start).copy()
+        self.observations[self.pos] = _numpy_cpu(obs).copy()
+        self.ego_actions[self.pos] = _numpy_cpu(action).copy()
+        self.adv_actions[self.pos] = _numpy_cpu(adv_action).copy()
+        self.rewards[self.pos] = _numpy_cpu(reward).copy()
+        self.next_observations[self.pos] = _numpy_cpu(next_obs).copy()
+        self.dones[self.pos] = _numpy_cpu(dones).copy()
+        self.episode_starts[self.pos] = _numpy_cpu(episode_start).copy()
         self.values[self.pos] = value.clone().cpu().numpy().flatten()
         self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
         self.q_values[self.pos] = q_value.clone().cpu().numpy().flatten()

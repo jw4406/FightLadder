@@ -1,6 +1,29 @@
+"""
+BR worker. Parse --device before importing torch so ``--device cpu`` can hide GPUs from PyTorch.
+"""
+import os
+import sys
+
+
+def _peek_torch_device_argv(argv):
+    for i, a in enumerate(argv):
+        if a == "--device" and i + 1 < len(argv):
+            return argv[i + 1]
+    return os.environ.get("BR_TORCH_DEVICE")
+
+
+_peeked_dev = _peek_torch_device_argv(sys.argv[1:])
+if _peeked_dev is not None and str(_peeked_dev).lower().startswith("cpu"):
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+
+def _ensure_cpu_only_env(device: str) -> None:
+    """Multiprocessing ``spawn`` may not replay argv peek; call with the same ``device`` as training."""
+    if str(device).lower().startswith("cpu"):
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 from common.algorithms import Exploiter
 import argparse
-import os
 import time
 import json
 import random
@@ -40,7 +63,7 @@ POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
 BR_TRAINING_STEPS = 10000
 
 
-def load_spar_model(game_args: dict, task_file_path: str, n_envs: int = 2) -> None:
+def load_spar_model(game_args: dict, task_file_path: str, n_envs: int = 2, device: str = "cuda"):
     worker_id = os.getpid()
     print(f"WORKER [{worker_id}]: Processing task: {os.path.basename(task_file_path)}")
 
@@ -59,7 +82,9 @@ def load_spar_model(game_args: dict, task_file_path: str, n_envs: int = 2) -> No
         ego_timestep = None
 
     
-    data, _, _ = load_from_zip_file(checkpoint_path)
+    # Default load_from_zip_file(..., device="auto") maps to CUDA and allocates GPU weights
+    # even though we only need ``data`` here; always respect the worker device.
+    data, _, _ = load_from_zip_file(checkpoint_path, device=device)
     # get the saved matchups -- make this automated so that we dont hit stupid user errors
     #matchups = data['matchups']
     uniques = list(dict.fromkeys(data['state_list']).keys())
@@ -78,16 +103,18 @@ def load_spar_model(game_args: dict, task_file_path: str, n_envs: int = 2) -> No
     env = env_generator(game_args, STATE=STATE)
     #env.num_envs = 1 # HACKY FOR NOW!
     try:
-        ftm = CleanDerivativeFreeSPAR.load(path=checkpoint_path, env=env, game_args=game_args, num_perturbed=1)
+        ftm = CleanDerivativeFreeSPAR.load(
+            path=checkpoint_path, env=env, game_args=game_args, num_perturbed=1, device=device
+        )
         #if ftm.policy.num_env_per_adv is None:
         #    ftm.policy.num_env_per_adv = ftm.envs_per_matchup
     except Exception as e:
         data, params, pytorch_variables = load_from_zip_file(
-            checkpoint_path)
+            checkpoint_path, device=device)
         ftm = CleanDerivativeFreeSPAR(
             "AACCnnPolicy",
             env,
-            device="cuda",
+            device=device,
             verbose=2,
             n_steps=256,
             batch_size=512,
@@ -122,6 +149,7 @@ def train_best_response(
     br_tracker_patience: int = 10,
     br_tracker_tolerance: float = 1e-4,
     br_tracker_window_size: int = 50,
+    device: str = "cuda",
 ) -> None:
     """
     The core logic for a single best-response training run.
@@ -143,6 +171,7 @@ def train_best_response(
                        "epochs": 0,
                        "br_wr": 0,
                        "main_training_epoch": 0,
+                       "torch_device": device,
                        })
     # 2. Create your environment, passing the frozen opponent to it
     #    so the BR agent can play against it.
@@ -166,7 +195,7 @@ def train_best_response(
     br_agent = Exploiter(
         'CnnPolicy' if is_image_space(env.observation_space) else 'MlpPolicy',
         env,
-        device='cuda',
+        device=device,
         exploited=ftm,
         n_steps=2048,
         batch_size=512,
@@ -214,6 +243,7 @@ def train_best_response(
         "--exploiter_is_cds", str(not from_scratch),
         "--br_index", str(br_index),
         "--game_args", json.dumps(vars(game_args)),
+        "--device", device,
         ])
         #agg_file = os.path.join(current_dir, "aggregate_to_wandb.py")
         #subprocess.Popen(["python", agg_file, "--read_from_proj_name", proj_name, "--upload_to_proj_name", analysis_upload_proj_name])
@@ -235,13 +265,15 @@ def run_br_for_task_in_subprocess(
     br_tracker_patience: int = 10,
     br_tracker_tolerance: float = 1e-4,
     br_tracker_window_size: int = 50,
+    device: str = "cuda",
 ) -> None:
     """
     Worker function for running a single BR training instance in a separate process.
     Each subprocess loads its own copy of the model to avoid pickling issues.
     """
+    _ensure_cpu_only_env(device)
     if is_spar:
-        loaded_model = load_spar_model(game_args, task_file_path, n_envs=n_envs)# LEARNING RATE
+        loaded_model = load_spar_model(game_args, task_file_path, n_envs=n_envs, device=device)
         if exploiter_save_freq * n_envs * len(loaded_model.matchups) > BR_TRAINING_STEPS:
             print("-------------------------------------------\n\n ")
             print("ERROR!")
@@ -276,6 +308,7 @@ def run_br_for_task_in_subprocess(
         br_tracker_patience=br_tracker_patience,
         br_tracker_tolerance=br_tracker_tolerance,
         br_tracker_window_size=br_tracker_window_size,
+        device=device,
     )
 
 
@@ -311,8 +344,15 @@ if __name__ == "__main__":
     parser.add_argument('--null_combo', choices=['True', 'False'], help='Null action space for special move', default='False')
     parser.add_argument('--transform_action', choices=['True', 'False'], help='Transform action space to MultiDiscrete', default='False')
     parser.add_argument('--seed', type=int, help='Seed', default=0)
+    parser.add_argument(
+        '--device',
+        type=str,
+        default='cuda',
+        help='Torch device for policies and training (e.g. cpu, cuda, cuda:0)',
+    )
     # whether or not we want to do full br training or continuing the CDS as exploiter
     args = parser.parse_args()
+    _ensure_cpu_only_env(args.device)
     args.render = True if args.render == 'True' else False
     args.enable_combo = True if args.enable_combo == 'True' else False
     args.null_combo = True if args.null_combo == 'True' else False
@@ -368,7 +408,7 @@ if __name__ == "__main__":
     # else:
     #     print("myfile.txt does not exist")
 
-    print(f"WORKER [{os.getpid()}]: Starting. Watching {todo_dir} for tasks.")
+    print(f"WORKER [{os.getpid()}]: Starting. Watching {todo_dir} for tasks. device={args.device}")
     if args.is_league == 'False' and args.load_br == 'False':
         while not os.path.exists(stop_file):
             tasks = [f for f in os.listdir(todo_dir) if f.endswith(".task")]
@@ -425,6 +465,7 @@ if __name__ == "__main__":
                                 args.br_tracker_patience,
                                 args.br_tracker_tolerance,
                                 args.br_tracker_window_size,
+                                args.device,
                             )
                             if args.DEBUG:
                                 print(f"DEBUG: Running BR {br_idx} for task {task_filename}")
@@ -453,6 +494,7 @@ if __name__ == "__main__":
                                 args.br_tracker_patience,
                                 args.br_tracker_tolerance,
                                 args.br_tracker_window_size,
+                                args.device,
                             )
                             if args.DEBUG:
                                 print(f"DEBUG: Running BR {br_idx} for task {task_filename}")
@@ -482,6 +524,7 @@ if __name__ == "__main__":
                                 args.br_tracker_patience,
                                 args.br_tracker_tolerance,
                                 args.br_tracker_window_size,
+                                args.device,
                             )
                             if args.DEBUG:
                                 print(f"DEBUG: Running BR {br_idx} for task {task_filename}")
@@ -510,6 +553,7 @@ if __name__ == "__main__":
                                 args.br_tracker_patience,
                                 args.br_tracker_tolerance,
                                 args.br_tracker_window_size,
+                                args.device,
                             )
                             if args.DEBUG:
                                 print(f"DEBUG: Running BR {br_idx} for task {task_filename}")

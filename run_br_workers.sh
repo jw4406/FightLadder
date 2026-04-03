@@ -37,6 +37,11 @@ ENABLE_COMBO="True"
 NULL_COMBO="False"
 TRANSFORM_ACTION="False"
 SEED="0"
+# Torch device: cpu, cuda, cuda:0, etc. (must match launch.json / worker --device)
+DEVICE="cpu"
+if [ "${DEVICE}" = "cpu" ]; then
+    export CUDA_VISIBLE_DEVICES=""
+fi
 
 # Create logs directory if it doesn't exist
 LOGS_DIR="${SCRIPT_DIR}/logs"
@@ -70,6 +75,7 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --null_combo "${NULL_COMBO}"
         --transform_action "${TRANSFORM_ACTION}"
         --seed "${SEED}"
+        --device "${DEVICE}"
     )
 
     if [ "${RUN_LIVE}" = "False" ]; then

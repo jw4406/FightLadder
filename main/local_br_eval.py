@@ -1,7 +1,23 @@
+import os
+import sys
+
+
+def _peek_torch_device_argv(argv):
+    for i, a in enumerate(argv):
+        if a == "--device" and i + 1 < len(argv):
+            return argv[i + 1]
+    return os.environ.get("BR_TORCH_DEVICE")
+
+
+_br_eval_dev = _peek_torch_device_argv(sys.argv[1:])
+if _br_eval_dev is not None and str(_br_eval_dev).lower().startswith("cpu"):
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+import ast
+
 from common.justin.clean_derivative_free_spar import CleanDerivativeFreeSPAR
 from common.algorithms import Exploiter
 from ippo import env_generator
-import os, ast
 import json
 import torch as th
 import numpy as np
@@ -20,6 +36,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exploiter_is_cds", type=str, required=True)
     parser.add_argument("--br_index", type=int, required=True)
     parser.add_argument("--game_args", type=str, required=True)
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda",
+        help="Torch device for loaded models (e.g. cpu, cuda:0)",
+    )
     return parser
 
 
@@ -78,9 +100,13 @@ def main() -> None:
     env = env_generator(args.game_args, STATE=args.state_list)
     # ENV_ID = args.env_id
     try:
-        model = CleanDerivativeFreeSPAR.load(main_checkpoint_model_path, env=env, num_perturbed=1)
+        model = CleanDerivativeFreeSPAR.load(
+            main_checkpoint_model_path, env=env, num_perturbed=1, device=args.device
+        )
     except FileNotFoundError:
-        model = CleanDerivativeFreeSPAR.load(done_model_checkpoint_path, env=env, num_perturbed=1)
+        model = CleanDerivativeFreeSPAR.load(
+            done_model_checkpoint_path, env=env, num_perturbed=1, device=args.device
+        )
 
 # if args.eval_prot is True: # we're training an optimal adversary
 #     dstb_action_space = Box(low=model.dstb_action_space.low, high=model.dstb_action_space.high, shape=model.dstb_action_space.shape)
@@ -97,7 +123,9 @@ def main() -> None:
 #     env.action_space = model.dstb_action_space
 
     if args.exploiter_is_cds:
-        br_model = CleanDerivativeFreeSPAR.load(br_model_path, env=env, num_perturbed=1)
+        br_model = CleanDerivativeFreeSPAR.load(
+            br_model_path, env=env, num_perturbed=1, device=args.device
+        )
     else:
         # if args.eval_prot is True:  # we're training an optimal adversary
         #     dstb_action_space = Box(
@@ -117,7 +145,7 @@ def main() -> None:
         #     env.action_space = ego_action_space
         # print("#$%*&^%$EVAL PROT: %s$%^&*", args.eval_prot)
         # print("$@#$%^&*()(*&^%$#@)%s$#%^&*()(*&^%$#@", args.exploiter_is_cds)
-        br_model = Exploiter.load(br_model_path, env=env, n_envs=1)
+        br_model = Exploiter.load(br_model_path, env=env, n_envs=1, device=args.device)
 
     nr = 50
     exploiter_rewards, selfplay_rewards = [], []

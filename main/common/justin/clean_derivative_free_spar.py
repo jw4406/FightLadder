@@ -214,44 +214,6 @@ class CleanDerivativeFreeSPAR(PPO):
         self.env_generator_func = env_generator_func
         self.parallel_updater = None
         self.n_global_env = self.n_envs
-        adversary_buffers = []
-        if self.num_adversaries is not None:
-            for i in range(self.num_adversaries):
-                # overwrite = dtss("AACCnnPolicy",
-                #                            self.env,
-                #                            device=self.device,
-                #                            verbose=self.verbose,
-                #                            n_steps=self.n_steps,
-                #                            batch_size=self.batch_size // self.n_envs,  # 512,
-                #                            n_epochs=self.n_epochs,
-                #                            gamma=self.gamma,
-                #                            v_learning_rate=v_learning_rate, c_learning_rate=c_learning_rate,
-                #                            d_learning_rate=d_learning_rate, v_learning_rate_decay=v_learning_rate_decay,
-                #                            c_learning_rate_decay=c_learning_rate_decay,
-                #                            d_learning_rate_decay=d_learning_rate_decay,
-                #                            clip_range=self.clip_range,
-                #                            tensorboard_log=self.tensorboard_log,
-                #                            seed=self.seed,
-                #                            ent_coef=self.ent_coef,
-                #                            dstb_ent_coef=self.dstb_ent_coef,
-                #                            update_left=not self.update_left,
-                #                            update_right=not self.update_right,
-                #                            warmstarted_cont_MAGICS=False,
-                #                            matchups=matchups,
-                #                            envs_per_matchup=self.envs_per_matchup
-                #                            )
-                # overwrite.rollout_buffer.n_envs = self.n_env_per_adv
-                # adversary_buffers.append(overwrite.rollout_buffer)
-                adversary_buffers.append(self.rollout_buffer_class(self.n_steps,
-                self.observation_space,
-                self.action_space,
-                device=self.device,
-                gamma=self.gamma,
-                gae_lambda=self.gae_lambda,
-                n_envs=self.envs_per_matchup,
-                #dstb_action_space=self.dstb_action_space
-            ))
-            self.adversary_buffers = adversary_buffers
         self.env.num_envs = self.n_envs
         self.use_mirror = use_mirror
         self.num_workers = num_workers
@@ -284,6 +246,24 @@ class CleanDerivativeFreeSPAR(PPO):
             n_envs=self.n_envs,
             #dstb_action_space=self.dstb_action_space
         )
+
+        # Rebuild adversary buffers so device matches the model (pickled buffers from old saves
+        # may still reference cuda after loading with device=cpu).
+        adversary_buffers = []
+        if self.num_adversaries is not None:
+            for _ in range(self.num_adversaries):
+                adversary_buffers.append(
+                    buffer_cls(
+                        self.n_steps,
+                        self.observation_space,
+                        self.action_space,
+                        device=self.device,
+                        gamma=self.gamma,
+                        gae_lambda=self.gae_lambda,
+                        n_envs=self.envs_per_matchup,
+                    )
+                )
+            self.adversary_buffers = adversary_buffers
 
         if hasattr(self, "num_adversaries"):
             self.policy_kwargs['num_adversaries'] = self.num_adversaries
@@ -752,7 +732,8 @@ class CleanDerivativeFreeSPAR(PPO):
 
 
                 gc.collect()
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 #self.perturbed_agent.env.close()
                 #del self.perturbed_agent
 
@@ -764,7 +745,8 @@ class CleanDerivativeFreeSPAR(PPO):
         finally:
             #IMPORTANT! Persistent workers must be cleaned up.
             self.cleanup()
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         return self
     
@@ -1360,7 +1342,9 @@ class CleanDerivativeFreeSPAR(PPO):
         Returns the names of the parameters that should be excluded from save.
         """
         excluded = super()._excluded_save_params()
-        excluded.extend(["parallel_updater", "callback", "perturbed_agents"])
+        excluded.extend(
+            ["parallel_updater", "callback", "perturbed_agents", "adversary_buffers"]
+        )
         return excluded
     
     def cleanup(self):
@@ -1375,7 +1359,10 @@ class CleanDerivativeFreeSPAR(PPO):
     def _initialize_parallel_updater(self) -> None:
         """This function initializes the ParallelUpdater"""
         if self.parallel_updater is None:
-            _, n_workers = get_n_workers()
+            if self.device.type == th.device("cpu").type:
+                n_workers = 1
+            else:
+                _, n_workers = get_n_workers()
             self.parallel_updater = ParallelUpdater(n_workers)
             self.first_run = True 
 

@@ -5289,6 +5289,25 @@ class eepy(MAGICS_PPO):
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
 
+
+def _move_exploited_rl_agent_to_device(exploited: Any, device: th.device) -> None:
+    """
+    Move a frozen opponent (e.g. CleanDerivativeFreeSPAR) to the same device as the Exploiter.
+    Otherwise obs tensors are built on self.device (e.g. CPU) but exploited.policy still runs on CUDA.
+    """
+    if exploited is None or not hasattr(exploited, "policy"):
+        return
+    pol = exploited.policy
+    if not isinstance(pol, nn.Module):
+        return
+    exploited.policy = pol.to(device)
+    exploited.device = device
+    if hasattr(pol, "dstb_log_std") and pol.dstb_log_std:
+        pol.dstb_log_std = {k: v.to(device) for k, v in pol.dstb_log_std.items()}
+    if hasattr(pol, "move_all_optimizers"):
+        pol.move_all_optimizers(device)
+
+
 class Exploiter(PPO):
     def __init__(self,
         policy: Union[str, Type[ActorCriticPolicy]],
@@ -5357,6 +5376,7 @@ class Exploiter(PPO):
             tolerance=self.br_tracker_tolerance,
             window_size=self.br_tracker_window_size,
         )
+        _move_exploited_rl_agent_to_device(self.exploited, self.device)
 
     def collect_rollouts(
         self,
