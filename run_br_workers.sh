@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Number of parallel new_br_worker instances to run
-NUM_WORKERS=10
+NUM_WORKERS=1
 # If True, run each worker detached with nohup and log redirection.
 # If False, run without nohup in the current shell.
 RUN_LIVE="True"
@@ -14,7 +14,7 @@ BR_WORKER_PATH="${SCRIPT_DIR}/main/new_br_worker.py"
 
 # Arguments from launch.json (Python Debugger: new_br_worker.py)
 EVAL_PROT="True"
-EVAL_ADV="True"
+EVAL_ADV="False"
 EVAL_ONLY="False"
 PROJ_NAME="br_training"
 ANALYSIS_UPLOAD_PROJ_NAME="br_analysis"
@@ -22,14 +22,14 @@ LOAD_BR="False"
 WHICH_ENV="my_pendulum"
 IS_LEAGUE="False"
 USE_MIRROR="False"
-NUM_FULL_EXPLOITERS="4"
+NUM_FULL_EXPLOITERS="1"
 NUM_CONTINUE_EXPLOITERS="1"
 DEBUG="True"
 N_ENVS="2"
 # TASK_DIR=""  # Optional: set this to pass --task_dir
-DEDICATED_EXPLOITER="False"
-CONTINUE_EXPLOITERS="True"
-EXPLOITER_SAVE_FREQ="1000"
+DEDICATED_EXPLOITER="True"
+CONTINUE_EXPLOITERS="False"
+EXPLOITER_SAVE_FREQ="10000"
 RESET="round"
 SIDE="both"
 RENDER="False"
@@ -38,7 +38,7 @@ NULL_COMBO="False"
 TRANSFORM_ACTION="False"
 SEED="0"
 # Torch device: cpu, cuda, cuda:0, etc. (must match launch.json / worker --device)
-DEVICE="cpu"
+DEVICE="cuda"
 if [ "${DEVICE}" = "cpu" ]; then
     export CUDA_VISIBLE_DEVICES=""
 fi

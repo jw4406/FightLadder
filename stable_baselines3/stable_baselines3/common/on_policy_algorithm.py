@@ -257,18 +257,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             progress_bar,
         )
 
-        # EMA-based stability check for exploiter early stopping.
-        # This replaces fixed-window max/min checks with reward-scale-aware tolerance.
-        ema_beta = 0.99
-        rel_tolerance = 0.05
-        warmup_checks = 100
-        patience_checks = 20
-        eps = 1e-8
-        ema_reward = None
-        ema_abs_reward = None
-        ema_abs_dev = None
-        num_checks = 0
-        stable_checks = 0
+        br_convergence_tracker = None
+        if isinstance(self, Exploiter):
+            br_convergence_tracker = getattr(self, "br_convergence_tracker", None)
         rews = []
 
         callback.on_training_start(locals(), globals())
@@ -278,37 +269,21 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
             if (
                 isinstance(self, Exploiter)
+                and br_convergence_tracker is not None
                 and len(self.ep_info_buffer) > 0
                 and len(self.ep_info_buffer[0]) > 0
             ):
                 current_rew = safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])
-                num_checks += 1
-                if ema_reward is None:
-                    ema_reward = current_rew
-                    ema_abs_reward = abs(current_rew)
-                    ema_abs_dev = 0.0
-                else:
-                    ema_reward = ema_beta * ema_reward + (1.0 - ema_beta) * current_rew
-                    ema_abs_reward = ema_beta * ema_abs_reward + (1.0 - ema_beta) * abs(current_rew)
-                    abs_dev = abs(current_rew - ema_reward)
-                    ema_abs_dev = ema_beta * ema_abs_dev + (1.0 - ema_beta) * abs_dev
-
-                dynamic_tolerance = rel_tolerance * max(ema_abs_reward, eps)
-                if num_checks > warmup_checks:
-                    if ema_abs_dev <= dynamic_tolerance:
-                        stable_checks += 1
-                    else:
-                        stable_checks = 0
-
-                    if stable_checks >= patience_checks:
-                        print(f"Exploiter reward is stable at EMA {ema_reward:.4f}")
-                        continue_training = False
-                        wandb.log(
-                            {
-                                "exploiter_rew": ema_reward,
-                                "main_training_epoch": self.exploited.num_timesteps if self.exploited is not None else 0,
-                            }
-                        )
+                if br_convergence_tracker.check_reward_stability(current_rew):
+                    ema_reward = br_convergence_tracker.ema_reward if br_convergence_tracker.ema_reward is not None else current_rew
+                    print(f"Exploiter reward is stable at EMA {ema_reward:.4f}")
+                    continue_training = False
+                    wandb.log(
+                        {
+                            "exploiter_rew": ema_reward,
+                            "main_training_epoch": self.exploited.num_timesteps if self.exploited is not None else 0,
+                        }
+                    )
             if continue_training is False:
                 break
 
