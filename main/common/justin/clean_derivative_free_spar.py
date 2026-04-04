@@ -217,7 +217,6 @@ class CleanDerivativeFreeSPAR(PPO):
         self.env.num_envs = self.n_envs
         self.use_mirror = use_mirror
         self.num_workers = num_workers
-
         #Create learning rate schedulers
 
     def _setup_model(self) -> None:
@@ -334,7 +333,7 @@ class CleanDerivativeFreeSPAR(PPO):
             return self.collect_rollouts_standard(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action)
     
     def collect_rollouts_standard(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, run_ego_forward: bool = True, run_adv_forward: bool = True, zero_ego_action=False, zero_adv_action=False) -> bool:
-       
+        timenow = time.time()
         video_log = [Image.fromarray(env.render(mode="rgb_array"))]
         assert self._last_obs is not None, "No previous observation was provided"
         # Switch to eval mode (this affects batch norm / dropout)
@@ -457,20 +456,6 @@ class CleanDerivativeFreeSPAR(PPO):
         for i in range(len(adversary_buffers)):
             adversary_buffers[i].prepare_data_for_training()
 
-
-        height, width, layers = np.array(video_log[0]).shape
-        container = av.open(f"/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/videos" + "_episode_{i}.mp4", mode='w')
-        stream = container.add_stream('h264', rate=10)
-        stream.width = width
-        stream.height = height
-        stream.pix_fmt = 'yuv420p'
-        for img in video_log:
-            frame = av.VideoFrame.from_image(img)
-            for packet in stream.encode(frame):
-                container.mux(packet)
-        remain_packets = stream.encode(None)
-        container.mux(remain_packets)
-        container.close()
         return True
     
     def collect_rollouts_mirror(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True) -> bool:

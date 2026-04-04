@@ -4,6 +4,7 @@ import sys
 import torch
 import multiprocessing as mp
 import argparse
+import time
 import random
 import numpy as np
 from PIL import Image
@@ -12,7 +13,7 @@ from common.justin.bare_derivative_free_spar import BareDerivativeFreeSPAR
 from common.justin.clean_derivative_free_spar import CleanDerivativeFreeSPAR
 from utils import merge_models
 import retro
-from stable_baselines3.common.callbacks import CheckpointCallback, SACheckpointCallback, FileQueueTriggerCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, SACheckpointCallback, FileQueueTriggerCallback, CreateVideoCallback
 from stable_baselines3.common.buffers import AdvRolloutBuffer
 from stable_baselines3.common.utils import get_schedule_fn
 from torch.backends.cudnn import deterministic
@@ -834,6 +835,7 @@ def main(args):
         save_path=args.save_dir,
         name_prefix=f"{model_name_prefix}"
     )
+    video_callback = CreateVideoCallback(save_path=args.save_dir, save_freq=checkpoint_interval)
 
     if (FINETUNE is True) or (EVAL is True):
         finetune_model = finetune_model_generator(args.model_file, lr_schedule=lr_schedule,
@@ -915,11 +917,10 @@ def main(args):
                 zero_adv_action=False
             else:
                 raise ValueError(f"Invalid adv style: {args.adv_style}")
-
             model.learn(
                 total_timesteps=TOTAL_TIMESTEPS,
                 num_perturbs = args.num_perturbs,
-                callback=[checkpoint_callback, file_queue_callback], update_ego=update_ego, update_adversary=update_adversary, run_ego_forward=True, run_adv_forward=True,
+                callback=[checkpoint_callback, file_queue_callback, video_callback], update_ego=update_ego, update_adversary=update_adversary, run_ego_forward=True, run_adv_forward=True,
                 zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)
@@ -982,7 +983,6 @@ if __name__ == "__main__":
     args.null_combo = True if args.null_combo == 'True' else False
     args.transform_action = True if args.transform_action == 'True' else False
     args.use_lr_annealing = True if args.use_lr_annealing == 'True' else False
-
     PLAYER = args.player
     mp.set_start_method("spawn", force=True) #A lot of stable_baseline3 objects don't support the default "fork".
     main(args)

@@ -3,7 +3,7 @@ import warnings
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Union, TYPE_CHECKING
 import copy
-import gym
+import gym, av
 import numpy as np
 import subprocess
 import shlex
@@ -305,7 +305,35 @@ class CheckpointCallback(BaseCallback):
                     print(f"Saving model VecNormalize to {vec_normalize_path}")
 
         return True
+class CreateVideoCallback(CheckpointCallback):
+    """
+    Callback for creating a video of the model. Should only be called when checkpointing
+    (this way we don't create videos for every step)
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.video_folder = self.save_path
+        os.makedirs(self.video_folder, exist_ok=True)
 
+    def _on_step(self) -> bool:
+        if self.n_calls % self.save_freq == 0:
+            if 'video_log' in self.locals:
+                video_log = self.locals['video_log']
+                height, width, layers = np.array(video_log[0]).shape
+                container = av.open(self.video_folder + "/_calls_%d_.mp4" % self.n_calls , mode='w')
+                stream = container.add_stream('h264', rate=10)
+                stream.width = width
+                stream.height = height
+                stream.pix_fmt = 'yuv420p'
+                for img in video_log:
+                    frame = av.VideoFrame.from_image(img)
+                    for packet in stream.encode(frame):
+                        container.mux(packet)
+                remain_packets = stream.encode(None)
+                container.mux(remain_packets)
+                container.close()
+            print('Video successfully saved to %s' % self.video_folder + "/_calls_%d_.mp4" % self.n_calls)
+        return True
 class FileQueueTriggerCallback(CheckpointCallback):
     """
     A custom callback that creates a task file in a directory
