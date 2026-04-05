@@ -3,6 +3,7 @@ BR worker. Parse --device before importing torch so ``--device cpu`` can hide GP
 """
 import os
 import sys
+from typing import Any, Dict, List, Optional
 
 
 def _peek_torch_device_argv(argv):
@@ -37,6 +38,7 @@ from stable_baselines3.common.save_util import load_from_zip_file
 from ippo import env_generator
 from stable_baselines3.common.callbacks import ExploiterCheckpointCallback
 from gymnasium.spaces import Box
+from utils import state2matchup
 # --- Configuration ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 #print(current_dir)
@@ -60,10 +62,184 @@ if not os.listdir(TASK_DIR):
     print("Warning: The TASK_DIR is empty. Please run ippo.py --player PLAYER to generate a task file.")
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
-BR_TRAINING_STEPS = 1000000000
+BR_TRAINING_STEPS = 10
 
 
-def load_spar_model(game_args: dict, task_file_path: str, n_envs: int = 2, device: str = "cuda"):
+def _dedupe_preserve_order(values: List[str]) -> List[str]:
+    """
+    Remove duplicates while preserving first-seen order.
+
+    This is intentionally deterministic: dedicated job generation and naming
+    should not depend on dict/hash iteration order.
+    """
+    return list(dict.fromkeys(values).keys())
+
+
+def _sanitize_for_filename(value: str) -> str:
+    """
+    Convert arbitrary matchup/state labels into safe filename fragments.
+
+    We keep alphanumeric, underscore, and hyphen characters and replace all
+    others with underscores so BR checkpoint names remain filesystem-friendly.
+    """
+    if value is None:
+        return "unknown"
+    out = []
+    for ch in str(value):
+        if ch.isalnum() or ch in ("_", "-"):
+            out.append(ch)
+        else:
+            out.append("_")
+    return "".join(out).strip("_") or "unknown"
+
+
+def _extract_unique_states_from_task(task_file_path: str, device: str = "cuda") -> List[str]:
+    """
+    Read checkpoint/task metadata and return unique state strings.
+
+    Why this helper exists:
+    - Dedicated exploiter mode now schedules one BR job per unique matchup state.
+    - We need to inspect the task checkpoint *before* launching subprocesses.
+    - This helper centralizes metadata parsing so scheduling logic stays readable.
+    """
+    data, _, _ = load_from_zip_file(task_file_path, device=device)
+    if "state_list" not in data:
+        raise KeyError(f"Task/checkpoint {task_file_path} does not contain 'state_list'.")
+    state_list = data["state_list"]
+    if not isinstance(state_list, list) or len(state_list) == 0:
+        raise ValueError(f"Task/checkpoint {task_file_path} has empty or invalid 'state_list'.")
+    return _dedupe_preserve_order(state_list)
+
+
+def _build_dedicated_job_specs(
+    unique_states: List[str],
+    replicates_per_matchup: int,
+    run_eval_prot: bool,
+    run_eval_adv: bool,
+) -> List[Dict[str, Any]]:
+    """
+    Build dedicated BR job specs:
+      - one entry per (state, side, replicate)
+      - side is controlled by eval_prot/eval_adv flags
+
+    Notes:
+    - "replicates_per_matchup" means if set to K, each matchup+side gets K
+      independent subprocess jobs (different BR indices/checkpoints).
+    - We keep a monotonic "job_index" for easy logging/debugging.
+    """
+    if replicates_per_matchup < 1:
+        raise ValueError("replicates_per_matchup must be >= 1 for dedicated jobs.")
+
+    job_specs: List[Dict[str, Any]] = []
+    job_index = 0
+    for state in unique_states:
+        # Attempt to produce a concise human-readable matchup label from the
+        # state string. If parsing fails, fall back to the raw state path.
+        try:
+            matchup_label_raw = state2matchup(state)
+        except Exception:
+            matchup_label_raw = state
+        matchup_label = _sanitize_for_filename(matchup_label_raw)
+
+        # eval_prot branch in this worker maps to exploiting='ego' downstream.
+        # We retain that existing contract and only change scheduling granularity.
+        if run_eval_prot:
+            for rep in range(replicates_per_matchup):
+                job_specs.append(
+                    {
+                        "job_index": job_index,
+                        "eval_prot": True,
+                        "state_subset": [state],
+                        "matchup_label": matchup_label,
+                        "replicate_idx": rep,
+                    }
+                )
+                job_index += 1
+
+        # eval_adv branch should schedule exploiter jobs on the other side
+        # (downstream exploiting='adv'), so eval_prot=False here.
+        if run_eval_adv:
+            for rep in range(replicates_per_matchup):
+                job_specs.append(
+                    {
+                        "job_index": job_index,
+                        "eval_prot": False,
+                        "state_subset": [state],
+                        "matchup_label": matchup_label,
+                        "replicate_idx": rep,
+                    }
+                )
+                job_index += 1
+    return job_specs
+
+
+class _FixedMatchupPolicyAdapter:
+    """
+    Lightweight policy adapter that forces CDS forward passes to a single matchup head.
+
+    Why this exists:
+    - `CleanDerivativeFreeSPAR` is architected around a full matchup topology.
+    - In dedicated BR runs we intentionally train on one matchup subset.
+    - We do NOT want to modify CDS internals, so we adapt behavior at the worker layer.
+
+    Behavior:
+    - Delegates all unknown attributes to the wrapped policy.
+    - Intercepts `__call__` and injects `network_keys=[fixed_idx]*batch_size`.
+    - Preserves `.to(device)` semantics so existing device-transfer code keeps working.
+    """
+
+    def __init__(self, base_policy, fixed_matchup_idx: int):
+        self._base_policy = base_policy
+        self._fixed_matchup_idx = int(fixed_matchup_idx)
+
+    def __call__(self, obs_tensor, *args, **kwargs):
+        # Always route every sample in this mini-batch to the same matchup head.
+        # This enforces "single-matchup dedicated evaluation/training" semantics
+        # even when the original CDS model contains multiple matchup heads.
+        batch_size = int(obs_tensor.shape[0])
+        kwargs = dict(kwargs)
+        kwargs["network_keys"] = [self._fixed_matchup_idx] * batch_size
+        return self._base_policy(obs_tensor, *args, **kwargs)
+
+    def to(self, device):
+        # Keep adapter identity stable while moving underlying policy modules.
+        self._base_policy = self._base_policy.to(device)
+        return self
+
+    def __getattr__(self, name):
+        # Delegate all other attributes/methods transparently.
+        return getattr(self._base_policy, name)
+
+
+def _resolve_matchup_index_for_state(loaded_model, dedicated_state: str) -> int:
+    """
+    Map a dedicated state string to a CDS matchup-head index.
+
+    We prefer an exact state-index lookup using the checkpoint's unique state order,
+    then fall back to matchup-label lookup if needed.
+    """
+    unique_states = getattr(loaded_model, "_worker_unique_states", None)
+    if isinstance(unique_states, list) and dedicated_state in unique_states:
+        return unique_states.index(dedicated_state)
+
+    target_matchup = state2matchup(dedicated_state)
+    envs_per_matchup = int(max(1, getattr(loaded_model, "envs_per_matchup", 1)))
+    matchups = getattr(loaded_model, "matchups", None) or []
+    for i in range(0, len(matchups), envs_per_matchup):
+        if matchups[i] == target_matchup:
+            return i // envs_per_matchup
+    raise ValueError(
+        f"Could not resolve matchup index for dedicated state '{dedicated_state}'."
+    )
+
+
+def load_spar_model(
+    game_args: dict,
+    task_file_path: str,
+    n_envs: int = 2,
+    device: str = "cuda",
+    state_subset: Optional[List[str]] = None,
+):
     worker_id = os.getpid()
     print(f"WORKER [{worker_id}]: Processing task: {os.path.basename(task_file_path)}")
 
@@ -85,10 +261,17 @@ def load_spar_model(game_args: dict, task_file_path: str, n_envs: int = 2, devic
     # Default load_from_zip_file(..., device="auto") maps to CUDA and allocates GPU weights
     # even though we only need ``data`` here; always respect the worker device.
     data, _, _ = load_from_zip_file(checkpoint_path, device=device)
-    # get the saved matchups -- make this automated so that we dont hit stupid user errors
-    #matchups = data['matchups']
-    uniques = list(dict.fromkeys(data['state_list']).keys())
-    # need to get the strengths as well
+    # IMPORTANT:
+    # Keep CDS model topology in its original full-matchup form. Even in
+    # dedicated runs we should NOT shrink the loaded CDS state/matchup metadata,
+    # because internal forward/update logic assumes the full topology.
+    #
+    # Dedicated isolation is handled later by:
+    #   1) dedicated BR env construction (subset env for the exploiter), and
+    #   2) `_FixedMatchupPolicyAdapter` (pins exploited CDS head selection).
+    uniques = _dedupe_preserve_order(data["state_list"])
+    # Build the concrete STATE list passed to env/model, repeating each unique
+    # state n_envs times to match existing worker conventions.
     STATE = [state for state in uniques for _ in range(n_envs)]
     game_args = argparse.Namespace(**game_args)
     
@@ -129,6 +312,10 @@ def load_spar_model(game_args: dict, task_file_path: str, n_envs: int = 2, devic
             use_mirror=False
         )
         ftm.set_parameters(params, exact_match=True, device=ftm.device)
+    # Keep a stable copy of the unique checkpoint state ordering for dedicated
+    # matchup-index resolution. This is worker metadata only (no CDS changes).
+    ftm._worker_unique_states = list(uniques)
+    ftm._worker_full_state_list = list(STATE)
     return ftm
 
 
@@ -150,6 +337,10 @@ def train_best_response(
     br_tracker_tolerance: float = 1e-4,
     br_tracker_window_size: int = 50,
     device: str = "cuda",
+    dedicated_state_subset: Optional[List[str]] = None,
+    matchup_label: Optional[str] = None,
+    replicate_idx: Optional[int] = None,
+    dedicated_job_id: Optional[int] = None,
 ) -> None:
     """
     The core logic for a single best-response training run.
@@ -178,7 +369,11 @@ def train_best_response(
     # env = YourStreetFighterEnv(opponent_policy=fixed_opponent)
     if is_spar == True:
         game_args = argparse.Namespace(**game_args)
-        env = env_generator(game_args, STATE=ftm.state_list, n_envs=n_envs)
+        # In dedicated mode, train BR in a subset environment (usually one
+        # matchup replicated `n_envs` times). This isolates BR rollouts while
+        # leaving the exploited CDS model topology untouched.
+        effective_state_list = ftm.state_list if dedicated_state_subset is None else dedicated_state_subset
+        env = env_generator(game_args, STATE=effective_state_list, n_envs=n_envs)
         # if eval_prot is True: # we're training an optimal adversary
         #     dstb_action_space = Box(low=ftm.dstb_action_space.low, high=ftm.dstb_action_space.high, shape=ftm.dstb_action_space.shape)
         #     env.action_space = dstb_action_space
@@ -207,7 +402,30 @@ def train_best_response(
     )
     br_agent.is_spar = is_spar # TODO: This is a stupid hack to get the BR agent to know if it is a SPAR model or not. Remove this once we have a better way to do this.
     # 4. Train the BR agent
-    br_model_name = f"br{br_index}_to_{os.path.splitext(os.path.basename(checkpoint_path))[0]}_exploiting_{'ego' if eval_prot is True else 'adv'}.zip"
+    #
+    # Name each BR checkpoint with rich metadata so downstream analysis can
+    # directly identify:
+    # - which side was exploited (ego/adv),
+    # - which matchup slice this dedicated run belongs to,
+    # - which replicate index it is within that matchup.
+    #
+    # This makes your "which character matchup performs worst" analysis much
+    # easier because filenames become self-describing.
+    exploit_side = "ego" if eval_prot is True else "adv"
+    dedicated_suffix_parts: List[str] = []
+    if matchup_label is not None:
+        dedicated_suffix_parts.append(f"matchup_{_sanitize_for_filename(matchup_label)}")
+    if replicate_idx is not None:
+        dedicated_suffix_parts.append(f"rep_{replicate_idx}")
+    if dedicated_job_id is not None:
+        dedicated_suffix_parts.append(f"job_{dedicated_job_id}")
+    dedicated_suffix = "_".join(dedicated_suffix_parts)
+    if dedicated_suffix != "":
+        dedicated_suffix = f"_{dedicated_suffix}"
+    br_model_name = (
+        f"br{br_index}_to_{os.path.splitext(os.path.basename(checkpoint_path))[0]}"
+        f"_exploiting_{exploit_side}{dedicated_suffix}.zip"
+    )
     exploiter_callback = ExploiterCheckpointCallback(save_freq=exploiter_save_freq // n_envs, save_path=BR_MODEL_DIR, name_prefix=br_model_name)
      
     if eval_only == False:
@@ -239,7 +457,8 @@ def train_best_response(
         "--main_checkpoint_model_path", checkpoint_path,
         "--done_model_checkpoint_path", done_model_checkpoint_path,
         "--br_checkpoint_model_path", br_model_path,
-        "--state_list", str(ftm.state_list),
+        # Evaluate exactly the state slice used by this BR run.
+        "--state_list", str(effective_state_list),
         "--exploiter_is_cds", str(not from_scratch),
         "--br_index", str(br_index),
         "--game_args", json.dumps(vars(game_args)),
@@ -266,6 +485,10 @@ def run_br_for_task_in_subprocess(
     br_tracker_tolerance: float = 1e-4,
     br_tracker_window_size: int = 50,
     device: str = "cuda",
+    state_subset: Optional[List[str]] = None,
+    matchup_label: Optional[str] = None,
+    replicate_idx: Optional[int] = None,
+    dedicated_job_id: Optional[int] = None,
 ) -> None:
     """
     Worker function for running a single BR training instance in a separate process.
@@ -273,7 +496,34 @@ def run_br_for_task_in_subprocess(
     """
     _ensure_cpu_only_env(device)
     if is_spar:
-        loaded_model = load_spar_model(game_args, task_file_path, n_envs=n_envs, device=device)
+        # NOTE: Do not shrink CDS model topology based on state_subset.
+        # We always load full topology and handle dedicated constraints via
+        # env slicing + fixed-head policy adapter below.
+        loaded_model = load_spar_model(
+            game_args,
+            task_file_path,
+            n_envs=n_envs,
+            device=device,
+        )
+        dedicated_state_list_for_env = None
+        if state_subset is not None:
+            if len(state_subset) == 0:
+                raise ValueError("state_subset was provided but empty.")
+            dedicated_state = state_subset[0]
+            dedicated_state_list_for_env = [dedicated_state for _ in range(n_envs)]
+            fixed_matchup_idx = _resolve_matchup_index_for_state(loaded_model, dedicated_state)
+
+            # Wrap exploited CDS policy so forward calls always use the selected
+            # matchup head. This avoids CDS full-topology assumptions breaking
+            # while still allowing single-matchup BR specialization.
+            loaded_model.policy = _FixedMatchupPolicyAdapter(
+                loaded_model.policy, fixed_matchup_idx=fixed_matchup_idx
+            )
+            print(
+                "Dedicated CDS adapter configured: "
+                f"state={dedicated_state}, fixed_matchup_idx={fixed_matchup_idx}, "
+                f"replicated_env_count={n_envs}"
+            )
         if exploiter_save_freq * n_envs * len(loaded_model.matchups) > BR_TRAINING_STEPS:
             print("-------------------------------------------\n\n ")
             print("ERROR!")
@@ -309,6 +559,10 @@ def run_br_for_task_in_subprocess(
         br_tracker_tolerance=br_tracker_tolerance,
         br_tracker_window_size=br_tracker_window_size,
         device=device,
+        dedicated_state_subset=dedicated_state_list_for_env,
+        matchup_label=matchup_label,
+        replicate_idx=replicate_idx,
+        dedicated_job_id=dedicated_job_id,
     )
 
 
@@ -444,125 +698,105 @@ if __name__ == "__main__":
                 #     )
                 # else:
                 processes = []
-                if args.eval_prot == True:
-                    if args.continue_exploiters == True:
-                        from_scratch = False
+
+                def _launch_job(
+                    eval_prot_flag: bool,
+                    br_idx: int,
+                    from_scratch: bool,
+                    state_subset: Optional[List[str]] = None,
+                    matchup_label: Optional[str] = None,
+                    replicate_idx: Optional[int] = None,
+                    dedicated_job_id: Optional[int] = None,
+                ) -> None:
+                    """
+                    Launch one BR subprocess (or run inline in DEBUG mode).
+
+                    Why this helper is nested here:
+                    - It captures current task-specific context (e.g. processing_path).
+                    - It removes duplicated argument packing across the many loops.
+                    - It ensures every launch path (continue + dedicated) uses the
+                      same subprocess signature and consistent debug prints.
+                    """
+                    target = run_br_for_task_in_subprocess
+                    training_args = (
+                        game_args,
+                        processing_path,
+                        eval_prot_flag,
+                        args.use_mirror,
+                        args.eval_only,
+                        args.proj_name,
+                        args.analysis_upload_proj_name,
+                        args.n_envs,
+                        True,  # is_spar
+                        br_idx,
+                        from_scratch,
+                        args.exploiter_save_freq,
+                        args.br_tracker_patience,
+                        args.br_tracker_tolerance,
+                        args.br_tracker_window_size,
+                        args.device,
+                        state_subset,
+                        matchup_label,
+                        replicate_idx,
+                        dedicated_job_id,
+                    )
+                    if args.DEBUG:
+                        print(
+                            "DEBUG: Launching BR job "
+                            f"idx={br_idx}, eval_prot_flag={eval_prot_flag}, "
+                            f"from_scratch={from_scratch}, matchup={matchup_label}, "
+                            f"replicate={replicate_idx}, dedicated_job_id={dedicated_job_id}"
+                        )
+                        target(*training_args)
+                    else:
+                        p = mp.Process(target=target, args=training_args)
+                        p.start()
+                        processes.append(p)
+
+                # Continue-exploiter mode (existing behavior): run a fixed number
+                # of jobs against the full checkpoint state list.
+                if args.continue_exploiters:
+                    from_scratch = False
+                    if args.eval_prot:
                         for br_idx in range(args.num_continue_exploiters):
-                            target = run_br_for_task_in_subprocess
-                            training_args = (
-                                game_args,
-                                processing_path,
-                                args.eval_prot,
-                                args.use_mirror,
-                                args.eval_only,
-                                args.proj_name,
-                                args.analysis_upload_proj_name,
-                                args.n_envs,
-                                True,  # is_spar
-                                br_idx,
-                                from_scratch,
-                                args.exploiter_save_freq,
-                                args.br_tracker_patience,
-                                args.br_tracker_tolerance,
-                                args.br_tracker_window_size,
-                                args.device,
-                            )
-                            if args.DEBUG:
-                                print(f"DEBUG: Running BR {br_idx} for task {task_filename}")
-                                target(*training_args)
-                            else:
-                                p = mp.Process(target=target, args=training_args)
-                                p.start()
-                                processes.append(p)
-                    if args.dedicated_exploiter == True:
-                        from_scratch = True
-                        for br_idx in range(args.num_full_exploiters):
-                            target = run_br_for_task_in_subprocess
-                            training_args = (
-                                game_args,
-                                processing_path,
-                                args.eval_prot,
-                                args.use_mirror,
-                                args.eval_only,
-                                args.proj_name,
-                                args.analysis_upload_proj_name,
-                                args.n_envs,
-                                True,  # is_spar
-                                br_idx,
-                                from_scratch,
-                                args.exploiter_save_freq,
-                                args.br_tracker_patience,
-                                args.br_tracker_tolerance,
-                                args.br_tracker_window_size,
-                                args.device,
-                            )
-                            if args.DEBUG:
-                                print(f"DEBUG: Running BR {br_idx} for task {task_filename}")
-                                target(*training_args)
-                            else:
-                                p = mp.Process(target=target, args=training_args)
-                                p.start()
-                                processes.append(p)
-                if args.eval_adv == True:
-                    if args.continue_exploiters == True:   
-                        from_scratch = False
+                            _launch_job(eval_prot_flag=True, br_idx=br_idx, from_scratch=from_scratch)
+                    if args.eval_adv:
+                        # IMPORTANT: eval_adv jobs must set eval_prot_flag=False so
+                        # train_best_response configures Exploiter(exploiting='adv').
                         for br_idx in range(args.num_continue_exploiters):
-                            target = run_br_for_task_in_subprocess
-                            training_args = (
-                                game_args,
-                                processing_path,
-                                args.eval_adv,
-                                args.use_mirror,
-                                args.eval_only,
-                                args.proj_name,
-                                args.analysis_upload_proj_name,
-                                args.n_envs,
-                                True,  # is_spar
-                                br_idx,
-                                from_scratch,
-                                args.exploiter_save_freq,
-                                args.br_tracker_patience,
-                                args.br_tracker_tolerance,
-                                args.br_tracker_window_size,
-                                args.device,
-                            )
-                            if args.DEBUG:
-                                print(f"DEBUG: Running BR {br_idx} for task {task_filename}")
-                                target(*training_args)
-                            else:
-                                p = mp.Process(target=target, args=training_args)
-                                p.start()
-                                processes.append(p)
-                    if args.dedicated_exploiter == True:
-                        from_scratch = True
-                        for br_idx in range(args.num_full_exploiters):
-                            target = run_br_for_task_in_subprocess
-                            training_args = (
-                                game_args,
-                                processing_path,
-                                args.eval_adv,
-                                args.use_mirror,
-                                args.eval_only,
-                                args.proj_name,
-                                args.analysis_upload_proj_name,
-                                args.n_envs,
-                                True,  # is_spar
-                                br_idx,
-                                from_scratch,
-                                args.exploiter_save_freq,
-                                args.br_tracker_patience,
-                                args.br_tracker_tolerance,
-                                args.br_tracker_window_size,
-                                args.device,
-                            )
-                            if args.DEBUG:
-                                print(f"DEBUG: Running BR {br_idx} for task {task_filename}")
-                                target(*training_args)
-                            else:
-                                p = mp.Process(target=target, args=training_args)
-                                p.start()
-                                processes.append(p)
-                    # Wait for all BR processes to finish before marking task as done
+                            _launch_job(eval_prot_flag=False, br_idx=br_idx, from_scratch=from_scratch)
+
+                # Dedicated mode (new behavior): schedule one job per unique
+                # matchup state per side, with `num_full_exploiters` replicates
+                # for each matchup+side pair.
+                if args.dedicated_exploiter:
+                    unique_states = _extract_unique_states_from_task(processing_path, device=args.device)
+                    dedicated_specs = _build_dedicated_job_specs(
+                        unique_states=unique_states,
+                        replicates_per_matchup=args.num_full_exploiters,
+                        run_eval_prot=args.eval_prot,
+                        run_eval_adv=args.eval_adv,
+                    )
+                    print(
+                        "Dedicated exploiter scheduling:\n"
+                        f"  unique_matchups={len(unique_states)}\n"
+                        f"  replicates_per_matchup={args.num_full_exploiters}\n"
+                        f"  total_jobs={len(dedicated_specs)}"
+                    )
+                    for spec in dedicated_specs:
+                        # We use spec["job_index"] as br_idx so each dedicated run
+                        # gets a globally unique BR index for this task.
+                        _launch_job(
+                            eval_prot_flag=spec["eval_prot"],
+                            br_idx=spec["job_index"],
+                            from_scratch=True,
+                            state_subset=spec["state_subset"],
+                            matchup_label=spec["matchup_label"],
+                            replicate_idx=spec["replicate_idx"],
+                            dedicated_job_id=spec["job_index"],
+                        )
+
+                # Wait for all BR processes to finish before marking task as done.
                 if not args.DEBUG:
                     for p in processes:
                         p.join()
