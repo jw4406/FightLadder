@@ -426,7 +426,7 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         if value_forward:
             values = self.value_forward(obs)
         else:
-            values = th.zeros(ego_actions.shape[0], 1)
+            values = th.zeros(ego_actions.shape[0], 1) if ego_forward else th.zeros(adv_actions.shape[0], 1)
         #q_values = self.q_value_forward(obs, ego_actions, adv_actions)
         return ego_actions, ego_log_prob, adv_actions, adv_log_prob, values, th.zeros_like(values)
 

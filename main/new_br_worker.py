@@ -4,7 +4,8 @@ BR worker. Parse --device before importing torch so ``--device cpu`` can hide GP
 import os
 import sys
 from typing import Any, Dict, List, Optional
-
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 def _peek_torch_device_argv(argv):
     for i, a in enumerate(argv):
@@ -62,7 +63,7 @@ if not os.listdir(TASK_DIR):
     print("Warning: The TASK_DIR is empty. Please run ippo.py --player PLAYER to generate a task file.")
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
-BR_TRAINING_STEPS = 10
+BR_TRAINING_STEPS = 1000
 
 
 def _dedupe_preserve_order(values: List[str]) -> List[str]:
@@ -116,6 +117,7 @@ def _build_dedicated_job_specs(
     replicates_per_matchup: int,
     run_eval_prot: bool,
     run_eval_adv: bool,
+    launch_local_br_eval: bool,
 ) -> List[Dict[str, Any]]:
     """
     Build dedicated BR job specs:
@@ -152,6 +154,7 @@ def _build_dedicated_job_specs(
                         "state_subset": [state],
                         "matchup_label": matchup_label,
                         "replicate_idx": rep,
+                        "launch_local_br_eval": launch_local_br_eval,
                     }
                 )
                 job_index += 1
@@ -167,6 +170,7 @@ def _build_dedicated_job_specs(
                         "state_subset": [state],
                         "matchup_label": matchup_label,
                         "replicate_idx": rep,
+                        "launch_local_br_eval": launch_local_br_eval,
                     }
                 )
                 job_index += 1
@@ -341,6 +345,7 @@ def train_best_response(
     matchup_label: Optional[str] = None,
     replicate_idx: Optional[int] = None,
     dedicated_job_id: Optional[int] = None,
+    launch_local_br_eval: bool = False,
 ) -> None:
     """
     The core logic for a single best-response training run.
@@ -452,18 +457,19 @@ def train_best_response(
         br_interval_num = exploiter_callback.n_calls * env.num_envs // exploiter_callback.save_freq
         #br_model_path = os.path.join(BR_MODEL_DIR, f"{br_model_name}_{br_interval_num}000_steps.zip")
         br_model_path = exploiter_callback.model_path
-        subprocess.Popen(["python", local_plot_and_eval_file, 
-        "--eval_prot", str(eval_prot),
-        "--main_checkpoint_model_path", checkpoint_path,
-        "--done_model_checkpoint_path", done_model_checkpoint_path,
-        "--br_checkpoint_model_path", br_model_path,
-        # Evaluate exactly the state slice used by this BR run.
-        "--state_list", str(effective_state_list),
-        "--exploiter_is_cds", str(not from_scratch),
-        "--br_index", str(br_index),
-        "--game_args", json.dumps(vars(game_args)),
-        "--device", device,
-        ])
+        if launch_local_br_eval:
+            subprocess.Popen(["python", local_plot_and_eval_file, 
+            "--eval_prot", str(eval_prot),
+            "--main_checkpoint_model_path", checkpoint_path,
+            "--done_model_checkpoint_path", done_model_checkpoint_path,
+            "--br_checkpoint_model_path", br_model_path,
+            # Evaluate exactly the state slice used by this BR run.
+            "--state_list", str(effective_state_list),
+            "--exploiter_is_cds", str(not from_scratch),
+            "--br_index", str(br_index),
+            "--game_args", json.dumps(vars(game_args)),
+            "--device", device,
+            ])
         #agg_file = os.path.join(current_dir, "aggregate_to_wandb.py")
         #subprocess.Popen(["python", agg_file, "--read_from_proj_name", proj_name, "--upload_to_proj_name", analysis_upload_proj_name])
 
@@ -489,6 +495,7 @@ def run_br_for_task_in_subprocess(
     matchup_label: Optional[str] = None,
     replicate_idx: Optional[int] = None,
     dedicated_job_id: Optional[int] = None,
+    launch_local_br_eval: bool = False,
 ) -> None:
     """
     Worker function for running a single BR training instance in a separate process.
@@ -563,6 +570,7 @@ def run_br_for_task_in_subprocess(
         matchup_label=matchup_label,
         replicate_idx=replicate_idx,
         dedicated_job_id=dedicated_job_id,
+        launch_local_br_eval=launch_local_br_eval,
     )
 
 
@@ -598,6 +606,7 @@ if __name__ == "__main__":
     parser.add_argument('--null_combo', choices=['True', 'False'], help='Null action space for special move', default='False')
     parser.add_argument('--transform_action', choices=['True', 'False'], help='Transform action space to MultiDiscrete', default='False')
     parser.add_argument('--seed', type=int, help='Seed', default=0)
+    parser.add_argument('--launch_local_br_eval', choices=['True', 'False'], help='Launch local br eval', default='False')
     parser.add_argument(
         '--device',
         type=str,
@@ -623,6 +632,7 @@ if __name__ == "__main__":
     args.DEBUG = args.DEBUG == 'True'
     args.dedicated_exploiter = args.dedicated_exploiter == 'True'
     args.continue_exploiters = args.continue_exploiters == 'True'
+    args.launch_local_br_eval = args.launch_local_br_eval == 'True'
 
 
     args.eval_prot = args.eval_prot == 'True'
@@ -640,6 +650,7 @@ if __name__ == "__main__":
     print("Continue exploiters: ", args.continue_exploiters)
     print("Number of continue exploiters: ", args.num_continue_exploiters)
     print("Number of environments: ", args.n_envs)
+    print("Launch local br eval: ", args.launch_local_br_eval)
     if args.exploiter_save_freq * args.n_envs > BR_TRAINING_STEPS:
         print("WARNING! Exploiter save frequency is greater than BR training steps. This will result in no exploiter checkpoints being saved AND AN ERROR RIGHT BEFORE LOCAL BR EVAL")
     args.eval_only = args.eval_only == 'True'
@@ -707,6 +718,7 @@ if __name__ == "__main__":
                     matchup_label: Optional[str] = None,
                     replicate_idx: Optional[int] = None,
                     dedicated_job_id: Optional[int] = None,
+                    launch_local_br_eval: bool = False,
                 ) -> None:
                     """
                     Launch one BR subprocess (or run inline in DEBUG mode).
@@ -739,13 +751,15 @@ if __name__ == "__main__":
                         matchup_label,
                         replicate_idx,
                         dedicated_job_id,
+                        launch_local_br_eval,
                     )
                     if args.DEBUG:
                         print(
                             "DEBUG: Launching BR job "
                             f"idx={br_idx}, eval_prot_flag={eval_prot_flag}, "
                             f"from_scratch={from_scratch}, matchup={matchup_label}, "
-                            f"replicate={replicate_idx}, dedicated_job_id={dedicated_job_id}"
+                            f"replicate={replicate_idx}, dedicated_job_id={dedicated_job_id}, "
+                            f"launch_local_br_eval={launch_local_br_eval}"
                         )
                         target(*training_args)
                     else:
@@ -759,12 +773,12 @@ if __name__ == "__main__":
                     from_scratch = False
                     if args.eval_prot:
                         for br_idx in range(args.num_continue_exploiters):
-                            _launch_job(eval_prot_flag=True, br_idx=br_idx, from_scratch=from_scratch)
+                            _launch_job(eval_prot_flag=True, br_idx=br_idx, from_scratch=from_scratch, launch_local_br_eval=args.launch_local_br_eval)
                     if args.eval_adv:
                         # IMPORTANT: eval_adv jobs must set eval_prot_flag=False so
                         # train_best_response configures Exploiter(exploiting='adv').
                         for br_idx in range(args.num_continue_exploiters):
-                            _launch_job(eval_prot_flag=False, br_idx=br_idx, from_scratch=from_scratch)
+                            _launch_job(eval_prot_flag=False, br_idx=br_idx, from_scratch=from_scratch, launch_local_br_eval=args.launch_local_br_eval)
 
                 # Dedicated mode (new behavior): schedule one job per unique
                 # matchup state per side, with `num_full_exploiters` replicates
@@ -776,6 +790,7 @@ if __name__ == "__main__":
                         replicates_per_matchup=args.num_full_exploiters,
                         run_eval_prot=args.eval_prot,
                         run_eval_adv=args.eval_adv,
+                        launch_local_br_eval=args.launch_local_br_eval,
                     )
                     print(
                         "Dedicated exploiter scheduling:\n"
@@ -794,7 +809,9 @@ if __name__ == "__main__":
                             matchup_label=spec["matchup_label"],
                             replicate_idx=spec["replicate_idx"],
                             dedicated_job_id=spec["job_index"],
+                            launch_local_br_eval=args.launch_local_br_eval,
                         )
+                        print("Complete job: ", spec["job_index"])
 
                 # Wait for all BR processes to finish before marking task as done.
                 if not args.DEBUG:

@@ -37,6 +37,7 @@ ENABLE_COMBO="True"
 NULL_COMBO="False"
 TRANSFORM_ACTION="False"
 SEED="0"
+LAUNCH_LOCAL_BR_EVAL="False"
 # Torch device: cpu, cuda, cuda:0, etc. (must match launch.json / worker --device)
 DEVICE="cuda"
 if [ "${DEVICE}" = "cpu" ]; then
@@ -76,6 +77,7 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --transform_action "${TRANSFORM_ACTION}"
         --seed "${SEED}"
         --device "${DEVICE}"
+        --launch_local_br_eval "${LAUNCH_LOCAL_BR_EVAL}"
     )
 
     if [ "${RUN_LIVE}" = "False" ]; then
