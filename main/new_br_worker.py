@@ -201,9 +201,23 @@ class _FixedMatchupPolicyAdapter:
         # This enforces "single-matchup dedicated evaluation/training" semantics
         # even when the original CDS model contains multiple matchup heads.
         batch_size = int(obs_tensor.shape[0])
-        kwargs = dict(kwargs)
-        kwargs["network_keys"] = [self._fixed_matchup_idx] * batch_size
-        return self._base_policy(obs_tensor, *args, **kwargs)
+        #kwargs = dict(kwargs)
+        #kwargs["network_keys"] = [self._fixed_matchup_idx] * batch_size
+
+        ego_forward = kwargs['ego_forward']
+        adv_forward = kwargs['adv_forward']
+
+        if ego_forward is True and adv_forward is True:
+            raise ValueError("cannot have both ego and adv forward -- we can only exploit one at a time")
+
+        if ego_forward:
+            exploited_actions, exploited_log_probs = self._base_policy.ego_forward(obs_tensor)
+        elif adv_forward:
+            exploited_actions, exploited_log_probs = self._base_policy.adv_forward(obs_tensor, buf_num=[self._fixed_matchup_idx])
+        else:
+            raise ValueError(f"Invalid forward flag: {ego_forward} or {adv_forward}")
+
+        return exploited_actions, exploited_log_probs
 
     def to(self, device):
         # Keep adapter identity stable while moving underlying policy modules.
@@ -799,6 +813,8 @@ if __name__ == "__main__":
                         f"  total_jobs={len(dedicated_specs)}"
                     )
                     for spec in dedicated_specs:
+                        if spec['job_index'] == 1:
+                            print("hello")
                         # We use spec["job_index"] as br_idx so each dedicated run
                         # gets a globally unique BR index for this task.
                         _launch_job(
@@ -820,6 +836,7 @@ if __name__ == "__main__":
 
                 # Move it to 'done' when finished
                 done_path = os.path.join(done_dir, task_filename)
+                print("Finished processing task: ", task_filename)
                 #os.rename(processing_path, done_path)
 
             except FileNotFoundError:

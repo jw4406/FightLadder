@@ -5421,14 +5421,20 @@ class Exploiter(PPO):
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 actions, values, log_probs, = self.policy(obs_tensor)
                 #ego_id = self.exploited.opp_list.index(self.exploited.player)
-                if self.exploiting == "ego":
-                    if self.is_spar:
-                        EXPLOITED_ACTIONS, _, _, _, _, _ = self.exploited.policy(obs_tensor, ego_forward=True, adv_forward=False, zero_ego_action=False, zero_adv_action=True,value_forward=False, q_value_forward=False)
+                
+                if self.is_spar:
+                    if self.exploiting == 'ego':
+                        ego_forward = False
+                        adv_forward = True
                     else:
-                        EXPLOITED_ACTIONS, DEAD_VALUES, DEAD_LOG_PROBS = self.exploited.policy(obs_tensor, ego_forward=True, adv_forward=False, zero_ego_action=False, zero_adv_action=False,value_forward=False, q_value_forward=False)
-                    # modify to add q_values for new forward signature
+                        ego_forward = True
+                        adv_forward = False
+                    EXPLOITED_ACTIONS, _, = self.exploited.policy(obs_tensor, ego_forward=ego_forward, adv_forward=adv_forward, zero_ego_action=False, zero_adv_action=False,value_forward=False, q_value_forward=False)
                 else:
-                    _, _, _, EXPLOITED_ACTIONS, _, _ = self.exploited.policy(obs_tensor, ego_forward=False, adv_forward=True, zero_ego_action=False, zero_adv_action=False,value_forward=False, q_value_forward=False)
+                    EXPLOITED_ACTIONS, DEAD_VALUES, DEAD_LOG_PROBS = self.exploited.policy(obs_tensor, ego_forward=True, adv_forward=False, zero_ego_action=False, zero_adv_action=False,value_forward=False, q_value_forward=False)
+                # modify to add q_values for new forward signature
+                
+                
 
             actions = actions.cpu().numpy()
             EXPLOITED_ACTIONS = EXPLOITED_ACTIONS.cpu().numpy()

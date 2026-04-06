@@ -308,9 +308,10 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
     #     else:
     #         raise ValueError("Invalid action distribution")
     def _get_adv_action_dist_from_latent(self, latent_pi_dstb, buf_num, evaluate=False) -> Tuple[Distribution, Distribution]:
-        if evaluate:
+        if evaluate or len(buf_num) == 1:
             assert len(buf_num) == 1
             num_adversaries = 1
+            evaluate = True
         else:
             num_adversaries = self.num_adversaries
         mean_or_logit_dstb_actions = th.zeros((latent_pi_dstb.shape[0], self.dstb_action_space.shape[0])).to(self.device)
@@ -363,11 +364,13 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         ctrl_log_prob = ctrl_distribution.log_prob(ctrl_actions)
         return ctrl_actions, ctrl_log_prob
 
-    def adv_forward(self, obs, deterministic=False) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+    def adv_forward(self, obs, buf_num=None,deterministic=False) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+        if buf_num is None:
+            buf_num = [i for i in range(self.num_adversaries)]
         new_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
         pi_dstb_features = self.pi_dstb_features_extractor(new_obs)
         latent_pi_dstb = self.mlp_extractor.adv_forward(pi_dstb_features)
-        dstb_distribution = self._get_adv_action_dist_from_latent(latent_pi_dstb, buf_num=[i for i in range(self.num_adversaries)])
+        dstb_distribution = self._get_adv_action_dist_from_latent(latent_pi_dstb, buf_num=buf_num)
         dstb_actions = [dstb_distribution[i].get_actions(deterministic=deterministic) for i in range(len(dstb_distribution))]
         #dstb_actions = [dstb_actions[i].reshape((-1, *self.dstb_action_space.shape)) for i in range(self.num_adversaries)]
         #dstb_actions = th.vstack(dstb_actions)
