@@ -45,25 +45,25 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 #print(current_dir)
 TASK_DIR = os.path.join(current_dir, "trained_models/tasks")
 #TASK_DIR = '/n/fs/magics/2415498/FightLadder/main/trained_models/tasks/'
-PROCESSING_DIR = os.path.join(current_dir, "main/trained_models/tasks/processing")
-DONE_DIR = os.path.join(current_dir, "main/trained_models/tasks/done")
-ERROR_DIR = os.path.join(current_dir, "main/trained_models/tasks/error")
-BR_MODEL_DIR = os.path.join(current_dir, "main/trained_models/tasks/br_models")
-WR_STATS_DIR = os.path.join(current_dir, "main/trained_models/wr_stats")
-MEAN_REW_STATS_DIR = os.path.join(current_dir, "main/trained_models/mean_rew_stats")
+#PROCESSING_DIR = os.path.join(current_dir, "main/trained_models/tasks/processing")
+DONE_DIR = os.path.join(current_dir, "trained_models/tasks/done")
+#ERROR_DIR = os.path.join(current_dir, "main/trained_models/tasks/error")
+BR_MODEL_DIR = os.path.join(current_dir, "trained_models/tasks/br_models")
+#WR_STATS_DIR = os.path.join(current_dir, "main/trained_models/wr_stats")
+#MEAN_REW_STATS_DIR = os.path.join(current_dir, "main/trained_models/mean_rew_stats")
 os.makedirs(BR_MODEL_DIR, exist_ok=True)
 os.makedirs(TASK_DIR, exist_ok=True)
-os.makedirs(PROCESSING_DIR, exist_ok=True)
-os.makedirs(DONE_DIR, exist_ok=True)
-os.makedirs(WR_STATS_DIR, exist_ok=True)
-os.makedirs(MEAN_REW_STATS_DIR, exist_ok=True)
-os.makedirs(ERROR_DIR, exist_ok=True)
+#os.makedirs(PROCESSING_DIR, exist_ok=True)
+#os.makedirs(DONE_DIR, exist_ok=True)
+#os.makedirs(WR_STATS_DIR, exist_ok=True)
+#os.makedirs(MEAN_REW_STATS_DIR, exist_ok=True)
+#os.makedirs(ERROR_DIR, exist_ok=True)
 
 if not os.listdir(TASK_DIR):
     print("Warning: The TASK_DIR is empty. Please run ippo.py --player PLAYER to generate a task file.")
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
-BR_TRAINING_STEPS = 50
+BR_TRAINING_STEPS = 100
 
 
 def _dedupe_preserve_order(values: List[str]) -> List[str]:
@@ -555,7 +555,7 @@ def run_br_for_task_in_subprocess(
                 f"state={dedicated_state}, fixed_matchup_idx={fixed_matchup_idx}, "
                 f"replicated_env_count={n_envs}"
             )
-        if exploiter_save_freq * n_envs * len(loaded_model.matchups) > BR_TRAINING_STEPS:
+        if exploiter_save_freq * len(loaded_model.matchups) > BR_TRAINING_STEPS:
             print("-------------------------------------------\n\n ")
             print("ERROR!")
             print("ERROR! Exploiter save frequency is greater than BR training steps. This will result in no exploiter checkpoints being saved AND AN ERROR RIGHT BEFORE LOCAL BR EVAL")

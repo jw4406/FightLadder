@@ -300,7 +300,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                     print("Recorded reward: %.2f" % safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
                     print("how long it took to get here: ", time_elapsed)
                     self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    wandb.log({"eval_rew": safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])})
+                    if self.use_wandb:
+                        wandb.log({"eval_rew": safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])})
                     self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                 self.logger.record("time/fps", fps)
                 self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
