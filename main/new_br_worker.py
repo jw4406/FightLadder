@@ -483,6 +483,7 @@ def train_best_response(
             "--done_model_checkpoint_path", done_model_checkpoint_path,
             "--br_checkpoint_model_path", br_model_path,
             # Evaluate exactly the state slice used by this BR run.
+            "--full_state_list", str(ftm.state_list),
             "--state_list", str(effective_state_list),
             "--dedicated_exploiter", str(from_scratch),
             "--br_index", str(br_index),

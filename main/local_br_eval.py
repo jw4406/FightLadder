@@ -14,6 +14,7 @@ if _br_eval_dev is not None and str(_br_eval_dev).lower().startswith("cpu"):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 import ast
+import re
 
 from common.justin.clean_derivative_free_spar import CleanDerivativeFreeSPAR
 from common.algorithms import Exploiter
@@ -33,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--main_checkpoint_model_path", type=str, required=True)
     parser.add_argument("--done_model_checkpoint_path", type=str, required=True)
     parser.add_argument("--br_checkpoint_model_path", type=str, required=True)
+    parser.add_argument("--full_state_list", type=str, required=True)
     parser.add_argument("--state_list", type=str, required=True)
     parser.add_argument("--dedicated_exploiter", type=str, required=True)
     parser.add_argument("--br_index", type=int, required=True)
@@ -80,12 +82,23 @@ def _collect_episode_returns(model, target_episodes, action_fn):
     return finished_returns
 
 
+def _extract_left_right_names_from_state(state):
+    if not state:
+        return "unknown_left", "unknown_right"
+    basename = os.path.basename(str(state))
+    matchup_match = re.search(r"\.([A-Za-z]+)Vs([A-Za-z]+)\.2Player\.state$", basename)
+    if matchup_match:
+        return matchup_match.group(1), matchup_match.group(2)
+    return "unknown_left", "unknown_right"
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     data_dict = json.loads(args.game_args)
     args.game_args = argparse.Namespace(**data_dict)
     args.state_list = ast.literal_eval(args.state_list)
+    args.full_state_list = ast.literal_eval(args.full_state_list)
     args.dedicated_exploiter = args.dedicated_exploiter == "True"
     args.eval_prot = args.eval_prot == "True"
 
@@ -99,6 +112,7 @@ def main() -> None:
     os.makedirs(selfplay_rewards_folder, exist_ok=True)
 
     env = env_generator(args.game_args, STATE=args.state_list)
+    full_env = env_generator(args.game_args, STATE=args.full_state_list)
     # ENV_ID = args.env_id
     try:
         model = CleanDerivativeFreeSPAR.load(
@@ -220,19 +234,56 @@ def main() -> None:
         return np.hstack([action, adv_action])
 
     exploiter_rewards = _collect_episode_returns(model, nr, exploiter_action_fn)
+    model.env = full_env
     selfplay_rewards = _collect_episode_returns(model, nr, selfplay_action_fn)
 
     # TODO: write out to a file and then aggregate the results and plot
     # os.makedirs(rewards_folder, exist_ok=True)
+    main_side = "left" if args.eval_prot else "right"
+    exploiter_side = "left" if not args.eval_prot else "right"
+    tested_states = _dedupe_preserve_order(args.state_list)
+    tested_state = tested_states[0] if tested_states else ""
+    left_name, right_name = _extract_left_right_names_from_state(tested_state)
+    main_name = left_name if main_side == "left" else right_name
+    exploiter_name = right_name if exploiter_side == "right" else left_name
+    filename = (
+        f"{model.num_timesteps}_main_{main_side}_{main_name}_"
+        f"exploiter_{exploiter_side}_{exploiter_name}_.txt"
+    )
     if args.eval_prot:
-        with open(os.path.join(br_rewards_folder, "%s_br%d_adv.txt" % (str(model.num_timesteps), args.br_index)), "w") as f:
+        with open(os.path.join(br_rewards_folder, filename), "w") as f:
             f.write(str(np.mean(exploiter_rewards)))
     else:
-        with open(os.path.join(br_rewards_folder, "%s_br%d_ego.txt" % (str(model.num_timesteps), args.br_index)), "w") as f:
+        with open(os.path.join(br_rewards_folder, filename), "w") as f:
             f.write(str(np.mean(exploiter_rewards)))
     with open(os.path.join(selfplay_rewards_folder, "%s_br%d.txt" % (str(model.num_timesteps), args.br_index)), "w") as f:
         f.write(str(np.mean(selfplay_rewards)))
 
+    eval_target = "ego" if args.eval_prot else "adv"
+    tested_state_for_print = tested_state if len(tested_states) == 1 else tested_states
+    run_summary = {
+        "checkpoint_num_timesteps": int(model.num_timesteps),
+        "br_index": args.br_index,
+        "tested_state": tested_state_for_print,
+        "left_name": left_name,
+        "right_name": right_name,
+        "output_filename": filename,
+        "eval_target": eval_target,
+        "dedicated_exploiter": args.dedicated_exploiter,
+        "device": args.device,
+        "main_checkpoint_model_path": args.main_checkpoint_model_path,
+        "done_model_checkpoint_path": args.done_model_checkpoint_path,
+        "br_checkpoint_model_path": args.br_checkpoint_model_path,
+        "full_state_list": args.full_state_list,
+        "state_list": args.state_list,
+    }
+    print(
+        f"local br eval complete for checkpoint {model.num_timesteps} | "
+        f"br_index={args.br_index} | state={tested_state_for_print} | eval_target={eval_target}",
+        flush=True,
+    )
+    print("local br eval args:", flush=True)
+    print(json.dumps(run_summary, indent=2, sort_keys=True), flush=True)
 
 if __name__ == "__main__":
     main()
