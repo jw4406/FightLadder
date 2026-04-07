@@ -484,7 +484,7 @@ def train_best_response(
             "--br_checkpoint_model_path", br_model_path,
             # Evaluate exactly the state slice used by this BR run.
             "--state_list", str(effective_state_list),
-            "--exploiter_is_cds", str(not from_scratch),
+            "--dedicated_exploiter", str(from_scratch),
             "--br_index", str(br_index),
             "--game_args", json.dumps(vars(game_args)),
             "--device", device,

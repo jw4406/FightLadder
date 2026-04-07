@@ -418,7 +418,7 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             ego_log_prob = th.zeros(self.num_adversaries * self.envs_per_matchup).to(self.device)
             #ego_entropy = th.zeros()
         if adv_forward:
-            adv_actions, adv_log_prob = self.adv_forward(obs, deterministic)
+            adv_actions, adv_log_prob = self.adv_forward(obs, deterministic=deterministic)
             #adv_actions = adv_actions[0]
             #adv_log_prob = adv_log_prob[0]
         if zero_adv_action:

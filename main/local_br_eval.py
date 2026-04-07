@@ -24,6 +24,7 @@ import numpy as np
 from stable_baselines3.common.utils import obs_as_tensor
 import argparse
 from gymnasium.spaces import Box
+from new_br_worker import _FixedMatchupPolicyAdapter, _dedupe_preserve_order
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--done_model_checkpoint_path", type=str, required=True)
     parser.add_argument("--br_checkpoint_model_path", type=str, required=True)
     parser.add_argument("--state_list", type=str, required=True)
-    parser.add_argument("--exploiter_is_cds", type=str, required=True)
+    parser.add_argument("--dedicated_exploiter", type=str, required=True)
     parser.add_argument("--br_index", type=int, required=True)
     parser.add_argument("--game_args", type=str, required=True)
     parser.add_argument(
@@ -85,7 +86,7 @@ def main() -> None:
     data_dict = json.loads(args.game_args)
     args.game_args = argparse.Namespace(**data_dict)
     args.state_list = ast.literal_eval(args.state_list)
-    args.exploiter_is_cds = args.exploiter_is_cds == "True"
+    args.dedicated_exploiter = args.dedicated_exploiter == "True"
     args.eval_prot = args.eval_prot == "True"
 
     main_checkpoint_model_path = args.main_checkpoint_model_path
@@ -122,7 +123,7 @@ def main() -> None:
 # else:
 #     env.action_space = model.dstb_action_space
 
-    if args.exploiter_is_cds:
+    if not args.dedicated_exploiter:
         br_model = CleanDerivativeFreeSPAR.load(
             br_model_path, env=env, num_perturbed=1, device=args.device
         )
@@ -149,20 +150,41 @@ def main() -> None:
 
     nr = 50
     exploiter_rewards, selfplay_rewards = [], []
+    model_policy_for_eval = model.policy
+    use_fixed_matchup_adapter = False
+    if args.dedicated_exploiter:
+        # Dedicated runs pass a repeated singleton state list; intercept policy
+        # forward calls on the exploited CDS model through one fixed matchup.
+        eval_unique_states = _dedupe_preserve_order(args.state_list)
+        if len(eval_unique_states) == 1:
+            dedicated_state = eval_unique_states[0]
+            model_unique_states = _dedupe_preserve_order(getattr(model, "state_list", []))
+            if dedicated_state in model_unique_states:
+                fixed_matchup_idx = model_unique_states.index(dedicated_state)
+                model_policy_for_eval = _FixedMatchupPolicyAdapter(
+                    model.policy, fixed_matchup_idx=fixed_matchup_idx
+                )
+                use_fixed_matchup_adapter = True
+                print(
+                    "Configured fixed-matchup eval adapter: "
+                    f"state={dedicated_state}, fixed_matchup_idx={fixed_matchup_idx}",
+                    flush=True,
+                )
 
     def exploiter_action_fn(obs):
         with th.no_grad():
-            action, _, _, _, _, _ = model.policy(obs_as_tensor(obs, model.device))
-            if args.exploiter_is_cds:
-                left_br_action, _, right_br_action, _, _, _ = br_model.policy(
-                    obs_as_tensor(obs, br_model.device),
+            obs_model_tensor = obs_as_tensor(obs, model.device)
+            if args.dedicated_exploiter and use_fixed_matchup_adapter:
+                action, _ = model_policy_for_eval(
+                    obs_model_tensor,
                     deterministic=False,
-                    ego_forward=True,
-                    adv_forward=True,
-                    zero_ego_action=False,
-                    zero_adv_action=True,
+                    ego_forward=args.eval_prot,
+                    adv_forward=not args.eval_prot,
                 )
-                action_br = right_br_action if args.eval_prot else left_br_action
+            else:
+                action, _, _, _, _, _ = model.policy(obs_model_tensor)
+            if args.dedicated_exploiter:
+                action_br, _, _ = br_model.policy(obs_as_tensor(obs, br_model.device))
             else:
                 action_br, _, _ = br_model.policy(obs_as_tensor(obs, br_model.device))
         action = action.cpu().numpy()

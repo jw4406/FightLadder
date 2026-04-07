@@ -5426,11 +5426,16 @@ class Exploiter(PPO):
                 
                 if self.is_spar:
                     if self.exploiting == 'ego':
-                        ego_forward = False
-                        adv_forward = True
-                    else:
+                        # if ego is being exploited, we need to see how he behaves
+                        # adversary action will be provided by exploiter model
                         ego_forward = True
                         adv_forward = False
+                    else:
+                        assert self.exploiting == 'adv'
+                        # if adv is being exploited, we need to see how he behaves
+                        # ego action will be provided by exploiter model
+                        ego_forward = False
+                        adv_forward = True
                     EXPLOITED_ACTIONS, _, = self.exploited.policy(obs_tensor, ego_forward=ego_forward, adv_forward=adv_forward, zero_ego_action=False, zero_adv_action=False,value_forward=False, q_value_forward=False)
                 else:
                     EXPLOITED_ACTIONS, DEAD_VALUES, DEAD_LOG_PROBS = self.exploited.policy(obs_tensor, ego_forward=True, adv_forward=False, zero_ego_action=False, zero_adv_action=False,value_forward=False, q_value_forward=False)
