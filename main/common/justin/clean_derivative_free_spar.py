@@ -139,10 +139,12 @@ class CleanDerivativeFreeSPAR(PPO):
             use_mirror=False,
             num_workers=None,
             scheduler_step_size: int=10, #TODO: 10 was chosen arbitrarily - should be changed.
+            use_wandb: bool = True,
     ):
 
         self.matchups = [state2matchup(state) for state in state_list] if state_list is not None else None #This needs to happen before the super().__init__
         self.envs_per_matchup = envs_per_matchup
+        self.use_wandb = use_wandb
         super().__init__(
             policy,
             env,

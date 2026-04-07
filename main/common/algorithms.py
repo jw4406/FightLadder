@@ -5338,6 +5338,7 @@ class Exploiter(PPO):
         br_tracker_patience: int = 10,
         br_tracker_tolerance: float = 1e-4,
         br_tracker_window_size: int = 50,
+        use_wandb: bool = True,
     ):
 
         super().__init__(policy=policy,
@@ -5376,6 +5377,7 @@ class Exploiter(PPO):
             tolerance=self.br_tracker_tolerance,
             window_size=self.br_tracker_window_size,
         )
+        self.use_wandb = use_wandb
         _move_exploited_rl_agent_to_device(self.exploited, self.device)
 
     def collect_rollouts(
@@ -5452,7 +5454,8 @@ class Exploiter(PPO):
             #print(rewards)
             # assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
             self.num_timesteps += env.num_envs
-            wandb.log({"epochs": self.num_timesteps})
+            if self.use_wandb:
+                wandb.log({"epochs": self.num_timesteps})
             # Give access to local variables
             callback.update_locals(locals())
             if callback.on_step() is False:

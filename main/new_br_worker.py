@@ -63,7 +63,7 @@ if not os.listdir(TASK_DIR):
     print("Warning: The TASK_DIR is empty. Please run ippo.py --player PLAYER to generate a task file.")
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
-BR_TRAINING_STEPS = 1000
+BR_TRAINING_STEPS = 50
 
 
 def _dedupe_preserve_order(values: List[str]) -> List[str]:
@@ -257,6 +257,7 @@ def load_spar_model(
     n_envs: int = 2,
     device: str = "cuda",
     state_subset: Optional[List[str]] = None,
+    use_wandb: bool = True,
 ):
     worker_id = os.getpid()
     print(f"WORKER [{worker_id}]: Processing task: {os.path.basename(task_file_path)}")
@@ -327,7 +328,8 @@ def load_spar_model(
             n_env_per_adv=1,
             seed= 0,
             target_kl=0.025,
-            use_mirror=False
+            use_mirror=False,
+            use_wandb=use_wandb,
         )
         ftm.set_parameters(params, exact_match=True, device=ftm.device)
     # Keep a stable copy of the unique checkpoint state ordering for dedicated
@@ -360,6 +362,7 @@ def train_best_response(
     replicate_idx: Optional[int] = None,
     dedicated_job_id: Optional[int] = None,
     launch_local_br_eval: bool = False,
+    use_wandb: bool = True,
 ) -> None:
     """
     The core logic for a single best-response training run.
@@ -373,16 +376,17 @@ def train_best_response(
     # --- This is where your specific BR logic goes ---
     # 1. Load the frozen opponent
     # fixed_opponent = PPO.load(checkpoint_path)
-    wandb.init(project=proj_name,
-               entity='jw4406',
-               group="br_workers",
-               config={"eval_rew": 0,
-                       "exploiter_rew": 0,
-                       "epochs": 0,
-                       "br_wr": 0,
-                       "main_training_epoch": 0,
-                       "torch_device": device,
-                       })
+    if use_wandb:
+        wandb.init(project=proj_name,
+                entity='jw4406',
+                group="br_workers",
+                config={"eval_rew": 0,
+                        "exploiter_rew": 0,
+                        "epochs": 0,
+                        "br_wr": 0,
+                        "main_training_epoch": 0,
+                        "torch_device": device,
+                        })
     # 2. Create your environment, passing the frozen opponent to it
     #    so the BR agent can play against it.
     # env = YourStreetFighterEnv(opponent_policy=fixed_opponent)
@@ -418,6 +422,7 @@ def train_best_response(
         br_tracker_patience=br_tracker_patience,
         br_tracker_tolerance=br_tracker_tolerance,
         br_tracker_window_size=br_tracker_window_size,
+        use_wandb=use_wandb,
     )
     br_agent.is_spar = is_spar # TODO: This is a stupid hack to get the BR agent to know if it is a SPAR model or not. Remove this once we have a better way to do this.
     # 4. Train the BR agent
@@ -510,12 +515,16 @@ def run_br_for_task_in_subprocess(
     replicate_idx: Optional[int] = None,
     dedicated_job_id: Optional[int] = None,
     launch_local_br_eval: bool = False,
+    use_wandb: bool = True,
 ) -> None:
     """
     Worker function for running a single BR training instance in a separate process.
     Each subprocess loads its own copy of the model to avoid pickling issues.
     """
     _ensure_cpu_only_env(device)
+    if not use_wandb:
+        os.environ["WANDB_DISABLED"] = "true"
+        os.environ["WANDB_MODE"] = "disabled"
     if is_spar:
         # NOTE: Do not shrink CDS model topology based on state_subset.
         # We always load full topology and handle dedicated constraints via
@@ -525,6 +534,7 @@ def run_br_for_task_in_subprocess(
             task_file_path,
             n_envs=n_envs,
             device=device,
+            use_wandb=use_wandb,
         )
         dedicated_state_list_for_env = None
         if state_subset is not None:
@@ -559,6 +569,7 @@ def run_br_for_task_in_subprocess(
         loaded_model.policy.dstb_optimizer.param_groups[0]['lr'] = 1e-4
         loaded_model.policy.value_optimizer.param_groups[0]['lr'] = 2e-4
         loaded_model.use_lr_annealing = False
+        loaded_model.use_wandb = use_wandb
     else:
         raise NotImplementedError("Non-SPAR multiprocessing BR training is not implemented.")
 
@@ -585,6 +596,7 @@ def run_br_for_task_in_subprocess(
         replicate_idx=replicate_idx,
         dedicated_job_id=dedicated_job_id,
         launch_local_br_eval=launch_local_br_eval,
+        use_wandb=use_wandb,
     )
 
 
@@ -621,6 +633,7 @@ if __name__ == "__main__":
     parser.add_argument('--transform_action', choices=['True', 'False'], help='Transform action space to MultiDiscrete', default='False')
     parser.add_argument('--seed', type=int, help='Seed', default=0)
     parser.add_argument('--launch_local_br_eval', choices=['True', 'False'], help='Launch local br eval', default='False')
+    parser.add_argument('--use_wandb', choices=['True', 'False'], help='Enable Weights & Biases logging', default='True')
     parser.add_argument(
         '--device',
         type=str,
@@ -647,6 +660,7 @@ if __name__ == "__main__":
     args.dedicated_exploiter = args.dedicated_exploiter == 'True'
     args.continue_exploiters = args.continue_exploiters == 'True'
     args.launch_local_br_eval = args.launch_local_br_eval == 'True'
+    args.use_wandb = args.use_wandb == 'True'
 
 
     args.eval_prot = args.eval_prot == 'True'
@@ -668,7 +682,11 @@ if __name__ == "__main__":
     if args.exploiter_save_freq * args.n_envs > BR_TRAINING_STEPS:
         print("WARNING! Exploiter save frequency is greater than BR training steps. This will result in no exploiter checkpoints being saved AND AN ERROR RIGHT BEFORE LOCAL BR EVAL")
     args.eval_only = args.eval_only == 'True'
-    wandb.login(key='d95a51c4001b862123a34a3853fe0306906d2f07')
+    if not args.use_wandb:
+        os.environ["WANDB_DISABLED"] = "true"
+        os.environ["WANDB_MODE"] = "disabled"
+    else:
+        wandb.login(key='d95a51c4001b862123a34a3853fe0306906d2f07')
     todo_dir = os.path.join(TASK_DIR, "todo")
 
     if args.task_dir is not None and args.task_dir != "":
@@ -766,6 +784,7 @@ if __name__ == "__main__":
                         replicate_idx,
                         dedicated_job_id,
                         launch_local_br_eval,
+                        args.use_wandb,
                     )
                     if args.DEBUG:
                         print(
