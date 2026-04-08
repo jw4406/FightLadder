@@ -196,11 +196,17 @@ def main() -> None:
                     adv_forward=not args.eval_prot,
                 )
             else:
-                action, _, _, _, _, _ = model.policy(obs_model_tensor)
+                if args.eval_prot:
+                    action, _, _, _, _, _ = model.policy(obs_model_tensor)
+                else:
+                    _, _, action, _, _, _ = model.policy(obs_model_tensor)
             if args.dedicated_exploiter:
                 action_br, _, _ = br_model.policy(obs_as_tensor(obs, br_model.device))
             else:
-                action_br, _, _ = br_model.policy(obs_as_tensor(obs, br_model.device))
+                if args.eval_prot:
+                    _, _, action_br, _, _, _ = br_model.policy(obs_as_tensor(obs, br_model.device))
+                else:
+                    action_br, _, _, _, _, _ = br_model.policy(obs_as_tensor(obs, br_model.device))
         action = action.cpu().numpy()
         action_br = action_br.cpu().numpy()
         if args.eval_prot:
@@ -250,13 +256,9 @@ def main() -> None:
         f"{model.num_timesteps}_main_{main_side}_{main_name}_"
         f"exploiter_{exploiter_side}_{exploiter_name}_.txt"
     )
-    if args.eval_prot:
-        with open(os.path.join(br_rewards_folder, filename), "w") as f:
-            f.write(str(np.mean(exploiter_rewards)))
-    else:
-        with open(os.path.join(br_rewards_folder, filename), "w") as f:
-            f.write(str(np.mean(exploiter_rewards)))
-    with open(os.path.join(selfplay_rewards_folder, "%s_br%d.txt" % (str(model.num_timesteps), args.br_index)), "w") as f:
+    with open(os.path.join(br_rewards_folder, filename), "w") as f:
+        f.write(str(np.mean(exploiter_rewards)))
+    with open(os.path.join(selfplay_rewards_folder, filename), "w") as f:
         f.write(str(np.mean(selfplay_rewards)))
 
     eval_target = "ego" if args.eval_prot else "adv"
@@ -285,5 +287,7 @@ def main() -> None:
     print("local br eval args:", flush=True)
     print(json.dumps(run_summary, indent=2, sort_keys=True), flush=True)
 
+    
 if __name__ == "__main__":
     main()
+    print("local br eval complete")
