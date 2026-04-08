@@ -754,7 +754,7 @@ class CleanDerivativeFreeSPAR(PPO):
             convergence_tracker = None
             if getattr(self, "training_br", False):
                 convergence_tracker = BRConvergenceTracker(
-                    patience=getattr(self, "br_tracker_patience", 10),
+                    patience=getattr(self, "br_tracker_patience", 20),
                     tolerance=getattr(self, "br_tracker_tolerance", 1e-4),
                     window_size=getattr(self, "br_tracker_window_size", 50),
                 )
@@ -819,11 +819,12 @@ class CleanDerivativeFreeSPAR(PPO):
                     and len(self.ep_info_buffer) > 0
                     and len(self.ep_info_buffer[0]) > 0
                 ):
-                    # Use negative mean reward as an exploitability proxy (lower is better).
-                    br_metric = -safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])
-                    if convergence_tracker.check(br_metric):
-                        print("BR convergence tracker triggered early stopping.")
-                        break
+                    # Use reward as an exploitability proxy 
+                    br_metric = safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])
+                    if hasattr(self, "training_br") and self.training_br:
+                        if convergence_tracker.check_reward_stability(br_metric):
+                            print("BR convergence tracker triggered early stopping.")
+                            break
             
 
                 self.train(update_ego=update_ego, update_adversary=update_adversary)
