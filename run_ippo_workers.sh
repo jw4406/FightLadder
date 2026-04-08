@@ -13,7 +13,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 IPPO_PATH="${SCRIPT_DIR}/main/ippo.py"
 
 # Arguments from launch.json (Python Debugger: ippo.py)
-PLAYER="Guile"
+PLAYER=("Guile" "Sagat" "Blanka")
 OPPONENTS=("Guile" "Sagat" "Ryu" "Dhalsim" "Zangief" "ChunLi" "Ken" "Balrog" "MBison" "Vega" "EHonda")
 NUM_ENV_TO_LOAD="1"
 ENV_BATCH_SIZE="24"
@@ -27,12 +27,12 @@ USE_MIRROR="False"
 # CONTINUE_TRAINING=""  # Optional: set this to pass --continue_training
 # LEFT_MODEL_FILE=""  # Optional: set this to pass --left-model-file
 # RIGHT_MODEL_FILE=""  # Optional: set this to pass --right-model-file
-SAVE_DIR="/u/jw4406/FightLadder/main/trained_models/tasks/todo/"
+SAVE_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/"
 USE_LR_ANNEALING="False"
 LR_ANNEAL_COEFF=".995"
 CHECKPOINT_INTERVAL="1000"
-NUM_ENV_STEPS="128"
-EGO_STYLE="zero_action"
+NUM_ENV_STEPS="256"
+EGO_STYLE="learning"
 ADV_STYLE="learning"
 ENVS_PER_MATCHUP="2"
 SIDE="both"
@@ -49,7 +49,7 @@ for i in $(seq 1 ${NUM_WORKERS}); do
     echo "Starting ippo instance ${i}..."
     CMD=(
         python "${IPPO_PATH}"
-        --player "${PLAYER}"
+        --player "${PLAYER[@]}"
         --opponents "${OPPONENTS[@]}"
         --num_env_to_load "${NUM_ENV_TO_LOAD}"
         --env_batch_size "${ENV_BATCH_SIZE}"

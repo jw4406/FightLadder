@@ -660,7 +660,7 @@ def main(args):
             v_learning_rate=args.v_lr,
             verbose=2,
             n_steps=args.num_env_steps,
-            batch_size=512,
+            batch_size=128,
             n_epochs=6,
             state_list=state_list,
             envs_per_matchup=args.envs_per_matchup,
