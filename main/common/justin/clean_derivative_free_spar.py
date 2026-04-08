@@ -219,7 +219,95 @@ class CleanDerivativeFreeSPAR(PPO):
         self.env.num_envs = self.n_envs
         self.use_mirror = use_mirror
         self.num_workers = num_workers
+        self.elo_initial_rating = 1000.0
+        self.elo_k_factor = 24.0
+        self._init_elo_trackers()
         #Create learning rate schedulers
+
+    def _init_elo_trackers(self) -> None:
+        self.elo_ego_rating = float(self.elo_initial_rating)
+        n_adv = int(self.num_adversaries) if self.num_adversaries is not None else 0
+        self.elo_adversary_ratings = np.full(n_adv, self.elo_initial_rating, dtype=np.float64)
+        self.elo_games_played = np.zeros(n_adv, dtype=np.int64)
+
+    def _matchup_name_for_adversary(self, adversary_idx: int) -> str:
+        if self.matchups is None or self.envs_per_matchup is None:
+            return f"adversary_{adversary_idx}"
+        state_idx = adversary_idx * self.envs_per_matchup
+        if state_idx < 0 or state_idx >= len(self.matchups):
+            return f"adversary_{adversary_idx}"
+        return str(self.matchups[state_idx])
+
+    def _ego_score_from_terminal(self, info: dict, reward: float, reward_other: float) -> float:
+        if info is not None:
+            outcome = info.get("outcome")
+            if isinstance(outcome, str):
+                normalized = outcome.lower()
+                if any(k in normalized for k in ["agent", "ego", "left", "player1", "win"]):
+                    if "lose" not in normalized and "loss" not in normalized:
+                        return 1.0
+                if any(k in normalized for k in ["enemy", "adv", "right", "player2", "lose", "loss"]):
+                    return 0.0
+                if any(k in normalized for k in ["draw", "tie"]):
+                    return 0.5
+            elif isinstance(outcome, (int, float)):
+                if outcome > 0:
+                    return 1.0
+                if outcome < 0:
+                    return 0.0
+                return 0.5
+
+            if "agent_hp" in info and "enemy_hp" in info:
+                agent_hp = info["agent_hp"]
+                enemy_hp = info["enemy_hp"]
+                if agent_hp > enemy_hp:
+                    return 1.0
+                if agent_hp < enemy_hp:
+                    return 0.0
+                return 0.5
+
+        if reward > reward_other:
+            return 1.0
+        if reward < reward_other:
+            return 0.0
+        return 0.5
+
+    def _update_elo_from_rollout_stats(self, rollout_stats: List[dict]) -> None:
+        if not rollout_stats or len(self.elo_adversary_ratings) == 0:
+            return
+
+        for adv_idx, stat in enumerate(rollout_stats):
+            n_games = int(stat["games"])
+            if n_games <= 0:
+                continue
+
+            observed_score = (stat["wins"] + 0.5 * stat["draws"]) / n_games
+            expected_score = 1.0 / (
+                1.0 + 10.0 ** ((self.elo_adversary_ratings[adv_idx] - self.elo_ego_rating) / 400.0)
+            )
+            delta = self.elo_k_factor * (observed_score - expected_score)
+            self.elo_ego_rating += delta
+            self.elo_adversary_ratings[adv_idx] -= delta
+            self.elo_games_played[adv_idx] += n_games
+
+            matchup_name = self._matchup_name_for_adversary(adv_idx)
+            self.logger.record(f"elo/{matchup_name}/score_rollout", float(observed_score))
+            self.logger.record(f"elo/{matchup_name}/games_rollout", n_games)
+            self.logger.record(f"elo/{matchup_name}/rating_adv", float(self.elo_adversary_ratings[adv_idx]))
+            self.logger.record(f"elo/{matchup_name}/rating_gap", float(self.elo_ego_rating - self.elo_adversary_ratings[adv_idx]))
+            if self.use_wandb:
+                wandb.log(
+                    {
+                        f"elo/{matchup_name}/score_rollout": float(observed_score),
+                        f"elo/{matchup_name}/games_rollout": n_games,
+                        f"elo/{matchup_name}/rating_adv": float(self.elo_adversary_ratings[adv_idx]),
+                        f"elo/{matchup_name}/rating_gap": float(self.elo_ego_rating - self.elo_adversary_ratings[adv_idx]),
+                    }
+                )
+
+        self.logger.record("elo/global/rating_ego", float(self.elo_ego_rating))
+        if self.use_wandb:
+            wandb.log({"elo/global/rating_ego": float(self.elo_ego_rating)})
 
     def _setup_model(self) -> None:
         assert self.state_list is not None
@@ -345,6 +433,10 @@ class CleanDerivativeFreeSPAR(PPO):
         rollout_buffer.reset()
         for i in range(self.num_adversaries):
             adversary_buffers[i].reset()
+        rollout_terminal_stats = [
+            {"wins": 0, "losses": 0, "draws": 0, "games": 0}
+            for _ in range(self.num_adversaries)
+        ]
         #rollout_buffer_other.reset()
         # Sample new weights for the state dependent exploration
         if self.use_sde:
@@ -396,6 +488,25 @@ class CleanDerivativeFreeSPAR(PPO):
 
             self._update_info_buffer(infos)
             n_steps += 1
+
+            for idx, done in enumerate(dones):
+                if not done:
+                    continue
+                adv_idx = idx // self.n_env_per_adv
+                if adv_idx < 0 or adv_idx >= self.num_adversaries:
+                    continue
+                ego_score = self._ego_score_from_terminal(
+                    infos[idx],
+                    float(rewards[idx]),
+                    float(rewards_other[idx]),
+                )
+                if ego_score >= 1.0:
+                    rollout_terminal_stats[adv_idx]["wins"] += 1
+                elif ego_score <= 0.0:
+                    rollout_terminal_stats[adv_idx]["losses"] += 1
+                else:
+                    rollout_terminal_stats[adv_idx]["draws"] += 1
+                rollout_terminal_stats[adv_idx]["games"] += 1
 
             if isinstance(self.action_space, _DiscreteTypes):
                 # Reshape in case of discrete action
@@ -457,6 +568,7 @@ class CleanDerivativeFreeSPAR(PPO):
         rollout_buffer.prepare_data_for_training()
         for i in range(len(adversary_buffers)):
             adversary_buffers[i].prepare_data_for_training()
+        self._update_elo_from_rollout_stats(rollout_terminal_stats)
 
         return True
     
