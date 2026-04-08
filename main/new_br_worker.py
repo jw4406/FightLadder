@@ -662,6 +662,9 @@ if __name__ == "__main__":
     args.continue_exploiters = args.continue_exploiters == 'True'
     args.launch_local_br_eval = args.launch_local_br_eval == 'True'
     args.use_wandb = args.use_wandb == 'True'
+    # Linux defaults to "fork", which cannot safely inherit an initialized CUDA
+    # runtime. Use explicit "spawn" for BR worker subprocesses.
+    mp_ctx = mp.get_context("spawn")
 
 
     args.eval_prot = args.eval_prot == 'True'
@@ -797,7 +800,7 @@ if __name__ == "__main__":
                         )
                         target(*training_args)
                     else:
-                        p = mp.Process(target=target, args=training_args)
+                        p = mp_ctx.Process(target=target, args=training_args)
                         p.start()
                         processes.append(p)
 

@@ -291,23 +291,28 @@ class CleanDerivativeFreeSPAR(PPO):
             self.elo_games_played[adv_idx] += n_games
 
             matchup_name = self._matchup_name_for_adversary(adv_idx)
-            self.logger.record(f"elo/{matchup_name}/score_rollout", float(observed_score))
-            self.logger.record(f"elo/{matchup_name}/games_rollout", n_games)
-            self.logger.record(f"elo/{matchup_name}/rating_adv", float(self.elo_adversary_ratings[adv_idx]))
-            self.logger.record(f"elo/{matchup_name}/rating_gap", float(self.elo_ego_rating - self.elo_adversary_ratings[adv_idx]))
+            rating_adv_display = int(round(float(self.elo_adversary_ratings[adv_idx])))
+            rating_gap_display = float(self.elo_ego_rating - self.elo_adversary_ratings[adv_idx])
+            self.logger.record(f"elo/adv/{matchup_name}/score_rollout", float(observed_score))
+            self.logger.record(f"elo/adv/{matchup_name}/games_rollout", n_games)
+            self.logger.record(f"elo/adv/{matchup_name}/rating_adv", rating_adv_display)
+            self.logger.record(
+                f"elo/adv/{matchup_name}/rating_gap",
+                rating_gap_display,
+            )
             if self.use_wandb:
                 wandb.log(
                     {
-                        f"elo/{matchup_name}/score_rollout": float(observed_score),
-                        f"elo/{matchup_name}/games_rollout": n_games,
-                        f"elo/{matchup_name}/rating_adv": float(self.elo_adversary_ratings[adv_idx]),
-                        f"elo/{matchup_name}/rating_gap": float(self.elo_ego_rating - self.elo_adversary_ratings[adv_idx]),
+                        f"elo/adv/{matchup_name}/score_rollout": float(observed_score),
+                        f"elo/adv/{matchup_name}/games_rollout": n_games,
+                        f"elo/adv/{matchup_name}/rating_adv": float(self.elo_adversary_ratings[adv_idx]),
+                        f"elo/adv/{matchup_name}/rating_gap": rating_gap_display,
                     }
                 )
 
-        self.logger.record("elo/global/rating_ego", float(self.elo_ego_rating))
+        self.logger.record("elo/ego/global/rating_ego", int(round(float(self.elo_ego_rating))))
         if self.use_wandb:
-            wandb.log({"elo/global/rating_ego": float(self.elo_ego_rating)})
+            wandb.log({"elo/ego/global/rating_ego": float(self.elo_ego_rating)})
 
     def _setup_model(self) -> None:
         assert self.state_list is not None
@@ -798,15 +803,15 @@ class CleanDerivativeFreeSPAR(PPO):
                 if log_interval is not None and iteration % log_interval == 0:
                     time_elapsed = max((time.time_ns() - self.start_time) / 1e9, sys.float_info.epsilon)
                     fps = int((self.num_timesteps - self._num_timesteps_at_start) / time_elapsed)
-                    self.logger.record("time/iterations", iteration, exclude="tensorboard")
+                    self.logger.record("train/time/iterations", iteration, exclude="tensorboard")
                     if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
                         rews.append(safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                        self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                        wandb.log({"eval_rew": safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])})
-                        self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
-                    self.logger.record("time/fps", fps)
-                    self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
-                    self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
+                        self.logger.record("train/rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+                        wandb.log({"train/eval_rew": safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])})
+                        self.logger.record("train/rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+                    self.logger.record("train/time/fps", fps)
+                    self.logger.record("train/time/time_elapsed", int(time_elapsed), exclude="tensorboard")
+                    self.logger.record("train/time/total_timesteps", self.num_timesteps, exclude="tensorboard")
                     self.logger.dump(step=self.num_timesteps)
                 if (
                     convergence_tracker is not None
