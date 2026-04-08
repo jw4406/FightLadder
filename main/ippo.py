@@ -660,7 +660,7 @@ def main(args):
             v_learning_rate=args.v_lr,
             verbose=2,
             n_steps=args.num_env_steps,
-            batch_size=128,
+            batch_size=args.training_batch_size,
             n_epochs=6,
             state_list=state_list,
             envs_per_matchup=args.envs_per_matchup,
@@ -954,6 +954,7 @@ if __name__ == "__main__":
     parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-4, required=True)
     parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=7e-4, required=True)
     parser.add_argument("--v_lr", type=float, help="value learning rate", default=7e-4, required=True)
+    parser.add_argument("--training_batch_size", type=int, help="Training batch size", default=256, required=True)
     parser.add_argument("--checkpoint_interval", type=int, help="Checkpoint interval", default=10000, required=True)
     parser.add_argument("--save_dir", type=str, help="Save directory", default="trained_models/ippo", required=True)
     #parser.add_argument("--log_dir", type=str, help="Log directory", default="logs/ippo", required=True)

@@ -807,7 +807,8 @@ class CleanDerivativeFreeSPAR(PPO):
                     if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
                         rews.append(safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
                         self.logger.record("train/rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                        wandb.log({"train/eval_rew": safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])})
+                        if self.use_wandb:
+                            wandb.log({"train/eval_rew": safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])})
                         self.logger.record("train/rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                     self.logger.record("train/time/fps", fps)
                     self.logger.record("train/time/time_elapsed", int(time_elapsed), exclude="tensorboard")

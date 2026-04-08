@@ -63,7 +63,7 @@ if not os.listdir(TASK_DIR):
     print("Warning: The TASK_DIR is empty. Please run ippo.py --player PLAYER to generate a task file.")
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
-BR_TRAINING_STEPS = 100
+BR_TRAINING_STEPS = 10000000
 
 
 def _dedupe_preserve_order(values: List[str]) -> List[str]:
@@ -468,6 +468,7 @@ def train_best_response(
             ftm.br_tracker_patience = br_tracker_patience
             ftm.br_tracker_tolerance = br_tracker_tolerance
             ftm.br_tracker_window_size = br_tracker_window_size
+            ftm.use_wandb = use_wandb
             ftm.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback, update_ego=not eval_prot, update_adversary=eval_prot)
         #br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
 
