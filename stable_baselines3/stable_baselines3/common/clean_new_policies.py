@@ -258,13 +258,13 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             #self.value_optimizer = self.optimizer_class(
             #    itertools.chain(self.mlp_extractor.value_net.parameters(), self.vf_features_extractor.parameters(), itertools.chain.from_iterable([self.value_net[i].parameters() for i in range(self.num_adversaries)])),
             #    joint_schedule[2](1), **self.optimizer_kwargs)
-            with th.no_grad():
-                for param in itertools.chain(
-                    self.mlp_extractor.value_net.parameters(),
-                    self.vf_features_extractor.parameters(),
-                    self.value_net.parameters(),
-                ):
-                    param.fill_(999.0)
+            # with th.no_grad():
+            #     for param in itertools.chain(
+            #         self.mlp_extractor.value_net.parameters(),
+            #         self.vf_features_extractor.parameters(),
+            #         self.value_net.parameters(),
+            #     ):
+            #         param.fill_(999.0)
             self.value_optimizer = self.optimizer_class(
                 itertools.chain(self.mlp_extractor.value_net.parameters(), self.vf_features_extractor.parameters(), self.value_net.parameters()),
                 joint_schedule[2](1), **self.optimizer_kwargs)

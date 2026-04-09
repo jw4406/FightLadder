@@ -1177,6 +1177,8 @@ class CleanDerivativeFreeSPAR(PPO):
                     self.policy.ctrl_optimizer.zero_grad()
                     self.policy.dstb_optimizer.zero_grad()
                     self.policy.value_optimizer.zero_grad()
+                    if hasattr(self.policy, "ego_value_optimizer"):
+                        self.policy.ego_value_optimizer.zero_grad()
                     loss.backward()
 
                     self.ego_grads_autograd_order.append([self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params']))])
@@ -1189,7 +1191,11 @@ class CleanDerivativeFreeSPAR(PPO):
                         self.policy.ctrl_optimizer.step()
                     else:
                         self.policy.dstb_optimizer.step()
-                    self.policy.value_optimizer.step()
+                    if hasattr(self.policy, "ego_value_optimizer") and update_ego:
+                        self.policy.ego_value_optimizer.step()
+                    else:
+                        self.policy.value_optimizer.step()
+                    #self.policy.value_optimizer.step()
 
                 if not continue_training:
                     break
