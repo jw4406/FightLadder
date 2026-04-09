@@ -39,3 +39,9 @@ plots/
 main/common/*.pt
 *.out
 videos/*
+main/selfplay_rewards/*
+main/selfplay_rewards
+main/br_rewards/*
+main/br_rewards
+main/main/videos/*
+main/main/videos

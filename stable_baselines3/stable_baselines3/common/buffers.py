@@ -853,6 +853,8 @@ class Q_RolloutBuffer(RolloutBuffer):
             # Handle env_indices separately as it remains a numpy array
             self.env_indices = self.swap_and_flatten(self.env_indices)
             self.generator_ready = True
+
+
 class AdvRolloutBuffer(BaseBuffer):
     """
     Rollout buffer used in on-policy algorithms like A2C/PPO.

@@ -321,6 +321,7 @@ class MlpExtractorAdv(nn.Module):
         policy_net: List[nn.Module] = []
         dstb_net: List[nn.Module] = []
         value_net: List[nn.Module] = []
+        ego_value_net: List[nn.Module] = []
         q_value_net: List[nn.Module] = []
         last_layer_dim_pi = feature_dim
         last_layer_dim_vf = feature_dim
@@ -354,6 +355,8 @@ class MlpExtractorAdv(nn.Module):
             else:
                 q_value_net.append(nn.Linear(last_layer_dim_vf, curr_layer_dim))
             q_value_net.append(activation_fn())
+            ego_value_net.append(nn.Linear(last_layer_dim_vf, curr_layer_dim))
+            ego_value_net.append(activation_fn())
             value_net.append(nn.Linear(last_layer_dim_vf, curr_layer_dim))
             value_net.append(activation_fn())
             last_layer_dim_vf = curr_layer_dim
@@ -368,6 +371,7 @@ class MlpExtractorAdv(nn.Module):
         self.policy_net = nn.Sequential(*policy_net).to(device)
         self.value_net = nn.Sequential(*value_net).to(device)
         self.q_value_net = nn.Sequential(*q_value_net).to(device)
+        self.ego_value_net = nn.Sequential(*ego_value_net).to(device)
         self.ego_action_extractor = nn.Sequential(
             nn.Linear(ego_action_dim, ego_action_dim),
             activation_fn(),
@@ -406,7 +410,9 @@ class MlpExtractorAdv(nn.Module):
         ego_actions_transformed = self.ego_action_extractor(ego_actions)
         adv_actions_transformed = self.adv_action_extractor(adv_actions)
         return self.q_value_net(th.cat([vf_features, ego_actions_transformed, adv_actions_transformed], dim=1))
-
+    
+    def forward_ego_value(self, vf_features: th.Tensor) -> th.Tensor:
+        return self.ego_value_net(vf_features)
 
 class IPPOMlpExtractorAdv(nn.Module):
     """

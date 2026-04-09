@@ -11,6 +11,7 @@ from PIL import Image
 import copy
 from common.justin.bare_derivative_free_spar import BareDerivativeFreeSPAR
 from common.justin.clean_derivative_free_spar import CleanDerivativeFreeSPAR
+from common.justin.clean_derivative_free_spar_ippo import CleanDerivativeFreeSPARIPPO
 from utils import merge_models
 import retro
 from stable_baselines3.common.callbacks import CheckpointCallback, SACheckpointCallback, FileQueueTriggerCallback, CreateVideoCallback
@@ -555,7 +556,7 @@ def main(args):
 
     def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
                                  other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
-                                 clip_range_schedule=linear_schedule(0.075, 0.025), STATE=None):
+                                 clip_range_schedule=linear_schedule(0.075, 0.025), STATE=None, model_arch_type=None):
         REMOVAL
         np.random.seed(0)
         random.seed(0)
@@ -650,29 +651,56 @@ def main(args):
         #     env_generator_func=env_generator,
         #     state_list=state_list,
         # )
-
-        finetune_model = CleanDerivativeFreeSPAR(
-            "AACCnnPolicy",
-            finetune_env,
-            device="cuda",
-            c_learning_rate=args.c_lr,
-            d_learning_rate=args.d_lr,
-            v_learning_rate=args.v_lr,
-            verbose=2,
-            n_steps=args.num_env_steps,
-            batch_size=args.training_batch_size,
-            n_epochs=6,
-            state_list=state_list,
-            envs_per_matchup=args.envs_per_matchup,
-            env_generator_func=env_generator,
-            num_adversaries=num_adversary,
-            n_env_per_adv=args.num_env // num_adversary,
-            seed= 0,
-            target_kl=None,
-            use_mirror=use_mirror,
-            use_lr_annealing=args.use_lr_annealing,
-            lr_anneal_coeff=args.lr_anneal_coeff
-        )
+        if model_arch_type == "spar":
+            finetune_model = CleanDerivativeFreeSPAR(
+                "AACCnnPolicy",
+                finetune_env,
+                device="cuda",
+                c_learning_rate=args.c_lr,
+                d_learning_rate=args.d_lr,
+                v_learning_rate=args.v_lr,
+                verbose=2,
+                n_steps=args.num_env_steps,
+                batch_size=args.training_batch_size,
+                n_epochs=6,
+                state_list=state_list,
+                envs_per_matchup=args.envs_per_matchup,
+                env_generator_func=env_generator,
+                num_adversaries=num_adversary,
+                n_env_per_adv=args.num_env // num_adversary,
+                seed= 0,
+                target_kl=None,
+                use_mirror=use_mirror,
+                use_lr_annealing=args.use_lr_annealing,
+                lr_anneal_coeff=args.lr_anneal_coeff
+            )
+        elif model_arch_type == "ippo":
+            finetune_model = CleanDerivativeFreeSPARIPPO(
+                "AACCnnPolicy",
+                finetune_env,
+                device="cuda",
+                c_learning_rate=args.c_lr,
+                d_learning_rate=args.c_lr,
+                v_learning_rate=args.c_lr,
+                verbose=2,
+                n_steps=args.num_env_steps,
+                batch_size=args.training_batch_size,
+                n_epochs=6,
+                state_list=state_list,
+                envs_per_matchup=args.envs_per_matchup,
+                env_generator_func=env_generator,
+                num_adversaries=num_adversary,
+                n_env_per_adv=args.num_env // num_adversary,
+                seed= 0,
+                target_kl=None,
+                use_mirror=use_mirror,
+                use_lr_annealing=args.use_lr_annealing,
+                lr_anneal_coeff=args.lr_anneal_coeff
+            )
+        elif model_arch_type == '2timescale':
+            pass
+        else:
+            raise ValueError(f"Invalid model arch type: {model_arch_type}. Valid choices are \'spar\', \'ippo\', \'2timescale\'.")
 
         # if args.load_path and args.continue_training:
         #     from stable_baselines3.common.save_util import load_from_zip_file
@@ -815,7 +843,7 @@ def main(args):
             assert isinstance(REMOVAL, list)
             args.num_env = (12 - len(REMOVAL)) * 4
     model = finetune_model_generator(args.model_file, lr_schedule=lr_schedule, other_lr_schedule=other_lr_schedule,
-                                     clip_range_schedule=clip_range_schedule, STATE=STATE)
+                                     clip_range_schedule=clip_range_schedule, STATE=STATE, model_arch_type=args.model_arch_type)
     if REMOVAL is not None:
         model.REMOVAL = REMOVAL
     # if args.left_model_file and args.right_model_file:
@@ -972,6 +1000,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_file', type=str, help='Model file', default=None)
     parser.add_argument('--use_mirror', choices=['True', 'False'], help='Use mirror', required=True, default='False')
     parser.add_argument('--async_update', choices=['True', 'False'], help='Async update', required=True, default='False')
+    parser.add_argument('--model_arch_type', type=str, help='Model architecture type', default="spar", required=True, choices=["spar", "ippo", "2timescale"])
     #parser.add_argument('--total_steps', type=int, help='How many total steps to train', default=int(1e8))
     #parser.add_argument('--num_workers', type=int, help='Number of workers', default=5)
     #parser.add_argument('--num_adversary', type=int, help='Number of adversaries', default=1)
