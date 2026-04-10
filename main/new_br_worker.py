@@ -29,12 +29,14 @@ import argparse
 import time
 import json
 import random
+from pprint import pformat
 import numpy as np
 import wandb
 import subprocess
 import multiprocessing as mp
 from stable_baselines3.common.preprocessing import is_image_space
 from common.justin.clean_derivative_free_spar import CleanDerivativeFreeSPAR
+from common.justin.clean_derivative_free_spar_ippo import CleanDerivativeFreeSPARIPPO
 from stable_baselines3.common.save_util import load_from_zip_file
 from ippo import env_generator
 from stable_baselines3.common.callbacks import ExploiterCheckpointCallback
@@ -63,7 +65,7 @@ if not os.listdir(TASK_DIR):
     print("Warning: The TASK_DIR is empty. Please run ippo.py --player PLAYER to generate a task file.")
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
-BR_TRAINING_STEPS = 100
+BR_TRAINING_STEPS = 100000000000
 
 
 def _dedupe_preserve_order(values: List[str]) -> List[str]:
@@ -110,6 +112,31 @@ def _extract_unique_states_from_task(task_file_path: str, device: str = "cuda") 
     if not isinstance(state_list, list) or len(state_list) == 0:
         raise ValueError(f"Task/checkpoint {task_file_path} has empty or invalid 'state_list'.")
     return _dedupe_preserve_order(state_list)
+
+
+def _infer_cds_architecture(data: Dict[str, Any], task_file_path: str) -> str:
+    """
+    Infer checkpoint architecture family for BR loading.
+
+    Returns:
+        "ippo" if checkpoint appears to use IPPO CDS policy/value heads
+        "spar" otherwise (default/fallback)
+    """
+    explicit_arch = data.get("model_arch_type")
+    if isinstance(explicit_arch, str):
+        normalized = explicit_arch.strip().lower()
+        if normalized in ("ippo", "spar"):
+            return normalized
+
+    policy_class = data.get("policy_class")
+    policy_class_name = getattr(policy_class, "__name__", str(policy_class))
+    if "CleanIPPOActorActorCriticPolicy" in policy_class_name or "IPPO" in policy_class_name:
+        return "ippo"
+
+    basename = os.path.basename(task_file_path).lower()
+    if basename.startswith("ippo_") or "_ippo_" in basename:
+        return "ippo"
+    return "spar"
 
 
 def _build_dedicated_job_specs(
@@ -280,6 +307,12 @@ def load_spar_model(
     # Default load_from_zip_file(..., device="auto") maps to CUDA and allocates GPU weights
     # even though we only need ``data`` here; always respect the worker device.
     data, _, _ = load_from_zip_file(checkpoint_path, device=device)
+    cds_arch = _infer_cds_architecture(data, checkpoint_path)
+    cds_cls = CleanDerivativeFreeSPARIPPO if cds_arch == "ippo" else CleanDerivativeFreeSPAR
+    print(
+        f"WORKER [{worker_id}]: Detected checkpoint architecture={cds_arch} "
+        f"(loader={cds_cls.__name__})"
+    )
     # IMPORTANT:
     # Keep CDS model topology in its original full-matchup form. Even in
     # dedicated runs we should NOT shrink the loaded CDS state/matchup metadata,
@@ -305,7 +338,7 @@ def load_spar_model(
     env = env_generator(game_args, STATE=STATE)
     #env.num_envs = 1 # HACKY FOR NOW!
     try:
-        ftm = CleanDerivativeFreeSPAR.load(
+        ftm = cds_cls.load(
             path=checkpoint_path, env=env, game_args=game_args, num_perturbed=1, device=device
         )
         #if ftm.policy.num_env_per_adv is None:
@@ -313,7 +346,7 @@ def load_spar_model(
     except Exception as e:
         data, params, pytorch_variables = load_from_zip_file(
             checkpoint_path, device=device)
-        ftm = CleanDerivativeFreeSPAR(
+        ftm = cds_cls(
             "AACCnnPolicy",
             env,
             device=device,
@@ -334,6 +367,7 @@ def load_spar_model(
         ftm.set_parameters(params, exact_match=True, device=ftm.device)
     # Keep a stable copy of the unique checkpoint state ordering for dedicated
     # matchup-index resolution. This is worker metadata only (no CDS changes).
+    ftm._worker_cds_arch = cds_arch
     ftm._worker_unique_states = list(uniques)
     ftm._worker_full_state_list = list(STATE)
     return ftm
@@ -353,7 +387,7 @@ def train_best_response(
     br_index: int = 0,
     from_scratch: bool = False,
     exploiter_save_freq: int = 100000,
-    br_tracker_patience: int = 10,
+    br_tracker_patience: int = 20,
     br_tracker_tolerance: float = 1e-4,
     br_tracker_window_size: int = 50,
     device: str = "cuda",
@@ -575,6 +609,14 @@ def run_br_for_task_in_subprocess(
     else:
         raise NotImplementedError("Non-SPAR multiprocessing BR training is not implemented.")
 
+    run_mode = "dedicated" if from_scratch else "continue"
+    exploit_side = "ego" if eval_prot else "adv"
+    loaded_arch = getattr(loaded_model, "_worker_cds_arch", "unknown")
+    print(
+        f"WORKER [{os.getpid()}]: BR launch mode={run_mode}, side={exploit_side}, "
+        f"cds_class={loaded_model.__class__.__name__}, cds_arch={loaded_arch}"
+    )
+
     train_best_response(
         game_args,
         loaded_model,
@@ -644,6 +686,20 @@ if __name__ == "__main__":
     )
     # whether or not we want to do full br training or continuing the CDS as exploiter
     args = parser.parse_args()
+
+    # Print all runtime CLI settings in a readable way for debugging/repro.
+    def _print_args_human_readable(parsed_args):
+        args_dict = vars(parsed_args)
+        print("\n====== NEW_BR_WORKER CLI Arguments ======")
+        max_key_len = max(len(key) for key in args_dict)
+        for key in sorted(args_dict):
+            value = args_dict[key]
+            value_str = pformat(value, compact=True)
+            print(f"{key:<{max_key_len}} : {value_str}")
+        print("=========================================\n")
+
+    _print_args_human_readable(args)
+
     _ensure_cpu_only_env(args.device)
     args.render = True if args.render == 'True' else False
     args.enable_combo = True if args.enable_combo == 'True' else False

@@ -1212,6 +1212,8 @@ class CleanDerivativeFreeSPAR(PPO):
         #self.logger.record("train/entropy_loss", np.mean(entropy_losses))
         #self.logger.record("train/policy_gradient_loss", np.mean(pg_losses))
         self.logger.record("train/value_loss", np.mean(value_losses))
+        if hasattr(self.policy, "ego_value_optimizer") and update_ego:
+            self.logger.record("train/ego_value_loss", np.mean(value_losses))
         #self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
         #self.logger.record("train/clip_fraction", np.mean(clip_fractions))
         #self.logger.record("train/loss", loss.item())

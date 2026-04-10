@@ -4,6 +4,7 @@ import sys
 import torch
 import multiprocessing as mp
 import argparse
+from pprint import pformat
 import time
 import random
 import numpy as np
@@ -392,7 +393,7 @@ def main(args):
         OPPONENT_LIST = ["Guile", "Sagat"]#,"ChunLi", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega", "EHonda"]
     player_short = ''.join(player[:2] for player in PLAYER)
     opponent_short = ''.join(opponent[:2] for opponent in OPPONENT_LIST)
-    model_name_prefix = "ppo_%s_%s" % (player_short, opponent_short)
+    model_name_prefix = "%s_%s_%s" % (args.model_arch_type, player_short, opponent_short)
     # parser = argparse.ArgumentParser(description='Reset game stats')
     # parser.add_argument('--reset', choices=['round', 'match', 'game'],
     #                     help='Reset stats for a round, a match, or the whole game', default='round')
@@ -494,7 +495,7 @@ def main(args):
     # PLAYER = args.player
 
     #args = parser.parse_args()
-    print("command line args:" + str(args))
+    #print("command line args:" + str(args))
     num_steps = args.num_env_steps
     os.makedirs(args.save_dir, exist_ok=True)
     #os.makedirs(args.log_dir, exist_ok=True)
@@ -1013,6 +1014,20 @@ if __name__ == "__main__":
     args.null_combo = True if args.null_combo == 'True' else False
     args.transform_action = True if args.transform_action == 'True' else False
     args.use_lr_annealing = True if args.use_lr_annealing == 'True' else False
+
+    # Print all runtime CLI settings in a readable way for debugging/repro.
+    def _print_args_human_readable(parsed_args):
+        args_dict = vars(parsed_args)
+        print("\n========== IPPO CLI Arguments ==========")
+        max_key_len = max(len(key) for key in args_dict)
+        for key in sorted(args_dict):
+            value = args_dict[key]
+            value_str = pformat(value, compact=True)
+            print(f"{key:<{max_key_len}} : {value_str}")
+        print("========================================\n")
+
+    _print_args_human_readable(args)
+
     PLAYER = args.player
     mp.set_start_method("spawn", force=True) #A lot of stable_baseline3 objects don't support the default "fork".
     main(args)
