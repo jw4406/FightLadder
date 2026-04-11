@@ -45,6 +45,38 @@ class BRConvergenceTracker:
         self.num_checks = 0
         self.stable_checks = 0
 
+    def _update_ema_stability_state(self, current_value, ema_value, ema_abs_value, ema_abs_dev):
+        """
+        Apply one EMA update step and return updated state plus a stability flag.
+
+        Returns:
+            (
+                updated_ema_value,
+                updated_ema_abs_value,
+                updated_ema_abs_dev,
+                dynamic_tolerance,
+                is_stable,
+            )
+        """
+        current_value = float(current_value)
+        prev_ema_value = ema_value
+        abs_dev = abs(current_value - prev_ema_value)
+        updated_ema_value = self.ema_beta * ema_value + (1.0 - self.ema_beta) * current_value
+        updated_ema_abs_value = self.ema_beta * ema_abs_value + (1.0 - self.ema_beta) * abs(current_value)
+        updated_ema_abs_dev = self.ema_beta * ema_abs_dev + (1.0 - self.ema_beta) * abs_dev
+        dynamic_tolerance = max(
+            self.tolerance,
+            self.rel_tolerance * max(updated_ema_abs_value, self.eps),
+        )
+        is_stable = updated_ema_abs_dev <= dynamic_tolerance
+        return (
+            updated_ema_value,
+            updated_ema_abs_value,
+            updated_ema_abs_dev,
+            dynamic_tolerance,
+            is_stable,
+        )
+
     def check(self, current_exploitability):
         """
         Returns True if the agents have converged.
@@ -103,19 +135,14 @@ class BRConvergenceTracker:
                 self.ema_abs_entropy_dev = 0.0
             return False
 
-        # Measure deviation against the previous EMA to avoid underestimating
-        # deviation after the current sample has already been blended in.
-        prev_ema_reward = self.ema_reward
-        abs_dev = abs(current_reward - prev_ema_reward)
-
-        self.ema_reward = self.ema_beta * self.ema_reward + (1.0 - self.ema_beta) * current_reward
-        self.ema_abs_reward = self.ema_beta * self.ema_abs_reward + (1.0 - self.ema_beta) * abs(current_reward)
-        self.ema_abs_dev = self.ema_beta * self.ema_abs_dev + (1.0 - self.ema_beta) * abs_dev
-
-        dynamic_tolerance = max(
-            self.tolerance,
-            self.rel_tolerance * max(self.ema_abs_reward, self.eps),
-        )
+        (
+            self.ema_reward,
+            self.ema_abs_reward,
+            self.ema_abs_dev,
+            _reward_tolerance,
+            reward_is_stable,
+        ) = self._update_ema_stability_state(current_reward, self.ema_reward, self.ema_abs_reward,self.ema_abs_dev)
+        
         entropy_is_stable = True
         if current_entropy is not None:
             if self.ema_entropy is None:
@@ -124,25 +151,20 @@ class BRConvergenceTracker:
                 self.ema_abs_entropy_dev = 0.0
                 entropy_is_stable = False
             else:
-                prev_ema_entropy = self.ema_entropy
-                abs_entropy_dev = abs(current_entropy - prev_ema_entropy)
-                self.ema_entropy = (
-                    self.ema_beta * self.ema_entropy + (1.0 - self.ema_beta) * current_entropy
+                (
+                    self.ema_entropy,
+                    self.ema_abs_entropy,
+                    self.ema_abs_entropy_dev,
+                    _entropy_tolerance,
+                    entropy_is_stable,
+                ) = self._update_ema_stability_state(
+                    current_entropy,
+                    self.ema_entropy,
+                    self.ema_abs_entropy,
+                    self.ema_abs_entropy_dev,
                 )
-                self.ema_abs_entropy = (
-                    self.ema_beta * self.ema_abs_entropy + (1.0 - self.ema_beta) * abs(current_entropy)
-                )
-                self.ema_abs_entropy_dev = (
-                    self.ema_beta * self.ema_abs_entropy_dev + (1.0 - self.ema_beta) * abs_entropy_dev
-                )
-                entropy_tolerance = max(
-                    self.tolerance,
-                    self.rel_tolerance * max(self.ema_abs_entropy, self.eps),
-                )
-                entropy_is_stable = self.ema_abs_entropy_dev <= entropy_tolerance
 
         if self.num_checks > self.warmup_checks:
-            reward_is_stable = self.ema_abs_dev <= dynamic_tolerance
             if reward_is_stable and entropy_is_stable:
                 self.stable_checks += 1
             else:
