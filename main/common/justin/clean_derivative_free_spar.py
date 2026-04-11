@@ -436,6 +436,9 @@ class CleanDerivativeFreeSPAR(PPO):
 
         n_steps = 0
         rollout_buffer.reset()
+        ego_entropy_sum = 0.0
+        adv_entropy_sum = 0.0
+        entropy_count = 0
         for i in range(self.num_adversaries):
             adversary_buffers[i].reset()
         rollout_terminal_stats = [
@@ -460,6 +463,9 @@ class CleanDerivativeFreeSPAR(PPO):
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 ego_actions, ego_log_probs, adv_actions, adv_log_probs, values, q_values = self.policy(obs_tensor, deterministic=False, ego_forward=run_ego_forward, adv_forward=run_adv_forward, zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action)
+                ego_entropy_sum += float((-ego_log_probs.detach()).mean().item())
+                adv_entropy_sum += float((-adv_log_probs.detach()).mean().item())
+                entropy_count += 1
                 if th.any(adv_actions):
                     #print("Adv actions are not all zeros")
                     pass
@@ -565,6 +571,19 @@ class CleanDerivativeFreeSPAR(PPO):
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
         for i in range(self.num_adversaries):
             adversary_buffers[i].compute_returns_and_advantage(last_values=-values[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], dones=dones[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv])
+        if entropy_count > 0:
+            self._last_rollout_entropy_ego = ego_entropy_sum / entropy_count
+            self._last_rollout_entropy_adv = adv_entropy_sum / entropy_count
+            if run_ego_forward and not run_adv_forward:
+                self._last_rollout_policy_entropy = self._last_rollout_entropy_ego
+            elif run_adv_forward and not run_ego_forward:
+                self._last_rollout_policy_entropy = self._last_rollout_entropy_adv
+            else:
+                self._last_rollout_policy_entropy = (
+                    self._last_rollout_entropy_ego + self._last_rollout_entropy_adv
+                ) / 2.0
+        else:
+            self._last_rollout_policy_entropy = None
         #if self.update_right:
         #    rollout_buffer_other.compute_returns_and_advantage(last_values=values_other, dones=dones)
 
@@ -584,6 +603,9 @@ class CleanDerivativeFreeSPAR(PPO):
 
         n_steps = 0
         rollout_buffer.reset()
+        ego_entropy_sum = 0.0
+        adv_entropy_sum = 0.0
+        entropy_count = 0
         for i in range(self.num_adversaries):
             adversary_buffers[i].reset()
 
@@ -600,6 +622,9 @@ class CleanDerivativeFreeSPAR(PPO):
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 ego_actions, ego_log_probs, adv_actions, adv_log_probs, values = self.policy(obs_tensor, deterministic=False, ego_forward=update_ego, adv_forward=update_adversary)
+                ego_entropy_sum += float((-ego_log_probs.detach()).mean().item())
+                adv_entropy_sum += float((-adv_log_probs.detach()).mean().item())
+                entropy_count += 1
                 
                 # The value network predicts value from the left player's perspective.
                 # In mirrored rollouts, the ego is on the right for the second half of envs.
@@ -722,6 +747,19 @@ class CleanDerivativeFreeSPAR(PPO):
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
         for i in range(self.num_adversaries):
             adversary_buffers[i].compute_returns_and_advantage(last_values=-values[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], dones=dones[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv])
+        if entropy_count > 0:
+            self._last_rollout_entropy_ego = ego_entropy_sum / entropy_count
+            self._last_rollout_entropy_adv = adv_entropy_sum / entropy_count
+            if update_ego and not update_adversary:
+                self._last_rollout_policy_entropy = self._last_rollout_entropy_ego
+            elif update_adversary and not update_ego:
+                self._last_rollout_policy_entropy = self._last_rollout_entropy_adv
+            else:
+                self._last_rollout_policy_entropy = (
+                    self._last_rollout_entropy_ego + self._last_rollout_entropy_adv
+                ) / 2.0
+        else:
+            self._last_rollout_policy_entropy = None
         #if self.update_right:
         #    rollout_buffer_other.compute_returns_and_advantage(last_values=values_other, dones=dones)
 
@@ -821,8 +859,16 @@ class CleanDerivativeFreeSPAR(PPO):
                 ):
                     # Use reward as an exploitability proxy 
                     br_metric = safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])
+                    if update_ego and not update_adversary:
+                        current_entropy = getattr(self, "_last_rollout_entropy_ego", None)
+                    elif update_adversary and not update_ego:
+                        current_entropy = getattr(self, "_last_rollout_entropy_adv", None)
+                    else:
+                        current_entropy = getattr(self, "_last_rollout_policy_entropy", None)
                     if hasattr(self, "training_br") and self.training_br:
-                        if convergence_tracker.check_reward_stability(br_metric):
+                        if convergence_tracker.check_reward_stability(
+                            br_metric, current_entropy=current_entropy
+                        ):
                             print("BR convergence tracker triggered early stopping.")
                             break
             

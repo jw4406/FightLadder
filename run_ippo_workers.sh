@@ -4,7 +4,7 @@
 NUM_WORKERS=1
 # If True, run each worker detached with nohup and log redirection.
 # If False, run without nohup in the current shell.
-RUN_LIVE="True"
+RUN_LIVE="False"
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -13,8 +13,8 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 IPPO_PATH="${SCRIPT_DIR}/main/ippo.py"
 
 # Arguments from launch.json (Python Debugger: ippo.py)
-PLAYER=("Guile" "Sagat" "Blanka")
-OPPONENTS=("Guile" "Sagat" "Ryu" "Dhalsim" "Zangief" "ChunLi" "Ken" "Balrog" "MBison" "Vega" "EHonda")
+PLAYER=("Guile")
+OPPONENTS=("Sagat" "Ryu")
 NUM_ENV_TO_LOAD="1"
 ENV_BATCH_SIZE="24"
 C_LR="1e-5"
@@ -30,8 +30,9 @@ USE_MIRROR="False"
 SAVE_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/"
 USE_LR_ANNEALING="False"
 LR_ANNEAL_COEFF=".995"
-CHECKPOINT_INTERVAL="1000"
-NUM_ENV_STEPS="256"
+CHECKPOINT_INTERVAL="100000"
+TRAINING_BATCH_SIZE="512"
+NUM_ENV_STEPS="512"
 EGO_STYLE="learning"
 ADV_STYLE="learning"
 ENVS_PER_MATCHUP="2"
@@ -39,6 +40,7 @@ SIDE="both"
 RENDER="False"
 MODEL_FILE=""
 ASYNC_UPDATE="False"
+MODEL_ARCH_TYPE="spar"
 
 # Create logs directory if it doesn't exist
 LOGS_DIR="${SCRIPT_DIR}/logs"
@@ -61,6 +63,7 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --save_dir "${SAVE_DIR}"
         --use_lr_annealing "${USE_LR_ANNEALING}"
         --lr_anneal_coeff "${LR_ANNEAL_COEFF}"
+	--training_batch_size "${TRAINING_BATCH_SIZE}"
         --checkpoint_interval "${CHECKPOINT_INTERVAL}"
         --num_env_steps "${NUM_ENV_STEPS}"
         --ego_style "${EGO_STYLE}"
@@ -70,6 +73,7 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --render "${RENDER}"
         --model_file "${MODEL_FILE}"
         --async_update "${ASYNC_UPDATE}"
+	--model_arch_type "${MODEL_ARCH_TYPE}"
     )
 
     if [ "${RUN_LIVE}" = "False" ]; then

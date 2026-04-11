@@ -1423,6 +1423,8 @@ class MAGICS_PPO(OnPolicyAlgorithm):
 
         n_steps = 0
         rollout_buffer.reset()
+        entropy_sum = 0.0
+        entropy_count = 0
         # Sample new weights for the state dependent exploration
         if self.use_sde:
             self.policy.reset_noise(env.num_envs)
@@ -5422,6 +5424,8 @@ class Exploiter(PPO):
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 actions, values, log_probs, = self.policy(obs_tensor)
+                entropy_sum += float((-log_probs.detach()).mean().item())
+                entropy_count += 1
                 #ego_id = self.exploited.opp_list.index(self.exploited.player)
                 
                 if self.is_spar:
@@ -5511,6 +5515,9 @@ class Exploiter(PPO):
             values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+        self._last_rollout_policy_entropy = (
+            entropy_sum / entropy_count if entropy_count > 0 else None
+        )
 
         callback.on_rollout_end()
 

@@ -39,6 +39,9 @@ class BRConvergenceTracker:
         self.ema_reward = None
         self.ema_abs_reward = None
         self.ema_abs_dev = None
+        self.ema_entropy = None
+        self.ema_abs_entropy = None
+        self.ema_abs_entropy_dev = None
         self.num_checks = 0
         self.stable_checks = 0
 
@@ -81,25 +84,66 @@ class BRConvergenceTracker:
             
         return False
 
-    def check_reward_stability(self, current_reward):
+    def check_reward_stability(self, current_reward, current_entropy=None):
         """
-        Returns True when reward has stabilized according to EMA absolute deviation.
+        Returns True when reward (and optionally entropy) have stabilized
+        according to EMA absolute deviation.
         """
         self.num_checks += 1
+        current_reward = float(current_reward)
+        if current_entropy is not None:
+            current_entropy = float(current_entropy)
         if self.ema_reward is None:
-            self.ema_reward = float(current_reward)
-            self.ema_abs_reward = abs(float(current_reward))
+            self.ema_reward = current_reward
+            self.ema_abs_reward = abs(current_reward)
             self.ema_abs_dev = 0.0
+            if current_entropy is not None:
+                self.ema_entropy = current_entropy
+                self.ema_abs_entropy = abs(current_entropy)
+                self.ema_abs_entropy_dev = 0.0
             return False
 
-        self.ema_reward = self.ema_beta * self.ema_reward + (1.0 - self.ema_beta) * float(current_reward)
-        self.ema_abs_reward = self.ema_beta * self.ema_abs_reward + (1.0 - self.ema_beta) * abs(float(current_reward))
-        abs_dev = abs(float(current_reward) - self.ema_reward)
+        # Measure deviation against the previous EMA to avoid underestimating
+        # deviation after the current sample has already been blended in.
+        prev_ema_reward = self.ema_reward
+        abs_dev = abs(current_reward - prev_ema_reward)
+
+        self.ema_reward = self.ema_beta * self.ema_reward + (1.0 - self.ema_beta) * current_reward
+        self.ema_abs_reward = self.ema_beta * self.ema_abs_reward + (1.0 - self.ema_beta) * abs(current_reward)
         self.ema_abs_dev = self.ema_beta * self.ema_abs_dev + (1.0 - self.ema_beta) * abs_dev
 
-        dynamic_tolerance = self.rel_tolerance * max(self.ema_abs_reward, self.eps)
+        dynamic_tolerance = max(
+            self.tolerance,
+            self.rel_tolerance * max(self.ema_abs_reward, self.eps),
+        )
+        entropy_is_stable = True
+        if current_entropy is not None:
+            if self.ema_entropy is None:
+                self.ema_entropy = current_entropy
+                self.ema_abs_entropy = abs(current_entropy)
+                self.ema_abs_entropy_dev = 0.0
+                entropy_is_stable = False
+            else:
+                prev_ema_entropy = self.ema_entropy
+                abs_entropy_dev = abs(current_entropy - prev_ema_entropy)
+                self.ema_entropy = (
+                    self.ema_beta * self.ema_entropy + (1.0 - self.ema_beta) * current_entropy
+                )
+                self.ema_abs_entropy = (
+                    self.ema_beta * self.ema_abs_entropy + (1.0 - self.ema_beta) * abs(current_entropy)
+                )
+                self.ema_abs_entropy_dev = (
+                    self.ema_beta * self.ema_abs_entropy_dev + (1.0 - self.ema_beta) * abs_entropy_dev
+                )
+                entropy_tolerance = max(
+                    self.tolerance,
+                    self.rel_tolerance * max(self.ema_abs_entropy, self.eps),
+                )
+                entropy_is_stable = self.ema_abs_entropy_dev <= entropy_tolerance
+
         if self.num_checks > self.warmup_checks:
-            if self.ema_abs_dev <= dynamic_tolerance:
+            reward_is_stable = self.ema_abs_dev <= dynamic_tolerance
+            if reward_is_stable and entropy_is_stable:
                 self.stable_checks += 1
             else:
                 self.stable_checks = 0
