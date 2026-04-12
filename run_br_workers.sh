@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Number of parallel new_br_worker instances to run
-NUM_WORKERS=1
+NUM_WORKERS=3
 # If True, run each worker detached with nohup and log redirection.
 # If False, run without nohup in the current shell.
-RUN_LIVE="True"
+RUN_LIVE="False"
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -13,7 +13,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 BR_WORKER_PATH="${SCRIPT_DIR}/main/new_br_worker.py"
 
 # Arguments from launch.json (Python Debugger: new_br_worker.py)
-EVAL_PROT="True"
+EVAL_PROT="False"
 EVAL_ADV="True"
 EVAL_ONLY="False"
 PROJ_NAME="br_training"
@@ -25,11 +25,12 @@ USE_MIRROR="False"
 NUM_FULL_EXPLOITERS="1"
 NUM_CONTINUE_EXPLOITERS="1"
 DEBUG="False"
+BR_TRACKER_PATIENCE="150"
 N_ENVS="2"
 # TASK_DIR=""  # Optional: set this to pass --task_dir
 DEDICATED_EXPLOITER="True"
-CONTINUE_EXPLOITERS="False"
-EXPLOITER_SAVE_FREQ="2"
+CONTINUE_EXPLOITERS="True"
+EXPLOITER_SAVE_FREQ="200000"
 RESET="round"
 SIDE="both"
 RENDER="False"
@@ -37,7 +38,7 @@ ENABLE_COMBO="True"
 NULL_COMBO="False"
 TRANSFORM_ACTION="False"
 SEED="0"
-LAUNCH_LOCAL_BR_EVAL="False"
+LAUNCH_LOCAL_BR_EVAL="True"
 USE_WANDB="True"
 # Torch device: cpu, cuda, cuda:0, etc. (must match launch.json / worker --device)
 DEVICE="cuda"
@@ -70,6 +71,7 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --dedicated_exploiter "${DEDICATED_EXPLOITER}"
         --continue_exploiters "${CONTINUE_EXPLOITERS}"
         --exploiter_save_freq "${EXPLOITER_SAVE_FREQ}"
+        --br_tracker_patience "${BR_TRACKER_PATIENCE}"
         --reset "${RESET}"
         --side "${SIDE}"
         --render "${RENDER}"

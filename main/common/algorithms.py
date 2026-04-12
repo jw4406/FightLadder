@@ -5409,6 +5409,9 @@ class Exploiter(PPO):
 
         n_steps = 0
         rollout_buffer.reset()
+        entropy_sum = 0.0
+        entropy_count = 0
+        #adv_entropy_sum = 0.0
         # Sample new weights for the state dependent exploration
         if self.use_sde:
             self.policy.reset_noise(env.num_envs)
