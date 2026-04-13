@@ -4,7 +4,7 @@
 NUM_WORKERS=1
 # If True, run each worker detached with nohup and log redirection.
 # If False, run without nohup in the current shell.
-RUN_LIVE="False"
+RUN_LIVE="True"
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -28,7 +28,7 @@ USE_MIRROR="False"
 # LEFT_MODEL_FILE=""  # Optional: set this to pass --left-model-file
 # RIGHT_MODEL_FILE=""  # Optional: set this to pass --right-model-file
 SAVE_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/"
-USE_LR_ANNEALING="False"
+USE_LR_ANNEALING="True"
 LR_ANNEAL_COEFF=".995"
 CHECKPOINT_INTERVAL="100000"
 TRAINING_BATCH_SIZE="512"
@@ -41,7 +41,13 @@ RENDER="False"
 MODEL_FILE=""
 ASYNC_UPDATE="False"
 MODEL_ARCH_TYPE="spar"
-
+USE_ELO_STAGNATION="True"
+ELO_STAGNATION_PATIENCE="20"
+ELO_STAGNATION_TOLERANCE="1e-4"
+ELO_ROSTER_EPOCH_SIZE="0"
+ELO_ENTROPY_WEIGHT="100.0"
+ELO_LR_FACTOR="0.5"
+ELO_LR_PATIENCE="5"
 # Create logs directory if it doesn't exist
 LOGS_DIR="${SCRIPT_DIR}/logs"
 mkdir -p "${LOGS_DIR}"
@@ -73,7 +79,14 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --render "${RENDER}"
         --model_file "${MODEL_FILE}"
         --async_update "${ASYNC_UPDATE}"
-	--model_arch_type "${MODEL_ARCH_TYPE}"
+	    --model_arch_type "${MODEL_ARCH_TYPE}"
+	    --use_elo_stagnation "${USE_ELO_STAGNATION}"
+        --elo_stagnation_patience "${ELO_STAGNATION_PATIENCE}"
+        --elo_stagnation_tolerance "${ELO_STAGNATION_TOLERANCE}"
+        --elo_roster_epoch_size "${ELO_ROSTER_EPOCH_SIZE}"
+        --elo_entropy_weight "${ELO_ENTROPY_WEIGHT}"
+        --elo_lr_factor "${ELO_LR_FACTOR}"
+        --elo_lr_patience "${ELO_LR_PATIENCE}"
     )
 
     if [ "${RUN_LIVE}" = "False" ]; then

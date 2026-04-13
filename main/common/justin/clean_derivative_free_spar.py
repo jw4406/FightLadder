@@ -139,6 +139,13 @@ class CleanDerivativeFreeSPAR(PPO):
             num_workers=None,
             scheduler_step_size: int=10, #TODO: 10 was chosen arbitrarily - should be changed.
             use_wandb: bool = True,
+            use_elo_stagnation: bool = True,
+            elo_stagnation_patience: int = 200,
+            elo_stagnation_tolerance: float = 1e-4,
+            elo_roster_epoch_size: Optional[int] = None,
+            elo_entropy_weight: float = 100.0,
+            elo_lr_factor: float = 0.5,
+            elo_lr_patience: int = 5,
     ):
 
         self.matchups = [state2matchup(state) for state in state_list] if state_list is not None else None #This needs to happen before the super().__init__
@@ -218,6 +225,13 @@ class CleanDerivativeFreeSPAR(PPO):
         self.env.num_envs = self.n_envs
         self.use_mirror = use_mirror
         self.num_workers = num_workers
+        self.use_elo_stagnation = use_elo_stagnation
+        self.elo_stagnation_patience_cfg = int(elo_stagnation_patience)
+        self.elo_stagnation_tolerance_cfg = float(elo_stagnation_tolerance)
+        self.elo_roster_epoch_size_cfg = elo_roster_epoch_size
+        self.elo_entropy_weight_cfg = float(elo_entropy_weight)
+        self.elo_lr_factor_cfg = float(elo_lr_factor)
+        self.elo_lr_patience_cfg = int(elo_lr_patience)
         self.elo_initial_rating = 1000.0
         self.elo_k_factor = 24.0
         self._init_elo_trackers()
@@ -232,20 +246,20 @@ class CleanDerivativeFreeSPAR(PPO):
 
     def _init_elo_stagnation_state(self) -> None:
         default_epoch_games = max(1, (int(self.num_adversaries) if self.num_adversaries is not None else 1) * 2)
-        self.elo_stagnation_patience = int(getattr(self, "br_tracker_patience", 20))
-        self.elo_stagnation_tolerance = float(getattr(self, "br_tracker_tolerance", 1e-4))
+        self.elo_stagnation_patience = self.elo_stagnation_patience_cfg
+        self.elo_stagnation_tolerance = self.elo_stagnation_tolerance_cfg
         self.elo_stagnation_epoch_games = int(
-            getattr(self, "elo_roster_epoch_size", default_epoch_games)
+            default_epoch_games if self.elo_roster_epoch_size_cfg is None else self.elo_roster_epoch_size_cfg
         )
-        self.elo_stagnation_entropy_weight = float(getattr(self, "elo_entropy_weight", 100.0))
+        self.elo_stagnation_entropy_weight = self.elo_entropy_weight_cfg
         self.elo_stagnation_games_since_eval = 0
         self.elo_stagnation_wait_count = 0
         self.elo_stagnation_best_metric = float("inf")
         self.elo_stagnation_last_metric = None
         self.elo_stagnation_last_velocity = None
         self.elo_stagnation_last_eval_ratings = np.copy(self.elo_adversary_ratings)
-        self.elo_stagnation_lr_factor = float(getattr(self, "elo_lr_factor", 0.5))
-        self.elo_stagnation_lr_patience = int(getattr(self, "elo_lr_patience", 5))
+        self.elo_stagnation_lr_factor = self.elo_lr_factor_cfg
+        self.elo_stagnation_lr_patience = self.elo_lr_patience_cfg
 
     def _matchup_name_for_adversary(self, adversary_idx: int) -> str:
         if self.matchups is None or self.envs_per_matchup is None:
@@ -921,7 +935,7 @@ class CleanDerivativeFreeSPAR(PPO):
     ):
         try:
             iteration = 0
-            use_elo_stagnation = bool(getattr(self, "training_br", False))
+            use_elo_stagnation = bool(getattr(self, "use_elo_stagnation", True))
             if use_elo_stagnation:
                 self._init_elo_stagnation_state()
             #from common.algorithms import Exploiter
@@ -979,6 +993,14 @@ class CleanDerivativeFreeSPAR(PPO):
                     self.logger.record("train/time/fps", fps)
                     self.logger.record("train/time/time_elapsed", int(time_elapsed), exclude="tensorboard")
                     self.logger.record("train/time/total_timesteps", self.num_timesteps, exclude="tensorboard")
+                    self.logger.record("train/lr/ego", float(self.policy.ctrl_optimizer.param_groups[0]["lr"]))
+                    self.logger.record("train/lr/adversary", float(self.policy.dstb_optimizer.param_groups[0]["lr"]))
+                    self.logger.record("train/lr/critic", float(self.policy.value_optimizer.param_groups[0]["lr"]))
+                    if hasattr(self.policy, "ego_value_optimizer"):
+                        self.logger.record(
+                            "train/lr/ego_critic",
+                            float(self.policy.ego_value_optimizer.param_groups[0]["lr"]),
+                        )
                     self.logger.dump(step=self.num_timesteps)
                 if use_elo_stagnation:
                     current_entropy = self._get_current_rollout_entropy(update_ego, update_adversary)

@@ -673,7 +673,14 @@ def main(args):
                 target_kl=None,
                 use_mirror=use_mirror,
                 use_lr_annealing=args.use_lr_annealing,
-                lr_anneal_coeff=args.lr_anneal_coeff
+                lr_anneal_coeff=args.lr_anneal_coeff,
+                use_elo_stagnation=args.use_elo_stagnation,
+                elo_stagnation_patience=args.elo_stagnation_patience,
+                elo_stagnation_tolerance=args.elo_stagnation_tolerance,
+                elo_roster_epoch_size=args.elo_roster_epoch_size,
+                elo_entropy_weight=args.elo_entropy_weight,
+                elo_lr_factor=args.elo_lr_factor,
+                elo_lr_patience=args.elo_lr_patience,
             )
         elif model_arch_type == "ippo":
             finetune_model = CleanDerivativeFreeSPARIPPO(
@@ -992,7 +999,13 @@ if __name__ == "__main__":
     parser.add_argument("--lr_anneal_coeff", type=float, help="Learning rate anneal coefficient", default=0.995, required=True)
     parser.add_argument('--reset', choices=['round', 'match', 'game'],help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument("--side", type=str, help="Side", default="left", required=True, choices=["left", "right", "both"])
-
+    parser.add_argument("--use_elo_stagnation", choices=['True', 'False'], help='Use elo stagnation', default=True, required=True)
+    parser.add_argument("--elo_stagnation_patience", type=int, help="Elo stagnation patience checks", default=20, required=True)
+    parser.add_argument("--elo_stagnation_tolerance", type=float, help="Elo stagnation tolerance", default=1e-4, required=True)
+    parser.add_argument("--elo_roster_epoch_size", type=int, help="Games before each Elo stagnation evaluation", default=0, required=True)
+    parser.add_argument("--elo_entropy_weight", type=float, help="Weight for entropy in Elo stagnation metric", default=100.0, required=True)
+    parser.add_argument("--elo_lr_factor", type=float, help="Target factor for Elo-triggered LR reduction", default=0.5, required=True)
+    parser.add_argument("--elo_lr_patience", type=int, help="Plateau checks before Elo-triggered LR reduction", default=5, required=True)
     parser.add_argument('--render', choices=['True', 'False'], help='Whether to render the game screen', default='False')
     parser.add_argument('--enable_combo', choices=['True', 'False'], help='Enable special move action space for environment', default='True')
     parser.add_argument('--null_combo', choices=['True', 'False'], help='Null action space for special move', default='False')
@@ -1014,6 +1027,8 @@ if __name__ == "__main__":
     args.null_combo = True if args.null_combo == 'True' else False
     args.transform_action = True if args.transform_action == 'True' else False
     args.use_lr_annealing = True if args.use_lr_annealing == 'True' else False
+    args.use_elo_stagnation = True if args.use_elo_stagnation == 'True' else False
+    args.elo_roster_epoch_size = None if args.elo_roster_epoch_size <= 0 else args.elo_roster_epoch_size
 
     # Print all runtime CLI settings in a readable way for debugging/repro.
     def _print_args_human_readable(parsed_args):
