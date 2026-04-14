@@ -140,6 +140,7 @@ class CleanDerivativeFreeSPAR(PPO):
             scheduler_step_size: int=10, #TODO: 10 was chosen arbitrarily - should be changed.
             use_wandb: bool = True,
             use_elo_stagnation: bool = True,
+            use_elo_early_stop: bool = True,
             elo_stagnation_patience: int = 200,
             elo_stagnation_tolerance: float = 1e-4,
             elo_stagnation_rel_tolerance: float = 0.05,
@@ -229,6 +230,7 @@ class CleanDerivativeFreeSPAR(PPO):
         self.use_mirror = use_mirror
         self.num_workers = num_workers
         self.use_elo_stagnation = use_elo_stagnation
+        self.use_elo_early_stop = use_elo_early_stop
         self.elo_stagnation_patience_cfg = int(elo_stagnation_patience)
         self.elo_stagnation_tolerance_cfg = float(elo_stagnation_tolerance)
         self.elo_stagnation_rel_tolerance_cfg = float(elo_stagnation_rel_tolerance)
@@ -1037,11 +1039,12 @@ class CleanDerivativeFreeSPAR(PPO):
                     self.logger.dump(step=self.num_timesteps)
                 if use_elo_stagnation:
                     current_entropy = self._get_current_rollout_entropy(update_ego, update_adversary)
-                    if self._check_elo_stagnation(
+                    stagnation_triggered = self._check_elo_stagnation(
                         current_entropy,
                         update_ego=update_ego,
                         update_adversary=update_adversary,
-                    ):
+                    )
+                    if stagnation_triggered and self.use_elo_early_stop:
                         print("Elo stagnation tracker triggered early stopping.")
                         break
             
@@ -1418,7 +1421,7 @@ class CleanDerivativeFreeSPAR(PPO):
 
                 if not continue_training:
                     break
-        self._update_schedulers(step_ego=update_ego, step_adv=(not update_ego), step_val=True, skip=not self.use_lr_annealing)
+        #self._update_schedulers(step_ego=update_ego, step_adv=(not update_ego), step_val=True, skip=not self.use_lr_annealing)
         # check location in train derivative free
         self._n_updates += self.n_epochs
         if th.is_tensor(buf.values):

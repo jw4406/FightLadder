@@ -675,6 +675,7 @@ def main(args):
                 use_lr_annealing=args.use_lr_annealing,
                 lr_anneal_coeff=args.lr_anneal_coeff,
                 use_elo_stagnation=args.use_elo_stagnation,
+                use_elo_early_stop=args.use_elo_early_stop,
                 elo_stagnation_patience=args.elo_stagnation_patience,
                 elo_stagnation_tolerance=args.elo_stagnation_tolerance,
                 elo_stagnation_rel_tolerance=args.elo_stagnation_rel_tolerance,
@@ -1003,6 +1004,7 @@ if __name__ == "__main__":
     parser.add_argument('--reset', choices=['round', 'match', 'game'],help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument("--side", type=str, help="Side", default="left", required=True, choices=["left", "right", "both"])
     parser.add_argument("--use_elo_stagnation", choices=['True', 'False'], help='Use elo stagnation', default=True, required=True)
+    parser.add_argument("--use_elo_early_stop", choices=['True', 'False'], help='Use Elo stagnation for early stopping', default=True, required=True)
     parser.add_argument("--elo_stagnation_patience", type=int, help="Elo stagnation patience checks", default=20, required=True)
     parser.add_argument("--elo_stagnation_tolerance", type=float, help="Elo stagnation tolerance", default=1e-4, required=True)
     parser.add_argument("--elo_stagnation_rel_tolerance", type=float, help="Relative tolerance for dynamic Elo stagnation threshold", default=0.05, required=True)
@@ -1034,6 +1036,7 @@ if __name__ == "__main__":
     args.transform_action = True if args.transform_action == 'True' else False
     args.use_lr_annealing = True if args.use_lr_annealing == 'True' else False
     args.use_elo_stagnation = True if args.use_elo_stagnation == 'True' else False
+    args.use_elo_early_stop = True if args.use_elo_early_stop == 'True' else False
     args.elo_roster_epoch_size = None if args.elo_roster_epoch_size <= 0 else args.elo_roster_epoch_size
 
     # Print all runtime CLI settings in a readable way for debugging/repro.
