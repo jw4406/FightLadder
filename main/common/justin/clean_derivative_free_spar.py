@@ -142,6 +142,9 @@ class CleanDerivativeFreeSPAR(PPO):
             use_elo_stagnation: bool = True,
             elo_stagnation_patience: int = 200,
             elo_stagnation_tolerance: float = 1e-4,
+            elo_stagnation_rel_tolerance: float = 0.05,
+            elo_stagnation_ema_beta: float = 0.99,
+            elo_stagnation_eps: float = 1e-8,
             elo_roster_epoch_size: Optional[int] = None,
             elo_entropy_weight: float = 100.0,
             elo_lr_factor: float = 0.5,
@@ -228,6 +231,9 @@ class CleanDerivativeFreeSPAR(PPO):
         self.use_elo_stagnation = use_elo_stagnation
         self.elo_stagnation_patience_cfg = int(elo_stagnation_patience)
         self.elo_stagnation_tolerance_cfg = float(elo_stagnation_tolerance)
+        self.elo_stagnation_rel_tolerance_cfg = float(elo_stagnation_rel_tolerance)
+        self.elo_stagnation_ema_beta_cfg = float(elo_stagnation_ema_beta)
+        self.elo_stagnation_eps_cfg = float(elo_stagnation_eps)
         self.elo_roster_epoch_size_cfg = elo_roster_epoch_size
         self.elo_entropy_weight_cfg = float(elo_entropy_weight)
         self.elo_lr_factor_cfg = float(elo_lr_factor)
@@ -248,6 +254,9 @@ class CleanDerivativeFreeSPAR(PPO):
         default_epoch_games = max(1, (int(self.num_adversaries) if self.num_adversaries is not None else 1) * 2)
         self.elo_stagnation_patience = self.elo_stagnation_patience_cfg
         self.elo_stagnation_tolerance = self.elo_stagnation_tolerance_cfg
+        self.elo_stagnation_rel_tolerance = self.elo_stagnation_rel_tolerance_cfg
+        self.elo_stagnation_ema_beta = self.elo_stagnation_ema_beta_cfg
+        self.elo_stagnation_eps = self.elo_stagnation_eps_cfg
         self.elo_stagnation_epoch_games = int(
             default_epoch_games if self.elo_roster_epoch_size_cfg is None else self.elo_roster_epoch_size_cfg
         )
@@ -257,9 +266,12 @@ class CleanDerivativeFreeSPAR(PPO):
         self.elo_stagnation_best_metric = float("inf")
         self.elo_stagnation_last_metric = None
         self.elo_stagnation_last_velocity = None
+        self.elo_stagnation_dynamic_threshold = None
         self.elo_stagnation_last_eval_ratings = np.copy(self.elo_adversary_ratings)
         self.elo_stagnation_lr_factor = self.elo_lr_factor_cfg
         self.elo_stagnation_lr_patience = self.elo_lr_patience_cfg
+        self.elo_stagnation_ema_metric = None
+        self.elo_stagnation_ema_abs_metric = None
 
     def _matchup_name_for_adversary(self, adversary_idx: int) -> str:
         if self.matchups is None or self.envs_per_matchup is None:
@@ -403,20 +415,41 @@ class CleanDerivativeFreeSPAR(PPO):
 
         self.elo_stagnation_last_velocity = mean_velocity
         self.elo_stagnation_last_metric = stagnation_metric
+
+        if self.elo_stagnation_ema_metric is None:
+            self.elo_stagnation_ema_metric = stagnation_metric
+            self.elo_stagnation_ema_abs_metric = abs(stagnation_metric)
+        else:
+            beta = self.elo_stagnation_ema_beta
+            self.elo_stagnation_ema_metric = (
+                beta * self.elo_stagnation_ema_metric + (1.0 - beta) * stagnation_metric
+            )
+            self.elo_stagnation_ema_abs_metric = (
+                beta * self.elo_stagnation_ema_abs_metric + (1.0 - beta) * abs(stagnation_metric)
+            )
+
+        dynamic_improvement_threshold = max(
+            self.elo_stagnation_tolerance,
+            self.elo_stagnation_rel_tolerance
+            * max(self.elo_stagnation_ema_abs_metric, self.elo_stagnation_eps),
+        )
+        self.elo_stagnation_dynamic_threshold = dynamic_improvement_threshold
+
         self.logger.record("elo/stagnation/velocity", mean_velocity)
         self.logger.record("elo/stagnation/metric", stagnation_metric)
         self.logger.record("elo/stagnation/entropy", entropy_loss)
+        self.logger.record("elo/stagnation/threshold", dynamic_improvement_threshold)
         if self.use_wandb:
             wandb.log(
                 {
                     "elo/stagnation/velocity": mean_velocity,
                     "elo/stagnation/metric": stagnation_metric,
                     "elo/stagnation/entropy": entropy_loss,
+                    "elo/stagnation/threshold": dynamic_improvement_threshold,
                 }
             )
 
-        improvement_threshold = self.elo_stagnation_tolerance * 0.1
-        if stagnation_metric < (self.elo_stagnation_best_metric - improvement_threshold):
+        if stagnation_metric < (self.elo_stagnation_best_metric - dynamic_improvement_threshold):
             self.elo_stagnation_best_metric = stagnation_metric
             self.elo_stagnation_wait_count = 0
         else:

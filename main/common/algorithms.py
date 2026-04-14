@@ -1425,6 +1425,8 @@ class MAGICS_PPO(OnPolicyAlgorithm):
         rollout_buffer.reset()
         entropy_sum = 0.0
         entropy_count = 0
+        tracker_reward_sum = 0.0
+        tracker_reward_count = 0
         # Sample new weights for the state dependent exploration
         if self.use_sde:
             self.policy.reset_noise(env.num_envs)
@@ -1459,6 +1461,9 @@ class MAGICS_PPO(OnPolicyAlgorithm):
 
             self._update_info_buffer(infos)
             n_steps += 1
+            tracker_rewards = rew_other if self.exploiting == "ego" else rewards
+            tracker_reward_sum += float(np.sum(tracker_rewards))
+            tracker_reward_count += int(np.size(tracker_rewards))
 
             if isinstance(self.action_space, spaces.Discrete):
                 # Reshape in case of discrete action
@@ -5378,6 +5383,7 @@ class Exploiter(PPO):
             patience=self.br_tracker_patience,
             tolerance=self.br_tracker_tolerance,
             window_size=self.br_tracker_window_size,
+            log_prefix="exploiter",
         )
         self.use_wandb = use_wandb
         _move_exploited_rl_agent_to_device(self.exploited, self.device)
@@ -5467,7 +5473,7 @@ class Exploiter(PPO):
             # assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
             self.num_timesteps += env.num_envs
             if self.use_wandb:
-                wandb.log({"epochs": self.num_timesteps})
+                wandb.log({"exploiter/epochs": self.num_timesteps})
             # Give access to local variables
             callback.update_locals(locals())
             if callback.on_step() is False:
@@ -5524,11 +5530,72 @@ class Exploiter(PPO):
 
         callback.on_rollout_end()
 
+        mean_reward = None
         if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-            # Use negative reward so "lower is better", matching tracker semantics.
-            exploitability_proxy = -safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])
-            if self.br_convergence_tracker.check(exploitability_proxy):
-                print("Exploiter convergence tracker triggered early stopping.")
+            mean_reward = safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])
+        elif tracker_reward_count > 0:
+            mean_reward = tracker_reward_sum / tracker_reward_count
+
+        if mean_reward is not None:
+            should_stop = self.br_convergence_tracker.check_reward_stability(
+                current_reward=mean_reward,
+                current_entropy=self._last_rollout_policy_entropy,
+            )
+            tracker = self.br_convergence_tracker
+            tracker_logs = {
+                "exploiter/reward/mean": float(mean_reward),
+                "exploiter/reward/ema": float(tracker.ema_reward),
+                "exploiter/reward/ema_abs": float(tracker.ema_abs_reward),
+                "exploiter/reward/ema_abs_dev": float(tracker.ema_abs_dev),
+                "exploiter/reward/tolerance": float(tracker.last_reward_tolerance),
+                "exploiter/reward/is_stable": float(bool(tracker.last_reward_is_stable)),
+                "exploiter/entropy/mean": (
+                    float(self._last_rollout_policy_entropy)
+                    if self._last_rollout_policy_entropy is not None
+                    else float("nan")
+                ),
+                "exploiter/entropy/ema": (
+                    float(tracker.ema_entropy) if tracker.ema_entropy is not None else float("nan")
+                ),
+                "exploiter/entropy/ema_abs": (
+                    float(tracker.ema_abs_entropy)
+                    if tracker.ema_abs_entropy is not None
+                    else float("nan")
+                ),
+                "exploiter/entropy/ema_abs_dev": (
+                    float(tracker.ema_abs_entropy_dev)
+                    if tracker.ema_abs_entropy_dev is not None
+                    else float("nan")
+                ),
+                "exploiter/entropy/tolerance": (
+                    float(tracker.last_entropy_tolerance)
+                    if tracker.last_entropy_tolerance is not None
+                    else float("nan")
+                ),
+                "exploiter/entropy/is_stable": float(bool(tracker.last_entropy_is_stable)),
+                "exploiter/stability/num_checks": float(tracker.num_checks),
+                "exploiter/stability/stable_checks": float(tracker.stable_checks),
+                "exploiter/stability/within_warmup": float(bool(tracker.last_within_warmup)),
+                "exploiter/stability/combined_is_stable": float(bool(tracker.last_combined_is_stable)),
+                "exploiter/stability/should_stop": float(bool(should_stop)),
+            }
+            for key, value in tracker_logs.items():
+                self.logger.record(key, value)
+            if self.use_wandb:
+                wandb.log(tracker_logs)
+            print(
+                "exploiter stability \n "
+                f"reward={mean_reward:.4f} \n"
+                f"entropy={float(self._last_rollout_policy_entropy) if self._last_rollout_policy_entropy is not None else float('nan'):.4f} \n"
+                f"stable={bool(tracker.last_combined_is_stable)} \n"
+                f"stable_checks={tracker.stable_checks}/{tracker.patience} \n"
+                f"warmup={bool(tracker.last_within_warmup)}\n",
+                flush=True,
+            )
+            if should_stop:
+                print("exploiter reward+entropy stability tracker triggered early stopping.")
                 return False
+        else:
+            print("exploiter stability skipped: reward signal unavailable", flush=True)
 
         return True

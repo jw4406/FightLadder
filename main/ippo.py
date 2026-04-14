@@ -677,6 +677,9 @@ def main(args):
                 use_elo_stagnation=args.use_elo_stagnation,
                 elo_stagnation_patience=args.elo_stagnation_patience,
                 elo_stagnation_tolerance=args.elo_stagnation_tolerance,
+                elo_stagnation_rel_tolerance=args.elo_stagnation_rel_tolerance,
+                elo_stagnation_ema_beta=args.elo_stagnation_ema_beta,
+                elo_stagnation_eps=args.elo_stagnation_eps,
                 elo_roster_epoch_size=args.elo_roster_epoch_size,
                 elo_entropy_weight=args.elo_entropy_weight,
                 elo_lr_factor=args.elo_lr_factor,
@@ -1002,6 +1005,9 @@ if __name__ == "__main__":
     parser.add_argument("--use_elo_stagnation", choices=['True', 'False'], help='Use elo stagnation', default=True, required=True)
     parser.add_argument("--elo_stagnation_patience", type=int, help="Elo stagnation patience checks", default=20, required=True)
     parser.add_argument("--elo_stagnation_tolerance", type=float, help="Elo stagnation tolerance", default=1e-4, required=True)
+    parser.add_argument("--elo_stagnation_rel_tolerance", type=float, help="Relative tolerance for dynamic Elo stagnation threshold", default=0.05, required=True)
+    parser.add_argument("--elo_stagnation_ema_beta", type=float, help="EMA beta for dynamic Elo stagnation threshold scaling", default=0.99, required=True)
+    parser.add_argument("--elo_stagnation_eps", type=float, help="Numerical epsilon floor for dynamic Elo stagnation threshold", default=1e-8, required=True)
     parser.add_argument("--elo_roster_epoch_size", type=int, help="Games before each Elo stagnation evaluation", default=0, required=True)
     parser.add_argument("--elo_entropy_weight", type=float, help="Weight for entropy in Elo stagnation metric", default=100.0, required=True)
     parser.add_argument("--elo_lr_factor", type=float, help="Target factor for Elo-triggered LR reduction", default=0.5, required=True)
