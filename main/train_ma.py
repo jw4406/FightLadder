@@ -2,6 +2,8 @@ import os, sys
 import torch
 import argparse
 import multiprocessing
+import re
+from typing import Dict, List, Tuple
 # multiprocessing.set_start_method('forkserver', force=True)
 multiprocessing.set_start_method('spawn', force=True) #TODO: Changed it to spawn to help with CUDA, not sure if it works. Can revert back if needed.
 from multiprocessing import Process
@@ -15,23 +17,204 @@ from common.retro_wrappers import SFWrapper, Monitor2P
 from common.league import PayoffManager, League, FSPLeague, PSROLeague, Learner
 
 
-#TODO: Once this is working, add all characters.
-STATES = {
-        "ryu": "Champion.RyuVsRyu.2Player.align",
-        "guile": "Champion.Level1.RyuVsGuile", 
-        "bison": "Champion.Level12.RyuVsBison.2Player",
-}
+# Default roster (can be overridden via CLI).
+DEFAULT_PLAYERS = ["Ryu"]
+DEFAULT_OPPONENTS = ["Guile", "Bison", "Dhalsim"]
+
+# STATES is built from PLAYERS x OPPONENTS in main().
+# Key format: "<player>_<opponent>" (lowercase/sanitized).
+STATES = {}
 # STATE = "Champion.RyuVsRyu.2Player.align"
 # STATE = ["Champion.RyuVsRyu.2Player.align", "Champion.Level12.RyuVsBison.2Player", "Champion.Level13.RyuVsBison.2Player", "Champion.Level1.RyuVsRyu.2Player"]
 
 
-def make_env(game, opponent: str, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, seed=0):
+def _sanitize_matchup_token(value: str) -> str:
+    token = str(value).strip().lower()
+    out = []
+    for ch in token:
+        if ch.isalnum() or ch in ("_", "-"):
+            out.append(ch)
+        else:
+            out.append("_")
+    return "".join(out).strip("_") or "unknown"
+
+
+def _extract_chars_from_state_name(state_name: str) -> Tuple[str, str]:
+    """
+    Parse `LeftVsRight` from a retro state string.
+
+    Examples:
+      Champion.Level1.RyuVsGuile.2Player.state -> ("ryu", "guile")
+      Champion.RyuVsRyu.2Player.align -> ("ryu", "ryu")
+    """
+    match = re.search(r"([A-Za-z]+)Vs([A-Za-z]+)", state_name)
+    if not match:
+        return "left", "right"
+    return _sanitize_matchup_token(match.group(1)), _sanitize_matchup_token(match.group(2))
+
+
+def _canonicalize_matchup_entry(raw_key: str, state_name: str) -> Tuple[str, str, str]:
+    """
+    Return `(canonical_key, left_char, right_char)` for one STATES entry.
+
+    Accepted key styles:
+      - "ryu_vs_sagat" (preferred)
+      - "ryu" (legacy; left parsed from state name)
+    """
+    key_norm = _sanitize_matchup_token(raw_key)
+    if "_vs_" in key_norm:
+        left_char, right_char = key_norm.split("_vs_", 1)
+    elif key_norm.count("_") == 1:
+        # New preferred STATES key style: "<player>_<opponent>"
+        left_char, right_char = key_norm.split("_", 1)
+    else:
+        left_char, right_char = _extract_chars_from_state_name(state_name)
+        # Keep old behavior if key was a single right-character token.
+        if key_norm not in ("", "unknown"):
+            right_char = key_norm
+    canonical_key = f"{left_char}_vs_{right_char}"
+    return canonical_key, left_char, right_char
+
+
+def _build_matchup_specs(states: Dict[str, str]) -> List[Dict[str, str]]:
+    """Normalize STATES dict into deterministic matchup specs."""
+    specs = []
+    seen_keys = set()
+    for raw_key, state_name in states.items():
+        canonical_key, left_char, right_char = _canonicalize_matchup_entry(raw_key, state_name)
+        if canonical_key in seen_keys:
+            raise ValueError(f"Duplicate canonical matchup key generated: {canonical_key}")
+        seen_keys.add(canonical_key)
+        specs.append(
+            {
+                "canonical_key": canonical_key,
+                "state_name": state_name,
+                "left_char": left_char,
+                "right_char": right_char,
+            }
+        )
+    return specs
+
+
+def _extract_matchup_from_log_name(log_name: str) -> str:
+    """
+    Extract matchup label from league agent names.
+
+    Supports names like:
+      MA0_right_m_02_ryu_vs_bison
+      ME1_right_m02_ryu_vs_bison
+      LE0_right_ryu_vs_bison
+    """
+    if not log_name:
+        return ""
+    name = _sanitize_matchup_token(log_name)
+    # Historical checkpoints append `_historical_step_<n>`; strip this suffix so
+    # matchup parsing works for both live and historical player names.
+    name = re.sub(r"_historical_step_\d+$", "", name)
+    # Preferred: ..._m_02_<matchup>
+    m = re.search(r"_m_(?:\d+)_([a-z0-9_]+)$", name)
+    if m:
+        return m.group(1)
+    # Backward-compatible compact form: ..._m02_<matchup>
+    m = re.search(r"_m\d+_([a-z0-9_]+)$", name)
+    if m:
+        return m.group(1)
+    # Fallback: everything after side token.
+    m = re.search(r"_(?:left|right)_(.+)$", name)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def _resolve_state_name(
+    side: str,
+    opponent: str,
+    state_name: str,
+    matchup_key: str,
+    log_name: str,
+) -> str:
+    """
+    Resolve a concrete Retro state string for constructor().
+
+    Resolution priority:
+      1) explicit state_name
+      2) matchup_key / parsed log_name against STATES keys
+      3) legacy opponent key
+      4) left-side fallback to first STATES entry
+    """
+    if state_name is not None:
+        return state_name
+
+    candidates: List[str] = []
+    if matchup_key:
+        candidates.append(_sanitize_matchup_token(matchup_key))
+    parsed_from_name = _extract_matchup_from_log_name(log_name)
+    if parsed_from_name:
+        candidates.append(parsed_from_name)
+    if opponent:
+        candidates.append(_sanitize_matchup_token(opponent))
+
+    expanded_candidates: List[str] = []
+    for cand in candidates:
+        expanded_candidates.append(cand)
+        if "_vs_" in cand:
+            expanded_candidates.append(cand.replace("_vs_", "_"))
+        elif cand.count("_") == 1:
+            left_tok, right_tok = cand.split("_", 1)
+            expanded_candidates.append(f"{left_tok}_vs_{right_tok}")
+
+    for cand in expanded_candidates:
+        if cand in STATES:
+            return STATES[cand]
+
+    if side == "left" and STATES:
+        # Left MA is global; any valid state bootstraps env construction.
+        return next(iter(STATES.values()))
+
+    raise KeyError(
+        f"Could not resolve state for side={side}, opponent={opponent}, "
+        f"matchup_key={matchup_key}, log_name={log_name}. Known STATES keys={list(STATES.keys())[:8]}"
+    )
+
+
+def _build_states_from_roster(players: List[str], opponents: List[str], side: str) -> Dict[str, str]:
+    """
+    Build STATES mapping keyed by player-opponent pair.
+
+    Example key:
+      "ryu_sagat" -> "two_player/Ryu_left/Champion.Level1.RyuVsSagat.2Player.state"
+    """
+    # ippo.py state folder convention uses a concrete side token.
+    roster_side = side if side in ("left", "right") else "left"
+    states: Dict[str, str] = {}
+    for player in players:
+        player_clean = _sanitize_matchup_token(player)
+        player_title = str(player).strip()
+        player_folder_name = f"{player_title}_{roster_side}"
+        for opponent in opponents:
+            opp_clean = _sanitize_matchup_token(opponent)
+            opponent_title = str(opponent).strip()
+            key = f"{player_clean}_{opp_clean}"
+            if key in states:
+                raise ValueError(f"Duplicate STATES key generated: {key}")
+            states[key] = (
+                "two_player/%s/Champion.Level1.%sVs%s.2Player.state"
+                % (player_folder_name, player_title, opponent_title)
+            )
+    return states
+
+
+def _right_char_from_matchup_key(matchup_key: str) -> str:
+    parts = _sanitize_matchup_token(matchup_key).split("_vs_", 1)
+    return parts[1] if len(parts) == 2 else _sanitize_matchup_token(matchup_key)
+
+
+def make_env(game, state_name: str, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, seed=0):
     def _init():
         players = 2
-        state = STATES[opponent]
         env = retro.make(
             game=game, 
-            state=state, 
+            state=state_name, 
             use_restricted_actions=retro.Actions.FILTERED,
             obs_type=retro.Observations.IMAGE,
             players=players
@@ -61,9 +244,26 @@ def restore_worker(idx, learner, total_steps, rollout_opponent_num):
         learner.run(total_timesteps=total_steps, rollout_opponent_num=rollout_opponent_num, reset_num_timesteps=False) # NOTE: do not reset num_timesteps so that the timesteps are restored
 
 #Added the default opponent so the opponent can be added to the end to not change the order of varaibles.
-def constructor(args, side, log_name=None, single_env=False, opponent: str="ryu"):
+def constructor(args, side, log_name=None, single_env=False, opponent: str="ryu", state_name: str=None, matchup_key: str=None):
+    """
+    Agent constructor for league players.
+
+    Notes:
+    - `state_name` and `matchup_key` are the new preferred inputs.
+    - `opponent` is kept for backward compatibility with older call-sites.
+    """
     num_env = 1 if single_env else args.num_env
-    env = [make_env(sf_game, opponent=opponent, side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=i) for i in range(num_env)]
+    state_name = _resolve_state_name(
+        side=side,
+        opponent=opponent,
+        state_name=state_name,
+        matchup_key=matchup_key,
+        log_name=log_name,
+    )
+    if matchup_key is None:
+        _, _, right_char = _canonicalize_matchup_entry(opponent, state_name)
+        matchup_key = f"left_vs_{right_char}"
+    env = [make_env(sf_game, state_name=state_name, side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=i) for i in range(num_env)]
     env = VecTransposeImage2P(SubprocVecEnv2P(env))
     league_ppo = LeaguePPO(
         side,
@@ -82,7 +282,7 @@ def constructor(args, side, log_name=None, single_env=False, opponent: str="ryu"
         other_learning_rate=1e-4, # other_lr_schedule,
     )
     league_ppo.constructor_args = args
-    league_ppo.current_opponent = opponent
+    league_ppo.current_opponent = _right_char_from_matchup_key(matchup_key)
     return league_ppo
 
 
@@ -119,6 +319,9 @@ def main():
     parser.add_argument('--rollout-opponent-num', type=int, help='Numbers of opponents to interact for each update', default=5) # 2
     parser.add_argument('--fsp-league', action='store_true', help='Fictitious self-play league')
     parser.add_argument('--psro-league', action='store_true', help='PSRO league')
+    # Match ippo.py conventions for roster CLI.
+    parser.add_argument('--player', type=str, nargs='+', default=DEFAULT_PLAYERS, help='Protagonist player(s).')
+    parser.add_argument('--opponent-list', type=str, nargs='+', default=DEFAULT_OPPONENTS, help='List of opponent characters.')
     
     args = parser.parse_args()
     print("command line args:" + str(args))
@@ -128,19 +331,48 @@ def main():
     # os.makedirs(args.video_dir, exist_ok=True)
     # os.makedirs(args.finetune_dir, exist_ok=True)
 
-    opponent_names = ["ryu", "guile", "bison"] #TODO: Add all characters when done testing. Make sure all states are installed (Right now I don't have all characters e.g. I don't have Ryu vs Ken).
-    right_models = {}
-    for opponent in opponent_names:
-        right_models[opponent] = constructor(args, "right", log_name=None, single_env=True, opponent=opponent)
+    global STATES
+    STATES = _build_states_from_roster(
+        players=args.player,
+        opponents=args.opponent_list,
+        side=args.side,
+    )
 
-    left_model = constructor(args, "left", log_name=None, single_env=True)
+    matchup_specs = _build_matchup_specs(STATES)
+    if len(matchup_specs) == 0:
+        raise ValueError("STATES must contain at least one matchup entry.")
+    right_models = {}
+    for spec in matchup_specs:
+        right_models[spec["canonical_key"]] = constructor(
+            args,
+            "right",
+            log_name=None,
+            single_env=True,
+            opponent=spec["right_char"],  # legacy arg for compatibility
+            state_name=spec["state_name"],
+            matchup_key=spec["canonical_key"],
+        )
+
+    # Left MA remains single/global; initialize using the first matchup state.
+    left_model = constructor(
+        args,
+        "left",
+        log_name=None,
+        single_env=True,
+        state_name=matchup_specs[0]["state_name"],
+        matchup_key="left_vs_all",
+    )
 
     #TODO: This should fail because right_model is no longer set.
     #TODO To Justin - what do you want to do with this block?
     if args.left_model_file and args.right_model_file:
         print("load model from " + args.left_model_file + " and " + args.right_model_file)
         left_model.set_parameters_2p(args.left_model_file, args.right_model_file)
-        right_model.set_parameters_2p(args.left_model_file, args.right_model_file)
+        # Right side is now a matchup-keyed dict of models, not a single `right_model`.
+        # Keep backward behavior by loading each right model with the provided 2p files.
+        for model_key, model in right_models.items():
+            print(f"loading right model parameters for {model_key}")
+            model.set_parameters_2p(args.left_model_file, args.right_model_file)
     
     initial_agents = {
         'left': left_model,

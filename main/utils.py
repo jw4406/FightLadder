@@ -3,6 +3,7 @@ from typing import List, Any
 import warnings
 import pickle
 import numpy as np
+import re
 
 CHARACTERS = ["ryu", "guile", "bison"] #TODO: Add all characters
 
@@ -90,17 +91,31 @@ def select_matchup_env(matchups: List[str], i: int, envs_per_matchup: int) -> st
 def find_character_name(s: str) -> str:
     """
     This function looks for a character name in a string.
-    WARNING: If there are more than 1 character in the string, returns an arbitrary one.
+    For matchup-style names like "..._ryu_vs_bison..." it returns the right-side
+    character ("bison") to match right-policy environment selection.
     Returns an empty string if no character name is found.
     """
-    res = ""
-    for character in CHARACTERS:
-        if character in s:
-            if res:
-                warnings.warn(f"Found multiple character names in {s}.")
-            res = character
-    if not res:
+    s_lower = s.lower()
+
+    # Prefer explicit matchup token parsing for new global naming.
+    vs_match = re.search(r"_([a-z0-9]+)_vs_([a-z0-9]+)", s_lower)
+    if vs_match:
+        right_char = vs_match.group(2)
+        if right_char in CHARACTERS:
+            return right_char
+
+    matches = [character for character in CHARACTERS if character in s_lower]
+    if not matches:
         warnings.warn(f"Could not find a character name in {s}.")
+        return ""
+
+    # Legacy fallback for old names: keep deterministic and quiet.
+    res = matches[0]
+    if len(matches) > 1:
+        # Multiple matches are expected for matchup-rich names; do not warn.
+        if "_vs_" not in s_lower and "vs" not in s_lower:
+            warnings.warn(f"Found multiple character names in {s}.")
+        res = matches[-1]
     return res
 
 def unpickle_policy(policy: Any) -> torch.nn.Module:
