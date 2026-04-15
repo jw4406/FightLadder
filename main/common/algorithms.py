@@ -5347,6 +5347,10 @@ class Exploiter(PPO):
         br_tracker_window_size: int = 50,
         use_br_reward_stagnation: bool = True,
         use_br_entropy_stagnation: bool = True,
+        br_use_slope_early_stop: bool = False,
+        br_slope_window: int = 20,
+        br_slope_tolerance: float = 5e-3,
+        br_min_slope_checks: int = 10,
         use_wandb: bool = True,
     ):
 
@@ -5383,10 +5387,18 @@ class Exploiter(PPO):
         self.br_tracker_window_size = br_tracker_window_size
         self.use_br_reward_stagnation = bool(use_br_reward_stagnation)
         self.use_br_entropy_stagnation = bool(use_br_entropy_stagnation)
+        self.br_use_slope_early_stop = bool(br_use_slope_early_stop)
+        self.br_slope_window = int(br_slope_window)
+        self.br_slope_tolerance = float(br_slope_tolerance)
+        self.br_min_slope_checks = int(br_min_slope_checks)
         self.br_convergence_tracker = BRConvergenceTracker(
             patience=self.br_tracker_patience,
             tolerance=self.br_tracker_tolerance,
             window_size=self.br_tracker_window_size,
+            use_slope_early_stop=self.br_use_slope_early_stop,
+            slope_window=self.br_slope_window,
+            slope_tolerance=self.br_slope_tolerance,
+            min_slope_checks=self.br_min_slope_checks,
             log_prefix="exploiter",
         )
         self.use_wandb = use_wandb
@@ -5586,6 +5598,21 @@ class Exploiter(PPO):
                 "exploiter/stability/should_stop": float(bool(should_stop)),
                 "exploiter/stability/use_reward_stagnation": float(bool(self.use_br_reward_stagnation)),
                 "exploiter/stability/use_entropy_stagnation": float(bool(self.use_br_entropy_stagnation)),
+                "exploiter/stability/use_slope_early_stop": float(bool(tracker.use_slope_early_stop)),
+                "exploiter/stability/slope_window": float(tracker.slope_window),
+                "exploiter/stability/slope_tolerance": float(tracker.slope_tolerance),
+                "exploiter/stability/min_slope_checks": float(tracker.min_slope_checks),
+                "exploiter/stability/signal_slope": (
+                    float(tracker.last_signal_slope)
+                    if tracker.last_signal_slope is not None
+                    else float("nan")
+                ),
+                "exploiter/stability/signal_slope_normalized": (
+                    float(tracker.last_signal_slope_normalized)
+                    if tracker.last_signal_slope_normalized is not None
+                    else float("nan")
+                ),
+                "exploiter/stability/signal_slope_is_flat": float(bool(tracker.last_signal_slope_is_flat)),
             }
             for key, value in tracker_logs.items():
                 self.logger.record(key, value)

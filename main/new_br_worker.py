@@ -42,6 +42,13 @@ from ippo import env_generator
 from stable_baselines3.common.callbacks import ExploiterCheckpointCallback
 from gymnasium.spaces import Box
 from utils import state2matchup
+from br_preflight import (
+    build_dedicated_job_specs,
+    dedupe_preserve_order,
+    extract_unique_states_from_checkpoint_data,
+    infer_cds_architecture,
+    sanitize_for_filename,
+)
 # --- Configuration ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 #print(current_dir)
@@ -69,31 +76,13 @@ BR_TRAINING_STEPS = 100000000000
 
 
 def _dedupe_preserve_order(values: List[str]) -> List[str]:
-    """
-    Remove duplicates while preserving first-seen order.
-
-    This is intentionally deterministic: dedicated job generation and naming
-    should not depend on dict/hash iteration order.
-    """
-    return list(dict.fromkeys(values).keys())
+    """Backward-compatible wrapper around br_preflight helper."""
+    return dedupe_preserve_order(values)
 
 
 def _sanitize_for_filename(value: str) -> str:
-    """
-    Convert arbitrary matchup/state labels into safe filename fragments.
-
-    We keep alphanumeric, underscore, and hyphen characters and replace all
-    others with underscores so BR checkpoint names remain filesystem-friendly.
-    """
-    if value is None:
-        return "unknown"
-    out = []
-    for ch in str(value):
-        if ch.isalnum() or ch in ("_", "-"):
-            out.append(ch)
-        else:
-            out.append("_")
-    return "".join(out).strip("_") or "unknown"
+    """Backward-compatible wrapper around br_preflight helper."""
+    return sanitize_for_filename(value)
 
 
 def _extract_unique_states_from_task(task_file_path: str, device: str = "cuda") -> List[str]:
@@ -106,12 +95,7 @@ def _extract_unique_states_from_task(task_file_path: str, device: str = "cuda") 
     - This helper centralizes metadata parsing so scheduling logic stays readable.
     """
     data, _, _ = load_from_zip_file(task_file_path, device=device)
-    if "state_list" not in data:
-        raise KeyError(f"Task/checkpoint {task_file_path} does not contain 'state_list'.")
-    state_list = data["state_list"]
-    if not isinstance(state_list, list) or len(state_list) == 0:
-        raise ValueError(f"Task/checkpoint {task_file_path} has empty or invalid 'state_list'.")
-    return _dedupe_preserve_order(state_list)
+    return extract_unique_states_from_checkpoint_data(data=data, task_file_path=task_file_path)
 
 
 def _infer_cds_architecture(data: Dict[str, Any], task_file_path: str) -> str:
@@ -122,21 +106,7 @@ def _infer_cds_architecture(data: Dict[str, Any], task_file_path: str) -> str:
         "ippo" if checkpoint appears to use IPPO CDS policy/value heads
         "spar" otherwise (default/fallback)
     """
-    explicit_arch = data.get("model_arch_type")
-    if isinstance(explicit_arch, str):
-        normalized = explicit_arch.strip().lower()
-        if normalized in ("ippo", "spar"):
-            return normalized
-
-    policy_class = data.get("policy_class")
-    policy_class_name = getattr(policy_class, "__name__", str(policy_class))
-    if "CleanIPPOActorActorCriticPolicy" in policy_class_name or "IPPO" in policy_class_name:
-        return "ippo"
-
-    basename = os.path.basename(task_file_path).lower()
-    if basename.startswith("ippo_") or "_ippo_" in basename:
-        return "ippo"
-    return "spar"
+    return infer_cds_architecture(data=data, task_file_path=task_file_path)
 
 
 def _build_dedicated_job_specs(
@@ -156,52 +126,14 @@ def _build_dedicated_job_specs(
       independent subprocess jobs (different BR indices/checkpoints).
     - We keep a monotonic "job_index" for easy logging/debugging.
     """
-    if replicates_per_matchup < 1:
-        raise ValueError("replicates_per_matchup must be >= 1 for dedicated jobs.")
-
-    job_specs: List[Dict[str, Any]] = []
-    job_index = 0
-    for state in unique_states:
-        # Attempt to produce a concise human-readable matchup label from the
-        # state string. If parsing fails, fall back to the raw state path.
-        try:
-            matchup_label_raw = state2matchup(state)
-        except Exception:
-            matchup_label_raw = state
-        matchup_label = _sanitize_for_filename(matchup_label_raw)
-
-        # eval_prot branch in this worker maps to exploiting='ego' downstream.
-        # We retain that existing contract and only change scheduling granularity.
-        if run_eval_prot:
-            for rep in range(replicates_per_matchup):
-                job_specs.append(
-                    {
-                        "job_index": job_index,
-                        "eval_prot": True,
-                        "state_subset": [state],
-                        "matchup_label": matchup_label,
-                        "replicate_idx": rep,
-                        "launch_local_br_eval": launch_local_br_eval,
-                    }
-                )
-                job_index += 1
-
-        # eval_adv branch should schedule exploiter jobs on the other side
-        # (downstream exploiting='adv'), so eval_prot=False here.
-        if run_eval_adv:
-            for rep in range(replicates_per_matchup):
-                job_specs.append(
-                    {
-                        "job_index": job_index,
-                        "eval_prot": False,
-                        "state_subset": [state],
-                        "matchup_label": matchup_label,
-                        "replicate_idx": rep,
-                        "launch_local_br_eval": launch_local_br_eval,
-                    }
-                )
-                job_index += 1
-    return job_specs
+    return build_dedicated_job_specs(
+        unique_states=unique_states,
+        replicates_per_matchup=replicates_per_matchup,
+        run_eval_prot=run_eval_prot,
+        run_eval_adv=run_eval_adv,
+        launch_local_br_eval=launch_local_br_eval,
+        state_to_matchup=state2matchup,
+    )
 
 
 class _FixedMatchupPolicyAdapter:
@@ -392,6 +324,26 @@ def train_best_response(
     br_tracker_window_size: int = 50,
     use_br_reward_stagnation: bool = True,
     use_br_entropy_stagnation: bool = True,
+    br_use_slope_early_stop: bool = False,
+    br_slope_window: int = 20,
+    br_slope_tolerance: float = 5e-3,
+    br_min_slope_checks: int = 10,
+    use_stagnation_early_stop: bool = False,
+    use_stagnation_velocity_signal: bool = False,
+    use_stagnation_entropy_signal: bool = True,
+    stagnation_patience: int = 2000000,
+    stagnation_tolerance: float = 1e-4,
+    stagnation_rel_tolerance: float = 0.05,
+    stagnation_ema_beta: float = 0.99,
+    stagnation_eps: float = 1e-8,
+    stagnation_eval_games: int = 0,
+    entropy_stagnation_weight: float = 100.0,
+    stagnation_lr_factor: float = 1.0,
+    stagnation_lr_patience: int = 0,
+    stagnation_use_slope_early_stop: bool = False,
+    stagnation_slope_window: int = 20,
+    stagnation_slope_tolerance: float = 5e-3,
+    stagnation_min_slope_checks: int = 10,
     device: str = "cuda",
     dedicated_state_subset: Optional[List[str]] = None,
     matchup_label: Optional[str] = None,
@@ -460,6 +412,10 @@ def train_best_response(
         br_tracker_window_size=br_tracker_window_size,
         use_br_reward_stagnation=use_br_reward_stagnation,
         use_br_entropy_stagnation=use_br_entropy_stagnation,
+        br_use_slope_early_stop=br_use_slope_early_stop,
+        br_slope_window=br_slope_window,
+        br_slope_tolerance=br_slope_tolerance,
+        br_min_slope_checks=br_min_slope_checks,
         use_wandb=use_wandb,
     )
     br_agent.is_spar = is_spar # TODO: This is a stupid hack to get the BR agent to know if it is a SPAR model or not. Remove this once we have a better way to do this.
@@ -506,16 +462,38 @@ def train_best_response(
             ftm.br_tracker_patience = br_tracker_patience
             ftm.br_tracker_tolerance = br_tracker_tolerance
             ftm.br_tracker_window_size = br_tracker_window_size
-            ftm.use_stagnation_entropy_signal = True
-            ftm.use_stagnation_velocity_signal = False
-            ftm.use_stagnation_early_stop = False
-            ftm.stagnation_patience = 2000000
-            ftm.stagnation_tolerance = 1e-4
-            ftm.stagnation_rel_tolerance = 0.05
-            ftm.stagnation_ema_beta = 0.99
-            ftm.stagnation_eps = 1e-8
-            ftm.stagnation_eval_games = 0
-            ftm.stagnation_lr_patience = 100
+            ftm.use_stagnation_entropy_signal = bool(use_stagnation_entropy_signal)
+            ftm.use_stagnation_velocity_signal = bool(use_stagnation_velocity_signal)
+            ftm.use_stagnation_early_stop = bool(use_stagnation_early_stop)
+            ftm.stagnation_patience_cfg = int(stagnation_patience)
+            ftm.stagnation_tolerance_cfg = float(stagnation_tolerance)
+            ftm.stagnation_rel_tolerance_cfg = float(stagnation_rel_tolerance)
+            ftm.stagnation_ema_beta_cfg = float(stagnation_ema_beta)
+            ftm.stagnation_eps_cfg = float(stagnation_eps)
+            ftm.stagnation_eval_games_cfg = None if int(stagnation_eval_games) <= 0 else int(stagnation_eval_games)
+            ftm.entropy_stagnation_weight_cfg = float(entropy_stagnation_weight)
+            ftm.stagnation_lr_factor_cfg = float(stagnation_lr_factor)
+            ftm.stagnation_lr_patience_cfg = int(stagnation_lr_patience)
+            ftm.stagnation_use_slope_early_stop_cfg = bool(stagnation_use_slope_early_stop)
+            ftm.stagnation_slope_window_cfg = int(stagnation_slope_window)
+            ftm.stagnation_slope_tolerance_cfg = float(stagnation_slope_tolerance)
+            ftm.stagnation_min_slope_checks_cfg = int(stagnation_min_slope_checks)
+            if hasattr(ftm, "stagnation_tracker") and ftm.stagnation_tracker is not None:
+                tracker = ftm.stagnation_tracker
+                tracker.patience = int(stagnation_patience)
+                tracker.tolerance = float(stagnation_tolerance)
+                tracker.rel_tolerance = float(stagnation_rel_tolerance)
+                tracker.ema_beta = float(stagnation_ema_beta)
+                tracker.eps = float(stagnation_eps)
+                tracker.eval_games = max(1, int(stagnation_eval_games))
+                tracker.entropy_weight = float(entropy_stagnation_weight)
+                tracker.lr_patience = int(stagnation_lr_patience)
+                tracker.use_velocity_signal = bool(use_stagnation_velocity_signal)
+                tracker.use_entropy_signal = bool(use_stagnation_entropy_signal)
+                tracker.use_slope_early_stop = bool(stagnation_use_slope_early_stop)
+                tracker.slope_window = max(2, int(stagnation_slope_window))
+                tracker.slope_tolerance = float(stagnation_slope_tolerance)
+                tracker.min_slope_checks = max(1, int(stagnation_min_slope_checks))
             ftm.use_wandb = use_wandb
             ftm.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback, update_ego=not eval_prot, update_adversary=eval_prot)
         #br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
@@ -561,6 +539,26 @@ def run_br_for_task_in_subprocess(
     br_tracker_window_size: int = 50,
     use_br_reward_stagnation: bool = True,
     use_br_entropy_stagnation: bool = True,
+    br_use_slope_early_stop: bool = False,
+    br_slope_window: int = 20,
+    br_slope_tolerance: float = 5e-3,
+    br_min_slope_checks: int = 10,
+    use_stagnation_early_stop: bool = False,
+    use_stagnation_velocity_signal: bool = False,
+    use_stagnation_entropy_signal: bool = True,
+    stagnation_patience: int = 2000000,
+    stagnation_tolerance: float = 1e-4,
+    stagnation_rel_tolerance: float = 0.05,
+    stagnation_ema_beta: float = 0.99,
+    stagnation_eps: float = 1e-8,
+    stagnation_eval_games: int = 0,
+    entropy_stagnation_weight: float = 100.0,
+    stagnation_lr_factor: float = 1.0,
+    stagnation_lr_patience: int = 0,
+    stagnation_use_slope_early_stop: bool = False,
+    stagnation_slope_window: int = 20,
+    stagnation_slope_tolerance: float = 5e-3,
+    stagnation_min_slope_checks: int = 10,
     device: str = "cuda",
     state_subset: Optional[List[str]] = None,
     matchup_label: Optional[str] = None,
@@ -652,6 +650,26 @@ def run_br_for_task_in_subprocess(
         br_tracker_window_size=br_tracker_window_size,
         use_br_reward_stagnation=use_br_reward_stagnation,
         use_br_entropy_stagnation=use_br_entropy_stagnation,
+        br_use_slope_early_stop=br_use_slope_early_stop,
+        br_slope_window=br_slope_window,
+        br_slope_tolerance=br_slope_tolerance,
+        br_min_slope_checks=br_min_slope_checks,
+        use_stagnation_early_stop=use_stagnation_early_stop,
+        use_stagnation_velocity_signal=use_stagnation_velocity_signal,
+        use_stagnation_entropy_signal=use_stagnation_entropy_signal,
+        stagnation_patience=stagnation_patience,
+        stagnation_tolerance=stagnation_tolerance,
+        stagnation_rel_tolerance=stagnation_rel_tolerance,
+        stagnation_ema_beta=stagnation_ema_beta,
+        stagnation_eps=stagnation_eps,
+        stagnation_eval_games=stagnation_eval_games,
+        entropy_stagnation_weight=entropy_stagnation_weight,
+        stagnation_lr_factor=stagnation_lr_factor,
+        stagnation_lr_patience=stagnation_lr_patience,
+        stagnation_use_slope_early_stop=stagnation_use_slope_early_stop,
+        stagnation_slope_window=stagnation_slope_window,
+        stagnation_slope_tolerance=stagnation_slope_tolerance,
+        stagnation_min_slope_checks=stagnation_min_slope_checks,
         device=device,
         dedicated_state_subset=dedicated_state_list_for_env,
         matchup_label=matchup_label,
@@ -687,6 +705,26 @@ if __name__ == "__main__":
     parser.add_argument("--br_tracker_window_size", type=int, default=50, help="Window size used to smooth BR convergence metric.")
     parser.add_argument("--use_br_reward_stagnation", choices=['True', 'False'], default='True', help="Use reward stability in BR early-stopping tracker.")
     parser.add_argument("--use_br_entropy_stagnation", choices=['True', 'False'], default='True', help="Use entropy stability in BR early-stopping tracker.")
+    parser.add_argument("--br_use_slope_early_stop", choices=['True', 'False'], default='False', help="Use slope plateau detection for BR early-stopping tracker.")
+    parser.add_argument("--br_slope_window", type=int, default=20, help="Number of BR checks to fit slope for plateau detection.")
+    parser.add_argument("--br_slope_tolerance", type=float, default=5e-3, help="Normalized BR slope threshold for plateau-based stopping.")
+    parser.add_argument("--br_min_slope_checks", type=int, default=10, help="Minimum BR checks before slope-based stopping can trigger.")
+    parser.add_argument("--use_stagnation_early_stop", choices=['True', 'False'], default='False', help="Use stagnation tracker for CDS early stopping (continue exploiters).")
+    parser.add_argument("--use_stagnation_velocity_signal", choices=['True', 'False'], default='False', help="Use rating-movement velocity in CDS stagnation tracker (continue exploiters).")
+    parser.add_argument("--use_stagnation_entropy_signal", choices=['True', 'False'], default='True', help="Use entropy signal in CDS stagnation tracker (continue exploiters).")
+    parser.add_argument("--stagnation_patience", type=int, default=2000000, help="Patience checks for CDS stagnation tracker (continue exploiters).")
+    parser.add_argument("--stagnation_tolerance", type=float, default=1e-4, help="Absolute tolerance for CDS stagnation tracker.")
+    parser.add_argument("--stagnation_rel_tolerance", type=float, default=0.05, help="Relative tolerance for CDS stagnation tracker.")
+    parser.add_argument("--stagnation_ema_beta", type=float, default=0.99, help="EMA beta for CDS stagnation tracker.")
+    parser.add_argument("--stagnation_eps", type=float, default=1e-8, help="Numerical epsilon floor for CDS stagnation tracker.")
+    parser.add_argument("--stagnation_eval_games", type=int, default=0, help="Games between CDS stagnation checks; <=0 uses tracker default.")
+    parser.add_argument("--entropy_stagnation_weight", type=float, default=100.0, help="Entropy weight in CDS stagnation metric.")
+    parser.add_argument("--stagnation_lr_factor", type=float, default=1.0, help="LR drop factor for CDS stagnation-triggered annealing (1.0 disables).")
+    parser.add_argument("--stagnation_lr_patience", type=int, default=0, help="Checks before CDS stagnation-triggered LR drop (0 disables).")
+    parser.add_argument("--stagnation_use_slope_early_stop", choices=['True', 'False'], default='False', help="Use slope plateau detection for CDS stagnation early stopping.")
+    parser.add_argument("--stagnation_slope_window", type=int, default=20, help="Number of CDS checks to fit slope for plateau detection.")
+    parser.add_argument("--stagnation_slope_tolerance", type=float, default=5e-3, help="Normalized CDS slope threshold for plateau-based stopping.")
+    parser.add_argument("--stagnation_min_slope_checks", type=int, default=10, help="Minimum CDS checks before slope-based stopping can trigger.")
 
     parser.add_argument('--reset', choices=['round', 'match', 'game'],help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument("--side", type=str, help="Side", default="left", required=True, choices=["left", "right", "both"])
@@ -741,6 +779,11 @@ if __name__ == "__main__":
     args.use_wandb = args.use_wandb == 'True'
     args.use_br_reward_stagnation = args.use_br_reward_stagnation == 'True'
     args.use_br_entropy_stagnation = args.use_br_entropy_stagnation == 'True'
+    args.br_use_slope_early_stop = args.br_use_slope_early_stop == 'True'
+    args.use_stagnation_early_stop = args.use_stagnation_early_stop == 'True'
+    args.use_stagnation_velocity_signal = args.use_stagnation_velocity_signal == 'True'
+    args.use_stagnation_entropy_signal = args.use_stagnation_entropy_signal == 'True'
+    args.stagnation_use_slope_early_stop = args.stagnation_use_slope_early_stop == 'True'
     # Linux defaults to "fork", which cannot safely inherit an initialized CUDA
     # runtime. Use explicit "spawn" for BR worker subprocesses.
     mp_ctx = mp.get_context("spawn")
@@ -863,6 +906,26 @@ if __name__ == "__main__":
                         args.br_tracker_window_size,
                         args.use_br_reward_stagnation,
                         args.use_br_entropy_stagnation,
+                        args.br_use_slope_early_stop,
+                        args.br_slope_window,
+                        args.br_slope_tolerance,
+                        args.br_min_slope_checks,
+                        args.use_stagnation_early_stop,
+                        args.use_stagnation_velocity_signal,
+                        args.use_stagnation_entropy_signal,
+                        args.stagnation_patience,
+                        args.stagnation_tolerance,
+                        args.stagnation_rel_tolerance,
+                        args.stagnation_ema_beta,
+                        args.stagnation_eps,
+                        args.stagnation_eval_games,
+                        args.entropy_stagnation_weight,
+                        args.stagnation_lr_factor,
+                        args.stagnation_lr_patience,
+                        args.stagnation_use_slope_early_stop,
+                        args.stagnation_slope_window,
+                        args.stagnation_slope_tolerance,
+                        args.stagnation_min_slope_checks,
                         args.device,
                         state_subset,
                         matchup_label,

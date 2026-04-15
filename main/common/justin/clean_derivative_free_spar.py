@@ -50,6 +50,7 @@ from stable_baselines3 import PPO
 from utils import select_matchup_env, select_device, get_n_workers, move_policy, unpickle_policy, state2matchup, mirror_flip_attributes
 from concurrent.futures import ThreadPoolExecutor
 from .parallel_updater import ParallelUpdater
+from br_tracker import RatingStagnationTracker
 
 TIMING = False
 DEBUG = False
@@ -151,6 +152,10 @@ class CleanDerivativeFreeSPAR(PPO):
             entropy_stagnation_weight: float = 100.0,
             stagnation_lr_factor: float = 0.5,
             stagnation_lr_patience: int = 5,
+            stagnation_use_slope_early_stop: bool = False,
+            stagnation_slope_window: int = 20,
+            stagnation_slope_tolerance: float = 5e-3,
+            stagnation_min_slope_checks: int = 10,
     ):
 
         self.matchups = [state2matchup(state) for state in state_list] if state_list is not None else None #This needs to happen before the super().__init__
@@ -233,19 +238,46 @@ class CleanDerivativeFreeSPAR(PPO):
         self.use_stagnation_early_stop = use_stagnation_early_stop
         self.use_stagnation_velocity_signal = bool(use_stagnation_velocity_signal)
         self.use_stagnation_entropy_signal = bool(use_stagnation_entropy_signal)
-        self.elo_stagnation_patience_cfg = int(stagnation_patience)
-        self.elo_stagnation_tolerance_cfg = float(stagnation_tolerance)
-        self.elo_stagnation_rel_tolerance_cfg = float(stagnation_rel_tolerance)
-        self.elo_stagnation_ema_beta_cfg = float(stagnation_ema_beta)
-        self.elo_stagnation_eps_cfg = float(stagnation_eps)
-        self.elo_roster_epoch_size_cfg = stagnation_eval_games
-        self.elo_entropy_weight_cfg = float(entropy_stagnation_weight)
-        self.elo_lr_factor_cfg = float(stagnation_lr_factor)
-        self.elo_lr_patience_cfg = int(stagnation_lr_patience)
+        self.stagnation_patience_cfg = int(stagnation_patience)
+        self.stagnation_tolerance_cfg = float(stagnation_tolerance)
+        self.stagnation_rel_tolerance_cfg = float(stagnation_rel_tolerance)
+        self.stagnation_ema_beta_cfg = float(stagnation_ema_beta)
+        self.stagnation_eps_cfg = float(stagnation_eps)
+        self.stagnation_eval_games_cfg = stagnation_eval_games
+        self.entropy_stagnation_weight_cfg = float(entropy_stagnation_weight)
+        self.stagnation_lr_factor_cfg = float(stagnation_lr_factor)
+        self.stagnation_lr_patience_cfg = int(stagnation_lr_patience)
+        self.stagnation_use_slope_early_stop_cfg = bool(stagnation_use_slope_early_stop)
+        self.stagnation_slope_window_cfg = int(stagnation_slope_window)
+        self.stagnation_slope_tolerance_cfg = float(stagnation_slope_tolerance)
+        self.stagnation_min_slope_checks_cfg = int(stagnation_min_slope_checks)
         self.elo_initial_rating = 1000.0
         self.elo_k_factor = 24.0
         self._init_elo_trackers()
-        self._init_elo_stagnation_state()
+        default_eval_games = max(
+            1,
+            (int(self.num_adversaries) if self.num_adversaries is not None else 1) * 2,
+        )
+        stagnation_eval_games = int(
+            default_eval_games if self.stagnation_eval_games_cfg is None else self.stagnation_eval_games_cfg
+        )
+        self.stagnation_tracker = RatingStagnationTracker(
+            patience=self.stagnation_patience_cfg,
+            tolerance=self.stagnation_tolerance_cfg,
+            rel_tolerance=self.stagnation_rel_tolerance_cfg,
+            ema_beta=self.stagnation_ema_beta_cfg,
+            eps=self.stagnation_eps_cfg,
+            eval_games=stagnation_eval_games,
+            entropy_weight=self.entropy_stagnation_weight_cfg,
+            lr_patience=self.stagnation_lr_patience_cfg,
+            use_velocity_signal=self.use_stagnation_velocity_signal,
+            use_entropy_signal=self.use_stagnation_entropy_signal,
+            use_slope_early_stop=self.stagnation_use_slope_early_stop_cfg,
+            slope_window=self.stagnation_slope_window_cfg,
+            slope_tolerance=self.stagnation_slope_tolerance_cfg,
+            min_slope_checks=self.stagnation_min_slope_checks_cfg,
+        )
+        self.stagnation_tracker.reset(self.elo_adversary_ratings)
         #Create learning rate schedulers
 
     def _init_elo_trackers(self) -> None:
@@ -253,29 +285,6 @@ class CleanDerivativeFreeSPAR(PPO):
         n_adv = int(self.num_adversaries) if self.num_adversaries is not None else 0
         self.elo_adversary_ratings = np.full(n_adv, self.elo_initial_rating, dtype=np.float64)
         self.elo_games_played = np.zeros(n_adv, dtype=np.int64)
-
-    def _init_elo_stagnation_state(self) -> None:
-        default_epoch_games = max(1, (int(self.num_adversaries) if self.num_adversaries is not None else 1) * 2)
-        self.elo_stagnation_patience = self.elo_stagnation_patience_cfg
-        self.elo_stagnation_tolerance = self.elo_stagnation_tolerance_cfg
-        self.elo_stagnation_rel_tolerance = self.elo_stagnation_rel_tolerance_cfg
-        self.elo_stagnation_ema_beta = self.elo_stagnation_ema_beta_cfg
-        self.elo_stagnation_eps = self.elo_stagnation_eps_cfg
-        self.elo_stagnation_epoch_games = int(
-            default_epoch_games if self.elo_roster_epoch_size_cfg is None else self.elo_roster_epoch_size_cfg
-        )
-        self.elo_stagnation_entropy_weight = self.elo_entropy_weight_cfg
-        self.elo_stagnation_games_since_eval = 0
-        self.elo_stagnation_wait_count = 0
-        self.elo_stagnation_best_metric = float("inf")
-        self.elo_stagnation_last_metric = None
-        self.elo_stagnation_last_velocity = None
-        self.elo_stagnation_dynamic_threshold = None
-        self.elo_stagnation_last_eval_ratings = np.copy(self.elo_adversary_ratings)
-        self.elo_stagnation_lr_factor = self.elo_lr_factor_cfg
-        self.elo_stagnation_lr_patience = self.elo_lr_patience_cfg
-        self.elo_stagnation_ema_metric = None
-        self.elo_stagnation_ema_abs_metric = None
 
     def _matchup_name_for_adversary(self, adversary_idx: int) -> str:
         if self.matchups is None or self.envs_per_matchup is None:
@@ -371,117 +380,6 @@ class CleanDerivativeFreeSPAR(PPO):
         if update_adversary and not update_ego:
             return getattr(self, "_last_rollout_entropy_adv", None)
         return getattr(self, "_last_rollout_policy_entropy", None)
-
-    def _apply_elo_stagnation_lr_adjustment(
-        self,
-        update_ego: bool,
-        update_adversary: bool,
-    ) -> None:
-        """
-        Apply an Elo-stagnation LR drop using existing scheduler rules.
-        This routes through _update_schedulers so LR ordering invariants are preserved.
-        """
-        if not self.use_lr_annealing:
-            return
-        if self.elo_stagnation_lr_factor <= 0.0 or self.elo_stagnation_lr_factor >= 1.0:
-            return
-
-        gamma = float(self.lr_anneal_coeff)
-        if gamma <= 0.0 or gamma >= 1.0:
-            extra_steps = 1
-        else:
-            extra_steps = int(np.ceil(np.log(self.elo_stagnation_lr_factor) / np.log(gamma)))
-            extra_steps = max(1, extra_steps)
-
-        for _ in range(extra_steps):
-            self._update_schedulers(
-                step_ego=update_ego,
-                step_adv=update_adversary,
-                step_val=True,
-                skip=not self.use_lr_annealing,
-            )
-
-    def _check_elo_stagnation(
-        self,
-        current_entropy: Optional[float],
-        update_ego: bool,
-        update_adversary: bool,
-    ) -> bool:
-        if len(self.elo_adversary_ratings) == 0:
-            return False
-        if self.elo_stagnation_games_since_eval < self.elo_stagnation_epoch_games:
-            return False
-
-        elo_movements = np.abs(self.elo_adversary_ratings - self.elo_stagnation_last_eval_ratings)
-        mean_velocity = float(np.mean(elo_movements))
-        entropy_loss = float(current_entropy) if current_entropy is not None else 0.0
-        velocity_component = mean_velocity if self.use_stagnation_velocity_signal else 0.0
-        entropy_component = (
-            entropy_loss * self.elo_stagnation_entropy_weight
-            if self.use_stagnation_entropy_signal
-            else 0.0
-        )
-        stagnation_metric = velocity_component + entropy_component
-
-        self.elo_stagnation_last_velocity = mean_velocity
-        self.elo_stagnation_last_metric = stagnation_metric
-
-        if self.elo_stagnation_ema_metric is None:
-            self.elo_stagnation_ema_metric = stagnation_metric
-            self.elo_stagnation_ema_abs_metric = abs(stagnation_metric)
-        else:
-            beta = self.elo_stagnation_ema_beta
-            self.elo_stagnation_ema_metric = (
-                beta * self.elo_stagnation_ema_metric + (1.0 - beta) * stagnation_metric
-            )
-            self.elo_stagnation_ema_abs_metric = (
-                beta * self.elo_stagnation_ema_abs_metric + (1.0 - beta) * abs(stagnation_metric)
-            )
-
-        dynamic_improvement_threshold = max(
-            self.elo_stagnation_tolerance,
-            self.elo_stagnation_rel_tolerance
-            * max(self.elo_stagnation_ema_abs_metric, self.elo_stagnation_eps),
-        )
-        self.elo_stagnation_dynamic_threshold = dynamic_improvement_threshold
-
-        self.logger.record("elo/stagnation/velocity", mean_velocity)
-        self.logger.record("elo/stagnation/velocity_component", velocity_component)
-        self.logger.record("elo/stagnation/metric", stagnation_metric)
-        self.logger.record("elo/stagnation/entropy", entropy_loss)
-        self.logger.record("elo/stagnation/entropy_component", entropy_component)
-        self.logger.record("elo/stagnation/use_velocity_stagnation", float(bool(self.use_stagnation_velocity_signal)))
-        self.logger.record("elo/stagnation/use_entropy_stagnation", float(bool(self.use_stagnation_entropy_signal)))
-        self.logger.record("elo/stagnation/threshold", dynamic_improvement_threshold)
-        if self.use_wandb:
-            wandb.log(
-                {
-                    "elo/stagnation/velocity": mean_velocity,
-                    "elo/stagnation/velocity_component": velocity_component,
-                    "elo/stagnation/metric": stagnation_metric,
-                    "elo/stagnation/entropy": entropy_loss,
-                    "elo/stagnation/entropy_component": entropy_component,
-                    "elo/stagnation/use_velocity_stagnation": float(bool(self.use_stagnation_velocity_signal)),
-                    "elo/stagnation/use_entropy_stagnation": float(bool(self.use_stagnation_entropy_signal)),
-                    "elo/stagnation/threshold": dynamic_improvement_threshold,
-                }
-            )
-
-        if stagnation_metric < (self.elo_stagnation_best_metric - dynamic_improvement_threshold):
-            self.elo_stagnation_best_metric = stagnation_metric
-            self.elo_stagnation_wait_count = 0
-        else:
-            self.elo_stagnation_wait_count += 1
-            if (
-                self.elo_stagnation_lr_patience > 0
-                and self.elo_stagnation_wait_count % self.elo_stagnation_lr_patience == 0
-            ):
-                self._apply_elo_stagnation_lr_adjustment(update_ego, update_adversary)
-
-        self.elo_stagnation_games_since_eval = 0
-        self.elo_stagnation_last_eval_ratings = np.copy(self.elo_adversary_ratings)
-
-        return self.elo_stagnation_wait_count >= self.elo_stagnation_patience
 
     def _setup_model(self) -> None:
         assert self.state_list is not None
@@ -761,9 +659,9 @@ class CleanDerivativeFreeSPAR(PPO):
         rollout_buffer.prepare_data_for_training()
         for i in range(len(adversary_buffers)):
             adversary_buffers[i].prepare_data_for_training()
-        self.elo_stagnation_games_since_eval += self._update_elo_from_rollout_stats(
-            rollout_terminal_stats
-        )
+        n_games = self._update_elo_from_rollout_stats(rollout_terminal_stats)
+        if getattr(self, "stagnation_tracker", None) is not None:
+            self.stagnation_tracker.register_games(n_games)
 
         return True
     
@@ -962,9 +860,9 @@ class CleanDerivativeFreeSPAR(PPO):
         rollout_buffer.prepare_data_for_training()
         for i in range(len(adversary_buffers)):
             adversary_buffers[i].prepare_data_for_training()
-        self.elo_stagnation_games_since_eval += self._update_elo_from_rollout_stats(
-            rollout_terminal_stats
-        )
+        n_games = self._update_elo_from_rollout_stats(rollout_terminal_stats)
+        if getattr(self, "stagnation_tracker", None) is not None:
+            self.stagnation_tracker.register_games(n_games)
 
         return True
 
@@ -990,8 +888,10 @@ class CleanDerivativeFreeSPAR(PPO):
                 bool(getattr(self, "use_stagnation_velocity_signal", True))
                 or bool(getattr(self, "use_stagnation_entropy_signal", True))
             )
-            if use_elo_tracker:
-                self._init_elo_stagnation_state()
+            if use_elo_tracker and getattr(self, "stagnation_tracker", None) is not None:
+                self.stagnation_tracker.use_velocity_signal = bool(self.use_stagnation_velocity_signal)
+                self.stagnation_tracker.use_entropy_signal = bool(self.use_stagnation_entropy_signal)
+                self.stagnation_tracker.reset(self.elo_adversary_ratings)
             #from common.algorithms import Exploiter
             total_timesteps, callback = self._setup_learn(
                 total_timesteps,
@@ -1058,11 +958,36 @@ class CleanDerivativeFreeSPAR(PPO):
                     self.logger.dump(step=self.num_timesteps)
                 if use_elo_tracker:
                     current_entropy = self._get_current_rollout_entropy(update_ego, update_adversary)
-                    stagnation_triggered = self._check_elo_stagnation(
-                        current_entropy,
-                        update_ego=update_ego,
-                        update_adversary=update_adversary,
+                    def _lr_adjustment_callback() -> None:
+                        if not self.use_lr_annealing:
+                            return
+                        lr_factor = float(self.stagnation_lr_factor_cfg)
+                        if lr_factor <= 0.0 or lr_factor >= 1.0:
+                            return
+                        gamma = float(self.lr_anneal_coeff)
+                        if gamma <= 0.0 or gamma >= 1.0:
+                            extra_steps = 1
+                        else:
+                            extra_steps = int(np.ceil(np.log(lr_factor) / np.log(gamma)))
+                            extra_steps = max(1, extra_steps)
+                        for _ in range(extra_steps):
+                            self._update_schedulers(
+                                step_ego=update_ego,
+                                step_adv=update_adversary,
+                                step_val=True,
+                                skip=not self.use_lr_annealing,
+                            )
+
+                    stagnation_triggered, stagnation_logs = self.stagnation_tracker.check(
+                        ratings=self.elo_adversary_ratings,
+                        current_entropy=current_entropy,
+                        lr_adjustment_callback=_lr_adjustment_callback,
                     )
+                    if stagnation_logs is not None:
+                        for key, value in stagnation_logs.items():
+                            self.logger.record(key, value)
+                        if self.use_wandb:
+                            wandb.log(stagnation_logs)
                     if stagnation_triggered and self.use_stagnation_early_stop:
                         print("Elo stagnation tracker triggered early stopping.")
                         break

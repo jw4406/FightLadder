@@ -1,74 +1,893 @@
---- Pipeline Orchestrator ---
-Cleaning up old tasks and STOP file...
-Starting the main trainer process in the background...
-Starting 4 best-response worker processes...
-Orchestrator is now waiting for the main trainer (PID: ) to complete.
-Workers will process tasks in the meantime.
-wandb: Appending key for api.wandb.ai to your netrc file: /home/jw4406/.netrc
-wandb: Appending key for api.wandb.ai to your netrc file: /home/jw4406/.netrc
-wandb: Appending key for api.wandb.ai to your netrc file: /home/jw4406/.netrc
-wandb: Appending key for api.wandb.ai to your netrc file: /home/jw4406/.netrc
-wandb: Currently logged in as: jw4406 to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
-/home/jw4406/codebase/FightLadder/main
-WORKER [4342]: Starting. Watching /home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo for tasks.
-WORKER [4342]: Processing task: ppo_Guile_400000_steps.task
-wandb: Currently logged in as: jw4406 to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
-/home/jw4406/codebase/FightLadder/main
-WORKER [4341]: Starting. Watching /home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo for tasks.
-WORKER [4341]: Processing task: ppo_Guile_1200000_steps.task
-wandb: Currently logged in as: jw4406 to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
-/home/jw4406/codebase/FightLadder/main
-WORKER [4340]: Starting. Watching /home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo for tasks.
-WORKER [4340]: Processing task: ppo_Guile_1600000_steps.task
-wandb: Currently logged in as: jw4406 to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
-/home/jw4406/codebase/FightLadder/main
-WORKER [4339]: Starting. Watching /home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo for tasks.
-WORKER [4339]: Processing task: ppo_Guile_800000_steps.task
+command line args:Namespace(enable_combo=False, fsp_league=False, left_model_file=None, log_dir='logs/ma', null_combo=False, num_env=24, psro_league=False, render=False, reset='round', right_model_file=None, rollout_opponent_num=5, save_dir='trained_models/ma', seed=0, side='both', total_steps=10000000000, transform_action=False)
+Using cuda device
 hello
+/home/jw4406/codebase/FightLadder/stable_baselines3/stable_baselines3/ppo/ppo.py:145: UserWarning: You have specified a mini-batch size of 1024, but because the `RolloutBuffer` is of size `n_steps * n_envs = 512`, after every 0 untruncated mini-batches, there will be a truncated mini-batch of size 512
+We recommend using a `batch_size` that is a factor of `n_steps * n_envs`.
+Info: (n_steps=512 and n_envs=1)
+  warnings.warn(
+Using cuda device
 hello
+/home/jw4406/codebase/FightLadder/stable_baselines3/stable_baselines3/ppo/ppo.py:145: UserWarning: You have specified a mini-batch size of 1024, but because the `RolloutBuffer` is of size `n_steps * n_envs = 512`, after every 0 untruncated mini-batches, there will be a truncated mini-batch of size 512
+We recommend using a `batch_size` that is a factor of `n_steps * n_envs`.
+Info: (n_steps=512 and n_envs=1)
+  warnings.warn(
+Using cuda device
 hello
-Generating 4 envs per character matchup:
-/home/jw4406/codebase/FightLadder/stable_baselines3/stable_baselines3/common/save_util.py:437: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-  th_object = th.load(file_content, map_location=device)
+Using cuda device
 hello
+[League] Adding player MA0_left_historical_step_0
+[Payoff] Saving model MA0_left_historical_step_0 at step 0
+[Payoff] Saving payoff
+[League] Adding player MA0_right_ryu_historical_step_0
+[Payoff] Saving model MA0_right_ryu_historical_step_0 at step 0
+[Payoff] Saving payoff
+[League] Adding player MA0_right_guile_historical_step_0
+[Payoff] Saving model MA0_right_guile_historical_step_0 at step 0
+[Payoff] Saving payoff
+[League] Adding player MA0_right_bison_historical_step_0
+[Payoff] Saving model MA0_right_bison_historical_step_0 at step 0
+[Payoff] Saving payoff
+[League] Adding player MA0_left
+[Payoff] Saving model MA0_left at step 0
+[Payoff] Saving payoff
+[League] Adding player ME0_left
+[Payoff] Saving model ME0_left at step 0
+[Payoff] Saving payoff
+[League] Adding player LE0_left
+[Payoff] Saving model LE0_left at step 0
+[Payoff] Saving payoff
+[League] Adding player LE1_left
+[Payoff] Saving model LE1_left at step 0
+[Payoff] Saving payoff
+[League] Adding player MA0_right_ryu
+[Payoff] Saving model MA0_right_ryu at step 0
+[Payoff] Saving payoff
+[League] Adding player ME0_right_ryu
+[Payoff] Saving model ME0_right_ryu at step 0
+[Payoff] Saving payoff
+[League] Adding player LE0_right_ryu
+[Payoff] Saving model LE0_right_ryu at step 0
+[Payoff] Saving payoff
+[League] Adding player LE1_right_ryu
+[Payoff] Saving model LE1_right_ryu at step 0
+[Payoff] Saving payoff
+[League] Adding player MA0_right_guile
+[Payoff] Saving model MA0_right_guile at step 0
+[Payoff] Saving payoff
+[League] Adding player ME0_right_guile
+[Payoff] Saving model ME0_right_guile at step 0
+[Payoff] Saving payoff
+[League] Adding player LE0_right_guile
+[Payoff] Saving model LE0_right_guile at step 0
+[Payoff] Saving payoff
+[League] Adding player LE1_right_guile
+[Payoff] Saving model LE1_right_guile at step 0
+[Payoff] Saving payoff
+[League] Adding player MA0_right_bison
+[Payoff] Saving model MA0_right_bison at step 0
+[Payoff] Saving payoff
+[League] Adding player ME0_right_bison
+[Payoff] Saving model ME0_right_bison at step 0
+[Payoff] Saving payoff
+[League] Adding player LE0_right_bison
+[Payoff] Saving model LE0_right_bison at step 0
+[Payoff] Saving payoff
+[League] Adding player LE1_right_bison
+[Payoff] Saving model LE1_right_bison at step 0
+[Payoff] Saving payoff
+Starting worker for MA0_left (type: MainPlayer)
+Agent exists: False
+worker MA0_left start
+Constructing agent for MA0_left
+Using cuda device
 hello
+Logging to logs/ma/MA0_left/Learner_10
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
 hello
-Generating 4 envs per character matchup:
-/home/jw4406/codebase/FightLadder/stable_baselines3/stable_baselines3/common/save_util.py:437: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-  th_object = th.load(file_content, map_location=device)
+Using cuda device
 hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_bison
+Using cuda device
 hello
+Using cuda device
 hello
-Generating 4 envs per character matchup:
-/home/jw4406/codebase/FightLadder/stable_baselines3/stable_baselines3/common/save_util.py:437: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-  th_object = th.load(file_content, map_location=device)
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison) - Character: bison
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
 hello
+Using cuda device
 hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
 hello
-Generating 4 envs per character matchup:
-/home/jw4406/codebase/FightLadder/stable_baselines3/stable_baselines3/common/save_util.py:437: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-  th_object = th.load(file_content, map_location=device)
-wandb: Tracking run with wandb version 0.19.11
-wandb: Run data is saved locally in /home/jw4406/codebase/FightLadder/main/wandb/run-20251201_133703-hguopddc
-wandb: Run `wandb offline` to turn off syncing.
-wandb: Syncing run soft-dust-706
-wandb: ⭐️ View project at https://wandb.ai/jw4406/exploiter
-wandb: 🚀 View run at https://wandb.ai/jw4406/exploiter/runs/hguopddc
-wandb: Tracking run with wandb version 0.19.11
-wandb: Run data is saved locally in /home/jw4406/codebase/FightLadder/main/wandb/run-20251201_133705-4olvfm5m
-wandb: Run `wandb offline` to turn off syncing.
-wandb: Syncing run sandy-galaxy-707
-wandb: ⭐️ View project at https://wandb.ai/jw4406/exploiter
-wandb: 🚀 View run at https://wandb.ai/jw4406/exploiter/runs/4olvfm5m
-wandb: Tracking run with wandb version 0.19.11
-wandb: Run data is saved locally in /home/jw4406/codebase/FightLadder/main/wandb/run-20251201_133705-u8tr4spq
-wandb: Run `wandb offline` to turn off syncing.
-wandb: Syncing run woven-spaceship-707
-wandb: ⭐️ View project at https://wandb.ai/jw4406/exploiter
-wandb: 🚀 View run at https://wandb.ai/jw4406/exploiter/runs/u8tr4spq
-wandb: Tracking run with wandb version 0.19.11
-wandb: Run data is saved locally in /home/jw4406/codebase/FightLadder/main/wandb/run-20251201_133705-tj4xrin8
-wandb: Run `wandb offline` to turn off syncing.
-wandb: Syncing run chocolate-sunset-707
-wandb: ⭐️ View project at https://wandb.ai/jw4406/exploiter
-wandb: 🚀 View run at https://wandb.ai/jw4406/exploiter/runs/tj4xrin8
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_bison_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison_historical_step_0) - Character: bison
+-----------------------------------
+| rollout/             |          |
+|    ep_len_mean       | 336      |
+|    ep_rew_mean       | -0.166   |
+|    ep_rew_other_mean | 0.166    |
+| time/                |          |
+|    fps               | 780      |
+|    iterations        | 1        |
+|    time_elapsed      | 78       |
+|    total_timesteps   | 61440    |
+-----------------------------------
+[Payoff] Saving model MA0_left at step 0
+[Payoff] Saving payoff
+[Player] Adding player MA0_left
+Constructing agent for MA0_right_bison
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison) - Character: bison
+Constructing agent for MA0_right_bison_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison_historical_step_0) - Character: bison
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_ryu
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu) - Character: ryu
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 355          |
+|    ep_rew_mean          | -0.135       |
+|    ep_rew_other_mean    | 0.135        |
+| time/                   |              |
+|    fps                  | 806          |
+|    iterations           | 2            |
+|    time_elapsed         | 152          |
+|    total_timesteps      | 122880       |
+| train/                  |              |
+|    approx_kl            | 0.0015227307 |
+|    clip_fraction        | 0.0187       |
+|    clip_range           | 0.1          |
+|    entropy_loss         | -8.32        |
+|    explained_variance   | -9.96        |
+|    loss                 | -0.00128     |
+|    n_updates            | 4            |
+|    policy_gradient_loss | -0.00162     |
+|    value_loss           | 0.0111       |
+------------------------------------------
+[Payoff] Saving model MA0_left at step 0
+[Payoff] Saving payoff
+[Player] Adding player MA0_left
+Constructing agent for MA0_right_bison_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison_historical_step_0) - Character: bison
+Constructing agent for MA0_right_ryu
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu) - Character: ryu
+Constructing agent for MA0_right_bison
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison) - Character: bison
+Constructing agent for MA0_right_ryu
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu) - Character: ryu
+Constructing agent for MA0_right_ryu
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu) - Character: ryu
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 367          |
+|    ep_rew_mean          | -0.0872      |
+|    ep_rew_other_mean    | 0.0873       |
+| time/                   |              |
+|    fps                  | 781          |
+|    iterations           | 3            |
+|    time_elapsed         | 235          |
+|    total_timesteps      | 184320       |
+| train/                  |              |
+|    approx_kl            | 0.0011721122 |
+|    clip_fraction        | 0.0191       |
+|    clip_range           | 0.1          |
+|    entropy_loss         | -8.32        |
+|    explained_variance   | -2.87        |
+|    loss                 | -0.00803     |
+|    n_updates            | 8            |
+|    policy_gradient_loss | -0.00255     |
+|    value_loss           | 0.00104      |
+------------------------------------------
+[Payoff] Saving model MA0_left at step 0
+[Payoff] Saving payoff
+[Player] Adding player MA0_left
+Constructing agent for MA0_right_ryu_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu_historical_step_0) - Character: ryu
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_bison
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison) - Character: bison
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_ryu
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu) - Character: ryu
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 361          |
+|    ep_rew_mean          | -0.0922      |
+|    ep_rew_other_mean    | 0.0922       |
+| time/                   |              |
+|    fps                  | 769          |
+|    iterations           | 4            |
+|    time_elapsed         | 319          |
+|    total_timesteps      | 245760       |
+| train/                  |              |
+|    approx_kl            | 0.0016907022 |
+|    clip_fraction        | 0.0468       |
+|    clip_range           | 0.1          |
+|    entropy_loss         | -8.31        |
+|    explained_variance   | -5.2         |
+|    loss                 | -0.0142      |
+|    n_updates            | 12           |
+|    policy_gradient_loss | -0.00579     |
+|    value_loss           | 0.000821     |
+------------------------------------------
+[Payoff] Saving model MA0_left at step 0
+[Payoff] Saving payoff
+[Player] Adding player MA0_left
+Constructing agent for MA0_right_ryu
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu) - Character: ryu
+Constructing agent for MA0_right_guile
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile) - Character: guile
+Constructing agent for MA0_right_ryu
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu) - Character: ryu
+Constructing agent for MA0_right_bison
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison) - Character: bison
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 364          |
+|    ep_rew_mean          | -0.129       |
+|    ep_rew_other_mean    | 0.129        |
+| time/                   |              |
+|    fps                  | 662          |
+|    iterations           | 5            |
+|    time_elapsed         | 463          |
+|    total_timesteps      | 307200       |
+| train/                  |              |
+|    approx_kl            | 0.0022384042 |
+|    clip_fraction        | 0.0812       |
+|    clip_range           | 0.1          |
+|    entropy_loss         | -8.31        |
+|    explained_variance   | -6.47        |
+|    loss                 | -0.0157      |
+|    n_updates            | 16           |
+|    policy_gradient_loss | -0.00913     |
+|    value_loss           | 0.000821     |
+------------------------------------------
+[Payoff] Saving model MA0_left at step 0
+[Payoff] Saving payoff
+[Player] Adding player MA0_left
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_bison
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison) - Character: bison
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 337          |
+|    ep_rew_mean          | -0.158       |
+|    ep_rew_other_mean    | 0.158        |
+| time/                   |              |
+|    fps                  | 631          |
+|    iterations           | 6            |
+|    time_elapsed         | 584          |
+|    total_timesteps      | 368640       |
+| train/                  |              |
+|    approx_kl            | 0.0025898002 |
+|    clip_fraction        | 0.106        |
+|    clip_range           | 0.1          |
+|    entropy_loss         | -8.31        |
+|    explained_variance   | -5.13        |
+|    loss                 | -0.0234      |
+|    n_updates            | 20           |
+|    policy_gradient_loss | -0.0119      |
+|    value_loss           | 0.000714     |
+------------------------------------------
+[Payoff] Saving model MA0_left at step 0
+[Payoff] Saving payoff
+[Player] Adding player MA0_left
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_bison
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison) - Character: bison
+Constructing agent for MA0_right_bison
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison) - Character: bison
+Constructing agent for MA0_right_bison
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison) - Character: bison
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 355         |
+|    ep_rew_mean          | -0.126      |
+|    ep_rew_other_mean    | 0.126       |
+| time/                   |             |
+|    fps                  | 650         |
+|    iterations           | 7           |
+|    time_elapsed         | 661         |
+|    total_timesteps      | 430080      |
+| train/                  |             |
+|    approx_kl            | 0.002821676 |
+|    clip_fraction        | 0.13        |
+|    clip_range           | 0.1         |
+|    entropy_loss         | -8.31       |
+|    explained_variance   | -3.27       |
+|    loss                 | -0.0285     |
+|    n_updates            | 24          |
+|    policy_gradient_loss | -0.0142     |
+|    value_loss           | 0.000668    |
+-----------------------------------------
+[Payoff] Saving model MA0_left at step 0
+[Payoff] Saving payoff
+[Player] Adding player MA0_left
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_ryu
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu) - Character: ryu
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_ryu_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu_historical_step_0) - Character: ryu
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 346          |
+|    ep_rew_mean          | -0.142       |
+|    ep_rew_other_mean    | 0.142        |
+| time/                   |              |
+|    fps                  | 662          |
+|    iterations           | 8            |
+|    time_elapsed         | 741          |
+|    total_timesteps      | 491520       |
+| train/                  |              |
+|    approx_kl            | 0.0032753523 |
+|    clip_fraction        | 0.158        |
+|    clip_range           | 0.1          |
+|    entropy_loss         | -8.3         |
+|    explained_variance   | -3.86        |
+|    loss                 | -0.0299      |
+|    n_updates            | 28           |
+|    policy_gradient_loss | -0.0166      |
+|    value_loss           | 0.000576     |
+------------------------------------------
+[Payoff] Saving model MA0_left at step 0
+[Payoff] Saving payoff
+[Player] Adding player MA0_left
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_ryu_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu_historical_step_0) - Character: ryu
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_bison
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison) - Character: bison
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 351          |
+|    ep_rew_mean          | -0.142       |
+|    ep_rew_other_mean    | 0.142        |
+| time/                   |              |
+|    fps                  | 664          |
+|    iterations           | 9            |
+|    time_elapsed         | 832          |
+|    total_timesteps      | 552960       |
+| train/                  |              |
+|    approx_kl            | 0.0031691259 |
+|    clip_fraction        | 0.161        |
+|    clip_range           | 0.1          |
+|    entropy_loss         | -8.3         |
+|    explained_variance   | -2.7         |
+|    loss                 | -0.0302      |
+|    n_updates            | 32           |
+|    policy_gradient_loss | -0.0157      |
+|    value_loss           | 0.000431     |
+------------------------------------------
+[Payoff] Saving model MA0_left at step 0
+[Payoff] Saving payoff
+[Player] Adding player MA0_left
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_bison
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison) - Character: bison
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+----------------------------------------
+| rollout/                |            |
+|    ep_len_mean          | 351        |
+|    ep_rew_mean          | -0.136     |
+|    ep_rew_other_mean    | 0.136      |
+| time/                   |            |
+|    fps                  | 644        |
+|    iterations           | 10         |
+|    time_elapsed         | 952        |
+|    total_timesteps      | 614400     |
+| train/                  |            |
+|    approx_kl            | 0.00333586 |
+|    clip_fraction        | 0.165      |
+|    clip_range           | 0.1        |
+|    entropy_loss         | -8.3       |
+|    explained_variance   | -2.01      |
+|    loss                 | -0.0336    |
+|    n_updates            | 36         |
+|    policy_gradient_loss | -0.018     |
+|    value_loss           | 0.000375   |
+----------------------------------------
+[Payoff] Saving model MA0_left at step 0
+[Payoff] Saving payoff
+[Player] Adding player MA0_left
+Constructing agent for MA0_right_bison
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison) - Character: bison
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_bison_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison_historical_step_0) - Character: bison
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 351         |
+|    ep_rew_mean          | -0.138      |
+|    ep_rew_other_mean    | 0.138       |
+| time/                   |             |
+|    fps                  | 619         |
+|    iterations           | 11          |
+|    time_elapsed         | 1091        |
+|    total_timesteps      | 675840      |
+| train/                  |             |
+|    approx_kl            | 0.003482192 |
+|    clip_fraction        | 0.18        |
+|    clip_range           | 0.1         |
+|    entropy_loss         | -8.29       |
+|    explained_variance   | -1.43       |
+|    loss                 | -0.0356     |
+|    n_updates            | 40          |
+|    policy_gradient_loss | -0.018      |
+|    value_loss           | 0.000355    |
+-----------------------------------------
+[Payoff] Saving model MA0_left at step 0
+[Payoff] Saving payoff
+[Player] Adding player MA0_left
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_ryu
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu) - Character: ryu
+Constructing agent for MA0_right_ryu
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu) - Character: ryu
+-----------------------------------------
+| rollout/                |             |
+|    ep_len_mean          | 349         |
+|    ep_rew_mean          | -0.152      |
+|    ep_rew_other_mean    | 0.152       |
+| time/                   |             |
+|    fps                  | 613         |
+|    iterations           | 12          |
+|    time_elapsed         | 1202        |
+|    total_timesteps      | 737280      |
+| train/                  |             |
+|    approx_kl            | 0.003948543 |
+|    clip_fraction        | 0.203       |
+|    clip_range           | 0.1         |
+|    entropy_loss         | -8.29       |
+|    explained_variance   | -1.45       |
+|    loss                 | -0.0361     |
+|    n_updates            | 44          |
+|    policy_gradient_loss | -0.0199     |
+|    value_loss           | 0.000283    |
+-----------------------------------------
+[Payoff] Saving model MA0_left at step 0
+[Payoff] Saving payoff
+[Player] Adding player MA0_left
+Constructing agent for MA0_right_ryu_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu_historical_step_0) - Character: ryu
+Constructing agent for MA0_right_ryu_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu_historical_step_0) - Character: ryu
+Constructing agent for MA0_right_bison
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison) - Character: bison
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 369          |
+|    ep_rew_mean          | -0.116       |
+|    ep_rew_other_mean    | 0.116        |
+| time/                   |              |
+|    fps                  | 620          |
+|    iterations           | 13           |
+|    time_elapsed         | 1287         |
+|    total_timesteps      | 798720       |
+| train/                  |              |
+|    approx_kl            | 0.0035763946 |
+|    clip_fraction        | 0.192        |
+|    clip_range           | 0.1          |
+|    entropy_loss         | -8.29        |
+|    explained_variance   | -0.903       |
+|    loss                 | -0.0356      |
+|    n_updates            | 48           |
+|    policy_gradient_loss | -0.018       |
+|    value_loss           | 0.000237     |
+------------------------------------------
+[Payoff] Saving model MA0_left at step 0
+[Payoff] Saving payoff
+[Player] Adding player MA0_left
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_ryu
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu) - Character: ryu
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_bison
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison) - Character: bison
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 340          |
+|    ep_rew_mean          | -0.139       |
+|    ep_rew_other_mean    | 0.139        |
+| time/                   |              |
+|    fps                  | 627          |
+|    iterations           | 14           |
+|    time_elapsed         | 1370         |
+|    total_timesteps      | 860160       |
+| train/                  |              |
+|    approx_kl            | 0.0039282795 |
+|    clip_fraction        | 0.199        |
+|    clip_range           | 0.1          |
+|    entropy_loss         | -8.29        |
+|    explained_variance   | -0.837       |
+|    loss                 | -0.0393      |
+|    n_updates            | 52           |
+|    policy_gradient_loss | -0.0205      |
+|    value_loss           | 0.000198     |
+------------------------------------------
+[Payoff] Saving model MA0_left at step 0
+[Payoff] Saving payoff
+[Player] Adding player MA0_left
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_bison
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison) - Character: bison
+Constructing agent for MA0_right_ryu
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu) - Character: ryu
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 345          |
+|    ep_rew_mean          | -0.127       |
+|    ep_rew_other_mean    | 0.127        |
+| time/                   |              |
+|    fps                  | 628          |
+|    iterations           | 15           |
+|    time_elapsed         | 1465         |
+|    total_timesteps      | 921600       |
+| train/                  |              |
+|    approx_kl            | 0.0038423925 |
+|    clip_fraction        | 0.203        |
+|    clip_range           | 0.1          |
+|    entropy_loss         | -8.28        |
+|    explained_variance   | -0.499       |
+|    loss                 | -0.0341      |
+|    n_updates            | 56           |
+|    policy_gradient_loss | -0.0196      |
+|    value_loss           | 0.000202     |
+------------------------------------------
+[Payoff] Saving model MA0_left at step 0
+[Payoff] Saving payoff
+[Player] Adding player MA0_left
+Constructing agent for MA0_right_ryu
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu) - Character: ryu
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_bison_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_bison_historical_step_0) - Character: bison
+Constructing agent for MA0_right_ryu_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_ryu_historical_step_0) - Character: ryu
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+------------------------------------------
+| rollout/                |              |
+|    ep_len_mean          | 348          |
+|    ep_rew_mean          | -0.137       |
+|    ep_rew_other_mean    | 0.137        |
+| time/                   |              |
+|    fps                  | 627          |
+|    iterations           | 16           |
+|    time_elapsed         | 1567         |
+|    total_timesteps      | 983040       |
+| train/                  |              |
+|    approx_kl            | 0.0039600837 |
+|    clip_fraction        | 0.213        |
+|    clip_range           | 0.1          |
+|    entropy_loss         | -8.28        |
+|    explained_variance   | -0.365       |
+|    loss                 | -0.0364      |
+|    n_updates            | 60           |
+|    policy_gradient_loss | -0.0193      |
+|    value_loss           | 0.000192     |
+------------------------------------------
+[Payoff] Saving model MA0_left at step 0
+[Payoff] Saving payoff
+[Player] Adding player MA0_left
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_guile_historical_step_0
+Using cuda device
+hello
+[Learner] Self(MA0_left) vs Opponent(MA0_right_guile_historical_step_0) - Character: guile
+Constructing agent for MA0_right_ryu_historical_step_0
