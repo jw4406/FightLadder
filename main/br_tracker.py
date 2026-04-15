@@ -133,52 +133,61 @@ class BRConvergenceTracker:
             
         return False
 
-    def check_reward_stability(self, current_reward, current_entropy=None):
+    def check_reward_stability(
+        self,
+        current_reward,
+        current_entropy=None,
+        use_reward_stagnation: bool = True,
+        use_entropy_stagnation: bool = True,
+    ):
         """
         Returns True when reward (and optionally entropy) have stabilized
         according to EMA absolute deviation.
         """
         self.num_checks += 1
+        if not use_reward_stagnation and not use_entropy_stagnation:
+            self.last_reward_tolerance = None
+            self.last_entropy_tolerance = None
+            self.last_reward_is_stable = True
+            self.last_entropy_is_stable = True
+            self.last_combined_is_stable = False
+            self.last_within_warmup = self.num_checks <= self.warmup_checks
+            self.stable_checks = 0
+            return False
+
         current_reward = float(current_reward)
         if current_entropy is not None:
             current_entropy = float(current_entropy)
-        if self.ema_reward is None:
-            self.ema_reward = current_reward
-            self.ema_abs_reward = abs(current_reward)
-            self.ema_abs_dev = 0.0
-            self.last_reward_tolerance = max(
-                self.tolerance,
-                self.rel_tolerance * max(self.ema_abs_reward, self.eps),
-            )
-            self.last_reward_is_stable = False
-            if current_entropy is not None:
-                self.ema_entropy = current_entropy
-                self.ema_abs_entropy = abs(current_entropy)
-                self.ema_abs_entropy_dev = 0.0
-                self.last_entropy_tolerance = max(
+        reward_is_stable = True
+        if use_reward_stagnation:
+            if self.ema_reward is None:
+                self.ema_reward = current_reward
+                self.ema_abs_reward = abs(current_reward)
+                self.ema_abs_dev = 0.0
+                self.last_reward_tolerance = max(
                     self.tolerance,
-                    self.rel_tolerance * max(self.ema_abs_entropy, self.eps),
+                    self.rel_tolerance * max(self.ema_abs_reward, self.eps),
                 )
-                self.last_entropy_is_stable = False
+                self.last_reward_is_stable = False
+                reward_is_stable = False
             else:
-                self.last_entropy_tolerance = None
-                self.last_entropy_is_stable = True
-            self.last_combined_is_stable = False
-            self.last_within_warmup = self.num_checks <= self.warmup_checks
-            return False
-
-        (
-            self.ema_reward,
-            self.ema_abs_reward,
-            self.ema_abs_dev,
-            reward_tolerance,
-            reward_is_stable,
-        ) = self._update_ema_stability_state(current_reward, self.ema_reward, self.ema_abs_reward,self.ema_abs_dev)
-        self.last_reward_tolerance = reward_tolerance
-        self.last_reward_is_stable = reward_is_stable
+                (
+                    self.ema_reward,
+                    self.ema_abs_reward,
+                    self.ema_abs_dev,
+                    reward_tolerance,
+                    reward_is_stable,
+                ) = self._update_ema_stability_state(
+                    current_reward, self.ema_reward, self.ema_abs_reward, self.ema_abs_dev
+                )
+                self.last_reward_tolerance = reward_tolerance
+                self.last_reward_is_stable = reward_is_stable
+        else:
+            self.last_reward_tolerance = None
+            self.last_reward_is_stable = True
         
         entropy_is_stable = True
-        if current_entropy is not None:
+        if use_entropy_stagnation and current_entropy is not None:
             if self.ema_entropy is None:
                 self.ema_entropy = current_entropy
                 self.ema_abs_entropy = abs(current_entropy)
@@ -208,7 +217,12 @@ class BRConvergenceTracker:
             self.last_entropy_tolerance = None
             self.last_entropy_is_stable = True
 
-        self.last_combined_is_stable = reward_is_stable and entropy_is_stable
+        enabled_stability_flags = []
+        if use_reward_stagnation:
+            enabled_stability_flags.append(reward_is_stable)
+        if use_entropy_stagnation:
+            enabled_stability_flags.append(entropy_is_stable)
+        self.last_combined_is_stable = all(enabled_stability_flags) if enabled_stability_flags else False
         self.last_within_warmup = self.num_checks <= self.warmup_checks
 
         if not self.last_within_warmup:

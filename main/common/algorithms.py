@@ -5345,6 +5345,8 @@ class Exploiter(PPO):
         br_tracker_patience: int = 10,
         br_tracker_tolerance: float = 1e-4,
         br_tracker_window_size: int = 50,
+        use_br_reward_stagnation: bool = True,
+        use_br_entropy_stagnation: bool = True,
         use_wandb: bool = True,
     ):
 
@@ -5379,6 +5381,8 @@ class Exploiter(PPO):
         self.br_tracker_patience = br_tracker_patience
         self.br_tracker_tolerance = br_tracker_tolerance
         self.br_tracker_window_size = br_tracker_window_size
+        self.use_br_reward_stagnation = bool(use_br_reward_stagnation)
+        self.use_br_entropy_stagnation = bool(use_br_entropy_stagnation)
         self.br_convergence_tracker = BRConvergenceTracker(
             patience=self.br_tracker_patience,
             tolerance=self.br_tracker_tolerance,
@@ -5540,14 +5544,16 @@ class Exploiter(PPO):
             should_stop = self.br_convergence_tracker.check_reward_stability(
                 current_reward=mean_reward,
                 current_entropy=self._last_rollout_policy_entropy,
+                use_reward_stagnation=self.use_br_reward_stagnation,
+                use_entropy_stagnation=self.use_br_entropy_stagnation,
             )
             tracker = self.br_convergence_tracker
             tracker_logs = {
                 "exploiter/reward/mean": float(mean_reward),
-                "exploiter/reward/ema": float(tracker.ema_reward),
-                "exploiter/reward/ema_abs": float(tracker.ema_abs_reward),
-                "exploiter/reward/ema_abs_dev": float(tracker.ema_abs_dev),
-                "exploiter/reward/tolerance": float(tracker.last_reward_tolerance),
+                "exploiter/reward/ema": float(tracker.ema_reward) if tracker.ema_reward is not None else float("nan"),
+                "exploiter/reward/ema_abs": float(tracker.ema_abs_reward) if tracker.ema_abs_reward is not None else float("nan"),
+                "exploiter/reward/ema_abs_dev": float(tracker.ema_abs_dev) if tracker.ema_abs_dev is not None else float("nan"),
+                "exploiter/reward/tolerance": float(tracker.last_reward_tolerance) if tracker.last_reward_tolerance is not None else float("nan"),
                 "exploiter/reward/is_stable": float(bool(tracker.last_reward_is_stable)),
                 "exploiter/entropy/mean": (
                     float(self._last_rollout_policy_entropy)
@@ -5578,6 +5584,8 @@ class Exploiter(PPO):
                 "exploiter/stability/within_warmup": float(bool(tracker.last_within_warmup)),
                 "exploiter/stability/combined_is_stable": float(bool(tracker.last_combined_is_stable)),
                 "exploiter/stability/should_stop": float(bool(should_stop)),
+                "exploiter/stability/use_reward_stagnation": float(bool(self.use_br_reward_stagnation)),
+                "exploiter/stability/use_entropy_stagnation": float(bool(self.use_br_entropy_stagnation)),
             }
             for key, value in tracker_logs.items():
                 self.logger.record(key, value)
@@ -5593,7 +5601,15 @@ class Exploiter(PPO):
                 flush=True,
             )
             if should_stop:
-                print("exploiter reward+entropy stability tracker triggered early stopping.")
+                if self.use_br_reward_stagnation and self.use_br_entropy_stagnation:
+                    mode_msg = "reward+entropy"
+                elif self.use_br_reward_stagnation:
+                    mode_msg = "reward"
+                elif self.use_br_entropy_stagnation:
+                    mode_msg = "entropy"
+                else:
+                    mode_msg = "disabled"
+                print(f"exploiter {mode_msg} stability tracker triggered early stopping.")
                 return False
         else:
             print("exploiter stability skipped: reward signal unavailable", flush=True)

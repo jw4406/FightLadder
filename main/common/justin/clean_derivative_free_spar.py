@@ -139,17 +139,18 @@ class CleanDerivativeFreeSPAR(PPO):
             num_workers=None,
             scheduler_step_size: int=10, #TODO: 10 was chosen arbitrarily - should be changed.
             use_wandb: bool = True,
-            use_elo_stagnation: bool = True,
-            use_elo_early_stop: bool = True,
-            elo_stagnation_patience: int = 200,
-            elo_stagnation_tolerance: float = 1e-4,
-            elo_stagnation_rel_tolerance: float = 0.05,
-            elo_stagnation_ema_beta: float = 0.99,
-            elo_stagnation_eps: float = 1e-8,
-            elo_roster_epoch_size: Optional[int] = None,
-            elo_entropy_weight: float = 100.0,
-            elo_lr_factor: float = 0.5,
-            elo_lr_patience: int = 5,
+            use_stagnation_early_stop: bool = False,
+            use_stagnation_velocity_signal: bool = True,
+            use_stagnation_entropy_signal: bool = True,
+            stagnation_patience: int = 200,
+            stagnation_tolerance: float = 1e-4,
+            stagnation_rel_tolerance: float = 0.05,
+            stagnation_ema_beta: float = 0.99,
+            stagnation_eps: float = 1e-8,
+            stagnation_eval_games: Optional[int] = None,
+            entropy_stagnation_weight: float = 100.0,
+            stagnation_lr_factor: float = 0.5,
+            stagnation_lr_patience: int = 5,
     ):
 
         self.matchups = [state2matchup(state) for state in state_list] if state_list is not None else None #This needs to happen before the super().__init__
@@ -229,17 +230,18 @@ class CleanDerivativeFreeSPAR(PPO):
         self.env.num_envs = self.n_envs
         self.use_mirror = use_mirror
         self.num_workers = num_workers
-        self.use_elo_stagnation = use_elo_stagnation
-        self.use_elo_early_stop = use_elo_early_stop
-        self.elo_stagnation_patience_cfg = int(elo_stagnation_patience)
-        self.elo_stagnation_tolerance_cfg = float(elo_stagnation_tolerance)
-        self.elo_stagnation_rel_tolerance_cfg = float(elo_stagnation_rel_tolerance)
-        self.elo_stagnation_ema_beta_cfg = float(elo_stagnation_ema_beta)
-        self.elo_stagnation_eps_cfg = float(elo_stagnation_eps)
-        self.elo_roster_epoch_size_cfg = elo_roster_epoch_size
-        self.elo_entropy_weight_cfg = float(elo_entropy_weight)
-        self.elo_lr_factor_cfg = float(elo_lr_factor)
-        self.elo_lr_patience_cfg = int(elo_lr_patience)
+        self.use_stagnation_early_stop = use_stagnation_early_stop
+        self.use_stagnation_velocity_signal = bool(use_stagnation_velocity_signal)
+        self.use_stagnation_entropy_signal = bool(use_stagnation_entropy_signal)
+        self.elo_stagnation_patience_cfg = int(stagnation_patience)
+        self.elo_stagnation_tolerance_cfg = float(stagnation_tolerance)
+        self.elo_stagnation_rel_tolerance_cfg = float(stagnation_rel_tolerance)
+        self.elo_stagnation_ema_beta_cfg = float(stagnation_ema_beta)
+        self.elo_stagnation_eps_cfg = float(stagnation_eps)
+        self.elo_roster_epoch_size_cfg = stagnation_eval_games
+        self.elo_entropy_weight_cfg = float(entropy_stagnation_weight)
+        self.elo_lr_factor_cfg = float(stagnation_lr_factor)
+        self.elo_lr_patience_cfg = int(stagnation_lr_patience)
         self.elo_initial_rating = 1000.0
         self.elo_k_factor = 24.0
         self._init_elo_trackers()
@@ -413,7 +415,13 @@ class CleanDerivativeFreeSPAR(PPO):
         elo_movements = np.abs(self.elo_adversary_ratings - self.elo_stagnation_last_eval_ratings)
         mean_velocity = float(np.mean(elo_movements))
         entropy_loss = float(current_entropy) if current_entropy is not None else 0.0
-        stagnation_metric = mean_velocity + (entropy_loss * self.elo_stagnation_entropy_weight)
+        velocity_component = mean_velocity if self.use_stagnation_velocity_signal else 0.0
+        entropy_component = (
+            entropy_loss * self.elo_stagnation_entropy_weight
+            if self.use_stagnation_entropy_signal
+            else 0.0
+        )
+        stagnation_metric = velocity_component + entropy_component
 
         self.elo_stagnation_last_velocity = mean_velocity
         self.elo_stagnation_last_metric = stagnation_metric
@@ -438,15 +446,23 @@ class CleanDerivativeFreeSPAR(PPO):
         self.elo_stagnation_dynamic_threshold = dynamic_improvement_threshold
 
         self.logger.record("elo/stagnation/velocity", mean_velocity)
+        self.logger.record("elo/stagnation/velocity_component", velocity_component)
         self.logger.record("elo/stagnation/metric", stagnation_metric)
         self.logger.record("elo/stagnation/entropy", entropy_loss)
+        self.logger.record("elo/stagnation/entropy_component", entropy_component)
+        self.logger.record("elo/stagnation/use_velocity_stagnation", float(bool(self.use_stagnation_velocity_signal)))
+        self.logger.record("elo/stagnation/use_entropy_stagnation", float(bool(self.use_stagnation_entropy_signal)))
         self.logger.record("elo/stagnation/threshold", dynamic_improvement_threshold)
         if self.use_wandb:
             wandb.log(
                 {
                     "elo/stagnation/velocity": mean_velocity,
+                    "elo/stagnation/velocity_component": velocity_component,
                     "elo/stagnation/metric": stagnation_metric,
                     "elo/stagnation/entropy": entropy_loss,
+                    "elo/stagnation/entropy_component": entropy_component,
+                    "elo/stagnation/use_velocity_stagnation": float(bool(self.use_stagnation_velocity_signal)),
+                    "elo/stagnation/use_entropy_stagnation": float(bool(self.use_stagnation_entropy_signal)),
                     "elo/stagnation/threshold": dynamic_improvement_threshold,
                 }
             )
@@ -970,8 +986,11 @@ class CleanDerivativeFreeSPAR(PPO):
     ):
         try:
             iteration = 0
-            use_elo_stagnation = bool(getattr(self, "use_elo_stagnation", True))
-            if use_elo_stagnation:
+            use_elo_tracker = (
+                bool(getattr(self, "use_stagnation_velocity_signal", True))
+                or bool(getattr(self, "use_stagnation_entropy_signal", True))
+            )
+            if use_elo_tracker:
                 self._init_elo_stagnation_state()
             #from common.algorithms import Exploiter
             total_timesteps, callback = self._setup_learn(
@@ -1037,14 +1056,14 @@ class CleanDerivativeFreeSPAR(PPO):
                             float(self.policy.ego_value_optimizer.param_groups[0]["lr"]),
                         )
                     self.logger.dump(step=self.num_timesteps)
-                if use_elo_stagnation:
+                if use_elo_tracker:
                     current_entropy = self._get_current_rollout_entropy(update_ego, update_adversary)
                     stagnation_triggered = self._check_elo_stagnation(
                         current_entropy,
                         update_ego=update_ego,
                         update_adversary=update_adversary,
                     )
-                    if stagnation_triggered and self.use_elo_early_stop:
+                    if stagnation_triggered and self.use_stagnation_early_stop:
                         print("Elo stagnation tracker triggered early stopping.")
                         break
             

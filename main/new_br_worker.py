@@ -390,6 +390,8 @@ def train_best_response(
     br_tracker_patience: int = 20,
     br_tracker_tolerance: float = 1e-4,
     br_tracker_window_size: int = 50,
+    use_br_reward_stagnation: bool = True,
+    use_br_entropy_stagnation: bool = True,
     device: str = "cuda",
     dedicated_state_subset: Optional[List[str]] = None,
     matchup_label: Optional[str] = None,
@@ -456,6 +458,8 @@ def train_best_response(
         br_tracker_patience=br_tracker_patience,
         br_tracker_tolerance=br_tracker_tolerance,
         br_tracker_window_size=br_tracker_window_size,
+        use_br_reward_stagnation=use_br_reward_stagnation,
+        use_br_entropy_stagnation=use_br_entropy_stagnation,
         use_wandb=use_wandb,
     )
     br_agent.is_spar = is_spar # TODO: This is a stupid hack to get the BR agent to know if it is a SPAR model or not. Remove this once we have a better way to do this.
@@ -502,6 +506,16 @@ def train_best_response(
             ftm.br_tracker_patience = br_tracker_patience
             ftm.br_tracker_tolerance = br_tracker_tolerance
             ftm.br_tracker_window_size = br_tracker_window_size
+            ftm.use_stagnation_entropy_signal = True
+            ftm.use_stagnation_velocity_signal = False
+            ftm.use_stagnation_early_stop = False
+            ftm.stagnation_patience = 2000000
+            ftm.stagnation_tolerance = 1e-4
+            ftm.stagnation_rel_tolerance = 0.05
+            ftm.stagnation_ema_beta = 0.99
+            ftm.stagnation_eps = 1e-8
+            ftm.stagnation_eval_games = 0
+            ftm.stagnation_lr_patience = 100
             ftm.use_wandb = use_wandb
             ftm.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback, update_ego=not eval_prot, update_adversary=eval_prot)
         #br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
@@ -545,6 +559,8 @@ def run_br_for_task_in_subprocess(
     br_tracker_patience: int = 10,
     br_tracker_tolerance: float = 1e-4,
     br_tracker_window_size: int = 50,
+    use_br_reward_stagnation: bool = True,
+    use_br_entropy_stagnation: bool = True,
     device: str = "cuda",
     state_subset: Optional[List[str]] = None,
     matchup_label: Optional[str] = None,
@@ -634,6 +650,8 @@ def run_br_for_task_in_subprocess(
         br_tracker_patience=br_tracker_patience,
         br_tracker_tolerance=br_tracker_tolerance,
         br_tracker_window_size=br_tracker_window_size,
+        use_br_reward_stagnation=use_br_reward_stagnation,
+        use_br_entropy_stagnation=use_br_entropy_stagnation,
         device=device,
         dedicated_state_subset=dedicated_state_list_for_env,
         matchup_label=matchup_label,
@@ -667,6 +685,8 @@ if __name__ == "__main__":
     parser.add_argument("--br_tracker_patience", type=int, default=10, help="Patience (in checks) for BR convergence early stopping.")
     parser.add_argument("--br_tracker_tolerance", type=float, default=1e-4, help="Tolerance for BR convergence stagnation checks.")
     parser.add_argument("--br_tracker_window_size", type=int, default=50, help="Window size used to smooth BR convergence metric.")
+    parser.add_argument("--use_br_reward_stagnation", choices=['True', 'False'], default='True', help="Use reward stability in BR early-stopping tracker.")
+    parser.add_argument("--use_br_entropy_stagnation", choices=['True', 'False'], default='True', help="Use entropy stability in BR early-stopping tracker.")
 
     parser.add_argument('--reset', choices=['round', 'match', 'game'],help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument("--side", type=str, help="Side", default="left", required=True, choices=["left", "right", "both"])
@@ -719,6 +739,8 @@ if __name__ == "__main__":
     args.continue_exploiters = args.continue_exploiters == 'True'
     args.launch_local_br_eval = args.launch_local_br_eval == 'True'
     args.use_wandb = args.use_wandb == 'True'
+    args.use_br_reward_stagnation = args.use_br_reward_stagnation == 'True'
+    args.use_br_entropy_stagnation = args.use_br_entropy_stagnation == 'True'
     # Linux defaults to "fork", which cannot safely inherit an initialized CUDA
     # runtime. Use explicit "spawn" for BR worker subprocesses.
     mp_ctx = mp.get_context("spawn")
@@ -839,6 +861,8 @@ if __name__ == "__main__":
                         args.br_tracker_patience,
                         args.br_tracker_tolerance,
                         args.br_tracker_window_size,
+                        args.use_br_reward_stagnation,
+                        args.use_br_entropy_stagnation,
                         args.device,
                         state_subset,
                         matchup_label,

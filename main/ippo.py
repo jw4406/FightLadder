@@ -674,17 +674,18 @@ def main(args):
                 use_mirror=use_mirror,
                 use_lr_annealing=args.use_lr_annealing,
                 lr_anneal_coeff=args.lr_anneal_coeff,
-                use_elo_stagnation=args.use_elo_stagnation,
-                use_elo_early_stop=args.use_elo_early_stop,
-                elo_stagnation_patience=args.elo_stagnation_patience,
-                elo_stagnation_tolerance=args.elo_stagnation_tolerance,
-                elo_stagnation_rel_tolerance=args.elo_stagnation_rel_tolerance,
-                elo_stagnation_ema_beta=args.elo_stagnation_ema_beta,
-                elo_stagnation_eps=args.elo_stagnation_eps,
-                elo_roster_epoch_size=args.elo_roster_epoch_size,
-                elo_entropy_weight=args.elo_entropy_weight,
-                elo_lr_factor=args.elo_lr_factor,
-                elo_lr_patience=args.elo_lr_patience,
+                use_stagnation_early_stop=args.use_stagnation_early_stop,
+                use_stagnation_velocity_signal=args.use_stagnation_velocity_signal,
+                use_stagnation_entropy_signal=args.use_stagnation_entropy_signal,
+                stagnation_patience=args.stagnation_patience,
+                stagnation_tolerance=args.stagnation_tolerance,
+                stagnation_rel_tolerance=args.stagnation_rel_tolerance,
+                stagnation_ema_beta=args.stagnation_ema_beta,
+                stagnation_eps=args.stagnation_eps,
+                stagnation_eval_games=args.stagnation_eval_games,
+                entropy_stagnation_weight=args.entropy_stagnation_weight,
+                stagnation_lr_factor=args.stagnation_lr_factor,
+                stagnation_lr_patience=args.stagnation_lr_patience,
             )
         elif model_arch_type == "ippo":
             finetune_model = CleanDerivativeFreeSPARIPPO(
@@ -1003,17 +1004,18 @@ if __name__ == "__main__":
     parser.add_argument("--lr_anneal_coeff", type=float, help="Learning rate anneal coefficient", default=0.995, required=True)
     parser.add_argument('--reset', choices=['round', 'match', 'game'],help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument("--side", type=str, help="Side", default="left", required=True, choices=["left", "right", "both"])
-    parser.add_argument("--use_elo_stagnation", choices=['True', 'False'], help='Use elo stagnation', default=True, required=True)
-    parser.add_argument("--use_elo_early_stop", choices=['True', 'False'], help='Use Elo stagnation for early stopping', default=True, required=True)
-    parser.add_argument("--elo_stagnation_patience", type=int, help="Elo stagnation patience checks", default=20, required=True)
-    parser.add_argument("--elo_stagnation_tolerance", type=float, help="Elo stagnation tolerance", default=1e-4, required=True)
-    parser.add_argument("--elo_stagnation_rel_tolerance", type=float, help="Relative tolerance for dynamic Elo stagnation threshold", default=0.05, required=True)
-    parser.add_argument("--elo_stagnation_ema_beta", type=float, help="EMA beta for dynamic Elo stagnation threshold scaling", default=0.99, required=True)
-    parser.add_argument("--elo_stagnation_eps", type=float, help="Numerical epsilon floor for dynamic Elo stagnation threshold", default=1e-8, required=True)
-    parser.add_argument("--elo_roster_epoch_size", type=int, help="Games before each Elo stagnation evaluation", default=0, required=True)
-    parser.add_argument("--elo_entropy_weight", type=float, help="Weight for entropy in Elo stagnation metric", default=100.0, required=True)
-    parser.add_argument("--elo_lr_factor", type=float, help="Target factor for Elo-triggered LR reduction", default=0.5, required=True)
-    parser.add_argument("--elo_lr_patience", type=int, help="Plateau checks before Elo-triggered LR reduction", default=5, required=True)
+    parser.add_argument("--use_stagnation_early_stop", choices=['True', 'False'], help='Use stagnation signal for early stopping', default=True, required=True)
+    parser.add_argument("--use_stagnation_velocity_signal", choices=['True', 'False'], help='Use rating-movement velocity in stagnation metric', default=True, required=True)
+    parser.add_argument("--use_stagnation_entropy_signal", choices=['True', 'False'], help='Use policy entropy in stagnation metric', default=True, required=True)
+    parser.add_argument("--stagnation_patience", type=int, help="Stagnation patience checks", default=20, required=True)
+    parser.add_argument("--stagnation_tolerance", type=float, help="Absolute stagnation tolerance", default=1e-4, required=True)
+    parser.add_argument("--stagnation_rel_tolerance", type=float, help="Relative tolerance for dynamic stagnation threshold", default=0.05, required=True)
+    parser.add_argument("--stagnation_ema_beta", type=float, help="EMA beta for dynamic stagnation threshold scaling", default=0.99, required=True)
+    parser.add_argument("--stagnation_eps", type=float, help="Numerical epsilon floor for dynamic stagnation threshold", default=1e-8, required=True)
+    parser.add_argument("--stagnation_eval_games", type=int, help="Games before each stagnation evaluation", default=0, required=True)
+    parser.add_argument("--entropy_stagnation_weight", type=float, help="Weight for entropy contribution in stagnation metric", default=100.0, required=True)
+    parser.add_argument("--stagnation_lr_factor", type=float, help="Target factor for stagnation-triggered LR reduction", default=0.5, required=True)
+    parser.add_argument("--stagnation_lr_patience", type=int, help="Plateau checks before stagnation-triggered LR reduction", default=5, required=True)
     parser.add_argument('--render', choices=['True', 'False'], help='Whether to render the game screen', default='False')
     parser.add_argument('--enable_combo', choices=['True', 'False'], help='Enable special move action space for environment', default='True')
     parser.add_argument('--null_combo', choices=['True', 'False'], help='Null action space for special move', default='False')
@@ -1035,9 +1037,10 @@ if __name__ == "__main__":
     args.null_combo = True if args.null_combo == 'True' else False
     args.transform_action = True if args.transform_action == 'True' else False
     args.use_lr_annealing = True if args.use_lr_annealing == 'True' else False
-    args.use_elo_stagnation = True if args.use_elo_stagnation == 'True' else False
-    args.use_elo_early_stop = True if args.use_elo_early_stop == 'True' else False
-    args.elo_roster_epoch_size = None if args.elo_roster_epoch_size <= 0 else args.elo_roster_epoch_size
+    args.use_stagnation_early_stop = True if args.use_stagnation_early_stop == 'True' else False
+    args.use_stagnation_velocity_signal = True if args.use_stagnation_velocity_signal == 'True' else False
+    args.use_stagnation_entropy_signal = True if args.use_stagnation_entropy_signal == 'True' else False
+    args.stagnation_eval_games = None if args.stagnation_eval_games <= 0 else args.stagnation_eval_games
 
     # Print all runtime CLI settings in a readable way for debugging/repro.
     def _print_args_human_readable(parsed_args):
