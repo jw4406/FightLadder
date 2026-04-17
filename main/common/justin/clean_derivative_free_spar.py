@@ -276,6 +276,9 @@ class CleanDerivativeFreeSPAR(PPO):
             slope_window=self.stagnation_slope_window_cfg,
             slope_tolerance=self.stagnation_slope_tolerance_cfg,
             min_slope_checks=self.stagnation_min_slope_checks_cfg,
+            enable_local_entropy_plot=True,
+            local_plot_prefix="continue_exploiter",
+            local_plot_every_checks=1,
         )
         self.stagnation_tracker.reset(self.elo_adversary_ratings)
         #Create learning rate schedulers
@@ -891,6 +894,19 @@ class CleanDerivativeFreeSPAR(PPO):
             if use_elo_tracker and getattr(self, "stagnation_tracker", None) is not None:
                 self.stagnation_tracker.use_velocity_signal = bool(self.use_stagnation_velocity_signal)
                 self.stagnation_tracker.use_entropy_signal = bool(self.use_stagnation_entropy_signal)
+                self.stagnation_tracker.enable_local_entropy_plot = bool(getattr(self, "training_br", False))
+                base_plot_prefix = (
+                    "continue_exploiter_ego"
+                    if update_ego and not update_adversary
+                    else "continue_exploiter_adv"
+                    if update_adversary and not update_ego
+                    else "continue_exploiter_joint"
+                )
+                stop_key = getattr(self, "br_manual_stop_key", None)
+                if stop_key is not None and str(stop_key) != "":
+                    self.stagnation_tracker.local_plot_prefix = f"{base_plot_prefix}_{str(stop_key)}"
+                else:
+                    self.stagnation_tracker.local_plot_prefix = base_plot_prefix
                 self.stagnation_tracker.reset(self.elo_adversary_ratings)
             #from common.algorithms import Exploiter
             total_timesteps, callback = self._setup_learn(
@@ -982,6 +998,7 @@ class CleanDerivativeFreeSPAR(PPO):
                         ratings=self.elo_adversary_ratings,
                         current_entropy=current_entropy,
                         lr_adjustment_callback=_lr_adjustment_callback,
+                        timestep=float(self.num_timesteps),
                     )
                     if stagnation_logs is not None:
                         for key, value in stagnation_logs.items():

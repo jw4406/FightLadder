@@ -1,4 +1,7 @@
 import numpy as np
+import os
+import csv
+from datetime import datetime
 from collections import deque
 from typing import Callable, Dict, Optional, Tuple
 
@@ -27,6 +30,13 @@ class RatingStagnationTracker:
         slope_window: int = 20,
         slope_tolerance: float = 5e-3,
         min_slope_checks: int = 10,
+        entropy_window_size: int = 50,
+        entropy_stop_ratio: float = 0.15,
+        enable_local_entropy_plot: bool = False,
+        local_plot_dir: str = "logs/local_entropy_plots",
+        local_plot_prefix: str = "stagnation",
+        local_plot_every_checks: int = 1,
+        entropy_warmup_checks: int = 100,
     ) -> None:
         self.patience = int(patience)
         self.tolerance = float(tolerance)
@@ -42,6 +52,15 @@ class RatingStagnationTracker:
         self.slope_window = max(2, int(slope_window))
         self.slope_tolerance = float(slope_tolerance)
         self.min_slope_checks = max(1, int(min_slope_checks))
+        self.entropy_window_size = max(2, int(entropy_window_size))
+        self.entropy_stop_ratio = float(entropy_stop_ratio)
+        self.enable_local_entropy_plot = bool(enable_local_entropy_plot)
+        self.local_plot_dir = str(local_plot_dir)
+        self.local_plot_prefix = str(local_plot_prefix)
+        self.local_plot_every_checks = max(1, int(local_plot_every_checks))
+        self.entropy_warmup_checks = max(0, int(entropy_warmup_checks))
+        self.local_entropy_csv_path = None
+        self.local_entropy_png_path = None
         self.reset(np.array([], dtype=np.float64))
 
     def enabled(self) -> bool:
@@ -63,6 +82,96 @@ class RatingStagnationTracker:
         self.last_metric_slope = None
         self.last_metric_slope_normalized = None
         self.last_slope_is_flat = None
+        self.entropy_ema = None
+        self.entropy_start = None
+        self.entropy_smoothed_history = deque(maxlen=self.entropy_window_size)
+        self.last_entropy_window_avg = None
+        self.last_entropy_window_ratio = None
+        self.last_entropy_window_stop = False
+        self.ema_abs_entropy = None
+        self.ema_abs_entropy_dev = None
+        self.last_entropy_tolerance = None
+        self.last_entropy_is_stable = None
+        self.last_within_entropy_warmup = True
+        self.entropy_stable_checks = 0
+        self.last_entropy_stability_stop = False
+        self.entropy_history = deque(maxlen=self.slope_window)
+        self.last_entropy_signal_slope = None
+        self.last_entropy_signal_slope_normalized = None
+        self.last_entropy_signal_slope_is_flat = None
+        self.entropy_timestep_history = []
+        self.entropy_raw_history = []
+        self.entropy_ema_history = []
+        self._plot_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        self.local_entropy_csv_path = None
+        self.local_entropy_png_path = None
+
+    def _update_ema_stability_state(
+        self,
+        current_value: float,
+        ema_value: float,
+        ema_abs_value: float,
+        ema_abs_dev: float,
+    ) -> Tuple[float, float, float, float, bool]:
+        current_value = float(current_value)
+        prev_ema_value = float(ema_value)
+        abs_dev = abs(current_value - prev_ema_value)
+        updated_ema_value = self.ema_beta * ema_value + (1.0 - self.ema_beta) * current_value
+        updated_ema_abs_value = self.ema_beta * ema_abs_value + (1.0 - self.ema_beta) * abs(current_value)
+        updated_ema_abs_dev = self.ema_beta * ema_abs_dev + (1.0 - self.ema_beta) * abs_dev
+        dynamic_tolerance = max(
+            self.tolerance,
+            self.rel_tolerance * max(updated_ema_abs_value, self.eps),
+        )
+        is_stable = updated_ema_abs_dev <= dynamic_tolerance
+        return (
+            updated_ema_value,
+            updated_ema_abs_value,
+            updated_ema_abs_dev,
+            dynamic_tolerance,
+            is_stable,
+        )
+
+    def _save_local_entropy_plot(self, force: bool = False) -> None:
+        if not self.enable_local_entropy_plot:
+            return
+        if len(self.entropy_timestep_history) == 0:
+            return
+        if (not force) and (self.num_checks % self.local_plot_every_checks != 0):
+            return
+        os.makedirs(self.local_plot_dir, exist_ok=True)
+        if self.local_entropy_csv_path is None or self.local_entropy_png_path is None:
+            base_name = f"{self.local_plot_prefix}_{self._plot_id}"
+            self.local_entropy_csv_path = os.path.join(self.local_plot_dir, f"{base_name}.csv")
+            self.local_entropy_png_path = os.path.join(self.local_plot_dir, f"{base_name}.png")
+
+        with open(self.local_entropy_csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["timestep", "entropy_raw", "entropy_ema"])
+            for t, raw, ema in zip(
+                self.entropy_timestep_history,
+                self.entropy_raw_history,
+                self.entropy_ema_history,
+            ):
+                writer.writerow([t, raw, ema])
+
+        try:
+            import matplotlib.pyplot as plt
+
+            plt.figure(figsize=(10, 5))
+            plt.plot(self.entropy_timestep_history, self.entropy_raw_history, label="entropy_raw", alpha=0.5)
+            plt.plot(self.entropy_timestep_history, self.entropy_ema_history, label="entropy_ema", linewidth=2.0)
+            plt.xlabel("exploiter training timestep")
+            plt.ylabel("entropy")
+            plt.title(f"Entropy vs Timestep ({self.local_plot_prefix})")
+            plt.legend()
+            plt.grid(alpha=0.25)
+            plt.tight_layout()
+            plt.savefig(self.local_entropy_png_path, dpi=150)
+            plt.close()
+        except Exception:
+            # Keep training robust even if plotting backend is unavailable.
+            pass
 
     def _compute_normalized_slope(self, history: np.ndarray, scale: float) -> Tuple[float, float]:
         x = np.arange(history.size, dtype=np.float64)
@@ -81,6 +190,7 @@ class RatingStagnationTracker:
         ratings: np.ndarray,
         current_entropy: Optional[float],
         lr_adjustment_callback: Optional[Callable[[], None]] = None,
+        timestep: Optional[float] = None,
     ) -> Tuple[bool, Optional[Dict[str, float]]]:
         ratings = np.asarray(ratings, dtype=np.float64)
         if not self.enabled():
@@ -132,6 +242,95 @@ class RatingStagnationTracker:
         self.last_metric_slope_normalized = normalized_slope
         self.last_slope_is_flat = slope_is_flat if slope_ready else False
 
+        entropy_window_ready = False
+        entropy_window_avg = None
+        entropy_window_ratio = None
+        entropy_window_stop = False
+        entropy_stability_stop = False
+        entropy_signal_slope = None
+        entropy_signal_slope_normalized = None
+        entropy_signal_slope_is_flat = False
+        entropy_slope_ready = False
+        if self.use_entropy_signal and current_entropy is not None:
+            current_entropy = float(current_entropy)
+            if self.entropy_ema is None:
+                self.entropy_ema = current_entropy
+                self.ema_abs_entropy = abs(current_entropy)
+                self.ema_abs_entropy_dev = 0.0
+                self.last_entropy_tolerance = max(
+                    self.tolerance,
+                    self.rel_tolerance * max(self.ema_abs_entropy, self.eps),
+                )
+                self.last_entropy_is_stable = False
+            else:
+                (
+                    self.entropy_ema,
+                    self.ema_abs_entropy,
+                    self.ema_abs_entropy_dev,
+                    entropy_tolerance,
+                    entropy_is_stable,
+                ) = self._update_ema_stability_state(
+                    current_entropy,
+                    self.entropy_ema,
+                    self.ema_abs_entropy if self.ema_abs_entropy is not None else abs(self.entropy_ema),
+                    self.ema_abs_entropy_dev if self.ema_abs_entropy_dev is not None else 0.0,
+                )
+                self.last_entropy_tolerance = entropy_tolerance
+                self.last_entropy_is_stable = bool(entropy_is_stable)
+            if self.entropy_start is None:
+                self.entropy_start = max(float(self.entropy_ema), self.eps)
+            t = float(self.num_checks if timestep is None else timestep)
+            self.entropy_timestep_history.append(t)
+            self.entropy_raw_history.append(current_entropy)
+            self.entropy_ema_history.append(float(self.entropy_ema))
+            self.entropy_history.append(float(self.entropy_ema))
+            self.entropy_smoothed_history.append(float(self.entropy_ema))
+            entropy_window_ready = len(self.entropy_smoothed_history) >= self.entropy_window_size
+            if entropy_window_ready:
+                entropy_window_avg = float(np.mean(np.asarray(self.entropy_smoothed_history, dtype=np.float64)))
+                entropy_window_ratio = entropy_window_avg / max(float(self.entropy_start), self.eps)
+                entropy_window_stop = entropy_window_ratio <= self.entropy_stop_ratio
+            self.last_within_entropy_warmup = self.num_checks <= self.entropy_warmup_checks
+
+            entropy_slope_ready = len(self.entropy_history) >= self.slope_window
+            if entropy_slope_ready:
+                entropy_signal_slope, entropy_signal_slope_normalized = self._compute_normalized_slope(
+                    np.asarray(self.entropy_history, dtype=np.float64),
+                    scale=float(self.ema_abs_entropy if self.ema_abs_entropy is not None else abs(current_entropy)),
+                )
+                entropy_signal_slope_is_flat = (
+                    float(entropy_signal_slope_normalized) <= self.slope_tolerance
+                )
+
+            self.last_entropy_signal_slope = entropy_signal_slope
+            self.last_entropy_signal_slope_normalized = entropy_signal_slope_normalized
+            self.last_entropy_signal_slope_is_flat = (
+                entropy_signal_slope_is_flat if entropy_slope_ready else False
+            )
+
+            if not self.last_within_entropy_warmup:
+                if self.use_slope_early_stop and entropy_slope_ready and self.num_checks >= self.min_slope_checks and entropy_signal_slope_is_flat:
+                    entropy_stability_stop = True
+                else:
+                    if bool(self.last_entropy_is_stable):
+                        self.entropy_stable_checks += 1
+                    else:
+                        self.entropy_stable_checks = 0
+                    if self.entropy_stable_checks >= self.patience:
+                        entropy_stability_stop = True
+        else:
+            self.last_entropy_tolerance = None
+            self.last_entropy_is_stable = True
+            self.last_within_entropy_warmup = self.num_checks <= self.entropy_warmup_checks
+            self.entropy_stable_checks = 0
+            self.last_entropy_signal_slope = None
+            self.last_entropy_signal_slope_normalized = None
+            self.last_entropy_signal_slope_is_flat = False
+        self.last_entropy_window_avg = entropy_window_avg
+        self.last_entropy_window_ratio = entropy_window_ratio
+        self.last_entropy_window_stop = entropy_window_stop
+        self.last_entropy_stability_stop = entropy_stability_stop
+
         if metric < (self.best_metric - dynamic_improvement_threshold):
             self.best_metric = metric
             self.wait_count = 0
@@ -168,11 +367,48 @@ class RatingStagnationTracker:
                 float(normalized_slope) if normalized_slope is not None else float("nan")
             ),
             "elo/stagnation/slope_is_flat": float(bool(self.last_slope_is_flat)),
+            "elo/stagnation/entropy_ema": (
+                float(self.entropy_ema) if self.entropy_ema is not None else float("nan")
+            ),
+            "elo/stagnation/entropy_start": (
+                float(self.entropy_start) if self.entropy_start is not None else float("nan")
+            ),
+            "elo/stagnation/entropy_tolerance": (
+                float(self.last_entropy_tolerance)
+                if self.last_entropy_tolerance is not None
+                else float("nan")
+            ),
+            "elo/stagnation/entropy_is_stable": float(bool(self.last_entropy_is_stable)),
+            "elo/stagnation/entropy_warmup_checks": float(self.entropy_warmup_checks),
+            "elo/stagnation/entropy_within_warmup": float(bool(self.last_within_entropy_warmup)),
+            "elo/stagnation/entropy_stable_checks": float(self.entropy_stable_checks),
+            "elo/stagnation/entropy_stability_stop": float(bool(entropy_stability_stop)),
+            "elo/stagnation/entropy_slope": (
+                float(entropy_signal_slope) if entropy_signal_slope is not None else float("nan")
+            ),
+            "elo/stagnation/entropy_slope_normalized": (
+                float(entropy_signal_slope_normalized)
+                if entropy_signal_slope_normalized is not None
+                else float("nan")
+            ),
+            "elo/stagnation/entropy_slope_is_flat": float(bool(self.last_entropy_signal_slope_is_flat)),
+            "elo/stagnation/entropy_window_size": float(self.entropy_window_size),
+            "elo/stagnation/entropy_stop_ratio": float(self.entropy_stop_ratio),
+            "elo/stagnation/entropy_window_ready": float(bool(entropy_window_ready)),
+            "elo/stagnation/entropy_window_avg": (
+                float(entropy_window_avg) if entropy_window_avg is not None else float("nan")
+            ),
+            "elo/stagnation/entropy_window_ratio": (
+                float(entropy_window_ratio) if entropy_window_ratio is not None else float("nan")
+            ),
+            "elo/stagnation/entropy_window_stop": float(bool(entropy_window_stop)),
         }
         if self.use_slope_early_stop:
-            should_stop = bool(slope_ready and self.num_checks >= self.min_slope_checks and slope_is_flat)
+            base_should_stop = bool(slope_ready and self.num_checks >= self.min_slope_checks and slope_is_flat)
         else:
-            should_stop = self.wait_count >= self.patience
+            base_should_stop = self.wait_count >= self.patience
+        should_stop = bool(base_should_stop or entropy_stability_stop or entropy_window_stop)
+        self._save_local_entropy_plot(force=should_stop)
         return should_stop, logs
 
 class BRConvergenceTracker:

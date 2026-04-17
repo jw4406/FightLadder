@@ -44,7 +44,7 @@ from stable_baselines3.common.vec_env import VecEnv
 
 from .const import *
 from .nash import compute_nash
-from br_tracker import BRConvergenceTracker
+from br_tracker import RatingStagnationTracker
 
 import itertools
 
@@ -5391,16 +5391,26 @@ class Exploiter(PPO):
         self.br_slope_window = int(br_slope_window)
         self.br_slope_tolerance = float(br_slope_tolerance)
         self.br_min_slope_checks = int(br_min_slope_checks)
-        self.br_convergence_tracker = BRConvergenceTracker(
+        self.br_convergence_tracker = RatingStagnationTracker(
             patience=self.br_tracker_patience,
             tolerance=self.br_tracker_tolerance,
-            window_size=self.br_tracker_window_size,
+            rel_tolerance=0.05,
+            ema_beta=0.99,
+            eps=1e-8,
+            eval_games=1,
+            entropy_weight=1.0,
+            lr_patience=0,
+            use_velocity_signal=self.use_br_reward_stagnation,
+            use_entropy_signal=self.use_br_entropy_stagnation,
             use_slope_early_stop=self.br_use_slope_early_stop,
             slope_window=self.br_slope_window,
             slope_tolerance=self.br_slope_tolerance,
             min_slope_checks=self.br_min_slope_checks,
-            log_prefix="exploiter",
+            enable_local_entropy_plot=True,
+            local_plot_prefix="dedicated_exploiter",
+            local_plot_every_checks=1,
         )
+        self.br_convergence_tracker.reset(np.array([0.0], dtype=np.float64))
         self.use_wandb = use_wandb
         _move_exploited_rl_agent_to_device(self.exploited, self.device)
 
@@ -5549,96 +5559,87 @@ class Exploiter(PPO):
         mean_reward = None
         if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
             mean_reward = safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])
-        elif tracker_reward_count > 0:
-            mean_reward = tracker_reward_sum / tracker_reward_count
+        tracker = self.br_convergence_tracker
+        tracker.use_velocity_signal = bool(self.use_br_reward_stagnation)
+        tracker.use_entropy_signal = bool(self.use_br_entropy_stagnation)
 
-        if mean_reward is not None:
-            should_stop = self.br_convergence_tracker.check_reward_stability(
-                current_reward=mean_reward,
-                current_entropy=self._last_rollout_policy_entropy,
-                use_reward_stagnation=self.use_br_reward_stagnation,
-                use_entropy_stagnation=self.use_br_entropy_stagnation,
-            )
-            tracker = self.br_convergence_tracker
-            tracker_logs = {
-                "exploiter/reward/mean": float(mean_reward),
-                "exploiter/reward/ema": float(tracker.ema_reward) if tracker.ema_reward is not None else float("nan"),
-                "exploiter/reward/ema_abs": float(tracker.ema_abs_reward) if tracker.ema_abs_reward is not None else float("nan"),
-                "exploiter/reward/ema_abs_dev": float(tracker.ema_abs_dev) if tracker.ema_abs_dev is not None else float("nan"),
-                "exploiter/reward/tolerance": float(tracker.last_reward_tolerance) if tracker.last_reward_tolerance is not None else float("nan"),
-                "exploiter/reward/is_stable": float(bool(tracker.last_reward_is_stable)),
-                "exploiter/entropy/mean": (
-                    float(self._last_rollout_policy_entropy)
-                    if self._last_rollout_policy_entropy is not None
-                    else float("nan")
-                ),
-                "exploiter/entropy/ema": (
-                    float(tracker.ema_entropy) if tracker.ema_entropy is not None else float("nan")
-                ),
-                "exploiter/entropy/ema_abs": (
-                    float(tracker.ema_abs_entropy)
-                    if tracker.ema_abs_entropy is not None
-                    else float("nan")
-                ),
-                "exploiter/entropy/ema_abs_dev": (
-                    float(tracker.ema_abs_entropy_dev)
-                    if tracker.ema_abs_entropy_dev is not None
-                    else float("nan")
-                ),
-                "exploiter/entropy/tolerance": (
-                    float(tracker.last_entropy_tolerance)
-                    if tracker.last_entropy_tolerance is not None
-                    else float("nan")
-                ),
-                "exploiter/entropy/is_stable": float(bool(tracker.last_entropy_is_stable)),
-                "exploiter/stability/num_checks": float(tracker.num_checks),
-                "exploiter/stability/stable_checks": float(tracker.stable_checks),
-                "exploiter/stability/within_warmup": float(bool(tracker.last_within_warmup)),
-                "exploiter/stability/combined_is_stable": float(bool(tracker.last_combined_is_stable)),
-                "exploiter/stability/should_stop": float(bool(should_stop)),
-                "exploiter/stability/use_reward_stagnation": float(bool(self.use_br_reward_stagnation)),
-                "exploiter/stability/use_entropy_stagnation": float(bool(self.use_br_entropy_stagnation)),
-                "exploiter/stability/use_slope_early_stop": float(bool(tracker.use_slope_early_stop)),
-                "exploiter/stability/slope_window": float(tracker.slope_window),
-                "exploiter/stability/slope_tolerance": float(tracker.slope_tolerance),
-                "exploiter/stability/min_slope_checks": float(tracker.min_slope_checks),
-                "exploiter/stability/signal_slope": (
-                    float(tracker.last_signal_slope)
-                    if tracker.last_signal_slope is not None
-                    else float("nan")
-                ),
-                "exploiter/stability/signal_slope_normalized": (
-                    float(tracker.last_signal_slope_normalized)
-                    if tracker.last_signal_slope_normalized is not None
-                    else float("nan")
-                ),
-                "exploiter/stability/signal_slope_is_flat": float(bool(tracker.last_signal_slope_is_flat)),
-            }
-            for key, value in tracker_logs.items():
-                self.logger.record(key, value)
-            if self.use_wandb:
-                wandb.log(tracker_logs)
-            print(
-                "exploiter stability \n "
-                f"reward={mean_reward:.4f} \n"
-                f"entropy={float(self._last_rollout_policy_entropy) if self._last_rollout_policy_entropy is not None else float('nan'):.4f} \n"
-                f"stable={bool(tracker.last_combined_is_stable)} \n"
-                f"stable_checks={tracker.stable_checks}/{tracker.patience} \n"
-                f"warmup={bool(tracker.last_within_warmup)}\n",
-                flush=True,
-            )
-            if should_stop:
-                if self.use_br_reward_stagnation and self.use_br_entropy_stagnation:
-                    mode_msg = "reward+entropy"
-                elif self.use_br_reward_stagnation:
-                    mode_msg = "reward"
-                elif self.use_br_entropy_stagnation:
-                    mode_msg = "entropy"
-                else:
-                    mode_msg = "disabled"
-                print(f"exploiter {mode_msg} stability tracker triggered early stopping.")
-                return False
-        else:
+        if mean_reward is None and self.use_br_reward_stagnation:
             print("exploiter stability skipped: reward signal unavailable", flush=True)
+            return True
+
+        ratings = np.array(
+            [float(mean_reward) if mean_reward is not None else 0.0],
+            dtype=np.float64,
+        )
+        tracker.register_games(1)
+        should_stop, stagnation_logs = tracker.check(
+            ratings=ratings,
+            current_entropy=self._last_rollout_policy_entropy,
+            lr_adjustment_callback=None,
+            timestep=float(self.num_timesteps),
+        )
+        tracker_logs = {
+            "exploiter/reward/mean": (
+                float(mean_reward) if mean_reward is not None else float("nan")
+            ),
+            "exploiter/entropy/mean": (
+                float(self._last_rollout_policy_entropy)
+                if self._last_rollout_policy_entropy is not None
+                else float("nan")
+            ),
+            "exploiter/stability/should_stop": float(bool(should_stop)),
+            "exploiter/stability/use_reward_stagnation": float(bool(self.use_br_reward_stagnation)),
+            "exploiter/stability/use_entropy_stagnation": float(bool(self.use_br_entropy_stagnation)),
+            "exploiter/stability/metric": (
+                float(tracker.last_metric) if tracker.last_metric is not None else float("nan")
+            ),
+            "exploiter/stability/velocity": (
+                float(tracker.last_velocity) if tracker.last_velocity is not None else float("nan")
+            ),
+            "exploiter/stability/threshold": (
+                float(tracker.dynamic_threshold)
+                if tracker.dynamic_threshold is not None
+                else float("nan")
+            ),
+            "exploiter/stability/wait_count": float(tracker.wait_count),
+            "exploiter/stability/patience": float(tracker.patience),
+            "exploiter/stability/slope": (
+                float(tracker.last_metric_slope)
+                if tracker.last_metric_slope is not None
+                else float("nan")
+            ),
+            "exploiter/stability/slope_normalized": (
+                float(tracker.last_metric_slope_normalized)
+                if tracker.last_metric_slope_normalized is not None
+                else float("nan")
+            ),
+            "exploiter/stability/slope_is_flat": float(bool(tracker.last_slope_is_flat)),
+        }
+        if stagnation_logs is not None:
+            tracker_logs.update({f"exploiter/{k}": float(v) for k, v in stagnation_logs.items()})
+        for key, value in tracker_logs.items():
+            self.logger.record(key, value)
+        if self.use_wandb:
+            wandb.log(tracker_logs)
+        print(
+            "exploiter stagnation \n "
+            f"reward={float(mean_reward) if mean_reward is not None else float('nan'):.4f} \n"
+            f"entropy={float(self._last_rollout_policy_entropy) if self._last_rollout_policy_entropy is not None else float('nan'):.4f} \n"
+            f"wait_count={tracker.wait_count}/{tracker.patience} \n"
+            f"metric={float(tracker.last_metric) if tracker.last_metric is not None else float('nan'):.6f} \n"
+            f"slope_flat={bool(tracker.last_slope_is_flat)}\n",
+            flush=True,
+        )
+        if should_stop:
+            if self.use_br_reward_stagnation and self.use_br_entropy_stagnation:
+                mode_msg = "reward+entropy"
+            elif self.use_br_reward_stagnation:
+                mode_msg = "reward"
+            elif self.use_br_entropy_stagnation:
+                mode_msg = "entropy"
+            else:
+                mode_msg = "disabled"
+            print(f"exploiter {mode_msg} stagnation tracker triggered early stopping.")
+            return False
 
         return True

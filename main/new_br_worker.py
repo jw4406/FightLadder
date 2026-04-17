@@ -39,7 +39,7 @@ from common.justin.clean_derivative_free_spar import CleanDerivativeFreeSPAR
 from common.justin.clean_derivative_free_spar_ippo import CleanDerivativeFreeSPARIPPO
 from stable_baselines3.common.save_util import load_from_zip_file
 from ippo import env_generator
-from stable_baselines3.common.callbacks import ExploiterCheckpointCallback
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList, ExploiterCheckpointCallback
 from gymnasium.spaces import Box
 from utils import state2matchup
 from br_preflight import (
@@ -73,6 +73,84 @@ if not os.listdir(TASK_DIR):
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
 BR_TRAINING_STEPS = 100000000000
+
+
+class ManualStopFileCallback(BaseCallback):
+    """
+    Graceful manual-stop callback.
+
+    When stop_file appears, return False from _on_step so learn() exits cleanly,
+    allowing post-training logic (e.g., local_br_eval launch) to still run.
+    """
+
+    def __init__(self, stop_file: str, stop_key: str, verbose: int = 1):
+        super().__init__(verbose=verbose)
+        self.stop_file = str(stop_file)
+        self.stop_key = str(stop_key)
+        self._already_triggered = False
+        self._terminated_stop_file = None
+
+    def _prepend_terminated(self, path: Optional[str]) -> Optional[str]:
+        if path is None or str(path) == "":
+            return path
+        dirname = os.path.dirname(path)
+        basename = os.path.basename(path)
+        if basename.startswith("TERMINATED_"):
+            return path
+        return os.path.join(dirname, f"TERMINATED_{basename}")
+
+    def _rename_if_exists(self, src: Optional[str]) -> Optional[str]:
+        if src is None or str(src) == "":
+            return src
+        dst = self._prepend_terminated(src)
+        if dst is None:
+            return src
+        if src == dst:
+            return src
+        if os.path.exists(src):
+            os.rename(src, dst)
+            return dst
+        return src
+
+    def _get_tracker(self):
+        # Dedicated exploiter path.
+        tracker = getattr(self.model, "br_convergence_tracker", None)
+        if tracker is not None:
+            return tracker
+        # Continue exploiter path.
+        return getattr(self.model, "stagnation_tracker", None)
+
+    def _mark_tracker_outputs_terminated(self) -> None:
+        tracker = self._get_tracker()
+        if tracker is None:
+            return
+        tracker.local_plot_prefix = (
+            tracker.local_plot_prefix
+            if str(getattr(tracker, "local_plot_prefix", "")).startswith("TERMINATED_")
+            else f"TERMINATED_{getattr(tracker, 'local_plot_prefix', self.stop_key)}"
+        )
+        tracker.local_entropy_csv_path = self._rename_if_exists(
+            getattr(tracker, "local_entropy_csv_path", None)
+        )
+        tracker.local_entropy_png_path = self._rename_if_exists(
+            getattr(tracker, "local_entropy_png_path", None)
+        )
+
+    def _on_step(self) -> bool:
+        if os.path.exists(self.stop_file):
+            if not self._already_triggered:
+                terminated_stop_file = self._rename_if_exists(self.stop_file)
+                self._terminated_stop_file = terminated_stop_file
+                self._mark_tracker_outputs_terminated()
+                print(
+                    f"MANUAL STOP [{self.stop_key}] detected at {self.stop_file}. "
+                    f"Renamed marker to {self._terminated_stop_file}. "
+                    "Ending current learn() call gracefully.",
+                    flush=True,
+                )
+                self._already_triggered = True
+            return False
+        return True
 
 
 def _dedupe_preserve_order(values: List[str]) -> List[str]:
@@ -349,6 +427,8 @@ def train_best_response(
     matchup_label: Optional[str] = None,
     replicate_idx: Optional[int] = None,
     dedicated_job_id: Optional[int] = None,
+    manual_stop_file: Optional[str] = None,
+    manual_stop_key: Optional[str] = None,
     launch_local_br_eval: bool = False,
     use_wandb: bool = True,
 ) -> None:
@@ -445,11 +525,23 @@ def train_best_response(
         f"_exploiting_{exploit_side}{dedicated_suffix}.zip"
     )
     exploiter_callback = ExploiterCheckpointCallback(save_freq=exploiter_save_freq // n_envs, save_path=BR_MODEL_DIR, name_prefix=br_model_name)
+    stop_key = _sanitize_for_filename(str(manual_stop_key if manual_stop_key is not None else f"br{br_index}_{exploit_side}"))
+    default_stop_file = os.path.join(TASK_DIR, "stop", f"STOP_{stop_key}")
+    stop_file_path = str(manual_stop_file) if manual_stop_file is not None else default_stop_file
+    os.makedirs(os.path.dirname(stop_file_path), exist_ok=True)
+    manual_stop_callback = ManualStopFileCallback(stop_file=stop_file_path, stop_key=stop_key)
+    train_callback = CallbackList([exploiter_callback, manual_stop_callback])
+    print(
+        f"Manual per-job stop configured: key={stop_key}, stop_file={stop_file_path}",
+        flush=True,
+    )
      
     if eval_only == False:
         print("eval_only was passed as False. Training the BR agent.")
         if from_scratch == True:
-            br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
+            if hasattr(br_agent, "br_convergence_tracker") and br_agent.br_convergence_tracker is not None:
+                br_agent.br_convergence_tracker.local_plot_prefix = f"dedicated_exploiter_{stop_key}"
+            br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=train_callback)
         else:
             # if eval prot is True we are training an optimal adversary so we need to update the adversary
             # if eval prot is False we are training an optimal ego against the current adversary so we need to update the ego
@@ -495,7 +587,8 @@ def train_best_response(
                 tracker.slope_tolerance = float(stagnation_slope_tolerance)
                 tracker.min_slope_checks = max(1, int(stagnation_min_slope_checks))
             ftm.use_wandb = use_wandb
-            ftm.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback, update_ego=not eval_prot, update_adversary=eval_prot)
+            ftm.br_manual_stop_key = stop_key
+            ftm.learn(total_timesteps=BR_TRAINING_STEPS, callback=train_callback, update_ego=not eval_prot, update_adversary=eval_prot)
         #br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
 
         local_plot_and_eval_file = os.path.join(current_dir, "local_br_eval.py")
@@ -564,6 +657,8 @@ def run_br_for_task_in_subprocess(
     matchup_label: Optional[str] = None,
     replicate_idx: Optional[int] = None,
     dedicated_job_id: Optional[int] = None,
+    manual_stop_file: Optional[str] = None,
+    manual_stop_key: Optional[str] = None,
     launch_local_br_eval: bool = False,
     use_wandb: bool = True,
 ) -> None:
@@ -675,6 +770,8 @@ def run_br_for_task_in_subprocess(
         matchup_label=matchup_label,
         replicate_idx=replicate_idx,
         dedicated_job_id=dedicated_job_id,
+        manual_stop_file=manual_stop_file,
+        manual_stop_key=manual_stop_key,
         launch_local_br_eval=launch_local_br_eval,
         use_wandb=use_wandb,
     )
@@ -888,6 +985,29 @@ if __name__ == "__main__":
                       same subprocess signature and consistent debug prints.
                     """
                     target = run_br_for_task_in_subprocess
+                    task_stem = os.path.splitext(os.path.basename(processing_path))[0]
+                    run_mode = "dedicated" if from_scratch else "continue"
+                    side_label = "ego" if eval_prot_flag else "adv"
+                    if dedicated_job_id is not None:
+                        key_base = (
+                            f"{task_stem}_{run_mode}_job{dedicated_job_id}_{side_label}_br{br_idx}"
+                        )
+                    else:
+                        matchup_part = (
+                            _sanitize_for_filename(str(matchup_label))
+                            if matchup_label is not None
+                            else "all_matchups"
+                        )
+                        rep_part = (
+                            f"rep{replicate_idx}" if replicate_idx is not None else "repNA"
+                        )
+                        key_base = (
+                            f"{task_stem}_{run_mode}_{side_label}_{matchup_part}_{rep_part}_br{br_idx}"
+                        )
+                    stop_key = _sanitize_for_filename(key_base)
+                    stop_file_dir = os.path.join(TASK_DIR, "stop")
+                    os.makedirs(stop_file_dir, exist_ok=True)
+                    stop_file_path = os.path.join(stop_file_dir, f"STOP_{stop_key}")
                     training_args = (
                         game_args,
                         processing_path,
@@ -931,6 +1051,8 @@ if __name__ == "__main__":
                         matchup_label,
                         replicate_idx,
                         dedicated_job_id,
+                        stop_file_path,
+                        stop_key,
                         launch_local_br_eval,
                         args.use_wandb,
                     )
@@ -940,7 +1062,8 @@ if __name__ == "__main__":
                             f"idx={br_idx}, eval_prot_flag={eval_prot_flag}, "
                             f"from_scratch={from_scratch}, matchup={matchup_label}, "
                             f"replicate={replicate_idx}, dedicated_job_id={dedicated_job_id}, "
-                            f"launch_local_br_eval={launch_local_br_eval}"
+                            f"launch_local_br_eval={launch_local_br_eval}, "
+                            f"stop_key={stop_key}, stop_file={stop_file_path}"
                         )
                         target(*training_args)
                     else:

@@ -255,7 +255,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         progress_bar: bool = False,
     ) -> SelfOnPolicyAlgorithm:
         iteration = 0
-        from common.algorithms import Exploiter
         total_timesteps, callback = self._setup_learn(
             total_timesteps,
             callback,
@@ -263,10 +262,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             tb_log_name,
             progress_bar,
         )
-
-        br_convergence_tracker = None
-        if isinstance(self, Exploiter):
-            br_convergence_tracker = getattr(self, "br_convergence_tracker", None)
         rews = []
 
         callback.on_training_start(locals(), globals())
@@ -274,26 +269,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         while self.num_timesteps < total_timesteps:
 
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
-            if (
-                isinstance(self, Exploiter)
-                and br_convergence_tracker is not None
-                and len(self.ep_info_buffer) > 0
-                and len(self.ep_info_buffer[0]) > 0
-            ):
-                current_rew = safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])
-                current_entropy = getattr(self, "_last_rollout_policy_entropy", None)
-                if br_convergence_tracker.check_reward_stability(
-                    current_rew, current_entropy=current_entropy
-                ):
-                    ema_reward = br_convergence_tracker.ema_reward if br_convergence_tracker.ema_reward is not None else current_rew
-                    print(f"Exploiter reward is stable at EMA {ema_reward:.4f}")
-                    continue_training = False
-                    wandb.log(
-                        {
-                            "exploiter_rew": ema_reward,
-                            "main_training_epoch": self.exploited.num_timesteps if self.exploited is not None else 0,
-                        }
-                    )
             if continue_training is False:
                 break
 

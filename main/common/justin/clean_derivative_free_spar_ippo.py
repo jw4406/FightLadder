@@ -55,6 +55,9 @@ class CleanDerivativeFreeSPARIPPO(CleanDerivativeFreeSPAR):
 
         n_steps = 0
         rollout_buffer.reset()
+        ego_entropy_sum = 0.0
+        adv_entropy_sum = 0.0
+        entropy_count = 0
         for i in range(self.num_adversaries):
             adversary_buffers[i].reset()
         rollout_terminal_stats = [
@@ -79,6 +82,9 @@ class CleanDerivativeFreeSPARIPPO(CleanDerivativeFreeSPAR):
                     zero_ego_action=zero_ego_action,
                     zero_adv_action=zero_adv_action,
                 )
+                ego_entropy_sum += float((-ego_log_probs.detach()).mean().item())
+                adv_entropy_sum += float((-adv_log_probs.detach()).mean().item())
+                entropy_count += 1
                 ego_values = self.policy.ego_value_forward(obs_tensor)
                 other_values = -values
 
@@ -171,7 +177,17 @@ class CleanDerivativeFreeSPARIPPO(CleanDerivativeFreeSPAR):
         rollout_buffer.prepare_data_for_training()
         for i in range(len(adversary_buffers)):
             adversary_buffers[i].prepare_data_for_training()
-        self._update_elo_from_rollout_stats(rollout_terminal_stats)
+        if entropy_count > 0:
+            self._last_rollout_entropy_ego = ego_entropy_sum / entropy_count
+            self._last_rollout_entropy_adv = adv_entropy_sum / entropy_count
+            self._last_rollout_policy_entropy = (
+                self._last_rollout_entropy_ego + self._last_rollout_entropy_adv
+            ) / 2.0
+        else:
+            self._last_rollout_policy_entropy = None
+        n_games = self._update_elo_from_rollout_stats(rollout_terminal_stats)
+        if getattr(self, "stagnation_tracker", None) is not None:
+            self.stagnation_tracker.register_games(n_games)
         return True
 
     def train_standard(self, update_ego: bool = True, update_adversary: bool = True) -> None:
