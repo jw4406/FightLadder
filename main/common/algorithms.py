@@ -5407,6 +5407,7 @@ class Exploiter(PPO):
             slope_tolerance=self.br_slope_tolerance,
             min_slope_checks=self.br_min_slope_checks,
             enable_local_entropy_plot=True,
+            enable_local_reward_plot=True,
             local_plot_prefix="dedicated_exploiter",
             local_plot_every_checks=1,
         )
@@ -5577,6 +5578,7 @@ class Exploiter(PPO):
             current_entropy=self._last_rollout_policy_entropy,
             lr_adjustment_callback=None,
             timestep=float(self.num_timesteps),
+            current_reward=float(mean_reward) if mean_reward is not None else None,
         )
         tracker_logs = {
             "exploiter/reward/mean": (

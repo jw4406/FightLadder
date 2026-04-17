@@ -135,6 +135,12 @@ class ManualStopFileCallback(BaseCallback):
         tracker.local_entropy_png_path = self._rename_if_exists(
             getattr(tracker, "local_entropy_png_path", None)
         )
+        tracker.local_reward_csv_path = self._rename_if_exists(
+            getattr(tracker, "local_reward_csv_path", None)
+        )
+        tracker.local_reward_png_path = self._rename_if_exists(
+            getattr(tracker, "local_reward_png_path", None)
+        )
 
     def _on_step(self) -> bool:
         if os.path.exists(self.stop_file):

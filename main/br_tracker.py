@@ -37,6 +37,7 @@ class RatingStagnationTracker:
         local_plot_prefix: str = "stagnation",
         local_plot_every_checks: int = 1,
         entropy_warmup_checks: int = 100,
+        enable_local_reward_plot: bool = False,
     ) -> None:
         self.patience = int(patience)
         self.tolerance = float(tolerance)
@@ -59,8 +60,11 @@ class RatingStagnationTracker:
         self.local_plot_prefix = str(local_plot_prefix)
         self.local_plot_every_checks = max(1, int(local_plot_every_checks))
         self.entropy_warmup_checks = max(0, int(entropy_warmup_checks))
+        self.enable_local_reward_plot = bool(enable_local_reward_plot)
         self.local_entropy_csv_path = None
         self.local_entropy_png_path = None
+        self.local_reward_csv_path = None
+        self.local_reward_png_path = None
         self.reset(np.array([], dtype=np.float64))
 
     def enabled(self) -> bool:
@@ -78,6 +82,9 @@ class RatingStagnationTracker:
         self.last_eval_ratings = np.copy(ratings)
         self.ema_metric = None
         self.ema_abs_metric = None
+        self.ema_reward = None
+        self.ema_abs_reward = None
+        self.ema_abs_reward_dev = None
         self.metric_history = deque(maxlen=self.slope_window)
         self.last_metric_slope = None
         self.last_metric_slope_normalized = None
@@ -105,6 +112,11 @@ class RatingStagnationTracker:
         self._plot_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self.local_entropy_csv_path = None
         self.local_entropy_png_path = None
+        self.reward_timestep_history = []
+        self.reward_raw_history = []
+        self.reward_ema_history = []
+        self.local_reward_csv_path = None
+        self.local_reward_png_path = None
 
     def _update_ema_stability_state(
         self,
@@ -173,6 +185,47 @@ class RatingStagnationTracker:
             # Keep training robust even if plotting backend is unavailable.
             pass
 
+    def _save_local_reward_plot(self, force: bool = False) -> None:
+        if not self.enable_local_reward_plot:
+            return
+        if len(self.reward_timestep_history) == 0:
+            return
+        if (not force) and (self.num_checks % self.local_plot_every_checks != 0):
+            return
+        os.makedirs(self.local_plot_dir, exist_ok=True)
+        if self.local_reward_csv_path is None or self.local_reward_png_path is None:
+            base_name = f"{self.local_plot_prefix}_{self._plot_id}_REWARD"
+            self.local_reward_csv_path = os.path.join(self.local_plot_dir, f"{base_name}.csv")
+            self.local_reward_png_path = os.path.join(self.local_plot_dir, f"{base_name}.png")
+
+        with open(self.local_reward_csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["timestep", "reward_raw", "reward_ema"])
+            for t, raw, ema in zip(
+                self.reward_timestep_history,
+                self.reward_raw_history,
+                self.reward_ema_history,
+            ):
+                writer.writerow([t, raw, ema])
+
+        try:
+            import matplotlib.pyplot as plt
+
+            plt.figure(figsize=(10, 5))
+            plt.plot(self.reward_timestep_history, self.reward_raw_history, label="reward_raw", alpha=0.5)
+            plt.plot(self.reward_timestep_history, self.reward_ema_history, label="reward_ema", linewidth=2.0)
+            plt.xlabel("exploiter training timestep")
+            plt.ylabel("reward")
+            plt.title(f"REWARD vs Timestep ({self.local_plot_prefix})")
+            plt.legend()
+            plt.grid(alpha=0.25)
+            plt.tight_layout()
+            plt.savefig(self.local_reward_png_path, dpi=150)
+            plt.close()
+        except Exception:
+            # Keep training robust even if plotting backend is unavailable.
+            pass
+
     def _compute_normalized_slope(self, history: np.ndarray, scale: float) -> Tuple[float, float]:
         x = np.arange(history.size, dtype=np.float64)
         x_centered = x - x.mean()
@@ -191,6 +244,7 @@ class RatingStagnationTracker:
         current_entropy: Optional[float],
         lr_adjustment_callback: Optional[Callable[[], None]] = None,
         timestep: Optional[float] = None,
+        current_reward: Optional[float] = None,
     ) -> Tuple[bool, Optional[Dict[str, float]]]:
         ratings = np.asarray(ratings, dtype=np.float64)
         if not self.enabled():
@@ -407,8 +461,34 @@ class RatingStagnationTracker:
             base_should_stop = bool(slope_ready and self.num_checks >= self.min_slope_checks and slope_is_flat)
         else:
             base_should_stop = self.wait_count >= self.patience
+
+        if current_reward is not None:
+            current_reward = float(current_reward)
+            if self.ema_reward is None:
+                self.ema_reward = current_reward
+                self.ema_abs_reward = abs(current_reward)
+                self.ema_abs_reward_dev = 0.0
+            else:
+                (
+                    self.ema_reward,
+                    self.ema_abs_reward,
+                    self.ema_abs_reward_dev,
+                    _reward_tol,
+                    _reward_is_stable,
+                ) = self._update_ema_stability_state(
+                    current_reward,
+                    self.ema_reward,
+                    self.ema_abs_reward if self.ema_abs_reward is not None else abs(self.ema_reward),
+                    self.ema_abs_reward_dev if self.ema_abs_reward_dev is not None else 0.0,
+                )
+            reward_t = float(self.num_checks if timestep is None else timestep)
+            self.reward_timestep_history.append(reward_t)
+            self.reward_raw_history.append(float(current_reward))
+            self.reward_ema_history.append(float(self.ema_reward))
+
         should_stop = bool(base_should_stop or entropy_stability_stop or entropy_window_stop)
         self._save_local_entropy_plot(force=should_stop)
+        self._save_local_reward_plot(force=should_stop)
         return should_stop, logs
 
 class BRConvergenceTracker:

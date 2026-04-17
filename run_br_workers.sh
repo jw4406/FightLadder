@@ -14,7 +14,7 @@ BR_WORKER_PATH="${SCRIPT_DIR}/main/new_br_worker.py"
 
 # Arguments from launch.json (Python Debugger: new_br_worker.py)
 EVAL_PROT="True"
-EVAL_ADV="False"
+EVAL_ADV="True"
 EVAL_ONLY="False"
 PROJ_NAME="br_training_ema_test_2"
 ANALYSIS_UPLOAD_PROJ_NAME="br_analysis"
@@ -52,7 +52,7 @@ STAGNATION_MIN_SLOPE_CHECKS="12"
 N_ENVS="2"
 # TASK_DIR=""  # Optional: set this to pass --task_dir
 DEDICATED_EXPLOITER="True"
-CONTINUE_EXPLOITERS="False"
+CONTINUE_EXPLOITERS="True"
 EXPLOITER_SAVE_FREQ="200000"
 RESET="round"
 SIDE="both"

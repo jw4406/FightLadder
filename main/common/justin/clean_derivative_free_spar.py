@@ -277,6 +277,7 @@ class CleanDerivativeFreeSPAR(PPO):
             slope_tolerance=self.stagnation_slope_tolerance_cfg,
             min_slope_checks=self.stagnation_min_slope_checks_cfg,
             enable_local_entropy_plot=True,
+            enable_local_reward_plot=True,
             local_plot_prefix="continue_exploiter",
             local_plot_every_checks=1,
         )
@@ -895,6 +896,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 self.stagnation_tracker.use_velocity_signal = bool(self.use_stagnation_velocity_signal)
                 self.stagnation_tracker.use_entropy_signal = bool(self.use_stagnation_entropy_signal)
                 self.stagnation_tracker.enable_local_entropy_plot = bool(getattr(self, "training_br", False))
+                self.stagnation_tracker.enable_local_reward_plot = bool(getattr(self, "training_br", False))
                 base_plot_prefix = (
                     "continue_exploiter_ego"
                     if update_ego and not update_adversary
@@ -973,6 +975,9 @@ class CleanDerivativeFreeSPAR(PPO):
                         )
                     self.logger.dump(step=self.num_timesteps)
                 if use_elo_tracker:
+                    current_reward = None
+                    if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
+                        current_reward = safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])
                     current_entropy = self._get_current_rollout_entropy(update_ego, update_adversary)
                     def _lr_adjustment_callback() -> None:
                         if not self.use_lr_annealing:
@@ -999,6 +1004,7 @@ class CleanDerivativeFreeSPAR(PPO):
                         current_entropy=current_entropy,
                         lr_adjustment_callback=_lr_adjustment_callback,
                         timestep=float(self.num_timesteps),
+                        current_reward=float(current_reward) if current_reward is not None else None,
                     )
                     if stagnation_logs is not None:
                         for key, value in stagnation_logs.items():
