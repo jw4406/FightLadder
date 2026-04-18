@@ -21,6 +21,15 @@ ANALYSIS_UPLOAD_PROJ_NAME="br_analysis"
 LOAD_BR="False"
 WHICH_ENV="my_pendulum"
 IS_LEAGUE="False"
+LEAGUE_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/tasks/ma/"
+# League matchup states (required when IS_LEAGUE="True"). Space-separated retro state strings.
+# Example for Ryu vs {Guile, Sagat, EHonda}:
+# LEAGUE_MATCHUP_STATES=(
+#     "two_player/Ryu_left/Champion.Level1.RyuVsGuile.2Player.state"
+#     "two_player/Ryu_left/Champion.Level1.RyuVsSagat.2Player.state"
+#     "two_player/Ryu_left/Champion.Level1.RyuVsEhonda.2Player.state"
+# )
+LEAGUE_MATCHUP_STATES=()
 USE_MIRROR="False"
 NUM_FULL_EXPLOITERS="1"
 NUM_CONTINUE_EXPLOITERS="1"
@@ -86,6 +95,7 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --load_br "${LOAD_BR}"
         --which_env "${WHICH_ENV}"
         --is_league "${IS_LEAGUE}"
+        --league_dir "${LEAGUE_DIR}"
         --use_mirror "${USE_MIRROR}"
         --num_full_exploiters "${NUM_FULL_EXPLOITERS}"
         --num_continue_exploiters "${NUM_CONTINUE_EXPLOITERS}"
@@ -128,6 +138,11 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --launch_local_br_eval "${LAUNCH_LOCAL_BR_EVAL}"
         --use_wandb "${USE_WANDB}"
     )
+
+    # Append league matchup states when running in league mode.
+    if [ "${IS_LEAGUE}" = "True" ] && [ ${#LEAGUE_MATCHUP_STATES[@]} -gt 0 ]; then
+        CMD+=(--league_matchup_states "${LEAGUE_MATCHUP_STATES[@]}")
+    fi
 
     if [ "${RUN_LIVE}" = "False" ]; then
         nohup "${CMD[@]}" > "${LOGS_DIR}/br_worker_${i}.log" 2>&1 &

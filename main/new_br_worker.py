@@ -2,6 +2,7 @@
 BR worker. Parse --device before importing torch so ``--device cpu`` can hide GPUs from PyTorch.
 """
 import os
+import re
 import sys
 from typing import Any, Dict, List, Optional
 import warnings
@@ -24,13 +25,14 @@ def _ensure_cpu_only_env(device: str) -> None:
     if str(device).lower().startswith("cpu"):
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
-from common.algorithms import Exploiter
+from common.algorithms import Exploiter, LeaguePPO
 import argparse
 import time
 import json
 import random
 from pprint import pformat
 import numpy as np
+import torch
 import wandb
 import subprocess
 import multiprocessing as mp
@@ -39,6 +41,7 @@ from common.justin.clean_derivative_free_spar import CleanDerivativeFreeSPAR
 from common.justin.clean_derivative_free_spar_ippo import CleanDerivativeFreeSPARIPPO
 from stable_baselines3.common.save_util import load_from_zip_file
 from ippo import env_generator
+from train_ma import constructor as league_constructor
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList, ExploiterCheckpointCallback
 from gymnasium.spaces import Box
 from utils import state2matchup
@@ -389,6 +392,185 @@ def load_spar_model(
     return ftm
 
 
+class _LeaguePolicyAdapter:
+    """
+    Adapter that makes a LeaguePPO model conform to the CDS-style
+    ``self.exploited.policy(obs, ego_forward=..., adv_forward=...)`` interface
+    expected by ``Exploiter.collect_rollouts``.
+
+    LeaguePPO stores two standard SB3 policies: ``policy`` (left) and
+    ``policy_other`` (right). This adapter selects the appropriate one
+    based on ``side`` and ignores the CDS-specific keyword arguments.
+    """
+
+    def __init__(self, league_model, side="left"):
+        self._league_model = league_model
+        self._side = side
+
+    def __call__(self, obs_tensor, *args, **kwargs):
+        if self._side == "left":
+            policy = self._league_model.policy
+        else:
+            policy = self._league_model.policy_other
+        actions, _, _ = policy(obs_tensor)
+        return actions, None, None
+
+    def to(self, device):
+        self._league_model.policy = self._league_model.policy.to(device)
+        if hasattr(self._league_model, "policy_other"):
+            self._league_model.policy_other = self._league_model.policy_other.to(device)
+        return self
+
+    def __getattr__(self, name):
+        return getattr(self._league_model.policy, name)
+
+
+_LEAGUE_RIGHT_RE = re.compile(
+    r"^MA\d+_right_m_\d+_(?P<right_char>[a-z0-9]+)_vs_(?P<left_char>[a-z0-9]+)_\d+\.pt$"
+)
+
+
+def _infer_league_matchup_states_from_dir(task_file_path: str) -> List[str]:
+    """
+    Scan sibling MA*_right* .pt files to infer matchup states for a MA*_left task.
+
+    Right-model filenames follow the pattern produced by ``league._agent_name``:
+        ``MA0_right_m_00_<right_char>_vs_<left_char>_<step>.pt``
+
+    We extract character pairs, build retro state strings in the same format
+    used by ``train_ma._build_states_from_roster``, and return unique states
+    in matchup-index order.
+    """
+    model_dir = os.path.dirname(task_file_path)
+    seen = set()
+    states: List[str] = []
+    for fname in sorted(os.listdir(model_dir)):
+        m = _LEAGUE_RIGHT_RE.match(fname)
+        if m is None:
+            continue
+        right_char = m.group("right_char")
+        left_char = m.group("left_char")
+        key = (left_char, right_char)
+        if key in seen:
+            continue
+        seen.add(key)
+        left_title = left_char.capitalize()
+        right_title = right_char.capitalize()
+        state = (
+            f"two_player/{left_title}_left/"
+            f"Champion.Level1.{left_title}Vs{right_title}.2Player.state"
+        )
+        states.append(state)
+
+    if not states:
+        raise FileNotFoundError(
+            f"Could not infer league matchup states: no MA*_right*.pt files "
+            f"found in {model_dir}"
+        )
+    return states
+
+
+def _load_league_checkpoint(path: str, device: str):
+    """
+    ``torch.load`` a league checkpoint while resolving the pickled
+    ``constructor`` function reference.
+
+    League checkpoints are saved by ``train_ma`` (running as ``__main__``), so
+    the pickled ``constructor`` callable is bound to ``__main__.constructor``.
+    When we load from a different entry-point the module name won't match.
+    We temporarily inject the symbol into both ``__main__`` and ``__mp_main__``
+    so ``torch.load``'s unpickler can resolve it.
+    """
+    import __main__
+    patched_modules = [__main__]
+    mp_main = sys.modules.get("__mp_main__")
+    if mp_main is not None:
+        patched_modules.append(mp_main)
+
+    originals = [(mod, getattr(mod, "constructor", None)) for mod in patched_modules]
+    for mod in patched_modules:
+        mod.constructor = league_constructor
+    try:
+        return torch.load(path, map_location=device)
+    finally:
+        for mod, orig in originals:
+            if orig is None:
+                if hasattr(mod, "constructor"):
+                    delattr(mod, "constructor")
+            else:
+                mod.constructor = orig
+
+
+def load_league_model(
+    game_args: dict,
+    task_file_path: str,
+    league_matchup_states: List[str],
+    n_envs: int = 2,
+    device: str = "cuda",
+    use_wandb: bool = True,
+):
+    """
+    Load a league (LeaguePPO) checkpoint saved by ``Payoff.add_player``.
+
+    The .task file is a renamed .pt produced by ``torch.save({"cls_name": ..., "kwargs": ...})``.
+    We reconstruct the model via ``train_ma.constructor`` (the same function used
+    during league training) so that the env wrappers, hyperparameters, and policy
+    architecture exactly match the original training run.  Weights are restored
+    with ``set_parameters(agent_dict)``.
+
+    Worker-metadata attributes are attached so downstream scheduling
+    (``_build_dedicated_job_specs``, etc.) works unchanged.
+    """
+    worker_id = os.getpid()
+    print(f"WORKER [{worker_id}]: Processing league task: {os.path.basename(task_file_path)}")
+
+    saved = _load_league_checkpoint(task_file_path, device)
+    saved_kwargs = saved["kwargs"]
+    agent_dict = saved_kwargs["agent_dict"]
+    side = saved_kwargs.get("side", "left")
+    saved_args = saved_kwargs.get("args")
+
+    constructor_args = argparse.Namespace(**game_args)
+    if saved_args is not None:
+        sa = saved_args if isinstance(saved_args, dict) else vars(saved_args)
+        for key in ("num_env", "log_dir"):
+            if key not in vars(constructor_args) and key in sa:
+                setattr(constructor_args, key, sa[key])
+    if not hasattr(constructor_args, "num_env"):
+        constructor_args.num_env = n_envs
+    if not hasattr(constructor_args, "log_dir"):
+        constructor_args.log_dir = "logs/ma"
+
+    first_state = league_matchup_states[0]
+    league_model = league_constructor(
+        constructor_args,
+        side,
+        log_name=None,
+        single_env=False,
+        state_name=first_state,
+        matchup_key="left_vs_all",
+    )
+    league_model.set_parameters(agent_dict)
+
+    checkpoint_step = saved_kwargs.get("checkpoint_step", 0)
+    if checkpoint_step:
+        league_model.set_steps(checkpoint_step)
+
+    league_model._worker_cds_arch = "league"
+    league_model._worker_unique_states = list(league_matchup_states)
+    league_model._worker_full_state_list = list(league_matchup_states)
+    league_model.state_list = list(league_matchup_states)
+    league_model.matchups = [state2matchup(s) for s in league_matchup_states]
+    league_model.envs_per_matchup = 1
+    league_model.use_wandb = use_wandb
+
+    print(
+        f"WORKER [{worker_id}]: League model loaded: side={side}, "
+        f"matchup_states={league_matchup_states}"
+    )
+    return league_model
+
+
 def train_best_response(
     game_args: dict,
     model_to_exploit,
@@ -480,8 +662,9 @@ def train_best_response(
         #     ego_action_space = Box(low=ftm.action_space.low, high=ftm.action_space.high, shape=ftm.action_space.shape)
         #     env.action_space = ego_action_space
     else:
-        # NOT SURE WHAT TO DO HERE ABOUT LEAGUE MODELS
-        env = env_generator(STATE=STATE)
+        game_args = argparse.Namespace(**game_args)
+        effective_state_list = ftm.state_list if dedicated_state_subset is None else dedicated_state_subset
+        env = env_generator(game_args, STATE=effective_state_list, n_envs=n_envs)
 
     # 3. Create a new agent to be the best response
     br_agent = Exploiter(
@@ -667,6 +850,8 @@ def run_br_for_task_in_subprocess(
     manual_stop_key: Optional[str] = None,
     launch_local_br_eval: bool = False,
     use_wandb: bool = True,
+    is_league: bool = False,
+    league_matchup_states: Optional[List[str]] = None,
 ) -> None:
     """
     Worker function for running a single BR training instance in a separate process.
@@ -676,7 +861,25 @@ def run_br_for_task_in_subprocess(
     if not use_wandb:
         os.environ["WANDB_DISABLED"] = "true"
         os.environ["WANDB_MODE"] = "disabled"
-    if is_spar:
+    if is_league:
+        loaded_model = load_league_model(
+            game_args,
+            task_file_path,
+            league_matchup_states=league_matchup_states or [],
+            n_envs=n_envs,
+            device=device,
+            use_wandb=use_wandb,
+        )
+        dedicated_state_list_for_env = None
+        if state_subset is not None:
+            if len(state_subset) == 0:
+                raise ValueError("state_subset was provided but empty.")
+            dedicated_state = state_subset[0]
+            dedicated_state_list_for_env = [dedicated_state for _ in range(n_envs)]
+
+        loaded_model.policy = _LeaguePolicyAdapter(loaded_model, side="left")
+        loaded_model.use_wandb = use_wandb
+    elif is_spar:
         # NOTE: Do not shrink CDS model topology based on state_subset.
         # We always load full topology and handle dedicated constraints via
         # env slicing + fixed-head policy adapter below.
@@ -793,6 +996,7 @@ if __name__ == "__main__":
     parser.add_argument("--load_br", choices=['True', 'False'], default='False', required=True)
     parser.add_argument("--which_env", choices=['my_pendulum', 'my_walker2d_v4', 'my_mountain_car_continuous', 'my_half_cheetah', 'my_hopper', 'my_ant'], required=True)
     parser.add_argument("--is_league", choices=['True', 'False'], default='False', required=True)
+    parser.add_argument("--league_dir", type=str, required=False)
     parser.add_argument("--use_mirror", choices=['True', 'False'], default='False', required=True)
     parser.add_argument("--task_dir", type=str, required=False)
     parser.add_argument("--num_brs", type=int, default=6, help="Number of independent BR agents to train per main checkpoint.")
@@ -845,6 +1049,14 @@ if __name__ == "__main__":
         default='cuda',
         help='Torch device for policies and training (e.g. cpu, cuda, cuda:0)',
     )
+    parser.add_argument(
+        '--league_matchup_states',
+        type=str,
+        nargs='+',
+        default=None,
+        help='Retro state strings for league BR matchups. '
+             'If omitted, inferred from sibling MA*_right*.pt files in the task directory.',
+    )
     # whether or not we want to do full br training or continuing the CDS as exploiter
     args = parser.parse_args()
 
@@ -887,6 +1099,11 @@ if __name__ == "__main__":
     args.use_stagnation_velocity_signal = args.use_stagnation_velocity_signal == 'True'
     args.use_stagnation_entropy_signal = args.use_stagnation_entropy_signal == 'True'
     args.stagnation_use_slope_early_stop = args.stagnation_use_slope_early_stop == 'True'
+    args.is_league = args.is_league == 'True'
+    if args.is_league:
+        if args.league_dir is None or args.league_dir == "":
+            print("ERROR: League directory is required when is_league is True.")
+            exit(1)
     # Linux defaults to "fork", which cannot safely inherit an initialized CUDA
     # runtime. Use explicit "spawn" for BR worker subprocesses.
     mp_ctx = mp.get_context("spawn")
@@ -935,7 +1152,7 @@ if __name__ == "__main__":
     #     print("myfile.txt does not exist")
 
     print(f"WORKER [{os.getpid()}]: Starting. Watching {todo_dir} for tasks. device={args.device}")
-    if args.is_league == 'False' and args.load_br == 'False':
+    if (not args.is_league) and args.load_br == 'False':
         while not os.path.exists(stop_file):
             tasks = [f for f in os.listdir(todo_dir) if f.endswith(".task")]
 
@@ -1145,11 +1362,189 @@ if __name__ == "__main__":
                     os.rename(processing_path, error_path)
                 except:
                     pass
-    elif args.is_league == 'True' and args.load_br == 'False':
-        model_files, payoff_path = load_league_models(model_dir=args.league_model_dir, character_names=["ryu", "bison", "guile"])
-        loaded_league = instantiate_league_models(model_files, character_names=["ryu", "bison", "guile"])
-        main_agent_left = loaded_league.get_player(0).agent
-        train_best_response(main_agent_left, payoff_path, eval_prot=args.eval_prot, use_mirror=args.use_mirror, eval_only=args.eval_only, proj_name=args.proj_name, is_spar=False, analysis_upload_proj_name=args.analysis_upload_proj_name)
+    elif args.is_league and args.load_br == 'False':
+        print(f"WORKER [{os.getpid()}]: League mode.")
+        print("WORKER [%d]: Processing League files. todo dir reset to %s" % (os.getpid(), args.league_dir))
+        todo_dir = args.league_dir
+        while not os.path.exists(stop_file):
+            tasks = [f for f in os.listdir(todo_dir) if f.endswith(".task")]
+
+            if not tasks:
+                time.sleep(POLL_INTERVAL)
+                continue
+
+            task_filename = random.choice(tasks)
+            todo_path = os.path.join(todo_dir, task_filename)
+            processing_path = os.path.join(processing_dir, task_filename)
+            error_path = os.path.join(error_dir, task_filename)
+
+            try:
+                os.rename(todo_path, processing_path)
+
+                if args.league_matchup_states:
+                    league_matchup_states = list(args.league_matchup_states)
+                else:
+                    league_matchup_states = _infer_league_matchup_states_from_dir(todo_dir)
+                    print(
+                        f"WORKER [{os.getpid()}]: Inferred {len(league_matchup_states)} "
+                        f"matchup states from sibling right-models:"
+                    )
+                    for s in league_matchup_states:
+                        print(f"  - {s}")
+
+                processes = []
+
+                def _launch_league_job(
+                    eval_prot_flag: bool,
+                    br_idx: int,
+                    from_scratch: bool,
+                    state_subset: Optional[List[str]] = None,
+                    matchup_label: Optional[str] = None,
+                    replicate_idx: Optional[int] = None,
+                    dedicated_job_id: Optional[int] = None,
+                    launch_local_br_eval: bool = False,
+                ) -> None:
+                    target = run_br_for_task_in_subprocess
+                    task_stem = os.path.splitext(os.path.basename(processing_path))[0]
+                    run_mode = "dedicated" if from_scratch else "continue"
+                    side_label = "ego" if eval_prot_flag else "adv"
+                    if dedicated_job_id is not None:
+                        key_base = (
+                            f"{task_stem}_{run_mode}_job{dedicated_job_id}_{side_label}_br{br_idx}"
+                        )
+                    else:
+                        matchup_part = (
+                            _sanitize_for_filename(str(matchup_label))
+                            if matchup_label is not None
+                            else "all_matchups"
+                        )
+                        rep_part = (
+                            f"rep{replicate_idx}" if replicate_idx is not None else "repNA"
+                        )
+                        key_base = (
+                            f"{task_stem}_{run_mode}_{side_label}_{matchup_part}_{rep_part}_br{br_idx}"
+                        )
+                    stop_key = _sanitize_for_filename(key_base)
+                    stop_file_dir = os.path.join(TASK_DIR, "stop")
+                    os.makedirs(stop_file_dir, exist_ok=True)
+                    stop_file_path = os.path.join(stop_file_dir, f"STOP_{stop_key}")
+                    training_args = (
+                        game_args,
+                        processing_path,
+                        eval_prot_flag,
+                        args.use_mirror,
+                        args.eval_only,
+                        args.proj_name,
+                        args.analysis_upload_proj_name,
+                        args.n_envs,
+                        False,  # is_spar = False for league
+                        br_idx,
+                        from_scratch,
+                        args.exploiter_save_freq,
+                        args.br_tracker_patience,
+                        args.br_tracker_tolerance,
+                        args.br_tracker_window_size,
+                        args.use_br_reward_stagnation,
+                        args.use_br_entropy_stagnation,
+                        args.br_use_slope_early_stop,
+                        args.br_slope_window,
+                        args.br_slope_tolerance,
+                        args.br_min_slope_checks,
+                        args.use_stagnation_early_stop,
+                        args.use_stagnation_velocity_signal,
+                        args.use_stagnation_entropy_signal,
+                        args.stagnation_patience,
+                        args.stagnation_tolerance,
+                        args.stagnation_rel_tolerance,
+                        args.stagnation_ema_beta,
+                        args.stagnation_eps,
+                        args.stagnation_eval_games,
+                        args.entropy_stagnation_weight,
+                        args.stagnation_lr_factor,
+                        args.stagnation_lr_patience,
+                        args.stagnation_use_slope_early_stop,
+                        args.stagnation_slope_window,
+                        args.stagnation_slope_tolerance,
+                        args.stagnation_min_slope_checks,
+                        args.device,
+                        state_subset,
+                        matchup_label,
+                        replicate_idx,
+                        dedicated_job_id,
+                        stop_file_path,
+                        stop_key,
+                        launch_local_br_eval,
+                        args.use_wandb,
+                        True,  # is_league
+                        league_matchup_states,
+                    )
+                    if args.DEBUG:
+                        print(
+                            "DEBUG: Launching league BR job "
+                            f"idx={br_idx}, eval_prot_flag={eval_prot_flag}, "
+                            f"from_scratch={from_scratch}, matchup={matchup_label}, "
+                            f"replicate={replicate_idx}, dedicated_job_id={dedicated_job_id}, "
+                            f"launch_local_br_eval={launch_local_br_eval}, "
+                            f"stop_key={stop_key}, stop_file={stop_file_path}"
+                        )
+                        target(*training_args)
+                    else:
+                        p = mp_ctx.Process(target=target, args=training_args)
+                        p.start()
+                        processes.append(p)
+
+                if args.continue_exploiters:
+                    from_scratch = False
+                    if args.eval_prot:
+                        for br_idx in range(args.num_continue_exploiters):
+                            _launch_league_job(eval_prot_flag=True, br_idx=br_idx, from_scratch=from_scratch, launch_local_br_eval=args.launch_local_br_eval)
+                    if args.eval_adv:
+                        for br_idx in range(args.num_continue_exploiters):
+                            _launch_league_job(eval_prot_flag=False, br_idx=br_idx, from_scratch=from_scratch, launch_local_br_eval=args.launch_local_br_eval)
+
+                if args.dedicated_exploiter:
+                    unique_states = list(league_matchup_states)
+                    dedicated_specs = _build_dedicated_job_specs(
+                        unique_states=unique_states,
+                        replicates_per_matchup=args.num_full_exploiters,
+                        run_eval_prot=args.eval_prot,
+                        run_eval_adv=args.eval_adv,
+                        launch_local_br_eval=args.launch_local_br_eval,
+                    )
+                    print(
+                        "League dedicated exploiter scheduling:\n"
+                        f"  unique_matchups={len(unique_states)}\n"
+                        f"  replicates_per_matchup={args.num_full_exploiters}\n"
+                        f"  total_jobs={len(dedicated_specs)}"
+                    )
+                    for spec in dedicated_specs:
+                        _launch_league_job(
+                            eval_prot_flag=spec["eval_prot"],
+                            br_idx=spec["job_index"],
+                            from_scratch=True,
+                            state_subset=spec["state_subset"],
+                            matchup_label=spec["matchup_label"],
+                            replicate_idx=spec["replicate_idx"],
+                            dedicated_job_id=spec["job_index"],
+                            launch_local_br_eval=args.launch_local_br_eval,
+                        )
+                        print("Complete league job: ", spec["job_index"])
+
+                if not args.DEBUG:
+                    for p in processes:
+                        p.join()
+
+                done_path = os.path.join(done_dir, task_filename)
+                print("Finished processing league task: ", task_filename)
+
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                print(f"WORKER [{os.getpid()}]: A critical error occurred. Error: {e}")
+                try:
+                    os.rename(processing_path, error_path)
+                except:
+                    pass
     else:
         while not os.path.exists(stop_file):
             tasks = [f for f in os.listdir(BR_MODEL_DIR) if f.endswith(".task")]
