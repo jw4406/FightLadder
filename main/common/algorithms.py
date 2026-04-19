@@ -929,10 +929,8 @@ class LeaguePPO(IPPO):
         self.side = side
         self.current_opponent = None
         self.constructor_fn = None
-        self.constructor_args = None        
-        self.current_opponent = None
-        self.constructor_fn = None
-        self.constructor_args = None        
+        self.constructor_args = None
+        self.constructor_state_name = None
 
         super().__init__(
             policy,
@@ -1204,7 +1202,11 @@ class LeaguePPO(IPPO):
         # Close current environment
         self.env.close()
         # Recreate with new opponent
-        new_agent = self.constructor_fn(self.constructor_args, self.side, opponent=opponent_character, single_env=False)
+        new_agent = self.constructor_fn(
+            self.constructor_args, self.side,
+            opponent=opponent_character, single_env=False,
+            state_name=self.constructor_state_name,
+        )
         self.env = new_agent.env
         # Reset episode tracking
         self._last_obs = None

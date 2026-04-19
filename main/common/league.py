@@ -453,6 +453,7 @@ class Player(object):
         self.agent.set_steps(self._checkpoint_step)
         self.agent.constructor_fn = self.constructor #Need to assign a constructor function - do NOT delete!
         self.agent.constructor_args = self.args
+        self.agent.constructor_state_name = self.state_name
     
     def get_parameters(self):
         return self._initial_weights if self.agent is None else self.agent.get_parameters()
@@ -643,7 +644,8 @@ class MainExploiter(Player):
 
         win_rate = self._payoff.get_item(self.name, opponent, "left") if self.side == "left" else self._payoff.get_item(opponent, self.name, "right")
         if coin_toss < 0.5 or win_rate > 0.1:
-            return self.get_player_by_name(opponent), is_training
+            opponent = self.get_player_by_name(opponent)
+            return opponent, opponent.character_name, is_training
 
         historical_opponents = self._payoff.get_names("right", Historical, opponent) if self.side == "left" else self._payoff.get_names("left", Historical, opponent)
         historical_opponents = self._filter_names_by_matchup_key(historical_opponents)
@@ -679,7 +681,7 @@ class LeagueExploiter(Player):
         historical_opponents = self._filter_names_by_matchup_key(historical_opponents)
         win_rates = self._payoff.get_item(self.name, historical_opponents, "left") if self.side == "left" else self._payoff.get_item(historical_opponents, self.name, "right")
         opponent = self.get_player_by_name(np.random.choice(
-            historical_opponents, p=pfsp(win_rates, weighting="linear_capped"))), True
+            historical_opponents, p=pfsp(win_rates, weighting="linear_capped")))
         is_training = True
         return opponent, opponent.character_name, is_training
 
@@ -869,7 +871,7 @@ class FSPPlayer(Player):
     def get_match(self):
         historical_opponents = self._payoff.get_names("right", Historical) if self.side == "left" else self._payoff.get_names("left", Historical)
         opponent = self.get_player_by_name(np.random.choice(
-            historical_opponents)), True
+            historical_opponents))
         is_training = True
         return opponent, opponent.character_name, is_training
 
@@ -918,7 +920,7 @@ class PSROPlayer(Player):
     def get_match(self):
         historical_opponents, mixed_weights = self._payoff.get_historical_nash("right") if self.side == "left" else self._payoff.get_historical_nash("left")
         opponent = self.get_player_by_name(np.random.choice(
-            historical_opponents, p=mixed_weights)), True
+            historical_opponents, p=mixed_weights))
         is_training = True
         return opponent, opponent.character_name, is_training
 
