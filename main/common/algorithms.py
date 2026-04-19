@@ -344,6 +344,7 @@ class IPPO(PPO):
             actions_other = actions_other.cpu().numpy()
 
             # Rescale and perform action
+            #actions = np.ones_like(actions)
             clipped_actions = np.hstack([actions, actions_other])
             # print(clipped_actions, flush=True)
             # print(np.shape(clipped_actions),flush=True)

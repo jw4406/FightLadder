@@ -170,7 +170,10 @@ class Payoff:
             "kwargs": kwargs,
         }
         print(f"[Payoff] Saving model {kwargs['name']} at step {kwargs['checkpoint_step']}", flush=True)
-        torch.save(save_kwargs, f"{self.save_dir}/{kwargs['name']}_{kwargs['checkpoint_step']}.pt")
+        if 'MA' in kwargs['name'] and 'left' in kwargs['name']:
+            torch.save(save_kwargs, f"{self.save_dir}/{kwargs['name']}_{kwargs['checkpoint_step']}.task")
+        else:
+            torch.save(save_kwargs, f"{self.save_dir}/{kwargs['name']}_{kwargs['checkpoint_step']}.pt")
         save_payoff = {
             "wins": dict(self._wins),
             "draws": dict(self._draws),
@@ -298,6 +301,7 @@ def get_player_config(player):
             "matchup_left": getattr(p, "matchup_left", None),
             "matchup_right": getattr(p, "matchup_right", None),
             "matchup_index": getattr(p, "matchup_index", None),
+            "state_name": getattr(p, "state_name", None),
         }
 
     if isinstance(player, MainPlayer):
@@ -420,6 +424,7 @@ class Player(object):
         matchup_left: Optional[str] = None,
         matchup_right: Optional[str] = None,
         matchup_index: Optional[int] = None,
+        state_name: Optional[str] = None,
     ):
         self.name = name
         self.side = side
@@ -436,10 +441,14 @@ class Player(object):
         self.matchup_left = matchup_left
         self.matchup_right = matchup_right
         self.matchup_index = matchup_index
+        self.state_name = state_name
     
     def construct_agent(self):
         print(f"Constructing agent for {self.name}") #TODO: DEBUG ONLY! Remove when done.
-        self.agent = self.constructor(self.args, self.side, log_name=self.name)
+        self.agent = self.constructor(
+            self.args, self.side, log_name=self.name,
+            state_name=self.state_name, matchup_key=self.matchup_key,
+        )
         self.agent.set_parameters(self._initial_weights)
         self.agent.set_steps(self._checkpoint_step)
         self.agent.constructor_fn = self.constructor #Need to assign a constructor function - do NOT delete!
@@ -456,7 +465,14 @@ class Player(object):
         return False
 
     def _create_checkpoint(self):
-        return Historical(f"{self.name}_historical_step_{self._checkpoint_step}", self.side, self.constructor, self.args, None, None, self.name, agent_dict=self.get_parameters(), checkpoint_step=0)
+        return Historical(
+            f"{self.name}_historical_step_{self._checkpoint_step}",
+            self.side, self.constructor, self.args, None, None, self.name,
+            agent_dict=self.get_parameters(), checkpoint_step=0,
+            matchup_key=self.matchup_key, matchup_left=self.matchup_left,
+            matchup_right=self.matchup_right, matchup_index=self.matchup_index,
+            state_name=self.state_name,
+        )
 
     @property
     def character_name(self) -> str:
@@ -527,8 +543,8 @@ class Player(object):
 
 class MainPlayer(Player):
 
-    def __init__(self, name, side, constructor, args, agent: LeaguePPO, payoff: Payoff, agent_dict=None, checkpoint_step=0, matchup_key: Optional[str] = None, matchup_left: Optional[str] = None, matchup_right: Optional[str] = None, matchup_index: Optional[int] = None):
-        super().__init__(name, side, constructor, args, agent, payoff, agent_dict, checkpoint_step, matchup_key, matchup_left, matchup_right, matchup_index)
+    def __init__(self, name, side, constructor, args, agent: LeaguePPO, payoff: Payoff, agent_dict=None, checkpoint_step=0, matchup_key: Optional[str] = None, matchup_left: Optional[str] = None, matchup_right: Optional[str] = None, matchup_index: Optional[int] = None, state_name: Optional[str] = None):
+        super().__init__(name, side, constructor, args, agent, payoff, agent_dict, checkpoint_step, matchup_key, matchup_left, matchup_right, matchup_index, state_name=state_name)
 
     def _pfsp_branch(self):
         historical_opponents = self._payoff.get_names("right", Historical) if self.side == "left" else self._payoff.get_names("left", Historical)
@@ -615,8 +631,8 @@ class MainPlayer(Player):
 
 class MainExploiter(Player):
 
-    def __init__(self, name, side, constructor, args, agent: LeaguePPO, payoff: Payoff, agent_dict=None, checkpoint_step=0, matchup_key: Optional[str] = None, matchup_left: Optional[str] = None, matchup_right: Optional[str] = None, matchup_index: Optional[int] = None):
-        super().__init__(name, side, constructor, args, agent, payoff, agent_dict, checkpoint_step, matchup_key, matchup_left, matchup_right, matchup_index)
+    def __init__(self, name, side, constructor, args, agent: LeaguePPO, payoff: Payoff, agent_dict=None, checkpoint_step=0, matchup_key: Optional[str] = None, matchup_left: Optional[str] = None, matchup_right: Optional[str] = None, matchup_index: Optional[int] = None, state_name: Optional[str] = None):
+        super().__init__(name, side, constructor, args, agent, payoff, agent_dict, checkpoint_step, matchup_key, matchup_left, matchup_right, matchup_index, state_name=state_name)
 
     def get_match(self):
         is_training = True
@@ -655,8 +671,8 @@ class MainExploiter(Player):
 
 class LeagueExploiter(Player):
 
-    def __init__(self, name, side, constructor, args, agent: LeaguePPO, payoff: Payoff, agent_dict=None, checkpoint_step=0, matchup_key: Optional[str] = None, matchup_left: Optional[str] = None, matchup_right: Optional[str] = None, matchup_index: Optional[int] = None):
-        super().__init__(name, side, constructor, args, agent, payoff, agent_dict, checkpoint_step, matchup_key, matchup_left, matchup_right, matchup_index)
+    def __init__(self, name, side, constructor, args, agent: LeaguePPO, payoff: Payoff, agent_dict=None, checkpoint_step=0, matchup_key: Optional[str] = None, matchup_left: Optional[str] = None, matchup_right: Optional[str] = None, matchup_index: Optional[int] = None, state_name: Optional[str] = None):
+        super().__init__(name, side, constructor, args, agent, payoff, agent_dict, checkpoint_step, matchup_key, matchup_left, matchup_right, matchup_index, state_name=state_name)
 
     def get_match(self):
         historical_opponents = self._payoff.get_names("right", Historical) if self.side == "left" else self._payoff.get_names("left", Historical)
@@ -686,8 +702,8 @@ class LeagueExploiter(Player):
 
 class Historical(Player):
 
-    def __init__(self, name, side, constructor, args, agent: LeaguePPO, payoff: Payoff, parent_name: str, agent_dict=None, checkpoint_step=0, matchup_key: Optional[str] = None, matchup_left: Optional[str] = None, matchup_right: Optional[str] = None, matchup_index: Optional[int] = None):
-        super().__init__(name, side, constructor, args, agent, payoff, agent_dict, checkpoint_step, matchup_key, matchup_left, matchup_right, matchup_index)
+    def __init__(self, name, side, constructor, args, agent: LeaguePPO, payoff: Payoff, parent_name: str, agent_dict=None, checkpoint_step=0, matchup_key: Optional[str] = None, matchup_left: Optional[str] = None, matchup_right: Optional[str] = None, matchup_index: Optional[int] = None, state_name: Optional[str] = None):
+        super().__init__(name, side, constructor, args, agent, payoff, agent_dict, checkpoint_step, matchup_key, matchup_left, matchup_right, matchup_index, state_name=state_name)
         self._parent = parent_name
 
     @property
@@ -710,12 +726,17 @@ class League(object):
                 payoff=None,
                 main_agents=1,
                 main_exploiters=1,
-                league_exploiters=2):
+                league_exploiters=2,
+                state_names=None):
         if payoff is None:
             self._payoff = Payoff()
         else:
             self._payoff = payoff
         self._learning_agents = []
+        if state_names is None:
+            state_names = {}
+
+        left_state = next(iter(state_names.values()), None)
 
         # Left side: single global main agent, still with explicit key metadata.
         left_key = _matchup_key(0, "left", "all")
@@ -731,6 +752,7 @@ class League(object):
                 matchup_left="left",
                 matchup_right="all",
                 matchup_index=0,
+                state_name=left_state,
             )
             self._learning_agents.append(main_agent)
             self.add_player(main_agent.checkpoint())
@@ -747,6 +769,7 @@ class League(object):
                     matchup_left="left",
                     matchup_right="all",
                     matchup_index=0,
+                    state_name=left_state,
                 )
             )
         for idx in range(league_exploiters):
@@ -762,6 +785,7 @@ class League(object):
                     matchup_left="left",
                     matchup_right="all",
                     matchup_index=0,
+                    state_name=left_state,
                 )
             )
 
@@ -769,6 +793,7 @@ class League(object):
         for match_idx, (raw_key, model) in enumerate(initial_agents["right"].items()):
             left_char, right_char = _parse_matchup_from_raw_key(raw_key)
             matchup_key = _matchup_key(match_idx, left_char, right_char)
+            right_state = state_names.get(raw_key)
 
             for idx in range(main_agents):
                 main_agent = MainPlayer(
@@ -782,6 +807,7 @@ class League(object):
                     matchup_left=left_char,
                     matchup_right=right_char,
                     matchup_index=match_idx,
+                    state_name=right_state,
                 )
                 self._learning_agents.append(main_agent)
                 self.add_player(main_agent.checkpoint())
@@ -798,6 +824,7 @@ class League(object):
                         matchup_left=left_char,
                         matchup_right=right_char,
                         matchup_index=match_idx,
+                        state_name=right_state,
                     )
                 )
             for idx in range(league_exploiters):
@@ -813,6 +840,7 @@ class League(object):
                         matchup_left=left_char,
                         matchup_right=right_char,
                         matchup_index=match_idx,
+                        state_name=right_state,
                     )
                 )
         for player in self._learning_agents:
@@ -835,8 +863,8 @@ class League(object):
 
 class FSPPlayer(Player):
 
-    def __init__(self, name, side, constructor, args, agent: LeaguePPO, payoff: Payoff, agent_dict=None, checkpoint_step=0, matchup_key: Optional[str] = None, matchup_left: Optional[str] = None, matchup_right: Optional[str] = None, matchup_index: Optional[int] = None):
-        super().__init__(name, side, constructor, args, agent, payoff, agent_dict, checkpoint_step, matchup_key, matchup_left, matchup_right, matchup_index)
+    def __init__(self, name, side, constructor, args, agent: LeaguePPO, payoff: Payoff, agent_dict=None, checkpoint_step=0, matchup_key: Optional[str] = None, matchup_left: Optional[str] = None, matchup_right: Optional[str] = None, matchup_index: Optional[int] = None, state_name: Optional[str] = None):
+        super().__init__(name, side, constructor, args, agent, payoff, agent_dict, checkpoint_step, matchup_key, matchup_left, matchup_right, matchup_index, state_name=state_name)
 
     def get_match(self):
         historical_opponents = self._payoff.get_names("right", Historical) if self.side == "left" else self._payoff.get_names("left", Historical)
@@ -884,8 +912,8 @@ class FSPLeague(League):
 
 class PSROPlayer(Player):
 
-    def __init__(self, name, side, constructor, args, agent: LeaguePPO, payoff: Payoff, agent_dict=None, checkpoint_step=0, matchup_key: Optional[str] = None, matchup_left: Optional[str] = None, matchup_right: Optional[str] = None, matchup_index: Optional[int] = None):
-        super().__init__(name, side, constructor, args, agent, payoff, agent_dict, checkpoint_step, matchup_key, matchup_left, matchup_right, matchup_index)
+    def __init__(self, name, side, constructor, args, agent: LeaguePPO, payoff: Payoff, agent_dict=None, checkpoint_step=0, matchup_key: Optional[str] = None, matchup_left: Optional[str] = None, matchup_right: Optional[str] = None, matchup_index: Optional[int] = None, state_name: Optional[str] = None):
+        super().__init__(name, side, constructor, args, agent, payoff, agent_dict, checkpoint_step, matchup_key, matchup_left, matchup_right, matchup_index, state_name=state_name)
 
     def get_match(self):
         historical_opponents, mixed_weights = self._payoff.get_historical_nash("right") if self.side == "left" else self._payoff.get_historical_nash("left")

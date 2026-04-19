@@ -290,7 +290,7 @@ def main():
     parser = argparse.ArgumentParser(description='Reset game stats')
     parser.add_argument('--reset', choices=['round', 'match', 'game'], help='Reset stats for a round, a match, or the whole game', default='round')
     # parser.add_argument('--model-file', help='The model to continue to learn from')
-    parser.add_argument('--save-dir', help='The directory to save the trained models', default="trained_models/ma")
+    parser.add_argument('--save-dir', help='The directory to save the trained models', default="main/trained_models/ma")
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs/ma")
     # parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_ryu")
     # parser.add_argument('--state', help='The state file to load. By default Champion.Level1.RyuVsGuile', default=SF_DEFAULT_STATE)
@@ -342,6 +342,7 @@ def main():
     if len(matchup_specs) == 0:
         raise ValueError("STATES must contain at least one matchup entry.")
     right_models = {}
+    state_names = {}
     for spec in matchup_specs:
         right_models[spec["canonical_key"]] = constructor(
             args,
@@ -352,6 +353,7 @@ def main():
             state_name=spec["state_name"],
             matchup_key=spec["canonical_key"],
         )
+        state_names[spec["canonical_key"]] = spec["state_name"]
 
     # Left MA remains single/global; initialize using the first matchup state.
     left_model = constructor(
@@ -386,28 +388,28 @@ def main():
         elif args.psro_league:
             league = PSROLeague(args=args, initial_agents=initial_agents, constructor=constructor, payoff=shared_payoff, main_agents=1)
         else:
-            league = League(args=args, initial_agents=initial_agents, constructor=constructor, payoff=shared_payoff, main_agents=1, main_exploiters=1, league_exploiters=2)
+            league = League(args=args, initial_agents=initial_agents, constructor=constructor, payoff=shared_payoff, main_agents=1, main_exploiters=1, league_exploiters=2, state_names=state_names)
         #TODO: DEBUGGING ONLY!!! This is serial method for debugging instead of multipcroessing.
         #For some reason, it works but the parallel version doesn't.
         #After the debugging is done, return to multiprocessing.
-        for idx in range(league.size()):
-            player = league.get_player(idx)
-            learner = Learner(player)
-            worker(idx, learner, args.total_steps, args.rollout_opponent_num)
-        
-        # TODO: This is the parallel version that doesn't work for some reason. Uncomment this block when done debugging the serial version.
-        # processes = []
         # for idx in range(league.size()):
         #     player = league.get_player(idx)
-        #     # player.constructor_fn = constructor #TODO: Delete when done
         #     learner = Learner(player)
-        #     process = Process(target=worker, args=(idx, learner, args.total_steps, args.rollout_opponent_num))
-        #     # process.daemon=True  # all processes closed when the main stops
-        #     processes.append(process)
-        # for p in processes:
-        #     p.start()
-        # for p in processes:
-        #     p.join()
+        #     worker(idx, learner, args.total_steps, args.rollout_opponent_num)
+        
+        # TODO: This is the parallel version that doesn't work for some reason. Uncomment this block when done debugging the serial version.
+        processes = []
+        for idx in range(league.size()):
+            player = league.get_player(idx)
+            # player.constructor_fn = constructor #TODO: Delete when done
+            learner = Learner(player)
+            process = Process(target=worker, args=(idx, learner, args.total_steps, args.rollout_opponent_num))
+            # process.daemon=True  # all processes closed when the main stops
+            processes.append(process)
+        for p in processes:
+            p.start()
+        for p in processes:
+            p.join()
 
 
 def restore():

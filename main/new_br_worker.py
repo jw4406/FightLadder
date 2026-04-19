@@ -7,6 +7,7 @@ import sys
 from typing import Any, Dict, List, Optional
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
+from copy import deepcopy
 
 def _peek_torch_device_argv(argv):
     for i, a in enumerate(argv):
@@ -426,7 +427,7 @@ class _LeaguePolicyAdapter:
 
 
 _LEAGUE_RIGHT_RE = re.compile(
-    r"^MA\d+_right_m_\d+_(?P<right_char>[a-z0-9]+)_vs_(?P<left_char>[a-z0-9]+)_\d+\.pt$"
+    r"^MA\d+_right_m_\d+_(?P<left_char>[a-z0-9]+)_vs_(?P<right_char>[a-z0-9]+)_\d+\.pt$"
 )
 
 
@@ -528,6 +529,12 @@ def load_league_model(
     saved_kwargs = saved["kwargs"]
     agent_dict = saved_kwargs["agent_dict"]
     side = saved_kwargs.get("side", "left")
+    if side == "left":
+        side = "right"
+    else:
+        side = "left"
+
+    # experimental
     saved_args = saved_kwargs.get("args")
 
     constructor_args = argparse.Namespace(**game_args)
@@ -569,6 +576,86 @@ def load_league_model(
         f"matchup_states={league_matchup_states}"
     )
     return league_model
+
+
+def _continue_train_loaded_league_model(
+    ftm: LeaguePPO,
+    eval_prot: bool,
+    total_timesteps: int,
+    callback,
+    rollout_opponent_num: int,
+) -> None:
+    """
+    Continue training a loaded league checkpoint using the same LeaguePPO learner path
+    as train_ma/league (side-aware rollouts + one-side policy updates).
+
+    Side update rule:
+    - eval_prot=True  -> train right-side policy (freeze left)
+    - eval_prot=False -> train left-side policy (freeze right)
+    """
+    from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer
+    from gymnasium import spaces
+
+    train_side = "right" if eval_prot else "left"
+    ftm.side = train_side
+
+    # Sync n_envs and rollout buffers with the (possibly different) env that was
+    # assigned to ftm before this call.  load_league_model builds the model with
+    # num_env from the constructor, but train_best_response may swap in a new env
+    # with a different n_envs.  Without this, the buffer shapes won't match and
+    # numpy will raise a reshape error.
+    actual_n_envs = ftm.env.num_envs
+    if ftm.n_envs != actual_n_envs:
+        ftm.n_envs = actual_n_envs
+        buffer_cls = DictRolloutBuffer if isinstance(ftm.observation_space, spaces.Dict) else RolloutBuffer
+        ftm.rollout_buffer = buffer_cls(
+            ftm.n_steps,
+            ftm.observation_space,
+            ftm.action_space,
+            device=ftm.device,
+            gamma=ftm.gamma,
+            gae_lambda=ftm.gae_lambda,
+            n_envs=actual_n_envs,
+        )
+        ftm.rollout_buffer_other = buffer_cls(
+            ftm.n_steps,
+            ftm.observation_space,
+            ftm.action_space,
+            device=ftm.device,
+            gamma=ftm.gamma,
+            gae_lambda=ftm.gae_lambda,
+            n_envs=actual_n_envs,
+        )
+
+    # Freeze the opposite-side policy by supplying a detached copy as rollout
+    # opponent policy. LeaguePPO.train() only updates the side selected by ftm.side.
+    frozen_left_policy = deepcopy(ftm.policy)
+    frozen_right_policy = deepcopy(ftm.policy_other)
+    frozen_left_policy.set_training_mode(False)
+    frozen_right_policy.set_training_mode(False)
+
+    def _get_kwargs():
+        kwargs: Dict[str, Any] = {
+            "coordinate_fn": lambda _outcome: None,
+            "sync_fn": lambda: None,
+        }
+        if train_side == "right":
+            kwargs["policy"] = frozen_left_policy
+        else:
+            kwargs["policy_other"] = frozen_right_policy
+
+        return kwargs
+
+    ftm.learn(
+        total_timesteps=total_timesteps,
+        rollout_opponent_num=max(1, int(rollout_opponent_num)),
+        callback=callback,
+        log_interval=1,
+        tb_log_name="Learner",
+        reset_num_timesteps=False,
+        progress_bar=False,
+        get_kwargs_fn=_get_kwargs,
+    )
 
 
 def train_best_response(
@@ -736,8 +823,10 @@ def train_best_response(
             # if eval prot is False we are training an optimal ego against the current adversary so we need to update the ego
             ftm.env = env # this is new (17:16)
             ftm.envs_per_matchup = ftm.envs_per_matchup
-            ftm.policy.num_env_per_adv = ftm.envs_per_matchup
-            ftm.policy.envs_per_matchup = ftm.envs_per_matchup
+            if hasattr(ftm.policy, "num_env_per_adv"):
+                ftm.policy.num_env_per_adv = ftm.envs_per_matchup
+            if hasattr(ftm.policy, "envs_per_matchup"):
+                ftm.policy.envs_per_matchup = ftm.envs_per_matchup
             ftm.exploited = None
             ftm.training_br = True
             ftm.br_tracker_patience = br_tracker_patience
@@ -777,7 +866,26 @@ def train_best_response(
                 tracker.min_slope_checks = max(1, int(stagnation_min_slope_checks))
             ftm.use_wandb = use_wandb
             ftm.br_manual_stop_key = stop_key
-            ftm.learn(total_timesteps=BR_TRAINING_STEPS, callback=train_callback, update_ego=not eval_prot, update_adversary=eval_prot)
+            if is_spar:
+
+                ftm.learn(total_timesteps=BR_TRAINING_STEPS, callback=train_callback, update_ego=not eval_prot, update_adversary=eval_prot)
+            elif isinstance(ftm, LeaguePPO):
+                # Continue from loaded league checkpoint using the train_ma-style
+                # league learner path, updating one side only.
+                rollout_opponent_num = getattr(
+                    ftm.constructor_args,
+                    "rollout_opponent_num",
+                    getattr(game_args, "rollout_opponent_num", 1),
+                )
+                _continue_train_loaded_league_model(
+                    ftm=ftm,
+                    eval_prot=eval_prot,
+                    total_timesteps=BR_TRAINING_STEPS,
+                    callback=train_callback,
+                    rollout_opponent_num=rollout_opponent_num,
+                )
+            else:
+                ftm.learn(total_timesteps=BR_TRAINING_STEPS, callback=train_callback)
         #br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
 
         local_plot_and_eval_file = os.path.join(current_dir, "local_br_eval.py")
@@ -876,8 +984,6 @@ def run_br_for_task_in_subprocess(
                 raise ValueError("state_subset was provided but empty.")
             dedicated_state = state_subset[0]
             dedicated_state_list_for_env = [dedicated_state for _ in range(n_envs)]
-
-        loaded_model.policy = _LeaguePolicyAdapter(loaded_model, side="left")
         loaded_model.use_wandb = use_wandb
     elif is_spar:
         # NOTE: Do not shrink CDS model topology based on state_subset.
@@ -1389,8 +1495,16 @@ if __name__ == "__main__":
                         f"WORKER [{os.getpid()}]: Inferred {len(league_matchup_states)} "
                         f"matchup states from sibling right-models:"
                     )
-                    for s in league_matchup_states:
-                        print(f"  - {s}")
+
+                problematic_names = ["Chunli", "Ehonda", "Mbison"]
+                canonical_names = ["ChunLi", "EHonda", "MBison"]
+                for i in range(len(league_matchup_states)):
+                    for j in range(len(problematic_names)):
+                        if problematic_names[j] in league_matchup_states[i]:
+                            league_matchup_states[i] = league_matchup_states[i].replace(problematic_names[j], canonical_names[j])
+
+                for s in league_matchup_states:
+                    print(f"  - {s}")
 
                 processes = []
 
