@@ -5584,41 +5584,15 @@ class Exploiter(PPO):
             current_reward=float(mean_reward) if mean_reward is not None else None,
         )
         tracker_logs = {
-            "exploiter/reward/mean": (
+            "exploiter/reward_mean": (
                 float(mean_reward) if mean_reward is not None else float("nan")
             ),
-            "exploiter/entropy/mean": (
+            "exploiter/entropy_mean": (
                 float(self._last_rollout_policy_entropy)
                 if self._last_rollout_policy_entropy is not None
                 else float("nan")
             ),
-            "exploiter/stability/should_stop": float(bool(should_stop)),
-            "exploiter/stability/use_reward_stagnation": float(bool(self.use_br_reward_stagnation)),
-            "exploiter/stability/use_entropy_stagnation": float(bool(self.use_br_entropy_stagnation)),
-            "exploiter/stability/metric": (
-                float(tracker.last_metric) if tracker.last_metric is not None else float("nan")
-            ),
-            "exploiter/stability/velocity": (
-                float(tracker.last_velocity) if tracker.last_velocity is not None else float("nan")
-            ),
-            "exploiter/stability/threshold": (
-                float(tracker.dynamic_threshold)
-                if tracker.dynamic_threshold is not None
-                else float("nan")
-            ),
-            "exploiter/stability/wait_count": float(tracker.wait_count),
-            "exploiter/stability/patience": float(tracker.patience),
-            "exploiter/stability/slope": (
-                float(tracker.last_metric_slope)
-                if tracker.last_metric_slope is not None
-                else float("nan")
-            ),
-            "exploiter/stability/slope_normalized": (
-                float(tracker.last_metric_slope_normalized)
-                if tracker.last_metric_slope_normalized is not None
-                else float("nan")
-            ),
-            "exploiter/stability/slope_is_flat": float(bool(tracker.last_slope_is_flat)),
+            "exploiter/should_stop": float(bool(should_stop)),
         }
         if stagnation_logs is not None:
             tracker_logs.update({f"exploiter/{k}": float(v) for k, v in stagnation_logs.items()})
@@ -5626,15 +5600,6 @@ class Exploiter(PPO):
             self.logger.record(key, value)
         if self.use_wandb:
             wandb.log(tracker_logs)
-        print(
-            "exploiter stagnation \n "
-            f"reward={float(mean_reward) if mean_reward is not None else float('nan'):.4f} \n"
-            f"entropy={float(self._last_rollout_policy_entropy) if self._last_rollout_policy_entropy is not None else float('nan'):.4f} \n"
-            f"wait_count={tracker.wait_count}/{tracker.patience} \n"
-            f"metric={float(tracker.last_metric) if tracker.last_metric is not None else float('nan'):.6f} \n"
-            f"slope_flat={bool(tracker.last_slope_is_flat)}\n",
-            flush=True,
-        )
         if should_stop:
             if self.use_br_reward_stagnation and self.use_br_entropy_stagnation:
                 mode_msg = "reward+entropy"

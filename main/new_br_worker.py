@@ -658,6 +658,180 @@ def _continue_train_loaded_league_model(
     )
 
 
+def _league_worker(idx, learner, total_steps, rollout_opponent_num):
+    """Worker target for league continue-exploiter subprocesses."""
+    import torch as _torch
+    print(f"league_worker {learner.player.name} start (pid={os.getpid()})")
+    device_count = _torch.cuda.device_count() if _torch.cuda.is_available() else 1
+    with _torch.cuda.device(idx % device_count):
+        learner.player.construct_agent()
+        learner.run(
+            total_timesteps=total_steps,
+            rollout_opponent_num=rollout_opponent_num,
+        )
+
+
+_LEAGUE_RIGHT_ANY_RE = re.compile(
+    r"^(?P<role>[A-Z]+\d+)_right_m_(?P<midx>\d+)_(?P<left_char>[a-z0-9]+)_vs_(?P<right_char>[a-z0-9]+)_(?P<step>\d+)\.pt$"
+)
+
+
+def _load_right_side_checkpoints(
+    model_dir: str,
+    league_matchup_states: List[str],
+    device: str = "cpu",
+) -> Dict[str, dict]:
+    """
+    Scan *model_dir* for right-side .pt files and return the highest-step
+    ``agent_dict`` for each matchup key (e.g. ``ryu_vs_guile``).
+
+    Only MA checkpoints are considered (not ME/LE/historical) because the
+    League will create its own ME/LE players initialized from the MA weights.
+    """
+    from train_ma import _sanitize_matchup_token
+
+    best: Dict[str, tuple] = {}
+    for fname in os.listdir(model_dir):
+        m = _LEAGUE_RIGHT_ANY_RE.match(fname)
+        if m is None:
+            continue
+        role = m.group("role")
+        if not role.startswith("MA"):
+            continue
+        left_char = m.group("left_char")
+        right_char = m.group("right_char")
+        step = int(m.group("step"))
+        key = f"{_sanitize_matchup_token(left_char)}_vs_{_sanitize_matchup_token(right_char)}"
+        if key not in best or step > best[key][0]:
+            best[key] = (step, os.path.join(model_dir, fname))
+
+    result: Dict[str, dict] = {}
+    for key, (step, path) in best.items():
+        saved = _load_league_checkpoint(path, device)
+        agent_dict = saved["kwargs"]["agent_dict"]
+        checkpoint_step = saved["kwargs"].get("checkpoint_step", step)
+        result[key] = {"agent_dict": agent_dict, "checkpoint_step": checkpoint_step}
+        print(f"[league_continue] Loaded right checkpoint: {key} step={checkpoint_step} from {os.path.basename(path)}")
+
+    return result
+
+
+def _run_league_continue_exploiter(
+    constructor_args: argparse.Namespace,
+    agent_dict: dict,
+    league_matchup_states: List[str],
+    total_timesteps: int,
+    rollout_opponent_num: int,
+    model_dir: Optional[str] = None,
+    save_dir: Optional[str] = None,
+    log_dir: str = "logs/br_league",
+) -> None:
+    """
+    Run a full right-side-only league against a frozen left MA checkpoint.
+
+    Builds per-matchup right-side agents (MA/ME/LE) and trains them via the
+    standard League loop (payoff tracking, PFSP opponent sampling, historical
+    checkpoints).  The left MA exists in the league as a static opponent but
+    never gets a training process.
+
+    If *model_dir* is provided, right-side agent weights are loaded from the
+    highest-step MA checkpoint found for each matchup.  *save_dir* defaults to
+    *model_dir* so new checkpoints are written alongside existing ones.
+    """
+    from train_ma import _extract_chars_from_state_name, _sanitize_matchup_token
+    from common.league import PayoffManager, League, Learner
+
+    if save_dir is None:
+        save_dir = model_dir if model_dir is not None else "trained_models/br_league"
+    os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
+    constructor_args = deepcopy(constructor_args)
+    constructor_args.log_dir = log_dir
+    constructor_args.save_dir = save_dir
+
+    right_checkpoints: Dict[str, dict] = {}
+    if model_dir is not None:
+        right_checkpoints = _load_right_side_checkpoints(model_dir, league_matchup_states)
+
+    right_models: Dict[str, LeaguePPO] = {}
+    state_names: Dict[str, str] = {}
+
+    for state_name in league_matchup_states:
+        left_char, right_char = _extract_chars_from_state_name(state_name)
+        canonical_key = f"{_sanitize_matchup_token(left_char)}_vs_{_sanitize_matchup_token(right_char)}"
+        right_model = league_constructor(
+            constructor_args,
+            "right",
+            log_name=None,
+            single_env=True,
+            opponent=right_char,
+            state_name=state_name,
+            matchup_key=canonical_key,
+        )
+        if canonical_key in right_checkpoints:
+            ckpt = right_checkpoints[canonical_key]
+            right_model.set_parameters(ckpt["agent_dict"])
+            right_model.set_steps(ckpt["checkpoint_step"])
+            print(f"[league_continue] Resuming {canonical_key} from step {ckpt['checkpoint_step']}")
+        else:
+            right_model.set_parameters(agent_dict)
+            print(f"[league_continue] No right checkpoint for {canonical_key}, using left MA weights")
+        right_models[canonical_key] = right_model
+        state_names[canonical_key] = state_name
+
+    first_state = league_matchup_states[0]
+    left_model = league_constructor(
+        constructor_args,
+        "left",
+        log_name=None,
+        single_env=True,
+        state_name=first_state,
+        matchup_key="left_vs_all",
+    )
+    left_model.set_parameters(agent_dict)
+
+    initial_agents = {
+        "left": left_model,
+        "right": right_models,
+    }
+
+    mp_ctx = mp.get_context("spawn")
+
+    with PayoffManager() as manager:
+        shared_payoff = manager.Payoff(save_dir)
+        league = League(
+            args=constructor_args,
+            initial_agents=initial_agents,
+            constructor=league_constructor,
+            payoff=shared_payoff,
+            main_agents=1,
+            main_exploiters=1,
+            league_exploiters=2,
+            state_names=state_names,
+        )
+
+        processes = []
+        for idx in range(league.size()):
+            player = league.get_player(idx)
+            if player.side != "right":
+                continue
+            learner = Learner(player)
+            p = mp_ctx.Process(
+                target=_league_worker,
+                args=(idx, learner, total_timesteps, rollout_opponent_num),
+            )
+            processes.append(p)
+
+        print(
+            f"[league_continue_exploiter] Launching {len(processes)} right-side "
+            f"worker(s) across {len(league_matchup_states)} matchup(s)"
+        )
+        for p in processes:
+            p.start()
+        for p in processes:
+            p.join()
+
+
 def train_best_response(
     game_args: dict,
     model_to_exploit,
@@ -773,6 +947,7 @@ def train_best_response(
         br_slope_tolerance=br_slope_tolerance,
         br_min_slope_checks=br_min_slope_checks,
         use_wandb=use_wandb,
+        verbose=1,
     )
     br_agent.is_spar = is_spar # TODO: This is a stupid hack to get the BR agent to know if it is a SPAR model or not. Remove this once we have a better way to do this.
     # 4. Train the BR agent
@@ -816,7 +991,8 @@ def train_best_response(
         print("eval_only was passed as False. Training the BR agent.")
         if from_scratch == True:
             if hasattr(br_agent, "br_convergence_tracker") and br_agent.br_convergence_tracker is not None:
-                br_agent.br_convergence_tracker.local_plot_prefix = f"dedicated_exploiter_{stop_key}"
+                matchup_tag = f"_{_sanitize_for_filename(matchup_label)}" if matchup_label is not None else ""
+                br_agent.br_convergence_tracker.local_plot_prefix = f"dedicated_exploiter_{stop_key}{matchup_tag}"
             br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=train_callback)
         else:
             # if eval prot is True we are training an optimal adversary so we need to update the adversary
@@ -870,19 +1046,19 @@ def train_best_response(
 
                 ftm.learn(total_timesteps=BR_TRAINING_STEPS, callback=train_callback, update_ego=not eval_prot, update_adversary=eval_prot)
             elif isinstance(ftm, LeaguePPO):
-                # Continue from loaded league checkpoint using the train_ma-style
-                # league learner path, updating one side only.
                 rollout_opponent_num = getattr(
                     ftm.constructor_args,
                     "rollout_opponent_num",
-                    getattr(game_args, "rollout_opponent_num", 1),
+                    getattr(game_args, "rollout_opponent_num", 5),
                 )
-                _continue_train_loaded_league_model(
-                    ftm=ftm,
-                    eval_prot=eval_prot,
+                league_states = getattr(ftm, "_worker_full_state_list", None) or getattr(ftm, "state_list", [])
+                _run_league_continue_exploiter(
+                    constructor_args=ftm.constructor_args if ftm.constructor_args is not None else game_args,
+                    agent_dict=ftm.get_parameters(),
+                    league_matchup_states=league_states,
                     total_timesteps=BR_TRAINING_STEPS,
-                    callback=train_callback,
                     rollout_opponent_num=rollout_opponent_num,
+                    model_dir=os.path.dirname(checkpoint_path),
                 )
             else:
                 ftm.learn(total_timesteps=BR_TRAINING_STEPS, callback=train_callback)
@@ -1474,6 +1650,7 @@ if __name__ == "__main__":
         todo_dir = args.league_dir
         while not os.path.exists(stop_file):
             tasks = [f for f in os.listdir(todo_dir) if f.endswith(".task")]
+            league_aux_files = [f for f in os.listdir(todo_dir) if f.endswith(".pt")]
 
             if not tasks:
                 time.sleep(POLL_INTERVAL)
@@ -1481,16 +1658,19 @@ if __name__ == "__main__":
 
             task_filename = random.choice(tasks)
             todo_path = os.path.join(todo_dir, task_filename)
-            processing_path = os.path.join(processing_dir, task_filename)
+            os.makedirs(processing_dir + "/%s_folder" % task_filename, exist_ok=True)
+            processing_path = os.path.join(processing_dir + "/%s_folder" % task_filename, task_filename)
             error_path = os.path.join(error_dir, task_filename)
 
             try:
                 os.rename(todo_path, processing_path)
+                for file in league_aux_files:
+                    os.rename(os.path.join(todo_dir, file), os.path.join(processing_dir + "/%s_folder" % task_filename, file))
 
                 if args.league_matchup_states:
                     league_matchup_states = list(args.league_matchup_states)
                 else:
-                    league_matchup_states = _infer_league_matchup_states_from_dir(todo_dir)
+                    league_matchup_states = _infer_league_matchup_states_from_dir(processing_path)
                     print(
                         f"WORKER [{os.getpid()}]: Inferred {len(league_matchup_states)} "
                         f"matchup states from sibling right-models:"

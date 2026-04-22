@@ -282,8 +282,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 self.logger.record("time/iterations", iteration, exclude="tensorboard")
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
                     rews.append(safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    print("Recorded reward: %.2f" % safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    print("how long it took to get here: ", time_elapsed)
                     self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
                     if self.use_wandb:
                         wandb.log({"eval_rew": safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])})
@@ -291,9 +289,11 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 self.logger.record("time/fps", fps)
                 self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
                 self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
-                self.logger.dump(step=self.num_timesteps)
 
             self.train()
+
+            if log_interval is not None and iteration % log_interval == 0:
+                self.logger.dump(step=self.num_timesteps)
 
         callback.on_training_end()
 

@@ -4,7 +4,7 @@
 NUM_WORKERS=1
 # If True, run each worker detached with nohup and log redirection.
 # If False, run without nohup in the current shell.
-RUN_LIVE="True"
+RUN_LIVE="False"
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -14,12 +14,12 @@ IPPO_PATH="${SCRIPT_DIR}/main/ippo.py"
 
 # Arguments from launch.json (Python Debugger: ippo.py)
 PLAYER=("Guile")
-OPPONENTS=("Sagat" "Ryu")
+OPPONENTS=("Sagat" "Ryu" "EHonda" "Blanka" "Ryu" "Dhalsim" "Zangief" "ChunLi" "Guile" "Ken" "Balrog" "MBison")
 NUM_ENV_TO_LOAD="1"
 ENV_BATCH_SIZE="24"
 C_LR="1e-5"
-D_LR="2e-4"
-V_LR="4e-5"
+D_LR="2e-5"
+V_LR="4e-4"
 NUM_PERTURBS="10"
 USE_MIRROR="False"
 # LOAD_PATH=""  # Optional: set this to pass --load_path
@@ -28,10 +28,10 @@ USE_MIRROR="False"
 # LEFT_MODEL_FILE=""  # Optional: set this to pass --left-model-file
 # RIGHT_MODEL_FILE=""  # Optional: set this to pass --right-model-file
 SAVE_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/"
-USE_LR_ANNEALING="True"
+USE_LR_ANNEALING="False"
 LR_ANNEAL_COEFF=".995"
-CHECKPOINT_INTERVAL="100000"
-TRAINING_BATCH_SIZE="512"
+CHECKPOINT_INTERVAL="20000"
+TRAINING_BATCH_SIZE="256"
 NUM_ENV_STEPS="512"
 EGO_STYLE="learning"
 ADV_STYLE="learning"
@@ -41,9 +41,9 @@ RENDER="False"
 MODEL_FILE=""
 ASYNC_UPDATE="False"
 MODEL_ARCH_TYPE="spar"
-USE_STAGNATION_EARLY_STOP="True"
-USE_STAGNATION_VELOCITY_SIGNAL="True"
-USE_STAGNATION_ENTROPY_SIGNAL="True"
+USE_STAGNATION_EARLY_STOP="False"
+USE_STAGNATION_VELOCITY_SIGNAL="False"
+USE_STAGNATION_ENTROPY_SIGNAL="False"
 STAGNATION_PATIENCE="20000"
 STAGNATION_TOLERANCE="1e-4"
 STAGNATION_REL_TOLERANCE="0.05"

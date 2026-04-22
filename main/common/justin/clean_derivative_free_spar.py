@@ -30,6 +30,8 @@ from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.callbacks import BaseCallback
 from common.justin.derivative_free_spar import ParallelUpdater
 from .calc_F import _get_buffers_and_keys, _calculate_policy_loss, _compute_grads, calc_F_grad_single, _calculate_q_policy_loss
+import json
+import os
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
@@ -289,6 +291,11 @@ class CleanDerivativeFreeSPAR(PPO):
         n_adv = int(self.num_adversaries) if self.num_adversaries is not None else 0
         self.elo_adversary_ratings = np.full(n_adv, self.elo_initial_rating, dtype=np.float64)
         self.elo_games_played = np.zeros(n_adv, dtype=np.int64)
+        self._elo_data_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "elo_data",
+        )
+        os.makedirs(self._elo_data_dir, exist_ok=True)
 
     def _matchup_name_for_adversary(self, adversary_idx: int) -> str:
         if self.matchups is None or self.envs_per_matchup is None:
@@ -376,7 +383,41 @@ class CleanDerivativeFreeSPAR(PPO):
         self.logger.record("elo/ego/global/rating_ego", int(round(float(self.elo_ego_rating))))
         if self.use_wandb:
             wandb.log({"elo/ego/global/rating_ego": float(self.elo_ego_rating)})
+
+        self._save_elo_snapshot(rollout_stats)
+
         return total_games
+
+    def _save_elo_snapshot(self, rollout_stats: List[dict]) -> None:
+        try:
+            timestep = int(getattr(self, "num_timesteps", 0))
+            per_matchup = {}
+            for adv_idx in range(len(self.elo_adversary_ratings)):
+                matchup_name = self._matchup_name_for_adversary(adv_idx)
+                stat = rollout_stats[adv_idx] if adv_idx < len(rollout_stats) else {}
+                n_games = int(stat.get("games", 0))
+                wins = int(stat.get("wins", 0))
+                draws = int(stat.get("draws", 0))
+                losses = n_games - wins - draws
+                per_matchup[matchup_name] = {
+                    "rating_adv": float(self.elo_adversary_ratings[adv_idx]),
+                    "games_total": int(self.elo_games_played[adv_idx]),
+                    "games_rollout": n_games,
+                    "wins": wins,
+                    "draws": draws,
+                    "losses": losses,
+                }
+            record = {
+                "timestep": timestep,
+                "rating_ego": float(self.elo_ego_rating),
+                "matchups": per_matchup,
+                "wall_time": time.time(),
+            }
+            elo_file = os.path.join(self._elo_data_dir, "elo_history.jsonl")
+            with open(elo_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record) + "\n")
+        except Exception:
+            pass
 
     def _get_current_rollout_entropy(self, update_ego: bool, update_adversary: bool) -> Optional[float]:
         if update_ego and not update_adversary:

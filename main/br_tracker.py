@@ -401,61 +401,61 @@ class RatingStagnationTracker:
         self.last_eval_ratings = np.copy(ratings)
 
         logs = {
-            "elo/stagnation/velocity": mean_velocity,
-            "elo/stagnation/velocity_component": velocity_component,
-            "elo/stagnation/metric": metric,
-            "elo/stagnation/entropy": entropy_loss,
-            "elo/stagnation/entropy_component": entropy_component,
-            "elo/stagnation/use_velocity_stagnation": float(bool(self.use_velocity_signal)),
-            "elo/stagnation/use_entropy_stagnation": float(bool(self.use_entropy_signal)),
-            "elo/stagnation/threshold": dynamic_improvement_threshold,
-            "elo/stagnation/wait_count": float(self.wait_count),
-            "elo/stagnation/patience": float(self.patience),
-            "elo/stagnation/num_checks": float(self.num_checks),
-            "elo/stagnation/use_slope_early_stop": float(bool(self.use_slope_early_stop)),
-            "elo/stagnation/slope_window": float(self.slope_window),
-            "elo/stagnation/slope_tolerance": float(self.slope_tolerance),
-            "elo/stagnation/min_slope_checks": float(self.min_slope_checks),
-            "elo/stagnation/slope": float(slope) if slope is not None else float("nan"),
-            "elo/stagnation/slope_normalized": (
+            "stag/velocity": mean_velocity,
+            "stag/velocity_component": velocity_component,
+            "stag/metric": metric,
+            "stag/entropy": entropy_loss,
+            "stag/entropy_component": entropy_component,
+            "stag/use_vel_stag": float(bool(self.use_velocity_signal)),
+            "stag/use_ent_stag": float(bool(self.use_entropy_signal)),
+            "stag/threshold": dynamic_improvement_threshold,
+            "stag/wait_count": float(self.wait_count),
+            "stag/patience": float(self.patience),
+            "stag/num_checks": float(self.num_checks),
+            "stag/use_slope_stop": float(bool(self.use_slope_early_stop)),
+            "stag/slope_window": float(self.slope_window),
+            "stag/slope_tol": float(self.slope_tolerance),
+            "stag/min_slope_checks": float(self.min_slope_checks),
+            "stag/slope": float(slope) if slope is not None else float("nan"),
+            "stag/slope_norm": (
                 float(normalized_slope) if normalized_slope is not None else float("nan")
             ),
-            "elo/stagnation/slope_is_flat": float(bool(self.last_slope_is_flat)),
-            "elo/stagnation/entropy_ema": (
+            "stag/slope_is_flat": float(bool(self.last_slope_is_flat)),
+            "stag/ent_ema": (
                 float(self.entropy_ema) if self.entropy_ema is not None else float("nan")
             ),
-            "elo/stagnation/entropy_start": (
+            "stag/ent_start": (
                 float(self.entropy_start) if self.entropy_start is not None else float("nan")
             ),
-            "elo/stagnation/entropy_tolerance": (
+            "stag/ent_tol": (
                 float(self.last_entropy_tolerance)
                 if self.last_entropy_tolerance is not None
                 else float("nan")
             ),
-            "elo/stagnation/entropy_is_stable": float(bool(self.last_entropy_is_stable)),
-            "elo/stagnation/entropy_warmup_checks": float(self.entropy_warmup_checks),
-            "elo/stagnation/entropy_within_warmup": float(bool(self.last_within_entropy_warmup)),
-            "elo/stagnation/entropy_stable_checks": float(self.entropy_stable_checks),
-            "elo/stagnation/entropy_stability_stop": float(bool(entropy_stability_stop)),
-            "elo/stagnation/entropy_slope": (
+            "stag/ent_is_stable": float(bool(self.last_entropy_is_stable)),
+            "stag/ent_warmup_checks": float(self.entropy_warmup_checks),
+            "stag/ent_within_warmup": float(bool(self.last_within_entropy_warmup)),
+            "stag/ent_stable_checks": float(self.entropy_stable_checks),
+            "stag/ent_stability_stop": float(bool(entropy_stability_stop)),
+            "stag/ent_slope": (
                 float(entropy_signal_slope) if entropy_signal_slope is not None else float("nan")
             ),
-            "elo/stagnation/entropy_slope_normalized": (
+            "stag/ent_slope_norm": (
                 float(entropy_signal_slope_normalized)
                 if entropy_signal_slope_normalized is not None
                 else float("nan")
             ),
-            "elo/stagnation/entropy_slope_is_flat": float(bool(self.last_entropy_signal_slope_is_flat)),
-            "elo/stagnation/entropy_window_size": float(self.entropy_window_size),
-            "elo/stagnation/entropy_stop_ratio": float(self.entropy_stop_ratio),
-            "elo/stagnation/entropy_window_ready": float(bool(entropy_window_ready)),
-            "elo/stagnation/entropy_window_avg": (
+            "stag/ent_slope_is_flat": float(bool(self.last_entropy_signal_slope_is_flat)),
+            "stag/ent_win_size": float(self.entropy_window_size),
+            "stag/ent_stop_ratio": float(self.entropy_stop_ratio),
+            "stag/ent_win_ready": float(bool(entropy_window_ready)),
+            "stag/ent_win_avg": (
                 float(entropy_window_avg) if entropy_window_avg is not None else float("nan")
             ),
-            "elo/stagnation/entropy_window_ratio": (
+            "stag/ent_win_ratio": (
                 float(entropy_window_ratio) if entropy_window_ratio is not None else float("nan")
             ),
-            "elo/stagnation/entropy_window_stop": float(bool(entropy_window_stop)),
+            "stag/ent_win_stop": float(bool(entropy_window_stop)),
         }
         if self.use_slope_early_stop:
             base_should_stop = bool(slope_ready and self.num_checks >= self.min_slope_checks and slope_is_flat)
