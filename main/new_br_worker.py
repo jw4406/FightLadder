@@ -390,6 +390,10 @@ def load_spar_model(
     ftm._worker_cds_arch = cds_arch
     ftm._worker_unique_states = list(uniques)
     ftm._worker_full_state_list = list(STATE)
+    # env was only needed to reconstruct the model — close its 2N emulator
+    # subprocesses before the caller creates the real training env.
+    env.close()
+    ftm.env = None
     return ftm
 
 
