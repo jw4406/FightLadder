@@ -112,11 +112,13 @@ class RatingStagnationTracker:
         self._plot_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self.local_entropy_csv_path = None
         self.local_entropy_png_path = None
+        self._entropy_csv_rows_written = 0
         self.reward_timestep_history = []
         self.reward_raw_history = []
         self.reward_ema_history = []
         self.local_reward_csv_path = None
         self.local_reward_png_path = None
+        self._reward_csv_rows_written = 0
 
     def _update_ema_stability_state(
         self,
@@ -157,15 +159,19 @@ class RatingStagnationTracker:
             self.local_entropy_csv_path = os.path.join(self.local_plot_dir, f"{base_name}.csv")
             self.local_entropy_png_path = os.path.join(self.local_plot_dir, f"{base_name}.png")
 
-        with open(self.local_entropy_csv_path, "w", newline="", encoding="utf-8") as f:
+        start = self._entropy_csv_rows_written
+        need_header = start == 0
+        with open(self.local_entropy_csv_path, "a" if not need_header else "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["timestep", "entropy_raw", "entropy_ema"])
+            if need_header:
+                writer.writerow(["timestep", "entropy_raw", "entropy_ema"])
             for t, raw, ema in zip(
-                self.entropy_timestep_history,
-                self.entropy_raw_history,
-                self.entropy_ema_history,
+                self.entropy_timestep_history[start:],
+                self.entropy_raw_history[start:],
+                self.entropy_ema_history[start:],
             ):
                 writer.writerow([t, raw, ema])
+        self._entropy_csv_rows_written = len(self.entropy_timestep_history)
 
         try:
             import matplotlib.pyplot as plt
@@ -198,15 +204,19 @@ class RatingStagnationTracker:
             self.local_reward_csv_path = os.path.join(self.local_plot_dir, f"{base_name}.csv")
             self.local_reward_png_path = os.path.join(self.local_plot_dir, f"{base_name}.png")
 
-        with open(self.local_reward_csv_path, "w", newline="", encoding="utf-8") as f:
+        start = self._reward_csv_rows_written
+        need_header = start == 0
+        with open(self.local_reward_csv_path, "a" if not need_header else "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["timestep", "reward_raw", "reward_ema"])
+            if need_header:
+                writer.writerow(["timestep", "reward_raw", "reward_ema"])
             for t, raw, ema in zip(
-                self.reward_timestep_history,
-                self.reward_raw_history,
-                self.reward_ema_history,
+                self.reward_timestep_history[start:],
+                self.reward_raw_history[start:],
+                self.reward_ema_history[start:],
             ):
                 writer.writerow([t, raw, ema])
+        self._reward_csv_rows_written = len(self.reward_timestep_history)
 
         try:
             import matplotlib.pyplot as plt

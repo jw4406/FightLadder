@@ -33,7 +33,9 @@ LEAGUE_MATCHUP_STATES=()
 USE_MIRROR="False"
 NUM_FULL_EXPLOITERS="1"
 NUM_CONTINUE_EXPLOITERS="1"
-DEBUG="True"
+MAX_CONCURRENT_JOBS="0"  # 0 = auto-compute from NUM_CORES. -1 = unlimited.
+NUM_CORES="32"  # CPU cores for this worker. 0 = auto-detect. Divide total cores by NUM_WORKERS.
+DEBUG="False"
 BR_TRACKER_PATIENCE="300"
 USE_BR_REWARD_STAGNATION="False"
 USE_BR_ENTROPY_STAGNATION="True"
@@ -58,7 +60,7 @@ STAGNATION_USE_SLOPE_EARLY_STOP="False"
 STAGNATION_SLOPE_WINDOW="20"
 STAGNATION_SLOPE_TOLERANCE="5e-3"
 STAGNATION_MIN_SLOPE_CHECKS="12"
-N_ENVS="75"
+N_ENVS="4"
 # TASK_DIR=""  # Optional: set this to pass --task_dir
 DEDICATED_EXPLOITER="True"
 CONTINUE_EXPLOITERS="False"
@@ -99,6 +101,8 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --use_mirror "${USE_MIRROR}"
         --num_full_exploiters "${NUM_FULL_EXPLOITERS}"
         --num_continue_exploiters "${NUM_CONTINUE_EXPLOITERS}"
+        --max_concurrent_jobs "${MAX_CONCURRENT_JOBS}"
+        --num_cores "${NUM_CORES}"
         --DEBUG "${DEBUG}"
         --n_envs "${N_ENVS}"
         --dedicated_exploiter "${DEDICATED_EXPLOITER}"

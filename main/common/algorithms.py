@@ -5486,14 +5486,11 @@ class Exploiter(PPO):
                 
                 
 
-            actions = actions.cpu().numpy()
-            EXPLOITED_ACTIONS = EXPLOITED_ACTIONS.cpu().numpy()
-            #dstb_actions = dstb_actions.cpu().numpy()
-            # Rescale and perform action
             if self.exploiting == "ego":
-                clipped_actions = np.hstack([EXPLOITED_ACTIONS, actions])
+                clipped_actions = th.cat([EXPLOITED_ACTIONS, actions], dim=-1).cpu().numpy()
             else:
-                clipped_actions = np.hstack([actions, EXPLOITED_ACTIONS])
+                clipped_actions = th.cat([actions, EXPLOITED_ACTIONS], dim=-1).cpu().numpy()
+            actions = actions.cpu().numpy()
             # Clip the actions to avoid out of bound error
             if isinstance(self.action_space, spaces.Box):
                 clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
@@ -5502,8 +5499,6 @@ class Exploiter(PPO):
             #print(rewards)
             # assert np.allclose(rewards + rew_other, np.zeros(rewards.shape))
             self.num_timesteps += env.num_envs
-            if self.use_wandb:
-                wandb.log({"exploiter/epochs": self.num_timesteps})
             # Give access to local variables
             callback.update_locals(locals())
             if callback.on_step() is False:

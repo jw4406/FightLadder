@@ -79,6 +79,26 @@ POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
 BR_TRAINING_STEPS = 100000000000
 
 
+def _reap_finished(active: List[mp.Process]) -> List[mp.Process]:
+    """Join finished processes and return those still running."""
+    still_active = []
+    for p in active:
+        if p.is_alive():
+            still_active.append(p)
+        else:
+            p.join()
+    return still_active
+
+
+def _wait_for_slot(active: List[mp.Process], max_concurrent: int) -> List[mp.Process]:
+    """Block until at least one slot is free, then return the updated active list."""
+    while len(active) >= max_concurrent:
+        active = _reap_finished(active)
+        if len(active) >= max_concurrent:
+            time.sleep(2)
+    return active
+
+
 class ManualStopFileCallback(BaseCallback):
     """
     Graceful manual-stop callback.
@@ -1289,6 +1309,8 @@ if __name__ == "__main__":
     parser.add_argument("--n_envs", type=int, default=2, help="Number of environments to run in parallel.")
     parser.add_argument("--DEBUG", choices=['True', 'False'], default='False', required=True)
     parser.add_argument("--num_full_exploiters", type=int, default=4, help="Number of full exploiters to train.")
+    parser.add_argument("--max_concurrent_jobs", type=int, default=0, help="Max BR subprocesses alive at once. 0 = auto-compute from --num_cores. -1 = unlimited (launch all).")
+    parser.add_argument("--num_cores", type=int, default=0, help="CPU cores available to this worker. 0 = auto-detect via os.cpu_count(). Used to compute max_concurrent_jobs when it is 0.")
     parser.add_argument("--num_continue_exploiters", type=int, default=4, help="Number of continue exploiters to train.")
     parser.add_argument("--dedicated_exploiter", choices=['True', 'False'], default='False', required=True)
     parser.add_argument("--continue_exploiters", choices=['True', 'False'], default='False', required=True)
@@ -1405,11 +1427,21 @@ if __name__ == "__main__":
         print("WARNING!")
         training_type = "adversary" if args.eval_prot else "ego " # if eval_prot is True we are training an optimal adversary so we need to update the adversary
         print(f"WARNING! Only {training_type} training will be performed.")
+    # --- Auto-compute max_concurrent_jobs from num_cores ---
+    if args.num_cores <= 0:
+        args.num_cores = os.cpu_count() or 1
+    if args.max_concurrent_jobs == 0:
+        args.max_concurrent_jobs = max(1, args.num_cores // (args.n_envs + 1))
+    elif args.max_concurrent_jobs < 0:
+        args.max_concurrent_jobs = 0  # 0 = unlimited internally
+
     print("Dedicated exploiter: ", args.dedicated_exploiter)
     print("Number of full exploiters: ", args.num_full_exploiters)
     print("Continue exploiters: ", args.continue_exploiters)
     print("Number of continue exploiters: ", args.num_continue_exploiters)
     print("Number of environments: ", args.n_envs)
+    print("Number of cores (this worker): ", args.num_cores)
+    print("Max concurrent jobs: ", args.max_concurrent_jobs if args.max_concurrent_jobs > 0 else "unlimited")
     print("Launch local br eval: ", args.launch_local_br_eval)
     if args.exploiter_save_freq * args.n_envs > BR_TRAINING_STEPS:
         print("WARNING! Exploiter save frequency is greater than BR training steps. This will result in no exploiter checkpoints being saved AND AN ERROR RIGHT BEFORE LOCAL BR EVAL")
@@ -1605,17 +1637,17 @@ if __name__ == "__main__":
                         run_eval_adv=args.eval_adv,
                         launch_local_br_eval=args.launch_local_br_eval,
                     )
+                    max_conc = args.max_concurrent_jobs
                     print(
                         "Dedicated exploiter scheduling:\n"
                         f"  unique_matchups={len(unique_states)}\n"
                         f"  replicates_per_matchup={args.num_full_exploiters}\n"
-                        f"  total_jobs={len(dedicated_specs)}"
+                        f"  total_jobs={len(dedicated_specs)}\n"
+                        f"  max_concurrent_jobs={max_conc if max_conc > 0 else 'unlimited'}"
                     )
                     for spec in dedicated_specs:
-                        if spec['job_index'] == 1:
-                            print("hello")
-                        # We use spec["job_index"] as br_idx so each dedicated run
-                        # gets a globally unique BR index for this task.
+                        if max_conc > 0 and not args.DEBUG:
+                            processes = _wait_for_slot(processes, max_conc)
                         _launch_job(
                             eval_prot_flag=spec["eval_prot"],
                             br_idx=spec["job_index"],
@@ -1626,7 +1658,7 @@ if __name__ == "__main__":
                             dedicated_job_id=spec["job_index"],
                             launch_local_br_eval=args.launch_local_br_eval,
                         )
-                        print("Complete job: ", spec["job_index"])
+                        print("Launched dedicated job: ", spec["job_index"])
 
                 # Wait for all BR processes to finish before marking task as done.
                 if not args.DEBUG:
@@ -1809,13 +1841,17 @@ if __name__ == "__main__":
                         run_eval_adv=args.eval_adv,
                         launch_local_br_eval=args.launch_local_br_eval,
                     )
+                    max_conc = args.max_concurrent_jobs
                     print(
                         "League dedicated exploiter scheduling:\n"
                         f"  unique_matchups={len(unique_states)}\n"
                         f"  replicates_per_matchup={args.num_full_exploiters}\n"
-                        f"  total_jobs={len(dedicated_specs)}"
+                        f"  total_jobs={len(dedicated_specs)}\n"
+                        f"  max_concurrent_jobs={max_conc if max_conc > 0 else 'unlimited'}"
                     )
                     for spec in dedicated_specs:
+                        if max_conc > 0 and not args.DEBUG:
+                            processes = _wait_for_slot(processes, max_conc)
                         _launch_league_job(
                             eval_prot_flag=spec["eval_prot"],
                             br_idx=spec["job_index"],
@@ -1826,7 +1862,7 @@ if __name__ == "__main__":
                             dedicated_job_id=spec["job_index"],
                             launch_local_br_eval=args.launch_local_br_eval,
                         )
-                        print("Complete league job: ", spec["job_index"])
+                        print("Launched league dedicated job: ", spec["job_index"])
 
                 if not args.DEBUG:
                     for p in processes:
