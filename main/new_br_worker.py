@@ -8,7 +8,8 @@ from typing import Any, Dict, List, Optional
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 from copy import deepcopy
-
+import socket
+socket.setdefaulttimeout(None)
 def _peek_torch_device_argv(argv):
     for i, a in enumerate(argv):
         if a == "--device" and i + 1 < len(argv):
@@ -1023,6 +1024,41 @@ def train_best_response(
             # if eval prot is False we are training an optimal ego against the current adversary so we need to update the ego
             ftm.env = env # this is new (17:16)
             ftm.envs_per_matchup = ftm.envs_per_matchup
+
+            # Re-instantiate Q_RolloutBuffers when the new env has different
+            # n_envs than the checkpoint's loading env (mirrors LeaguePPO logic
+            # at _continue_train_loaded_league_model).
+            actual_n_envs = ftm.env.num_envs
+            if ftm.n_envs != actual_n_envs:
+                from stable_baselines3.common.buffers import DictRolloutBuffer, Q_RolloutBuffer
+                from gymnasium import spaces
+                ftm.n_envs = actual_n_envs
+                buffer_cls = DictRolloutBuffer if isinstance(ftm.observation_space, spaces.Dict) else Q_RolloutBuffer
+                ftm.rollout_buffer = buffer_cls(
+                    ftm.n_steps,
+                    ftm.observation_space,
+                    ftm.action_space,
+                    device=ftm.device,
+                    gamma=ftm.gamma,
+                    gae_lambda=ftm.gae_lambda,
+                    n_envs=actual_n_envs,
+                )
+                if hasattr(ftm, "adversary_buffers") and ftm.adversary_buffers is not None:
+                    adversary_buffers = []
+                    for _ in range(len(ftm.adversary_buffers)):
+                        adversary_buffers.append(
+                            buffer_cls(
+                                ftm.n_steps,
+                                ftm.observation_space,
+                                ftm.action_space,
+                                device=ftm.device,
+                                gamma=ftm.gamma,
+                                gae_lambda=ftm.gae_lambda,
+                                n_envs=ftm.envs_per_matchup,
+                            )
+                        )
+                    ftm.adversary_buffers = adversary_buffers
+
             if hasattr(ftm.policy, "num_env_per_adv"):
                 ftm.policy.num_env_per_adv = ftm.envs_per_matchup
             if hasattr(ftm.policy, "envs_per_matchup"):
