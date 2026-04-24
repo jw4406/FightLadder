@@ -319,10 +319,11 @@ def main():
     parser.add_argument('--rollout-opponent-num', type=int, help='Numbers of opponents to interact for each update', default=5) # 2
     parser.add_argument('--fsp-league', action='store_true', help='Fictitious self-play league')
     parser.add_argument('--psro-league', action='store_true', help='PSRO league')
+    parser.add_argument('--sync-save-interval', type=int, help='Steps between sync checkpoint saves (0 = save every sync)', default=500000)
     # Match ippo.py conventions for roster CLI.
     parser.add_argument('--player', type=str, nargs='+', default=DEFAULT_PLAYERS, help='Protagonist player(s).')
     parser.add_argument('--opponent-list', type=str, nargs='+', default=DEFAULT_OPPONENTS, help='List of opponent characters.')
-    
+
     args = parser.parse_args()
     print("command line args:" + str(args))
 
@@ -445,7 +446,8 @@ def restore():
     parser.add_argument('--rollout-opponent-num', type=int, help='Numbers of opponents to interact for each update', default=5) # 2
     parser.add_argument('--fsp-league', action='store_true', help='Fictitious self-play league')
     parser.add_argument('--psro-league', action='store_true', help='PSRO league')
-    
+    parser.add_argument('--sync-save-interval', type=int, help='Steps between sync checkpoint saves (0 = save every sync)', default=500000)
+
     args = parser.parse_args()
     print("command line args:" + str(args))
 

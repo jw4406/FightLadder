@@ -170,10 +170,17 @@ class Payoff:
             "kwargs": kwargs,
         }
         print(f"[Payoff] Saving model {kwargs['name']} at step {kwargs['checkpoint_step']}", flush=True)
-        if 'MA' in kwargs['name'] and 'left' in kwargs['name']:
-            torch.save(save_kwargs, f"{self.save_dir}/{kwargs['name']}_{kwargs['checkpoint_step']}.task")
+        if cls_name == "Historical":
+            if 'MA' in kwargs['name'] and 'left' in kwargs['name']:
+                torch.save(save_kwargs, f"{self.save_dir}/{kwargs['name']}_{kwargs['checkpoint_step']}.task")
+            else:
+                torch.save(save_kwargs, f"{self.save_dir}/{kwargs['name']}_{kwargs['checkpoint_step']}.pt")
         else:
-            torch.save(save_kwargs, f"{self.save_dir}/{kwargs['name']}_{kwargs['checkpoint_step']}.pt")
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            if 'MA' in kwargs['name'] and 'left' in kwargs['name']:
+                torch.save(save_kwargs, f"{self.save_dir}/{kwargs['name']}_{kwargs['checkpoint_step']}_{ts}.task")
+            else:
+                torch.save(save_kwargs, f"{self.save_dir}/{kwargs['name']}_{kwargs['checkpoint_step']}_{ts}.pt")
         save_payoff = {
             "wins": dict(self._wins),
             "draws": dict(self._draws),
@@ -437,6 +444,7 @@ class Player(object):
             self._initial_weights = agent.get_parameters()
         self._payoff = payoff
         self._checkpoint_step = checkpoint_step
+        self._last_sync_step = 0
         self.matchup_key = matchup_key
         self.matchup_left = matchup_left
         self.matchup_right = matchup_right
@@ -531,6 +539,12 @@ class Player(object):
             self.add_player(self.checkpoint())
     
     def sync(self):
+        sync_interval = getattr(self.args, 'sync_save_interval', 0)
+        if self.agent is not None and sync_interval > 0:
+            current_step = self.agent.get_steps()
+            if current_step - self._last_sync_step < sync_interval:
+                return
+            self._last_sync_step = current_step
         self.add_player(self)
     
     def load(self, path):
