@@ -14,7 +14,7 @@ BR_WORKER_PATH="${SCRIPT_DIR}/main/new_br_worker.py"
 
 # Arguments from launch.json (Python Debugger: new_br_worker.py)
 EVAL_PROT="True"
-EVAL_ADV="True"
+EVAL_ADV="False"
 EVAL_ONLY="False"
 PROJ_NAME="br_training_ema_test_2"
 ANALYSIS_UPLOAD_PROJ_NAME="br_analysis"
