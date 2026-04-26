@@ -16,6 +16,7 @@ Usage:
 import argparse
 import argparse as _ap
 import os
+import pickle as _pickle
 import sys
 import numpy as np
 import torch
@@ -77,9 +78,35 @@ def load_spar_family(model_type, path, device):
     return model, matchups
 
 
+class _LenientUnpickler(_pickle.Unpickler):
+    # League .task files were pickled with references to the training script's
+    # __main__ (e.g. train_ma.py's `constructor` closure, plus `agent`/`payoff`
+    # objects from the running league). We only need `agent_dict`, so missing
+    # names get resolved to inert stubs instead of raising AttributeError.
+    def find_class(self, module, name):
+        try:
+            return super().find_class(module, name)
+        except (AttributeError, ModuleNotFoundError):
+            stub = type("_Stub", (), {
+                "__init__": lambda self, *a, **kw: None,
+                "__reduce__": lambda self: (object, ()),
+            })
+            stub.__name__ = name
+            stub.__module__ = module
+            return stub
+
+
+class _LenientPickleModule:
+    Unpickler = _LenientUnpickler
+
+    @staticmethod
+    def load(file, **kwargs):
+        return _LenientUnpickler(file, **kwargs).load()
+
+
 def load_league_agent_dict(path):
     """League checkpoints are torch-save style: {cls_name, kwargs:{agent_dict:{...}}}."""
-    obj = torch.load(path, map_location="cpu")
+    obj = torch.load(path, map_location="cpu", pickle_module=_LenientPickleModule)
     if not isinstance(obj, dict) or "kwargs" not in obj or "agent_dict" not in obj["kwargs"]:
         raise ValueError(
             f"League checkpoint {path} is not in the expected "
