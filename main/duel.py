@@ -14,10 +14,10 @@ Usage:
         --adv_model_file /abs/path/to/adv.task
 """
 import argparse
+import argparse as _ap
 import os
 import sys
 import numpy as np
-import retro
 import torch
 import torch as th
 
@@ -25,11 +25,10 @@ from stable_baselines3.common.save_util import load_from_zip_file
 from stable_baselines3.common.utils import obs_as_tensor
 
 from common.const import sf_game
-from common.retro_wrappers import SFWrapper, Monitor2P
-from common.utils import SubprocVecEnv2P, VecTransposeImage2P
 from common.algorithms import LeaguePPO
 from common.justin.clean_derivative_free_spar import CleanDerivativeFreeSPAR
 from common.justin.clean_derivative_free_spar_ippo import CleanDerivativeFreeSPARIPPO
+from ippo import env_generator, make_env
 from utils import agent_win, state2matchup
 
 
@@ -44,29 +43,16 @@ CHARACTERS = [
 SPAR_FAMILY = {"spar", "ippo", "2timescale"}
 
 
-def make_env_factory(state, seed=0):
-    """Returns a no-arg callable that builds a single retro+SF env at `state`."""
-    def _init():
-        env = retro.make(
-            game=sf_game,
-            state=state,
-            use_restricted_actions=retro.Actions.FILTERED,
-            obs_type=retro.Observations.IMAGE,
-            players=2,
-        )
-        env = SFWrapper(env, side="both", rendering=False, reset_type="round",
-                        init_level=1, state_dir=None, verbose=False,
-                        enable_combo=False, null_combo=False, transform_action=False)
-        env = Monitor2P(env)
-        env.seed(seed)
-        return env
-    return _init
-
-
-def build_construction_vec_env(state_list):
-    """Build a vec env shaped to the saved model's topology (one env per state)."""
-    env_fns = [make_env_factory(s, seed=0) for s in state_list]
-    return VecTransposeImage2P(SubprocVecEnv2P(env_fns))
+def env_args():
+    """Namespace shaped for ippo.env_generator (no rendering, no combos, side='both')."""
+    return _ap.Namespace(
+        side="both",
+        reset="round",
+        render=False,
+        enable_combo=False,
+        null_combo=False,
+        transform_action=False,
+    )
 
 
 def spar_class_for(model_type):
@@ -82,7 +68,7 @@ def load_spar_family(model_type, path, device):
     cls = spar_class_for(model_type)
     data, _, _ = load_from_zip_file(path, device="cpu")
     state_list = data["state_list"]
-    env = build_construction_vec_env(state_list)
+    env = env_generator(env_args(), STATE=state_list)
     model = cls.load(path, env=env, num_perturbed=1, device=device)
     matchups = list(getattr(model, "matchups", []) or [])
     if not matchups:
@@ -104,7 +90,7 @@ def load_league_agent_dict(path):
 
 def build_league_model(duel_state, device):
     """Construct a fresh LeaguePPO with a single-env vec for inference."""
-    env = VecTransposeImage2P(SubprocVecEnv2P([make_env_factory(duel_state, seed=0)]))
+    env = env_generator(env_args(), STATE=[duel_state])
     return LeaguePPO(
         side="left",
         policy="CnnPolicy",
@@ -290,7 +276,11 @@ def main():
         adv_act = make_league_action_fn(adv_model, "right", deterministic)
 
     # ---- Build the actual duel env (single, non-vec) ----
-    duel_env = make_env_factory(duel_state, seed=args.seed)().env
+    duel_env = make_env(
+        sf_game, state=duel_state, side="both", reset_type="round",
+        rendering=False, enable_combo=False, null_combo=False,
+        transform_action=False, seed=args.seed,
+    )().env
 
     # ---- Run rounds ----
     print(
