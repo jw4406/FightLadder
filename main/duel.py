@@ -50,7 +50,7 @@ def env_args():
         side="both",
         reset="round",
         render=False,
-        enable_combo=False,
+        enable_combo=True,
         null_combo=False,
         transform_action=False,
     )
@@ -206,7 +206,7 @@ def parse_args():
                    help="Ego side (must be 'left'; right is rejected).")
     p.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--deterministic", default="True", choices=["True", "False"])
+    p.add_argument("--deterministic", default="False", choices=["True", "False"])
     return p.parse_args()
 
 
@@ -303,11 +303,7 @@ def main():
         adv_act = make_league_action_fn(adv_model, "right", deterministic)
 
     # ---- Build the actual duel env (single, non-vec) ----
-    duel_env = make_env(
-        sf_game, state=duel_state, side="both", reset_type="round",
-        rendering=False, enable_combo=False, null_combo=False,
-        transform_action=False, seed=args.seed,
-    )().env
+    duel_env = env_generator(env_args(), STATE=[duel_state])
 
     # ---- Run rounds ----
     print(
@@ -323,6 +319,7 @@ def main():
     wins = 0
     for r in range(1, args.num_rounds + 1):
         obs = duel_env.reset()
+        #obs = np.expand_dims(obs, 0)
         done = False
         info = {}
         while not done:
@@ -333,6 +330,7 @@ def main():
             obs, _reward, _reward_other, done, info = duel_env.step(
                 np.hstack([left_action, right_action])
             )
+        info = info[0]
         ego_won = bool(agent_win(info))
         wins += int(ego_won)
         print(
