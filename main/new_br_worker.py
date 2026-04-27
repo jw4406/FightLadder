@@ -78,7 +78,7 @@ if not os.listdir(TASK_DIR):
     print("Warning: The TASK_DIR is empty. Please run ippo.py --player PLAYER to generate a task file.")
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
-BR_TRAINING_STEPS = 15000
+BR_TRAINING_STEPS = 150000
 
 
 def _reap_finished(active: List[mp.Process]) -> List[mp.Process]:
@@ -486,11 +486,15 @@ class _LeaguePolicyAdapter:
         return getattr(self._left_policy, name)
 
 
+# Sibling-snapshot regexes accept both `.pt` (live training output) and
+# `.task` (renamed copies queued for the BR worker). The two extensions are
+# byte-identical torch.save dumps; only the suffix differs based on whether
+# the snapshot is at-rest or in the queue.
 _LEAGUE_RIGHT_RE = re.compile(
-    r"^MA\d+_right_m_\d+_(?P<left_char>[a-z0-9]+)_vs_(?P<right_char>[a-z0-9]+)_\d+_\d{8}_\d{6}\.pt$"
+    r"^MA\d+_right_m_\d+_(?P<left_char>[a-z0-9]+)_vs_(?P<right_char>[a-z0-9]+)_\d+_\d{8}_\d{6}\.(?:pt|task)$"
 )
 _BACKUP_LEAGUE_RIGHT_RE = re.compile(
-    r"^LE\d+_right_m_\d+_(?P<left_char>[a-z0-9]+)_vs_(?P<right_char>[a-z0-9]+)_\d+_\d{8}_\d{6}\.pt$"
+    r"^LE\d+_right_m_\d+_(?P<left_char>[a-z0-9]+)_vs_(?P<right_char>[a-z0-9]+)_\d+_\d{8}_\d{6}\.(?:pt|task)$"
 )
 
 def _infer_league_matchup_states_from_dir(task_file_path: str) -> List[str]:
@@ -754,7 +758,7 @@ def _league_worker(idx, learner, total_steps, rollout_opponent_num):
 
 
 _LEAGUE_RIGHT_ANY_RE = re.compile(
-    r"^(?P<role>[A-Z]+\d+)_right_m_(?P<midx>\d+)_(?P<left_char>[a-z0-9]+)_vs_(?P<right_char>[a-z0-9]+)_(?P<step>\d+)_(?P<date>\d{8})_(?P<time>\d{6})\.pt$"
+    r"^(?P<role>[A-Z]+\d+)_right_m_(?P<midx>\d+)_(?P<left_char>[a-z0-9]+)_vs_(?P<right_char>[a-z0-9]+)_(?P<step>\d+)_(?P<date>\d{8})_(?P<time>\d{6})\.(?:pt|task)$"
 )
 
 # Left-side league checkpoints. The league only ever has one left model
@@ -762,7 +766,7 @@ _LEAGUE_RIGHT_ANY_RE = re.compile(
 # League.__init__), so this regex is intentionally narrower than the right-side
 # one: a fixed "left_vs_all" matchup, no per-character pair.
 _LEAGUE_LEFT_ANY_RE = re.compile(
-    r"^(?P<role>[A-Z]+\d+)_left_m_(?P<midx>\d+)_left_vs_all_(?P<step>\d+)_(?P<date>\d{8})_(?P<time>\d{6})\.pt$"
+    r"^(?P<role>[A-Z]+\d+)_left_m_(?P<midx>\d+)_left_vs_all_(?P<step>\d+)_(?P<date>\d{8})_(?P<time>\d{6})\.(?:pt|task)$"
 )
 
 
@@ -1300,7 +1304,7 @@ def train_best_response(
                 tracker.min_slope_checks = max(1, int(stagnation_min_slope_checks))
             ftm.use_wandb = use_wandb
             ftm.br_manual_stop_key = stop_key
-            if is_spar:
+            if is_spar_like:
 
                 ftm.learn(total_timesteps=BR_TRAINING_STEPS, callback=train_callback, update_ego=not eval_prot, update_adversary=eval_prot)
             elif isinstance(ftm, LeaguePPO):
@@ -1469,7 +1473,7 @@ def run_br_for_task_in_subprocess(
                     f"replicated_env_count={n_envs}"
                 )
         loaded_model.use_wandb = use_wandb
-    elif is_spar:
+    elif is_spar_like:
         # NOTE: Do not shrink CDS model topology based on state_subset.
         # We always load full topology and handle dedicated constraints via
         # env slicing + fixed-head policy adapter below.

@@ -39,6 +39,9 @@ ENVS_PER_MATCHUP="2"
 SIDE="both"
 RENDER="False"
 MODEL_FILE=""
+
+MASTER_USE_STAG="False"
+
 ASYNC_UPDATE="False"
 MODEL_ARCH_TYPE="spar"
 USE_STAGNATION_EARLY_STOP="False"
@@ -79,6 +82,7 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --num_env_steps "${NUM_ENV_STEPS}"
         --ego_style "${EGO_STYLE}"
         --adv_style "${ADV_STYLE}"
+        --master_use_stag "${MASTER_USE_STAG}"
         --envs_per_matchup "${ENVS_PER_MATCHUP}"
         --side "${SIDE}"
         --render "${RENDER}"

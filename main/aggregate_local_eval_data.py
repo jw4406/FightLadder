@@ -99,8 +99,62 @@ def _parse_records(br_rewards_dir):
         # Style may be None (legacy unprefixed files); normalize to "" so
         # downstream code can treat it uniformly.
         rec["style"] = rec.get("style") or ""
+        # Selfplay value populated later by _attach_selfplay_values once
+        # the matching sibling folder is known.
+        rec["selfplay_value"] = None
         records.append(rec)
     return records
+
+
+def _compute_selfplay_means(records):
+    """
+    Average selfplay_value across the two direction-samples of the same
+    (timestep, matchup_key). Returns dict keyed by (timestep, matchup_key),
+    value = mean of available selfplay values (1 or 2 samples).
+
+    The two files
+       <step>_main_left_<L>_exploiter_right_<R>_.txt
+       <step>_main_right_<R>_exploiter_left_<L>_.txt
+    are two samples of the same self-play matchup viewed from each side;
+    averaging gives a single per-matchup value that's stable across the
+    two BR runs that produced them.
+    """
+    grouped = defaultdict(list)
+    for rec in records:
+        sp = rec.get("selfplay_value")
+        if sp is None:
+            continue
+        grouped[(rec["timestep"], rec["matchup_key"])].append(sp)
+    return {k: (sum(vs) / len(vs)) for k, vs in grouped.items()}
+
+
+def _attach_selfplay_values(records, selfplay_dir):
+    """
+    For each record, look up the matching same-named file under
+    *selfplay_dir* and attach its float value to rec["selfplay_value"].
+
+    Records without a matching selfplay file (or with an unreadable one)
+    keep selfplay_value=None so the plotters can skip the overlay
+    cleanly. Returns the count of records that successfully picked up a
+    selfplay value.
+
+    The pairing key is the filename: local_br_eval.py writes both BR and
+    selfplay outputs under the *same* basename in their respective dirs,
+    so we don't need to re-parse the filename to align them.
+    """
+    if not selfplay_dir or not os.path.isdir(selfplay_dir):
+        return 0
+    paired = 0
+    for rec in records:
+        sp_path = os.path.join(selfplay_dir, rec["filename"])
+        if not os.path.isfile(sp_path):
+            continue
+        sp_value = _safe_float_from_file(sp_path)
+        if sp_value is None:
+            continue
+        rec["selfplay_value"] = sp_value
+        paired += 1
+    return paired
 
 
 def _dominant_style(records):
@@ -185,25 +239,36 @@ def _plot_master(records, pairs_by_timestep_matchup, out_dir):
     color_by_matchup = {k: cmap(i / denom) for i, k in enumerate(matchup_keys)}
     marker_by_direction = {"main_left": "o", "main_right": "^"}
 
-    # Scatter all points
+    # Scatter BR points (one per direction-record, filled markers).
     for rec in records:
         ax.scatter(
-            rec["timestep"],
-            rec["value"],
+            rec["timestep"], rec["value"],
             color=color_by_matchup[rec["matchup_key"]],
             marker=marker_by_direction[rec["direction"]],
-            s=55,
-            alpha=0.9,
+            s=55, alpha=0.9,
         )
 
-    # Connect paired points at same timestep/matchup (if both exist)
+    # Connect paired BR points at same timestep/matchup (existing solid line).
     for (_, _), group in pairs_by_timestep_matchup.items():
         if len(group) < 2:
             continue
         group_sorted = sorted(group, key=lambda x: x["direction"])
+        color = color_by_matchup[group_sorted[0]["matchup_key"]]
         xs = [g["timestep"] for g in group_sorted]
         ys = [g["value"] for g in group_sorted]
-        ax.plot(xs, ys, color=color_by_matchup[group_sorted[0]["matchup_key"]], alpha=0.35, linewidth=1.0)
+        ax.plot(xs, ys, color=color, alpha=0.35, linewidth=1.0)
+
+    # Selfplay overlay: ONE averaged point per (timestep, matchup) — the two
+    # main_left/main_right files for a matchup are two samples of the same
+    # self-play game viewed from each side, so we average them. Square
+    # hollow marker keeps it visually distinct from BR (circle/triangle).
+    selfplay_means = _compute_selfplay_means(records)
+    for (timestep, matchup_key), mean_value in selfplay_means.items():
+        ax.scatter(
+            timestep, mean_value,
+            facecolors="none", edgecolors=color_by_matchup[matchup_key],
+            marker="s", s=55, alpha=0.9, linewidths=1.2,
+        )
 
     ax.set_title("Local BR Eval: All Matchups (paired directions)")
     ax.set_xlabel("Timestep")
@@ -243,6 +308,24 @@ def _plot_master(records, pairs_by_timestep_matchup, out_dir):
         )
 
     legend_handles = left_handles + right_handles
+
+    # Append a small "metric" legend group at the end so the reader can
+    # tell BR from the averaged selfplay marker. Only added when any
+    # record has a selfplay value (otherwise it's noise on a BR-only plot).
+    if any(rec.get("selfplay_value") is not None for rec in records):
+        legend_handles.append(
+            Line2D(
+                [0], [0], marker="o", color="black", linestyle="None",
+                markersize=7, label="BR (filled circle/triangle)",
+            )
+        )
+        legend_handles.append(
+            Line2D(
+                [0], [0], marker="s", color="black", linestyle="None",
+                markersize=7, markerfacecolor="none", markeredgewidth=1.2,
+                label="selfplay (avg of directions, open square)",
+            )
+        )
     legend_labels = [h.get_label() for h in legend_handles]
     ax.legend(
         legend_handles,
@@ -295,14 +378,37 @@ def _plot_per_matchup(records, out_dir):
                 linewidth=1.2,
                 markersize=5,
                 alpha=0.9,
-                label=direction,
+                label=f"BR {direction}",
+            )
+
+        # Selfplay overlay: ONE averaged line per matchup. The two
+        # direction-records at the same timestep are two samples of the
+        # same selfplay matchup, so we average them. Drawn dashed in a
+        # neutral color so it doesn't compete with the per-direction BR
+        # colors. Skipped silently when no selfplay data exists.
+        sp_means = _compute_selfplay_means(m_records)
+        if sp_means:
+            sp_sorted = sorted(sp_means.items(), key=lambda kv: kv[0][0])
+            sp_xs = [k[0] for k, _ in sp_sorted]
+            sp_ys = [v for _, v in sp_sorted]
+            ax.plot(
+                sp_xs,
+                sp_ys,
+                marker="s",
+                color="#555555",
+                linewidth=1.2,
+                markersize=5,
+                alpha=0.85,
+                linestyle="--",
+                markerfacecolor="none",
+                label="selfplay (avg of directions)",
             )
 
         ax.set_title(f"Local BR Eval: {matchup_key}")
         ax.set_xlabel("Timestep")
         ax.set_ylabel("Reward")
         ax.grid(True, alpha=0.25)
-        ax.legend(loc="best")
+        ax.legend(loc="best", fontsize=8)
 
         out_name = f"{name_prefix}matchup_{matchup_key}.png"
         out_path = os.path.join(out_dir, out_name)
@@ -313,7 +419,7 @@ def _plot_per_matchup(records, out_dir):
     return paths
 
 
-def _process_run(input_dir, output_dir, label):
+def _process_run(input_dir, output_dir, label, selfplay_dir=None):
     """
     Run the full parse + plot pipeline for a single training process.
 
@@ -321,6 +427,9 @@ def _process_run(input_dir, output_dir, label):
     br_rewards/ itself in the legacy unsegregated case). *output_dir* is
     the matching plots destination. *label* is the run identifier used in
     log lines (subfolder name, or "<legacy>" for the top-level bucket).
+    *selfplay_dir* (optional) is the matching selfplay rewards folder; if
+    provided, each record gets a `selfplay_value` populated for overlay
+    plotting.
 
     Returns a dict with summary stats; the caller is responsible for
     aggregate logging across multiple runs.
@@ -331,12 +440,16 @@ def _process_run(input_dir, output_dir, label):
         print(f"[{label}] No parseable reward files in: {input_dir}")
         return {"label": label, "count": 0}
 
+    selfplay_paired = _attach_selfplay_values(records, selfplay_dir)
+
     pairs = _build_pairs(records)
     states, left_set, right_set, matchups, timesteps = _infer_sets(records)
 
     print(f"=== Run: {label} ===")
     print(f"  Rewards folder: {input_dir}")
     print(f"  Output folder:  {output_dir}")
+    if selfplay_dir:
+        print(f"  Selfplay folder: {selfplay_dir} (paired={selfplay_paired}/{len(records)})")
     print(f"  Parsed file count: {len(records)}")
     print(f"  Timestep count: {len(timesteps)}")
     print(f"  Matchup count: {len(matchups)}")
@@ -371,6 +484,7 @@ def _process_run(input_dir, output_dir, label):
         "matchups": len(matchups),
         "complete_pairs": complete_pairs,
         "incomplete_pairs": incomplete_pairs,
+        "selfplay_paired": selfplay_paired,
         "master_path": master_path,
         "matchup_plot_paths": matchup_plot_paths,
     }
@@ -399,7 +513,28 @@ def main():
         help="Optional filter: process only this single subfolder name "
              "(useful for incremental re-plot). Empty = process all.",
     )
+    parser.add_argument(
+        "--selfplay_rewards_dir",
+        type=str,
+        default="",
+        help="Folder containing local selfplay reward txt files. Subfolder "
+             "layout mirrors --br_rewards_dir. Defaults to the sibling of "
+             "--br_rewards_dir with 'br_rewards' replaced by "
+             "'selfplay_rewards'.",
+    )
     args = parser.parse_args()
+
+    # Default selfplay dir = sibling of br_rewards_dir. local_br_eval.py
+    # writes to "selfplay_rewards" in the same parent as "br_rewards", so
+    # this string substitution is the natural pairing — and only fires
+    # when the user hasn't overridden via CLI.
+    if not args.selfplay_rewards_dir:
+        if "br_rewards" in args.br_rewards_dir:
+            args.selfplay_rewards_dir = args.br_rewards_dir.replace(
+                "br_rewards", "selfplay_rewards"
+            )
+        else:
+            args.selfplay_rewards_dir = ""  # unable to derive; skip overlay
 
     os.makedirs(args.output_dir, exist_ok=True)
     runs = _discover_training_processes(args.br_rewards_dir)
@@ -417,24 +552,34 @@ def main():
             return
 
     print(f"Discovered {len(runs)} training-process bucket(s) under {args.br_rewards_dir}")
+    if args.selfplay_rewards_dir:
+        print(f"Selfplay overlay source: {args.selfplay_rewards_dir}")
     summaries = []
     for name, path in runs:
         # Empty subfolder name == legacy bucket: write plots straight into
-        # the top-level output_dir to mirror old behavior.
+        # the top-level output_dir to mirror old behavior. Selfplay folder
+        # mirrors the same layout (subfolder under selfplay_rewards/, or
+        # selfplay_rewards/ itself for the legacy bucket).
         if name:
             sub_out = os.path.join(args.output_dir, name)
             label = name
+            sp_dir = (
+                os.path.join(args.selfplay_rewards_dir, name)
+                if args.selfplay_rewards_dir else None
+            )
         else:
             sub_out = args.output_dir
             label = "<legacy>"
-        summaries.append(_process_run(path, sub_out, label))
+            sp_dir = args.selfplay_rewards_dir or None
+        summaries.append(_process_run(path, sub_out, label, selfplay_dir=sp_dir))
 
     print("=== Aggregate summary ===")
     for s in summaries:
-        print(
-            f"  {s['label']}: parsed={s['count']}"
-            + (f", matchups={s.get('matchups', 0)}" if s["count"] else "")
-        )
+        line = f"  {s['label']}: parsed={s['count']}"
+        if s["count"]:
+            line += f", matchups={s.get('matchups', 0)}"
+            line += f", selfplay_paired={s.get('selfplay_paired', 0)}"
+        print(line)
 
 
 if __name__ == "__main__":

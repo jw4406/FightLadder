@@ -25,7 +25,7 @@ class CleanIPPOActorActorCriticPolicy(CleanActorActorCriticPolicy):
         # Keep optimizer setup close to original behavior while adding ego value params.
         self.ego_value_optimizer = self.optimizer_class(
             itertools.chain(self.mlp_extractor.ego_value_net.parameters(), self.ego_vf_features_extractor.parameters(), self.ego_value_net.parameters()),
-            self.value_optimizer.param_groups[0]["lr"],
+            self.ctrl_optimizer.param_groups[0]["lr"],
             **self.optimizer_kwargs,
         )
 

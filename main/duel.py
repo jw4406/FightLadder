@@ -297,6 +297,7 @@ def main():
 
     if args.adv_model_type in SPAR_FAMILY:
         adv_head_idx = resolve_head_idx(adv_matchups, matchup_key)
+        adv_head_idx = adv_head_idx // adv_model.envs_per_matchup
         adv_act = make_spar_adv_action_fn(adv_model, adv_head_idx, deterministic)
     else:
         adv_head_idx = None
