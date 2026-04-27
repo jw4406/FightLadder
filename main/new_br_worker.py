@@ -78,7 +78,7 @@ if not os.listdir(TASK_DIR):
     print("Warning: The TASK_DIR is empty. Please run ippo.py --player PLAYER to generate a task file.")
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
-BR_TRAINING_STEPS = 100000000000
+BR_TRAINING_STEPS = 15000
 
 
 def _reap_finished(active: List[mp.Process]) -> List[mp.Process]:
@@ -193,6 +193,30 @@ def _dedupe_preserve_order(values: List[str]) -> List[str]:
 def _sanitize_for_filename(value: str) -> str:
     """Backward-compatible wrapper around br_preflight helper."""
     return sanitize_for_filename(value)
+
+
+# SPAR .task filenames follow `<run_prefix>_<step>_steps.task` (see the
+# timestep parsing at line ~341 in load_spar_model). The run prefix is
+# stable across all checkpoints from the same training run, so it serves as
+# the natural per-run identifier for output segregation.
+_SPAR_RUN_PREFIX_RE = re.compile(r"^(?P<run>.+)_\d+_steps\.task$")
+
+
+def _derive_spar_run_subdir(task_filename: str) -> str:
+    """
+    Extract the per-run identifier from a SPAR .task filename.
+
+    Returns the run prefix (everything before `_<step>_steps.task`) so that
+    different ippo training runs land in different br_rewards / selfplay_rewards
+    subfolders. Falls back to the filename stem if the suffix doesn't match
+    (defensive — caller should still get *some* segregation rather than
+    silently sharing an unsegregated bucket).
+    """
+    m = _SPAR_RUN_PREFIX_RE.match(task_filename)
+    if m is not None:
+        return _sanitize_for_filename(m.group("run"))
+    stem, _ = os.path.splitext(task_filename)
+    return _sanitize_for_filename(stem) or "unknown_run"
 
 
 def _extract_unique_states_from_task(task_file_path: str, device: str = "cuda") -> List[str]:
@@ -1074,11 +1098,16 @@ def train_best_response(
     manual_stop_key: Optional[str] = None,
     launch_local_br_eval: bool = False,
     use_wandb: bool = True,
+    output_subdir: str = "",
 ) -> None:
     """
     The core logic for a single best-response training run.
 
     Args:
+        output_subdir: per-training-process subfolder name forwarded to
+            local_br_eval.py via --output_subdir. See _derive_spar_run_subdir
+            and the league-branch computation in __main__ for how this is
+            populated by the launcher.
         TODO: Complete this.
     """
     checkpoint_path = task_file_path
@@ -1308,7 +1337,7 @@ def train_best_response(
         #br_model_path = os.path.join(BR_MODEL_DIR, f"{br_model_name}_{br_interval_num}000_steps.zip")
         br_model_path = exploiter_callback.model_path
         if launch_local_br_eval:
-            subprocess.Popen(["python", local_plot_and_eval_file, 
+            subprocess.Popen(["python", local_plot_and_eval_file,
             "--eval_prot", str(eval_prot),
             "--main_checkpoint_model_path", checkpoint_path,
             "--done_model_checkpoint_path", done_model_checkpoint_path,
@@ -1320,6 +1349,23 @@ def train_best_response(
             "--br_index", str(br_index),
             "--game_args", json.dumps(vars(game_args)),
             "--device", device,
+            # Tell local_br_eval whether to use load_league_model +
+            # policy/policy_other (league) or CleanDerivativeFreeSPAR.load
+            # (CDS). Derived from the loaded model class so it stays in
+            # sync with whatever path was taken in run_br_for_task_in_subprocess.
+            "--is_league", str(isinstance(ftm, LeaguePPO)),
+            # Per-training-process subfolder. Empty string == legacy
+            # unsegregated layout. Computed by the launcher from the source
+            # dir (league) or the .task filename prefix (SPAR).
+            "--output_subdir", output_subdir,
+            # Training style label embedded in the .txt filenames so the
+            # downstream aggregator can include it in plot filenames.
+            # "league" for LeaguePPO; otherwise the CDS arch ("ippo" or
+            # "spar") inferred at load time.
+            "--training_style", (
+                "league" if isinstance(ftm, LeaguePPO)
+                else getattr(ftm, "_worker_cds_arch", "spar")
+            ),
             ])
         #agg_file = os.path.join(current_dir, "aggregate_to_wandb.py")
         #subprocess.Popen(["python", agg_file, "--read_from_proj_name", proj_name, "--upload_to_proj_name", analysis_upload_proj_name])
@@ -1374,10 +1420,14 @@ def run_br_for_task_in_subprocess(
     use_wandb: bool = True,
     is_league: bool = False,
     league_matchup_states: Optional[List[str]] = None,
+    output_subdir: str = "",
 ) -> None:
     """
     Worker function for running a single BR training instance in a separate process.
     Each subprocess loads its own copy of the model to avoid pickling issues.
+
+    *output_subdir* is forwarded to train_best_response and from there to
+    local_br_eval.py so its outputs land in a per-training-process folder.
     """
     _ensure_cpu_only_env(device)
     if not use_wandb:
@@ -1523,6 +1573,7 @@ def run_br_for_task_in_subprocess(
         manual_stop_key=manual_stop_key,
         launch_local_br_eval=launch_local_br_eval,
         use_wandb=use_wandb,
+        output_subdir=output_subdir,
     )
 
 
@@ -1722,6 +1773,14 @@ if __name__ == "__main__":
                 # Atomically move the task file to claim it
                 os.rename(todo_path, processing_path)
 
+                # Per-training-process subfolder for local_br_eval outputs.
+                # SPAR runs share TASK_DIR/todo by default, so we derive the
+                # run identifier from the .task filename prefix (stripped of
+                # the trailing `_<step>_steps` suffix). All checkpoints from
+                # the same ippo training run share that prefix → same folder;
+                # different runs → different folders.
+                output_subdir = _derive_spar_run_subdir(task_filename)
+
                 # Now that we've claimed it, process it
                 # if args.num_brs == 1:
                 #     loaded_model = load_spar_model(processing_path)
@@ -1831,6 +1890,11 @@ if __name__ == "__main__":
                         launch_local_br_eval,
                         args.use_wandb,
                     )
+                    # SPAR tuple stops short of run_br_for_task_in_subprocess's
+                    # is_league/league_matchup_states defaults, so we pass the
+                    # newer output_subdir as a kwarg rather than filling in
+                    # unrelated positional defaults.
+                    training_kwargs = {"output_subdir": output_subdir}
                     if args.DEBUG:
                         print(
                             "DEBUG: Launching BR job "
@@ -1838,11 +1902,16 @@ if __name__ == "__main__":
                             f"from_scratch={from_scratch}, matchup={matchup_label}, "
                             f"replicate={replicate_idx}, dedicated_job_id={dedicated_job_id}, "
                             f"launch_local_br_eval={launch_local_br_eval}, "
-                            f"stop_key={stop_key}, stop_file={stop_file_path}"
+                            f"stop_key={stop_key}, stop_file={stop_file_path}, "
+                            f"output_subdir={output_subdir}"
                         )
-                        target(*training_args)
+                        target(*training_args, **training_kwargs)
                     else:
-                        p = mp_ctx.Process(target=target, args=training_args)
+                        p = mp_ctx.Process(
+                            target=target,
+                            args=training_args,
+                            kwargs=training_kwargs,
+                        )
                         p.start()
                         processes.append(p)
 
@@ -1956,6 +2025,40 @@ if __name__ == "__main__":
                 _peek = _load_league_checkpoint(processing_path, device="cpu")
                 loaded_task_side = _peek["kwargs"].get("side")
                 loaded_matchup_key = _peek["kwargs"].get("matchup_key")
+
+                # Per-training-process subfolder for local_br_eval outputs.
+                # The league filename ("MA0_left_m_00_left_vs_all_<step>_<date>_<time>.task")
+                # has no per-RUN component — every league spawn produces the
+                # same player-name prefix, and the timestamp varies per
+                # checkpoint, not per run. So filename-based segregation
+                # would either collide (prefix) or fragment per checkpoint
+                # (timestamp).
+                #
+                # The authoritative per-run identifier is the training
+                # process's --save-dir, saved on every Player as `args` (see
+                # common/league._create_checkpoint). Two parallel league
+                # trainings necessarily use different save_dirs, so this
+                # differentiates them even when they share a --league_dir
+                # for BR queueing.
+                _saved_args = _peek["kwargs"].get("args")
+                _saved_save_dir = None
+                if _saved_args is not None:
+                    if isinstance(_saved_args, dict):
+                        _saved_save_dir = _saved_args.get("save_dir")
+                    else:
+                        _saved_save_dir = getattr(_saved_args, "save_dir", None)
+                if _saved_save_dir:
+                    output_subdir = _sanitize_for_filename(
+                        os.path.basename(str(_saved_save_dir).rstrip("/"))
+                    )
+                else:
+                    # Fallback: league_dir basename (works when each run uses
+                    # its own --league_dir).
+                    output_subdir = _sanitize_for_filename(
+                        os.path.basename(args.league_dir.rstrip("/"))
+                    )
+                if not output_subdir:
+                    output_subdir = "unknown_run"
                 del _peek
                 if loaded_task_side not in ("left", "right"):
                     raise ValueError(
@@ -1969,6 +2072,8 @@ if __name__ == "__main__":
                 print(
                     f"WORKER [{os.getpid()}]: League task side={loaded_task_side}, "
                     f"matchup_key={loaded_matchup_key}, "
+                    f"output_subdir={output_subdir!r} "
+                    f"(saved save_dir={_saved_save_dir!r}), "
                     f"BR will train {'right (adv)' if eval_prot_for_this_task else 'left (ego)'}, "
                     f"eval_prot_for_this_task={eval_prot_for_this_task}"
                 )
@@ -2078,6 +2183,10 @@ if __name__ == "__main__":
                         True,  # is_league
                         league_matchup_states,
                     )
+                    # Pass output_subdir as a kwarg to mirror the SPAR launch
+                    # path; keeps the positional tuple stable so future param
+                    # additions don't have to backfill defaults.
+                    training_kwargs = {"output_subdir": output_subdir}
                     if args.DEBUG:
                         print(
                             "DEBUG: Launching league BR job "
@@ -2085,11 +2194,16 @@ if __name__ == "__main__":
                             f"from_scratch={from_scratch}, matchup={matchup_label}, "
                             f"replicate={replicate_idx}, dedicated_job_id={dedicated_job_id}, "
                             f"launch_local_br_eval={launch_local_br_eval}, "
-                            f"stop_key={stop_key}, stop_file={stop_file_path}"
+                            f"stop_key={stop_key}, stop_file={stop_file_path}, "
+                            f"output_subdir={output_subdir}"
                         )
-                        target(*training_args)
+                        target(*training_args, **training_kwargs)
                     else:
-                        p = mp_ctx.Process(target=target, args=training_args)
+                        p = mp_ctx.Process(
+                            target=target,
+                            args=training_args,
+                            kwargs=training_kwargs,
+                        )
                         p.start()
                         processes.append(p)
 

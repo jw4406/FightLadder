@@ -9,16 +9,33 @@ from matplotlib.lines import Line2D
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+# Optional <style>_ prefix (league|ippo|spar|2timescale|...) is captured but
+# allowed to be absent so legacy reward files still match.
 FILENAME_RE = re.compile(
-    r"^(?P<timestep>\d+)_main_(?P<main_side>left|right)_(?P<main_char>[A-Za-z0-9]+)"
+    r"^(?:(?P<style>[A-Za-z0-9]+)_)?"
+    r"(?P<timestep>\d+)_main_(?P<main_side>left|right)_(?P<main_char>[A-Za-z0-9]+)"
     r"_exploiter_(?P<exploiter_side>left|right)_(?P<exploiter_char>[A-Za-z0-9]+)_\.txt$"
 )
 
 
 def _safe_float_from_file(path):
+    """
+    Read a single float from *path*. Returns None when the file is empty
+    or its contents don't parse as a float, so the caller can skip the
+    record instead of crashing the whole aggregation.
+
+    Empty files happen when local_br_eval started but didn't reach the
+    write step (interrupted run, crashed BR worker, race with another
+    process). One bad file shouldn't kill aggregation across many runs.
+    """
     with open(path, "r", encoding="utf-8") as f:
         content = f.read().strip()
-    return float(content)
+    if not content:
+        return None
+    try:
+        return float(content)
+    except ValueError:
+        return None
 
 
 def _matchup_from_record(rec):
@@ -68,15 +85,75 @@ def _parse_records(br_rewards_dir):
         rec["filename"] = entry
         rec["timestep"] = int(rec["timestep"])
         rec["path"] = os.path.join(br_rewards_dir, entry)
-        rec["value"] = _safe_float_from_file(rec["path"])
+        value = _safe_float_from_file(rec["path"])
+        if value is None:
+            print(f"  [warn] skipping unreadable reward file: {entry}")
+            continue
+        rec["value"] = value
         left_char, right_char = _matchup_from_record(rec)
         rec["left_char"] = left_char
         rec["right_char"] = right_char
         rec["state"] = _state_string(left_char, right_char)
         rec["matchup_key"] = _canonical_matchup(left_char, right_char)
         rec["direction"] = "main_left" if rec["main_side"] == "left" else "main_right"
+        # Style may be None (legacy unprefixed files); normalize to "" so
+        # downstream code can treat it uniformly.
+        rec["style"] = rec.get("style") or ""
         records.append(rec)
     return records
+
+
+def _dominant_style(records):
+    """
+    Pick the most common training_style across a record set. Returns ""
+    when no record has a style. Logs a warning when styles are mixed
+    (shouldn't happen because each subfolder is one training process, but
+    legacy directories can have heterogeneous content).
+    """
+    counts = defaultdict(int)
+    for r in records:
+        counts[r["style"]] += 1
+    if not counts:
+        return ""
+    # Sort by count desc, then style asc for determinism.
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    if len(ranked) > 1 and any(s for s, _ in ranked):
+        # Mixed styles in one directory — surface a warning so the user
+        # knows the plot filename only reflects the dominant one.
+        breakdown = ", ".join(f"{s or '<none>'}={c}" for s, c in ranked)
+        print(f"  [warn] mixed training_styles in directory ({breakdown})")
+    return ranked[0][0]
+
+
+def _discover_training_processes(br_rewards_dir):
+    """
+    Return [(label, abs_path), ...] — one entry per training process.
+
+    New segregated layout: each immediate subfolder is one training process;
+    label = subfolder name.
+
+    Legacy unsegregated layout: top-level .txt files exist directly under
+    br_rewards_dir; surfaced as a single ("", br_rewards_dir) bucket so old
+    data still plots without restructuring on disk.
+
+    Mixed layouts (both subfolders and top-level .txt files) are supported:
+    legacy bucket and per-subfolder buckets coexist.
+    """
+    if not os.path.isdir(br_rewards_dir):
+        return []
+    entries = sorted(os.listdir(br_rewards_dir))
+    runs = []
+    for e in entries:
+        full = os.path.join(br_rewards_dir, e)
+        if os.path.isdir(full):
+            runs.append((e, full))
+    has_top_level_txt = any(
+        e.endswith(".txt") and os.path.isfile(os.path.join(br_rewards_dir, e))
+        for e in entries
+    )
+    if has_top_level_txt:
+        runs.append(("", br_rewards_dir))
+    return runs
 
 
 def _build_pairs(records):
@@ -177,7 +254,12 @@ def _plot_master(records, pairs_by_timestep_matchup, out_dir):
         columnspacing=1.6,
     )
 
-    output_path = os.path.join(out_dir, "master_local_eval_pairs.png")
+    # Style prefix in plot filename so the artifact is self-describing
+    # (e.g., league_master_local_eval_pairs.png). Empty style preserves
+    # the legacy filename.
+    style = _dominant_style(records)
+    name_prefix = f"{style}_" if style else ""
+    output_path = os.path.join(out_dir, f"{name_prefix}master_local_eval_pairs.png")
     fig.savefig(output_path, dpi=600, bbox_inches="tight")
     plt.close(fig)
     return output_path
@@ -191,6 +273,9 @@ def _plot_per_matchup(records, out_dir):
 
     marker_by_direction = {"main_left": "o", "main_right": "^"}
     color_by_direction = {"main_left": "#1f77b4", "main_right": "#ff7f0e"}
+
+    style = _dominant_style(records)
+    name_prefix = f"{style}_" if style else ""
 
     for matchup_key, m_records in sorted(records_by_matchup.items()):
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -219,7 +304,7 @@ def _plot_per_matchup(records, out_dir):
         ax.grid(True, alpha=0.25)
         ax.legend(loc="best")
 
-        out_name = f"matchup_{matchup_key}.png"
+        out_name = f"{name_prefix}matchup_{matchup_key}.png"
         out_path = os.path.join(out_dir, out_name)
         fig.savefig(out_path, dpi=600, bbox_inches="tight")
         plt.close(fig)
@@ -228,61 +313,128 @@ def _plot_per_matchup(records, out_dir):
     return paths
 
 
+def _process_run(input_dir, output_dir, label):
+    """
+    Run the full parse + plot pipeline for a single training process.
+
+    *input_dir* is the per-run rewards folder (subfolder of br_rewards/, or
+    br_rewards/ itself in the legacy unsegregated case). *output_dir* is
+    the matching plots destination. *label* is the run identifier used in
+    log lines (subfolder name, or "<legacy>" for the top-level bucket).
+
+    Returns a dict with summary stats; the caller is responsible for
+    aggregate logging across multiple runs.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    records = _parse_records(input_dir)
+    if not records:
+        print(f"[{label}] No parseable reward files in: {input_dir}")
+        return {"label": label, "count": 0}
+
+    pairs = _build_pairs(records)
+    states, left_set, right_set, matchups, timesteps = _infer_sets(records)
+
+    print(f"=== Run: {label} ===")
+    print(f"  Rewards folder: {input_dir}")
+    print(f"  Output folder:  {output_dir}")
+    print(f"  Parsed file count: {len(records)}")
+    print(f"  Timestep count: {len(timesteps)}")
+    print(f"  Matchup count: {len(matchups)}")
+    print(f"  left_set (ego_list candidate): {left_set}")
+    print(f"  right_set (adv_list candidate): {right_set}")
+    print("  Inferred state_list:")
+    for s in states:
+        print(f"    - {s}")
+
+    complete_pairs = 0
+    incomplete_pairs = 0
+    for _, group in pairs.items():
+        if len(group) >= 2:
+            complete_pairs += 1
+        else:
+            incomplete_pairs += 1
+    print("  Pairing summary (timestep + matchup groups):")
+    print(f"    complete pairs: {complete_pairs}")
+    print(f"    incomplete pairs (kept): {incomplete_pairs}")
+
+    master_path = _plot_master(records, pairs, output_dir)
+    matchup_plot_paths = _plot_per_matchup(records, output_dir)
+
+    print("  Saved plots:")
+    print(f"    - {master_path}")
+    for p in matchup_plot_paths:
+        print(f"    - {p}")
+
+    return {
+        "label": label,
+        "count": len(records),
+        "matchups": len(matchups),
+        "complete_pairs": complete_pairs,
+        "incomplete_pairs": incomplete_pairs,
+        "master_path": master_path,
+        "matchup_plot_paths": matchup_plot_paths,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--br_rewards_dir",
         type=str,
         default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "br_rewards"),
-        help="Folder containing local br reward txt files.",
+        help="Folder containing local br reward txt files (segregated by "
+             "training-process subfolder, or legacy flat layout).",
     )
     parser.add_argument(
         "--output_dir",
         type=str,
         default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "local_eval_plots"),
-        help="Folder for saved plots.",
+        help="Folder for saved plots. Per-run plots land in subfolders "
+             "matching the br_rewards/ subfolder layout.",
+    )
+    parser.add_argument(
+        "--training_process",
+        type=str,
+        default="",
+        help="Optional filter: process only this single subfolder name "
+             "(useful for incremental re-plot). Empty = process all.",
     )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
-    records = _parse_records(args.br_rewards_dir)
-    if not records:
-        print(f"No parseable reward files found in: {args.br_rewards_dir}")
+    runs = _discover_training_processes(args.br_rewards_dir)
+    if not runs:
+        print(f"No training-process data found under: {args.br_rewards_dir}")
         return
 
-    pairs = _build_pairs(records)
-    states, left_set, right_set, matchups, timesteps = _infer_sets(records)
+    if args.training_process:
+        runs = [(name, path) for name, path in runs if name == args.training_process]
+        if not runs:
+            print(
+                f"--training_process={args.training_process!r} did not match "
+                f"any subfolder under {args.br_rewards_dir}"
+            )
+            return
 
-    print("=== Inferred local eval data summary ===")
-    print(f"Rewards folder: {args.br_rewards_dir}")
-    print(f"Parsed file count: {len(records)}")
-    print(f"Timestep count: {len(timesteps)}")
-    print(f"Matchup count: {len(matchups)}")
-    print(f"left_set (ego_list candidate): {left_set}")
-    print(f"right_set (adv_list candidate): {right_set}")
-    print("Inferred state_list:")
-    for s in states:
-        print(f"  - {s}")
-
-    complete_pairs = 0
-    incomplete_pairs = 0
-    for key, group in pairs.items():
-        if len(group) >= 2:
-            complete_pairs += 1
+    print(f"Discovered {len(runs)} training-process bucket(s) under {args.br_rewards_dir}")
+    summaries = []
+    for name, path in runs:
+        # Empty subfolder name == legacy bucket: write plots straight into
+        # the top-level output_dir to mirror old behavior.
+        if name:
+            sub_out = os.path.join(args.output_dir, name)
+            label = name
         else:
-            incomplete_pairs += 1
+            sub_out = args.output_dir
+            label = "<legacy>"
+        summaries.append(_process_run(path, sub_out, label))
 
-    print("Pairing summary (timestep + matchup groups):")
-    print(f"  complete pairs: {complete_pairs}")
-    print(f"  incomplete pairs (kept): {incomplete_pairs}")
-
-    master_path = _plot_master(records, pairs, args.output_dir)
-    matchup_plot_paths = _plot_per_matchup(records, args.output_dir)
-
-    print("Saved plots:")
-    print(f"  - {master_path}")
-    for p in matchup_plot_paths:
-        print(f"  - {p}")
+    print("=== Aggregate summary ===")
+    for s in summaries:
+        print(
+            f"  {s['label']}: parsed={s['count']}"
+            + (f", matchups={s.get('matchups', 0)}" if s["count"] else "")
+        )
 
 
 if __name__ == "__main__":

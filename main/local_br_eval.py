@@ -25,7 +25,12 @@ import numpy as np
 from stable_baselines3.common.utils import obs_as_tensor
 import argparse
 from gymnasium.spaces import Box
-from new_br_worker import _FixedMatchupPolicyAdapter, _dedupe_preserve_order
+from new_br_worker import (
+    _FixedMatchupPolicyAdapter,
+    _dedupe_preserve_order,
+    _sanitize_for_filename,
+    load_league_model,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,6 +44,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dedicated_exploiter", type=str, required=True)
     parser.add_argument("--br_index", type=int, required=True)
     parser.add_argument("--game_args", type=str, required=True)
+    # When True, main_checkpoint_model_path is a LeaguePPO checkpoint and
+    # the eval path uses model.policy / model.policy_other instead of CDS
+    # heads. BR model still must be an Exploiter (dedicated mode only).
+    parser.add_argument("--is_league", type=str, default="False")
+    # Per-training-process segregation. Outputs go to
+    #   br_rewards/<output_subdir>/...     and
+    #   selfplay_rewards/<output_subdir>/...
+    # when set. Empty string preserves the legacy unsegregated layout.
+    # Computed by the launcher in new_br_worker.py from the source dir
+    # (league) or the .task filename prefix (SPAR).
+    parser.add_argument("--output_subdir", type=str, default="")
+    # Training style label ("league", "ippo", "spar", "2timescale", ...).
+    # Prepended to the output .txt filename so aggregate_local_eval_data.py
+    # can surface it in plot filenames. Empty string preserves the legacy
+    # unprefixed filename format.
+    parser.add_argument("--training_style", type=str, default="")
     parser.add_argument(
         "--device",
         type=str,
@@ -101,27 +122,65 @@ def main() -> None:
     args.full_state_list = ast.literal_eval(args.full_state_list)
     args.dedicated_exploiter = args.dedicated_exploiter == "True"
     args.eval_prot = args.eval_prot == "True"
+    args.is_league = args.is_league == "True"
+    # Sanitize the subdir name (defensive: launcher already sanitizes, but
+    # we re-apply to guard against direct CLI invocations).
+    args.output_subdir = _sanitize_for_filename(args.output_subdir or "")
+    args.training_style = _sanitize_for_filename(args.training_style or "")
 
     main_checkpoint_model_path = args.main_checkpoint_model_path
     done_model_checkpoint_path = args.done_model_checkpoint_path
     br_model_path = args.br_checkpoint_model_path
 
-    br_rewards_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "br_rewards")
-    selfplay_rewards_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "selfplay_rewards")
+    # Per-training-process segregation. When --output_subdir is non-empty,
+    # outputs nest under it so different main training runs don't collide.
+    # Empty string preserves the legacy unsegregated layout.
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    br_rewards_folder = os.path.join(base_dir, "br_rewards")
+    selfplay_rewards_folder = os.path.join(base_dir, "selfplay_rewards")
+    if args.output_subdir:
+        br_rewards_folder = os.path.join(br_rewards_folder, args.output_subdir)
+        selfplay_rewards_folder = os.path.join(selfplay_rewards_folder, args.output_subdir)
     os.makedirs(br_rewards_folder, exist_ok=True)
     os.makedirs(selfplay_rewards_folder, exist_ok=True)
 
     env = env_generator(args.game_args, STATE=args.state_list)
     full_env = env_generator(args.game_args, STATE=args.full_state_list)
     # ENV_ID = args.env_id
-    try:
-        model = CleanDerivativeFreeSPAR.load(
-            main_checkpoint_model_path, env=env, num_perturbed=1, device=args.device
-        )
-    except FileNotFoundError:
-        model = CleanDerivativeFreeSPAR.load(
-            done_model_checkpoint_path, env=env, num_perturbed=1, device=args.device
-        )
+    if args.is_league:
+        # League path: reuse load_league_model so the unpickling /
+        # league_constructor logic stays in one place. The function builds
+        # an internal single-side league env we don't need; we override
+        # model.env with the SPAR-style 2-player VecEnv from env_generator
+        # so _collect_episode_returns can step joint [ego, adv] actions.
+        try:
+            model = load_league_model(
+                vars(args.game_args),
+                main_checkpoint_model_path,
+                league_matchup_states=args.full_state_list,
+                n_envs=env.num_envs,
+                device=args.device,
+                use_wandb=False,
+            )
+        except FileNotFoundError:
+            model = load_league_model(
+                vars(args.game_args),
+                done_model_checkpoint_path,
+                league_matchup_states=args.full_state_list,
+                n_envs=env.num_envs,
+                device=args.device,
+                use_wandb=False,
+            )
+        model.env = env
+    else:
+        try:
+            model = CleanDerivativeFreeSPAR.load(
+                main_checkpoint_model_path, env=env, num_perturbed=1, device=args.device
+            )
+        except FileNotFoundError:
+            model = CleanDerivativeFreeSPAR.load(
+                done_model_checkpoint_path, env=env, num_perturbed=1, device=args.device
+            )
 
 # if args.eval_prot is True: # we're training an optimal adversary
 #     dstb_action_space = Box(low=model.dstb_action_space.low, high=model.dstb_action_space.high, shape=model.dstb_action_space.shape)
@@ -138,6 +197,18 @@ def main() -> None:
 #     env.action_space = model.dstb_action_space
 
     if not args.dedicated_exploiter:
+        if args.is_league:
+            # Continue-mode league BR is a LeaguePPO file (saved by
+            # _run_league_continue_exploiter), not an Exploiter zip, and
+            # new_br_worker.py's launcher does not populate br_model_path
+            # for that path. Refuse here rather than silently loading the
+            # wrong format.
+            raise NotImplementedError(
+                "local_br_eval does not support league + continue-exploiter "
+                "mode. Run with --dedicated_exploiter True (BR is an "
+                "Exploiter checkpoint), or eval league outputs via the "
+                "league-native eval path."
+            )
         br_model = CleanDerivativeFreeSPAR.load(
             br_model_path, env=env, num_perturbed=1, device=args.device
         )
@@ -166,9 +237,12 @@ def main() -> None:
     exploiter_rewards, selfplay_rewards = [], []
     model_policy_for_eval = model.policy
     use_fixed_matchup_adapter = False
-    if args.dedicated_exploiter:
-        # Dedicated runs pass a repeated singleton state list; intercept policy
-        # forward calls on the exploited CDS model through one fixed matchup.
+    if args.dedicated_exploiter and not args.is_league:
+        # CDS-only: dedicated runs pass a repeated singleton state list;
+        # intercept policy forward calls on the exploited CDS model through
+        # one fixed matchup head. League models have no matchup heads
+        # (standard SB3 policy + policy_other), so this adapter does not
+        # apply.
         eval_unique_states = _dedupe_preserve_order(args.state_list)
         if len(eval_unique_states) == 1:
             dedicated_state = eval_unique_states[0]
@@ -188,7 +262,16 @@ def main() -> None:
     def exploiter_action_fn(obs):
         with th.no_grad():
             obs_model_tensor = obs_as_tensor(obs, model.device)
-            if args.dedicated_exploiter and use_fixed_matchup_adapter:
+            if args.is_league:
+                # League frozen-side selection mirrors the new_br_worker.py
+                # league branch:
+                #   eval_prot=True  -> exploit ego, frozen=left  -> model.policy
+                #   eval_prot=False -> exploit adv, frozen=right -> model.policy_other
+                if args.eval_prot:
+                    action, _, _ = model.policy(obs_model_tensor)
+                else:
+                    action, _, _ = model.policy_other(obs_model_tensor)
+            elif args.dedicated_exploiter and use_fixed_matchup_adapter:
                 action, _ = model_policy_for_eval(
                     obs_model_tensor,
                     deterministic=False,
@@ -200,6 +283,8 @@ def main() -> None:
                     action, _, _, _, _, _ = model.policy(obs_model_tensor)
                 else:
                     _, _, action, _, _, _ = model.policy(obs_model_tensor)
+            # BR is always an Exploiter for league (continue+league guarded
+            # above), so the dedicated branch covers it.
             if args.dedicated_exploiter:
                 action_br, _, _ = br_model.policy(obs_as_tensor(obs, br_model.device))
             else:
@@ -234,7 +319,14 @@ def main() -> None:
 
     def selfplay_action_fn(obs):
         with th.no_grad():
-            action, _, adv_action, _, _, _ = model.policy(obs_as_tensor(obs, model.device))
+            if args.is_league:
+                # LeaguePPO stores left and right policies separately;
+                # query both for the joint [left, right] action vector.
+                obs_t = obs_as_tensor(obs, model.device)
+                action, _, _ = model.policy(obs_t)
+                adv_action, _, _ = model.policy_other(obs_t)
+            else:
+                action, _, adv_action, _, _, _ = model.policy(obs_as_tensor(obs, model.device))
         action = action.cpu().numpy()
         adv_action = adv_action.cpu().numpy()
         return np.hstack([action, adv_action])
@@ -252,8 +344,12 @@ def main() -> None:
     left_name, right_name = _extract_left_right_names_from_state(tested_state)
     main_name = left_name if main_side == "left" else right_name
     exploiter_name = right_name if exploiter_side == "right" else left_name
+    # Optional training-style prefix. Aggregate parses it out of the
+    # filename via FILENAME_RE; legacy unprefixed files still match because
+    # the style group in that regex is optional.
+    style_prefix = f"{args.training_style}_" if args.training_style else ""
     filename = (
-        f"{model.num_timesteps}_main_{main_side}_{main_name}_"
+        f"{style_prefix}{model.num_timesteps}_main_{main_side}_{main_name}_"
         f"exploiter_{exploiter_side}_{exploiter_name}_.txt"
     )
     with open(os.path.join(br_rewards_folder, filename), "w") as f:
