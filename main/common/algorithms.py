@@ -5467,7 +5467,8 @@ class Exploiter(PPO):
                 entropy_count += 1
                 #ego_id = self.exploited.opp_list.index(self.exploited.player)
                 
-                if self.is_spar:
+                if self.is_spar_like:
+                    # any of {spar, ippo, 2timescale} because theyre all based on cds
                     if self.exploiting == 'ego':
                         # if ego is being exploited, we need to see how he behaves
                         # adversary action will be provided by exploiter model
@@ -5481,7 +5482,8 @@ class Exploiter(PPO):
                         adv_forward = True
                     EXPLOITED_ACTIONS, _, = self.exploited.policy(obs_tensor, ego_forward=ego_forward, adv_forward=adv_forward, zero_ego_action=False, zero_adv_action=False,value_forward=False, q_value_forward=False)
                 else:
-                    EXPLOITED_ACTIONS, DEAD_VALUES, DEAD_LOG_PROBS = self.exploited.policy(obs_tensor, ego_forward=True, adv_forward=False, zero_ego_action=False, zero_adv_action=False,value_forward=False, q_value_forward=False)
+                    # league is not spar-like in the signatures
+                    EXPLOITED_ACTIONS, DEAD_VALUES, DEAD_LOG_PROBS = self.exploited.policy(obs_tensor, deterministic=False)
                 # modify to add q_values for new forward signature
                 
                 

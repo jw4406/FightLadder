@@ -36,6 +36,7 @@ from pprint import pformat
 import numpy as np
 import torch
 import wandb
+import shutil
 import subprocess
 import multiprocessing as mp
 from stable_baselines3.common.preprocessing import is_image_space
@@ -430,31 +431,43 @@ class _LeaguePolicyAdapter:
     """
 
     def __init__(self, league_model, side="left"):
+        # Capture the underlying policies *before* the caller assigns
+        # ``league_model.policy = adapter``. Once that assignment happens,
+        # ``league_model.policy`` is the adapter itself, so any later read of
+        # ``self._league_model.policy`` would resolve back to ``self`` and
+        # cause infinite recursion in __call__/to/__getattr__.
         self._league_model = league_model
         self._side = side
+        self._left_policy = league_model.policy
+        self._right_policy = getattr(league_model, "policy_other", None)
 
     def __call__(self, obs_tensor, *args, **kwargs):
         if self._side == "left":
-            policy = self._league_model.policy
+            policy = self._left_policy
         else:
-            policy = self._league_model.policy_other
+            policy = self._right_policy
         actions, _, _ = policy(obs_tensor)
         return actions, None, None
 
     def to(self, device):
-        self._league_model.policy = self._league_model.policy.to(device)
-        if hasattr(self._league_model, "policy_other"):
-            self._league_model.policy_other = self._league_model.policy_other.to(device)
+        self._left_policy = self._left_policy.to(device)
+        if self._right_policy is not None:
+            self._right_policy = self._right_policy.to(device)
         return self
 
     def __getattr__(self, name):
-        return getattr(self._league_model.policy, name)
+        # Delegate to the captured left policy. Reading
+        # ``self._league_model.policy`` here would recurse because that
+        # attribute now points to this adapter.
+        return getattr(self._left_policy, name)
 
 
 _LEAGUE_RIGHT_RE = re.compile(
-    r"^MA\d+_right_m_\d+_(?P<left_char>[a-z0-9]+)_vs_(?P<right_char>[a-z0-9]+)_\d+\.pt$"
+    r"^MA\d+_right_m_\d+_(?P<left_char>[a-z0-9]+)_vs_(?P<right_char>[a-z0-9]+)_\d+_\d{8}_\d{6}\.pt$"
 )
-
+_BACKUP_LEAGUE_RIGHT_RE = re.compile(
+    r"^LE\d+_right_m_\d+_(?P<left_char>[a-z0-9]+)_vs_(?P<right_char>[a-z0-9]+)_\d+_\d{8}_\d{6}\.pt$"
+)
 
 def _infer_league_matchup_states_from_dir(task_file_path: str) -> List[str]:
     """
@@ -471,7 +484,7 @@ def _infer_league_matchup_states_from_dir(task_file_path: str) -> List[str]:
     seen = set()
     states: List[str] = []
     for fname in sorted(os.listdir(model_dir)):
-        m = _LEAGUE_RIGHT_RE.match(fname)
+        m = _LEAGUE_RIGHT_RE.match(fname) or _BACKUP_LEAGUE_RIGHT_RE.match(fname)
         if m is None:
             continue
         right_char = m.group("right_char")
@@ -553,11 +566,25 @@ def load_league_model(
     saved = _load_league_checkpoint(task_file_path, device)
     saved_kwargs = saved["kwargs"]
     agent_dict = saved_kwargs["agent_dict"]
-    side = saved_kwargs.get("side", "left")
-    if side == "left":
+
+    # Capture the original side from the checkpoint *before* we flip it. The
+    # flipped value drives league_constructor below (training-side
+    # convention), but downstream BR scheduling needs to know which side the
+    # checkpoint actually came from so it can pick the right frozen-side
+    # adapter / continue-mode helper.
+    loaded_side = saved_kwargs.get("side")
+    if loaded_side == "left":
         side = "right"
-    else:
+    elif loaded_side == "right":
         side = "left"
+    else:
+        # Strict mapping: any other value (None, "both", typos, future enum
+        # additions) is a bug or schema drift. Fail loudly instead of
+        # silently coercing to one side.
+        raise ValueError(
+            f"Saved league checkpoint has invalid side={loaded_side!r}; "
+            "expected 'left' or 'right'."
+        )
 
     # experimental
     saved_args = saved_kwargs.get("args")
@@ -591,6 +618,12 @@ def load_league_model(
     league_model._worker_cds_arch = "league"
     league_model._worker_unique_states = list(league_matchup_states)
     league_model._worker_full_state_list = list(league_matchup_states)
+    # Original (pre-flip) side and matchup_key from the saved checkpoint.
+    # Continue-mode (`_run_league_continue_exploiter`) reads these to decide
+    # which side to freeze and which matchup's right model to override with
+    # the loaded `agent_dict`.
+    league_model._worker_loaded_side = loaded_side
+    league_model._worker_loaded_matchup_key = saved_kwargs.get("matchup_key")
     league_model.state_list = list(league_matchup_states)
     league_model.matchups = [state2matchup(s) for s in league_matchup_states]
     league_model.envs_per_matchup = 1
@@ -697,7 +730,15 @@ def _league_worker(idx, learner, total_steps, rollout_opponent_num):
 
 
 _LEAGUE_RIGHT_ANY_RE = re.compile(
-    r"^(?P<role>[A-Z]+\d+)_right_m_(?P<midx>\d+)_(?P<left_char>[a-z0-9]+)_vs_(?P<right_char>[a-z0-9]+)_(?P<step>\d+)\.pt$"
+    r"^(?P<role>[A-Z]+\d+)_right_m_(?P<midx>\d+)_(?P<left_char>[a-z0-9]+)_vs_(?P<right_char>[a-z0-9]+)_(?P<step>\d+)_(?P<date>\d{8})_(?P<time>\d{6})\.pt$"
+)
+
+# Left-side league checkpoints. The league only ever has one left model
+# (matchup_key = "m_00_left_vs_all" — see common.league._matchup_key /
+# League.__init__), so this regex is intentionally narrower than the right-side
+# one: a fixed "left_vs_all" matchup, no per-character pair.
+_LEAGUE_LEFT_ANY_RE = re.compile(
+    r"^(?P<role>[A-Z]+\d+)_left_m_(?P<midx>\d+)_left_vs_all_(?P<step>\d+)_(?P<date>\d{8})_(?P<time>\d{6})\.pt$"
 )
 
 
@@ -741,6 +782,50 @@ def _load_right_side_checkpoints(
     return result
 
 
+def _load_left_side_checkpoint(
+    model_dir: str,
+    device: str = "cpu",
+) -> Optional[dict]:
+    """
+    Scan *model_dir* for the highest-step MA left-side .pt and return its
+    ``agent_dict`` + ``checkpoint_step``.
+
+    The league only contains a single left-side MA agent (matchup_key
+    ``m_00_left_vs_all``), so unlike the right-side scanner this returns a
+    single dict (or ``None`` if no MA left file exists).
+
+    Used by ``_run_league_continue_exploiter`` when the loaded task is a
+    right-side checkpoint and we need the matching left protagonist to
+    continue-train against frozen right.
+    """
+    best: Optional[tuple] = None  # (step, path)
+    for fname in os.listdir(model_dir):
+        m = _LEAGUE_LEFT_ANY_RE.match(fname)
+        if m is None:
+            continue
+        # Mirror the right-side helper: only consider main-agent (MA) snapshots,
+        # not exploiter snapshots (ME/LE) — those have different training
+        # dynamics and aren't the canonical "current protagonist".
+        if not m.group("role").startswith("MA"):
+            continue
+        step = int(m.group("step"))
+        if best is None or step > best[0]:
+            best = (step, os.path.join(model_dir, fname))
+
+    if best is None:
+        return None
+
+    step, path = best
+    saved = _load_league_checkpoint(path, device)
+    agent_dict = saved["kwargs"]["agent_dict"]
+    checkpoint_step = saved["kwargs"].get("checkpoint_step", step)
+    print(
+        f"[league_continue] Loaded left checkpoint: step={checkpoint_step} "
+        f"from {os.path.basename(path)}"
+    )
+    return {"agent_dict": agent_dict, "checkpoint_step": checkpoint_step}
+
+
 def _run_league_continue_exploiter(
     constructor_args: argparse.Namespace,
     agent_dict: dict,
@@ -750,21 +835,47 @@ def _run_league_continue_exploiter(
     model_dir: Optional[str] = None,
     save_dir: Optional[str] = None,
     log_dir: str = "logs/br_league",
+    frozen_side: str = "left",
+    loaded_matchup_key: Optional[str] = None,
 ) -> None:
     """
-    Run a full right-side-only league against a frozen left MA checkpoint.
+    Run a one-side-only continue league against a frozen opposing side.
 
-    Builds per-matchup right-side agents (MA/ME/LE) and trains them via the
-    standard League loop (payoff tracking, PFSP opponent sampling, historical
-    checkpoints).  The left MA exists in the league as a static opponent but
-    never gets a training process.
+    The function is symmetric in *frozen_side*:
 
-    If *model_dir* is provided, right-side agent weights are loaded from the
-    highest-step MA checkpoint found for each matchup.  *save_dir* defaults to
-    *model_dir* so new checkpoints are written alongside existing ones.
+    - ``frozen_side="left"`` (loaded task was a left MA): build the full
+      right-side roster (MA/ME/LE per matchup) and train them. The left MA
+      acts as a static opponent. Right-side agent weights are loaded from
+      sibling ``MA*_right_*.pt`` snapshots in *model_dir*; matchups without a
+      sibling fall back to ``agent_dict`` (the loaded left MA's weights).
+
+    - ``frozen_side="right"`` (loaded task was a right MA for one matchup):
+      build the full left-side roster (one MA + ME + LE) and train them.
+      Right models stay frozen. The right roster is loaded from sibling
+      ``MA*_right_*.pt`` snapshots, *except* the entry for *loaded_matchup_key*
+      which is overridden with ``agent_dict`` (the freshest snapshot for that
+      matchup is the loaded task itself). The left MA is loaded from the
+      sibling ``MA*_left_*.pt`` snapshot via ``_load_left_side_checkpoint``;
+      if no sibling exists we fall back to ``agent_dict`` (which is
+      right-side weights — wrong shape, will likely crash, so we surface a
+      clear error instead).
+
+    Args:
+        agent_dict: Weights for the loaded checkpoint (left MA when
+            frozen_side="left", right MA for *loaded_matchup_key* when
+            frozen_side="right").
+        loaded_matchup_key: Canonical matchup key (e.g. ``ryu_vs_guile``) the
+            loaded task corresponds to. Required when frozen_side="right" so
+            we know which right-roster slot to override.
     """
     from train_ma import _extract_chars_from_state_name, _sanitize_matchup_token
     from common.league import PayoffManager, League, Learner
+
+    if frozen_side not in ("left", "right"):
+        raise ValueError(
+            f"_run_league_continue_exploiter: frozen_side={frozen_side!r}, "
+            "expected 'left' or 'right'."
+        )
 
     if save_dir is None:
         save_dir = model_dir if model_dir is not None else "trained_models/br_league"
@@ -774,13 +885,33 @@ def _run_league_continue_exploiter(
     constructor_args.log_dir = log_dir
     constructor_args.save_dir = save_dir
 
+    # --- Resolve right-side roster weights ---
     right_checkpoints: Dict[str, dict] = {}
     if model_dir is not None:
         right_checkpoints = _load_right_side_checkpoints(model_dir, league_matchup_states)
 
+    # When the loaded task IS a right-side checkpoint, treat it as the
+    # freshest snapshot for its matchup and override the file-scan result.
+    if frozen_side == "right":
+        if loaded_matchup_key is None:
+            raise ValueError(
+                "_run_league_continue_exploiter: frozen_side='right' requires "
+                "loaded_matchup_key (so we know which right-roster slot to "
+                "override with the loaded agent_dict)."
+            )
+        right_checkpoints[loaded_matchup_key] = {
+            "agent_dict": agent_dict,
+            # Step is intentionally 0 here because the saved checkpoint_step
+            # lives one frame up in saved["kwargs"]; the caller (which has
+            # already loaded `ftm`) has the authoritative step on
+            # `ftm._checkpoint_step` and applies it via set_steps elsewhere.
+            # For roster initialization we just need the weights.
+            "checkpoint_step": 0,
+        }
+
+    # --- Build right roster (always; same shape regardless of frozen_side) ---
     right_models: Dict[str, LeaguePPO] = {}
     state_names: Dict[str, str] = {}
-
     for state_name in league_matchup_states:
         left_char, right_char = _extract_chars_from_state_name(state_name)
         canonical_key = f"{_sanitize_matchup_token(left_char)}_vs_{_sanitize_matchup_token(right_char)}"
@@ -797,13 +928,44 @@ def _run_league_continue_exploiter(
             ckpt = right_checkpoints[canonical_key]
             right_model.set_parameters(ckpt["agent_dict"])
             right_model.set_steps(ckpt["checkpoint_step"])
-            print(f"[league_continue] Resuming {canonical_key} from step {ckpt['checkpoint_step']}")
+            print(
+                f"[league_continue] Resuming right {canonical_key} "
+                f"from step {ckpt['checkpoint_step']}"
+            )
         else:
+            # No sibling right snapshot for this matchup. For frozen_side="left"
+            # we fall back to the loaded left MA's weights (legacy behavior;
+            # not great but the network shapes match because both sides share
+            # the same policy architecture). For frozen_side="right" this
+            # branch should not be hit for the loaded matchup (we override it
+            # above), but other matchups missing a sibling still degrade to
+            # this fallback.
             right_model.set_parameters(agent_dict)
-            print(f"[league_continue] No right checkpoint for {canonical_key}, using left MA weights")
+            print(
+                f"[league_continue] No right checkpoint for {canonical_key}, "
+                f"using loaded agent_dict as fallback"
+            )
         right_models[canonical_key] = right_model
         state_names[canonical_key] = state_name
 
+    # --- Resolve left-side weights ---
+    if frozen_side == "left":
+        # Loaded task is the left MA — use its weights directly.
+        left_weights = agent_dict
+        left_step = 0  # caller restores authoritative step on ftm separately
+    else:
+        # Loaded task is right; we need a separate left MA snapshot.
+        left_ckpt = _load_left_side_checkpoint(model_dir) if model_dir else None
+        if left_ckpt is None:
+            raise FileNotFoundError(
+                "_run_league_continue_exploiter(frozen_side='right') needs a "
+                "sibling MA*_left_*.pt checkpoint in model_dir to initialize "
+                f"the left protagonist, but none was found in {model_dir!r}."
+            )
+        left_weights = left_ckpt["agent_dict"]
+        left_step = left_ckpt["checkpoint_step"]
+
+    # --- Build left model (single, matchup_key='left_vs_all') ---
     first_state = league_matchup_states[0]
     left_model = league_constructor(
         constructor_args,
@@ -813,12 +975,18 @@ def _run_league_continue_exploiter(
         state_name=first_state,
         matchup_key="left_vs_all",
     )
-    left_model.set_parameters(agent_dict)
+    left_model.set_parameters(left_weights)
+    if left_step:
+        left_model.set_steps(left_step)
 
     initial_agents = {
         "left": left_model,
         "right": right_models,
     }
+
+    # The TRAINING side is the opposite of the frozen side. Filter learners
+    # accordingly so we only spawn workers for the side we want to update.
+    training_side = "right" if frozen_side == "left" else "left"
 
     mp_ctx = mp.get_context("spawn")
 
@@ -838,7 +1006,7 @@ def _run_league_continue_exploiter(
         processes = []
         for idx in range(league.size()):
             player = league.get_player(idx)
-            if player.side != "right":
+            if player.side != training_side:
                 continue
             learner = Learner(player)
             p = mp_ctx.Process(
@@ -848,7 +1016,8 @@ def _run_league_continue_exploiter(
             processes.append(p)
 
         print(
-            f"[league_continue_exploiter] Launching {len(processes)} right-side "
+            f"[league_continue_exploiter] frozen_side={frozen_side}, "
+            f"training_side={training_side}: launching {len(processes)} "
             f"worker(s) across {len(league_matchup_states)} matchup(s)"
         )
         for p in processes:
@@ -867,7 +1036,7 @@ def train_best_response(
     proj_name: str,
     analysis_upload_proj_name: str,
     n_envs: int,
-    is_spar: bool = False,
+    is_spar_like: bool = False,
     br_index: int = 0,
     from_scratch: bool = False,
     exploiter_save_freq: int = 100000,
@@ -932,7 +1101,7 @@ def train_best_response(
     # 2. Create your environment, passing the frozen opponent to it
     #    so the BR agent can play against it.
     # env = YourStreetFighterEnv(opponent_policy=fixed_opponent)
-    if is_spar == True:
+    if is_spar_like == True:
         game_args = argparse.Namespace(**game_args)
         # In dedicated mode, train BR in a subset environment (usually one
         # matchup replicated `n_envs` times). This isolates BR rollouts while
@@ -974,7 +1143,7 @@ def train_best_response(
         use_wandb=use_wandb,
         verbose=1,
     )
-    br_agent.is_spar = is_spar # TODO: This is a stupid hack to get the BR agent to know if it is a SPAR model or not. Remove this once we have a better way to do this.
+    br_agent.is_spar_like = is_spar_like # TODO: This is a stupid hack to get the BR agent to know if it is a SPAR model or not. Remove this once we have a better way to do this.
     # 4. Train the BR agent
     #
     # Name each BR checkpoint with rich metadata so downstream analysis can
@@ -1112,6 +1281,13 @@ def train_best_response(
                     getattr(game_args, "rollout_opponent_num", 5),
                 )
                 league_states = getattr(ftm, "_worker_full_state_list", None) or getattr(ftm, "state_list", [])
+                # Frozen side and matchup key were stashed by load_league_model
+                # from the saved checkpoint kwargs (pre-flip). Pass them
+                # through so the helper trains the opposite side and, when
+                # frozen_side='right', overrides the correct right-roster
+                # slot with the loaded weights.
+                frozen_side = getattr(ftm, "_worker_loaded_side", "left")
+                loaded_matchup_key = getattr(ftm, "_worker_loaded_matchup_key", None)
                 _run_league_continue_exploiter(
                     constructor_args=ftm.constructor_args if ftm.constructor_args is not None else game_args,
                     agent_dict=ftm.get_parameters(),
@@ -1119,6 +1295,8 @@ def train_best_response(
                     total_timesteps=BR_TRAINING_STEPS,
                     rollout_opponent_num=rollout_opponent_num,
                     model_dir=os.path.dirname(checkpoint_path),
+                    frozen_side=frozen_side,
+                    loaded_matchup_key=loaded_matchup_key,
                 )
             else:
                 ftm.learn(total_timesteps=BR_TRAINING_STEPS, callback=train_callback)
@@ -1156,7 +1334,7 @@ def run_br_for_task_in_subprocess(
     proj_name: str,
     analysis_upload_proj_name: str,
     n_envs: int,
-    is_spar: bool,
+    is_spar_like: bool,
     br_index: int,
     from_scratch: bool = False,
     exploiter_save_freq: int = 100000,
@@ -1220,6 +1398,26 @@ def run_br_for_task_in_subprocess(
                 raise ValueError("state_subset was provided but empty.")
             dedicated_state = state_subset[0]
             dedicated_state_list_for_env = [dedicated_state for _ in range(n_envs)]
+            if from_scratch:
+                # Dedicated league exploiter: wrap LeaguePPO policy so the
+                # frozen side exposes a CDS-compatible call signature for
+                # Exploiter.collect_rollouts.
+                #
+                # Side mapping (consistent with the league branch in __main__):
+                #   eval_prot=True  -> exploit ego, BR plays adv -> frozen=left
+                #   eval_prot=False -> exploit adv, BR plays ego -> frozen=right
+                # The league branch derives eval_prot from the loaded task's
+                # saved side, so this assignment is just propagating that
+                # decision through to adapter selection.
+                frozen_side = "left" if eval_prot else "right"
+                loaded_model.policy = _LeaguePolicyAdapter(
+                    loaded_model, side=frozen_side
+                )
+                print(
+                    "Dedicated league adapter configured: "
+                    f"state={dedicated_state}, frozen_side={frozen_side}, "
+                    f"replicated_env_count={n_envs}"
+                )
         loaded_model.use_wandb = use_wandb
     elif is_spar:
         # NOTE: Do not shrink CDS model topology based on state_subset.
@@ -1287,7 +1485,7 @@ def run_br_for_task_in_subprocess(
         proj_name=proj_name,
         analysis_upload_proj_name=analysis_upload_proj_name,
         n_envs=n_envs,
-        is_spar=is_spar,
+        is_spar_like=is_spar_like,
         br_index=br_index,
         from_scratch = from_scratch,
         exploiter_save_freq=exploiter_save_freq,
@@ -1594,7 +1792,7 @@ if __name__ == "__main__":
                         args.proj_name,
                         args.analysis_upload_proj_name,
                         args.n_envs,
-                        True,  # is_spar
+                        True,  # is_spar_like
                         br_idx,
                         from_scratch,
                         args.exploiter_save_freq,
@@ -1735,9 +1933,45 @@ if __name__ == "__main__":
             error_path = os.path.join(error_dir, task_filename)
 
             try:
+                # Atomically claim the .task (rename = exclusive ownership).
                 os.rename(todo_path, processing_path)
+                # Aux .pt siblings (left MA, right MAs, ME, LE snapshots) are
+                # COPIED, not renamed, so other workers picking up other
+                # .task files in the same league_dir can still find them.
+                # Copies live in the per-task processing folder for the rest
+                # of this worker's pipeline (state inference, continue-mode
+                # checkpoint loading).
                 for file in league_aux_files:
-                    os.rename(os.path.join(todo_dir, file), os.path.join(processing_dir + "/%s_folder" % task_filename, file))
+                    src = os.path.join(todo_dir, file)
+                    dst = os.path.join(processing_dir + "/%s_folder" % task_filename, file)
+                    if os.path.exists(src):
+                        shutil.copy2(src, dst)
+
+                # ---- Detect which side this task represents ----------------
+                # The CLI flags --eval_prot / --eval_adv are intentionally
+                # ignored from here on: the loaded checkpoint dictates which
+                # side is frozen and therefore which side BR trains. Any CLI
+                # mismatch is silently overridden (governing script needs to
+                # process both sides for the plots).
+                _peek = _load_league_checkpoint(processing_path, device="cpu")
+                loaded_task_side = _peek["kwargs"].get("side")
+                loaded_matchup_key = _peek["kwargs"].get("matchup_key")
+                del _peek
+                if loaded_task_side not in ("left", "right"):
+                    raise ValueError(
+                        f"League task {task_filename!r} has invalid "
+                        f"side={loaded_task_side!r}; expected 'left' or 'right'."
+                    )
+                # Side mapping (mirrors _LeaguePolicyAdapter convention):
+                #   loaded left  -> exploit ego, BR plays adv  -> eval_prot=True
+                #   loaded right -> exploit adv, BR plays ego  -> eval_prot=False
+                eval_prot_for_this_task = (loaded_task_side == "left")
+                print(
+                    f"WORKER [{os.getpid()}]: League task side={loaded_task_side}, "
+                    f"matchup_key={loaded_matchup_key}, "
+                    f"BR will train {'right (adv)' if eval_prot_for_this_task else 'left (ego)'}, "
+                    f"eval_prot_for_this_task={eval_prot_for_this_task}"
+                )
 
                 if args.league_matchup_states:
                     league_matchup_states = list(args.league_matchup_states)
@@ -1803,7 +2037,7 @@ if __name__ == "__main__":
                         args.proj_name,
                         args.analysis_upload_proj_name,
                         args.n_envs,
-                        False,  # is_spar = False for league
+                        False,  # is_spar_like = False for league
                         br_idx,
                         from_scratch,
                         args.exploiter_save_freq,
@@ -1859,22 +2093,29 @@ if __name__ == "__main__":
                         p.start()
                         processes.append(p)
 
+                # Continue-mode and dedicated-mode scheduling both use
+                # eval_prot_for_this_task (file-derived) instead of the CLI
+                # --eval_prot / --eval_adv flags. See the comment above where
+                # eval_prot_for_this_task is computed.
                 if args.continue_exploiters:
-                    from_scratch = False
-                    if args.eval_prot:
-                        for br_idx in range(args.num_continue_exploiters):
-                            _launch_league_job(eval_prot_flag=True, br_idx=br_idx, from_scratch=from_scratch, launch_local_br_eval=args.launch_local_br_eval)
-                    if args.eval_adv:
-                        for br_idx in range(args.num_continue_exploiters):
-                            _launch_league_job(eval_prot_flag=False, br_idx=br_idx, from_scratch=from_scratch, launch_local_br_eval=args.launch_local_br_eval)
+                    for br_idx in range(args.num_continue_exploiters):
+                        _launch_league_job(
+                            eval_prot_flag=eval_prot_for_this_task,
+                            br_idx=br_idx,
+                            from_scratch=False,
+                            launch_local_br_eval=args.launch_local_br_eval,
+                        )
 
                 if args.dedicated_exploiter:
                     unique_states = list(league_matchup_states)
+                    # Pass exactly one side as True so _build_dedicated_job_specs
+                    # produces the (state, side, replicate) cross-product for
+                    # only the side BR should train.
                     dedicated_specs = _build_dedicated_job_specs(
                         unique_states=unique_states,
                         replicates_per_matchup=args.num_full_exploiters,
-                        run_eval_prot=args.eval_prot,
-                        run_eval_adv=args.eval_adv,
+                        run_eval_prot=eval_prot_for_this_task,
+                        run_eval_adv=(not eval_prot_for_this_task),
                         launch_local_br_eval=args.launch_local_br_eval,
                     )
                     max_conc = args.max_concurrent_jobs

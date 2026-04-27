@@ -597,7 +597,7 @@ def train_best_response(model_to_exploit, task_file_path: str, eval_prot: bool, 
 
     # 3. Create a new agent to be the best response
     br_agent = Exploiter('CnnPolicy', env, device='cuda', exploited=ftm, n_steps=2048, batch_size=512, n_epochs=5, exploiting='ego')
-    br_agent.is_spar = is_spar # TODO: This is a stupid hack to get the BR agent to know if it is a SPAR model or not. Remove this once we have a better way to do this.
+    br_agent.is_spar_like = is_spar_like # TODO: This is a stupid hack to get the BR agent to know if it is a SPAR model or not. Remove this once we have a better way to do this.
     # 4. Train the BR agent
     br_model_name = f"br_to_{os.path.splitext(os.path.basename(checkpoint_path))[0]}.zip"
     exploiter_callback = ExploiterCheckpointCallback(save_freq=100000, save_path=BR_MODEL_DIR, name_prefix=br_model_name)
