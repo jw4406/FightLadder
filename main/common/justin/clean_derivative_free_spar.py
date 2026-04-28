@@ -116,13 +116,13 @@ class CleanDerivativeFreeSPAR(PPO):
             clip_range: Union[float, Schedule] = 0.1,
             clip_range_vf: Union[None, float, Schedule] = None,
             normalize_advantage: bool = False,
-            ent_coef: float = 0.0,
-            dstb_ent_coef: float = 0.0,
+            ent_coef: float = 5e-6,
+            dstb_ent_coef: float = 5e-6,
             vf_coef: float = 0.5,
             max_grad_norm: float = 0.5,
             use_sde: bool = False,
             sde_sample_freq: int = -1,
-            target_kl: Optional[float] = None,
+            target_kl: Optional[float] = 0.1,
             tensorboard_log: Optional[str] = None,
             policy_kwargs: Optional[Dict[str, Any]] = None,
             verbose: int = 0,
@@ -1381,9 +1381,10 @@ class CleanDerivativeFreeSPAR(PPO):
                         entropy_loss = -th.mean(entropy)
 
                     entropy_losses.append(entropy_loss.item())
+                    coef = self.ent_coef if update_ego else self.dstb_ent_coef
                     pl = policy_loss#_ego if update_ego else policy_loss_adv
                     self.ego_params = self.policy.ctrl_optimizer.param_groups[0]['params']
-                    loss = pl + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+                    loss = pl + coef * entropy_loss + self.vf_coef * value_loss
 
                     # Calculate approximate form of reverse KL Divergence for early stopping
                     # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417

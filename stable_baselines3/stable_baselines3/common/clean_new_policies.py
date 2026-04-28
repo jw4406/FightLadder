@@ -321,7 +321,10 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             evaluate = True
         else:
             num_adversaries = self.num_adversaries
-        mean_or_logit_dstb_actions = th.zeros((latent_pi_dstb.shape[0], self.dstb_action_space.shape[0])).to(self.device)
+        sample_dstb_net = next(iter(self.dstb_action_net.values()))
+        head = sample_dstb_net[-1] if isinstance(sample_dstb_net, nn.Sequential) else sample_dstb_net
+        n_logits = head.out_features
+        mean_or_logit_dstb_actions = th.zeros((latent_pi_dstb.shape[0], n_logits), device=self.device)
         latents_per_adv = latent_pi_dstb.shape[0] // num_adversaries
         for i in range(len(buf_num)):
             chunk = slice(buf_num[i] * latents_per_adv, (buf_num[i]+1) * latents_per_adv)
@@ -359,6 +362,14 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
                 distributions.append(self.dstb_action_dist[buf_num[i]].proba_distribution(mean_actions=mean_or_logit_dstb_actions[chunk], log_std=self.dstb_log_std[key]))
             return distributions
             #return [self.dstb_action_dist[buf_num[i]].proba_distribution(mean_actions=dstb_actions[buf_num[i] * latents_per_adv : (buf_num[i]+1) * latents_per_adv, :], log_std=self.dstb_log_std[select_matchup_env(self.matchups, buf_num[i], self.envs_per_matchup)]) for i in range(len(buf_num))]
+        elif isinstance(self.dstb_action_dist[buf_num[i]], MultiCategoricalDistribution):
+            for i in range(len(buf_num)):
+                key = select_matchup_env(self.matchups, buf_num[i], self.envs_per_matchup)
+                chunk = slice(buf_num[i] * latents_per_adv, (buf_num[i]+1) * latents_per_adv)
+                if evaluate:
+                    chunk = slice(0 * latents_per_adv, 1 * latents_per_adv)
+                distributions.append(self.dstb_action_dist[buf_num[i]].proba_distribution(action_logits=mean_or_logit_dstb_actions[chunk]))
+            return distributions
         else:
             raise ValueError("Invalid action distribution")
         
