@@ -35,7 +35,7 @@ PRETRAIN = True
 FINETUNE = False
 EVAL = False
 SAVE_FREQ = 10000  # Save a checkpoint every 10,000 steps
-TOTAL_TIMESTEPS = 100_000_000_000
+#TOTAL_TIMESTEPS = 150_000_000
 
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -668,6 +668,7 @@ def main(args):
                 envs_per_matchup=args.envs_per_matchup,
                 env_generator_func=env_generator,
                 num_adversaries=num_adversary,
+                clip_range=clip_range_schedule,
                 n_env_per_adv=args.num_env // num_adversary,
                 seed= 0,
                 target_kl=None,
@@ -878,7 +879,7 @@ def main(args):
     #finetune_epoch_model_path = os.path.join(args.save_dir, args.model_name_prefix + f"_final_steps")
     lr_schedule = 1e-4  # if args.async_update else linear_schedule(2.5e-4, 2.5e-6)
     other_lr_schedule = 1e-4  # if args.async_update else linear_schedule(2.5e-4/args.other_timescale, 2.5e-6/args.other_timescale)
-    clip_range_schedule = 0.1  # if args.async_update else linear_schedule(0.15, 0.025)
+    clip_range_schedule = linear_schedule(0.15, 0.025)  # if args.async_update else linear_schedule(0.15, 0.025)
     if REMOVAL is None:
         temp_env = env_generator(args, STATE=STATE)
         args.num_env = temp_env.num_envs
@@ -994,7 +995,7 @@ def main(args):
             else:
                 raise ValueError(f"Invalid adv style: {args.adv_style}")
             model.learn(
-                total_timesteps=TOTAL_TIMESTEPS,
+                total_timesteps=args.total_timesteps,
                 num_perturbs = args.num_perturbs,
                 callback=[checkpoint_callback, file_queue_callback, video_callback], update_ego=update_ego, update_adversary=update_adversary, run_ego_forward=True, run_adv_forward=True,
                 zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action
@@ -1067,7 +1068,7 @@ if __name__ == "__main__":
     parser.add_argument('--use_mirror', choices=['True', 'False'], help='Use mirror', required=True, default='False')
     parser.add_argument('--async_update', choices=['True', 'False'], help='Async update', required=True, default='False')
     parser.add_argument('--model_arch_type', type=str, help='Model architecture type', default="spar", required=True, choices=["spar", "ippo", "2timescale"])
-    #parser.add_argument('--total_steps', type=int, help='How many total steps to train', default=int(1e8))
+    parser.add_argument('--total_timesteps', type=int, help='How many total steps to train', default=int(1e8))
     #parser.add_argument('--num_workers', type=int, help='Number of workers', default=5)
     #parser.add_argument('--num_adversary', type=int, help='Number of adversaries', default=1)
     #parser.add_argument('--n_global_env', type=int, help='Number of global environments', default=1)

@@ -170,6 +170,7 @@ class CleanDerivativeFreeSPAR(PPO):
             n_steps=n_steps,
             gamma=gamma,
             gae_lambda=gae_lambda,
+            clip_range=clip_range,
             ent_coef=ent_coef,
             vf_coef=vf_coef,
             max_grad_norm=max_grad_norm,
