@@ -118,6 +118,48 @@ def _parse_records(br_rewards_dir):
     return records
 
 
+def _aggregate_replicates(records):
+    """
+    Collapse replicates to one record per
+        (timestep, matchup_key, direction, exp_type)
+    via arithmetic mean.
+
+    Multiple br_idx files at the same (timestep, matchup, side, exp_type) are
+    independent samples of the same exploitability measurement (different
+    BR seeds, same target). Averaging them gives a single per-bucket value
+    that's stable enough to plot directly without the per-replicate scatter.
+
+    Selfplay values are also averaged across replicates within the bucket.
+    The returned list has one record per bucket; br_idx is set to None and
+    a new "replicate_count" field exposes how many samples contributed (so
+    plot legends or summary lines can surface it if useful).
+    """
+    grouped = defaultdict(list)
+    for rec in records:
+        key = (
+            rec["timestep"],
+            rec["matchup_key"],
+            rec["direction"],
+            rec["exp_type"] or "continue",
+        )
+        grouped[key].append(rec)
+
+    aggregated = []
+    for _, group in grouped.items():
+        template = dict(group[0])
+        template["value"] = sum(r["value"] for r in group) / len(group)
+        sp_vals = [r.get("selfplay_value") for r in group if r.get("selfplay_value") is not None]
+        template["selfplay_value"] = (
+            sum(sp_vals) / len(sp_vals) if sp_vals else None
+        )
+        template["replicate_count"] = len(group)
+        template["br_idx"] = None
+        # Force exp_type to the canonical bucket value (legacy "" -> "continue").
+        template["exp_type"] = group[0]["exp_type"] or "continue"
+        aggregated.append(template)
+    return aggregated
+
+
 def _compute_selfplay_means(records):
     """
     Average selfplay_value across the two direction-samples of the same
@@ -398,47 +440,29 @@ def _plot_per_matchup(records, out_dir):
         m_records = sorted(m_records, key=lambda x: (x["timestep"], x["direction"]))
 
         # Four BR series: (continue, dedicated) × (main_left, main_right).
-        # Per replicate we plot a separate scatter point at the replicate's
-        # (timestep, value); per (type, direction) we also draw a line
-        # through the per-timestep MEAN across replicates so the trend is
-        # readable without averaging away the spread. Legacy records with
-        # no exp_type field are bucketed as "continue" since the original
-        # pre-suffix BR runs were continue-mode by default.
+        # Records arriving here have already been replicate-averaged in
+        # _process_run, so each (timestep, direction, exp_type) bucket has
+        # exactly one value. We plot a single line per series, marker
+        # filled (continue) or hollow (dedicated). Legacy records without
+        # an explicit exp_type are bucketed as "continue" by the
+        # aggregator.
         for exp_type in ("continue", "dedicated"):
             for direction in ("main_left", "main_right"):
-                d_recs = [
-                    r for r in m_records
-                    if r["direction"] == direction
-                    and (r["exp_type"] or "continue") == exp_type
-                ]
+                d_recs = sorted(
+                    (r for r in m_records
+                     if r["direction"] == direction
+                     and (r["exp_type"] or "continue") == exp_type),
+                    key=lambda r: r["timestep"],
+                )
                 if not d_recs:
                     continue
-                # Per-timestep mean for the line.
-                by_ts = defaultdict(list)
-                for r in d_recs:
-                    by_ts[r["timestep"]].append(r["value"])
-                ts_sorted = sorted(by_ts.keys())
-                mean_ys = [
-                    sum(by_ts[t]) / len(by_ts[t]) for t in ts_sorted
-                ]
+                xs = [r["timestep"] for r in d_recs]
+                ys = [r["value"] for r in d_recs]
                 color = color_by_direction[direction]
                 marker = marker_by_direction[direction]
-                # Scatter every replicate at full alpha so spread is visible.
-                ax.scatter(
-                    [r["timestep"] for r in d_recs],
-                    [r["value"] for r in d_recs],
-                    color=color,
-                    marker=marker,
-                    s=28,
-                    alpha=0.55,
-                    facecolors=("none" if exp_type == "dedicated" else color),
-                    edgecolors=color,
-                    linewidths=1.0,
-                )
-                # Trend line through per-timestep means.
                 ax.plot(
-                    ts_sorted,
-                    mean_ys,
+                    xs,
+                    ys,
                     color=color,
                     linestyle=linestyle_by_exp[exp_type],
                     linewidth=1.4,
@@ -510,6 +534,13 @@ def _process_run(input_dir, output_dir, label, selfplay_dir=None):
         return {"label": label, "count": 0}
 
     selfplay_paired = _attach_selfplay_values(records, selfplay_dir)
+    raw_count = len(records)
+
+    # Collapse replicates: multiple (br_idx) files for the same (timestep,
+    # matchup, direction, exp_type) get averaged into one record. Plotters
+    # downstream then see one point per (timestep, matchup, direction,
+    # exp_type) instead of N separate replicates.
+    records = _aggregate_replicates(records)
 
     pairs = _build_pairs(records)
     states, left_set, right_set, matchups, timesteps = _infer_sets(records)
@@ -518,8 +549,8 @@ def _process_run(input_dir, output_dir, label, selfplay_dir=None):
     print(f"  Rewards folder: {input_dir}")
     print(f"  Output folder:  {output_dir}")
     if selfplay_dir:
-        print(f"  Selfplay folder: {selfplay_dir} (paired={selfplay_paired}/{len(records)})")
-    print(f"  Parsed file count: {len(records)}")
+        print(f"  Selfplay folder: {selfplay_dir} (paired={selfplay_paired}/{raw_count})")
+    print(f"  Parsed file count: {raw_count} (after replicate-mean aggregation: {len(records)})")
     print(f"  Timestep count: {len(timesteps)}")
     print(f"  Matchup count: {len(matchups)}")
     print(f"  left_set (ego_list candidate): {left_set}")

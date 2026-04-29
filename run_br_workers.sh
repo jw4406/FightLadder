@@ -31,7 +31,7 @@ LEAGUE_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/ma/"
 # )
 LEAGUE_MATCHUP_STATES=()
 USE_MIRROR="False"
-NUM_FULL_EXPLOITERS="1"
+NUM_FULL_EXPLOITERS="2"
 NUM_CONTINUE_EXPLOITERS="1"
 MAX_CONCURRENT_JOBS="0"  # 0 = auto-compute from NUM_CORES. -1 = unlimited.
 NUM_CORES="32"  # CPU cores for this worker. 0 = auto-detect. Divide total cores by NUM_WORKERS.
@@ -63,7 +63,7 @@ STAGNATION_MIN_SLOPE_CHECKS="12"
 N_ENVS="1"
 # TASK_DIR=""  # Optional: set this to pass --task_dir
 DEDICATED_EXPLOITER="True"
-CONTINUE_EXPLOITERS="True"
+CONTINUE_EXPLOITERS="False"
 EXPLOITER_SAVE_FREQ="1000"
 RESET="round"
 SIDE="both"

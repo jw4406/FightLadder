@@ -78,7 +78,7 @@ if not os.listdir(TASK_DIR):
     print("Warning: The TASK_DIR is empty. Please run ippo.py --player PLAYER to generate a task file.")
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
-BR_TRAINING_STEPS = 150000
+BR_TRAINING_STEPS = 15000
 
 
 def _reap_finished(active: List[mp.Process]) -> List[mp.Process]:
