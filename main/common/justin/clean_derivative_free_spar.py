@@ -141,7 +141,7 @@ class CleanDerivativeFreeSPAR(PPO):
             use_mirror=False,
             num_workers=None,
             scheduler_step_size: int=10, #TODO: 10 was chosen arbitrarily - should be changed.
-            use_wandb: bool = True,
+            use_wandb: bool = False,
             use_stagnation_early_stop: bool = False,
             use_stagnation_velocity_signal: bool = True,
             use_stagnation_entropy_signal: bool = True,
