@@ -348,9 +348,16 @@ def main() -> None:
     # filename via FILENAME_RE; legacy unprefixed files still match because
     # the style group in that regex is optional.
     style_prefix = f"{args.training_style}_" if args.training_style else ""
+    # Disambiguator suffix: encodes exploiter type (continue vs dedicated)
+    # and br_index so multiple exploiters of the same side and matchup
+    # don't overwrite each other's reward files. Aggregate parses these
+    # to plot continue and dedicated as separate series and to keep
+    # replicates as separate scatter points.
+    exp_type = "dedicated" if args.dedicated_exploiter else "continue"
     filename = (
         f"{style_prefix}{model.num_timesteps}_main_{main_side}_{main_name}_"
-        f"exploiter_{exploiter_side}_{exploiter_name}_.txt"
+        f"exploiter_{exploiter_side}_{exploiter_name}_"
+        f"{exp_type}_br{args.br_index}_.txt"
     )
     with open(os.path.join(br_rewards_folder, filename), "w") as f:
         f.write(str(np.mean(exploiter_rewards)))

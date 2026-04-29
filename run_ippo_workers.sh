@@ -14,7 +14,7 @@ IPPO_PATH="${SCRIPT_DIR}/main/ippo.py"
 
 # Arguments from launch.json (Python Debugger: ippo.py)
 PLAYER=("Guile")
-OPPONENTS=("Sagat" "Ryu" "EHonda" "Blanka" "Ryu" "Dhalsim" "Zangief" "ChunLi" "Guile" "Ken" "Balrog" "MBison")
+OPPONENTS=("Sagat" "Ryu" "EHonda")
 NUM_ENV_TO_LOAD="1"
 ENV_BATCH_SIZE="24"
 C_LR="1e-5"
@@ -30,11 +30,11 @@ USE_MIRROR="False"
 SAVE_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/"
 USE_LR_ANNEALING="False"
 LR_ANNEAL_COEFF=".995"
-CHECKPOINT_INTERVAL="20000"
+CHECKPOINT_INTERVAL="2000"
 TOTAL_TIMESTEPS="150000000"
-TRAINING_BATCH_SIZE="256"
+TRAINING_BATCH_SIZE="128"
 TRANSFORM_ACTION="True"
-NUM_ENV_STEPS="512"
+NUM_ENV_STEPS="256"
 EGO_STYLE="learning"
 ADV_STYLE="learning"
 ENVS_PER_MATCHUP="2"

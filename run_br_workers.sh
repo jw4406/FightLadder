@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Number of parallel new_br_worker instances to run
-NUM_WORKERS=2
+NUM_WORKERS=1
 # If True, run each worker detached with nohup and log redirection.
 # If False, run without nohup in the current shell.
 RUN_LIVE="False"
@@ -20,7 +20,7 @@ PROJ_NAME="br_training_ema_test_2"
 ANALYSIS_UPLOAD_PROJ_NAME="br_analysis"
 LOAD_BR="False"
 WHICH_ENV="my_pendulum"
-IS_LEAGUE="True"
+IS_LEAGUE="False"
 LEAGUE_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/ma/"
 # League matchup states (required when IS_LEAGUE="True"). Space-separated retro state strings.
 # Example for Ryu vs {Guile, Sagat, EHonda}:
@@ -34,7 +34,7 @@ USE_MIRROR="False"
 NUM_FULL_EXPLOITERS="1"
 NUM_CONTINUE_EXPLOITERS="1"
 MAX_CONCURRENT_JOBS="0"  # 0 = auto-compute from NUM_CORES. -1 = unlimited.
-NUM_CORES="16"  # CPU cores for this worker. 0 = auto-detect. Divide total cores by NUM_WORKERS.
+NUM_CORES="32"  # CPU cores for this worker. 0 = auto-detect. Divide total cores by NUM_WORKERS.
 DEBUG="False"
 BR_TRACKER_PATIENCE="300"
 USE_BR_REWARD_STAGNATION="False"
@@ -60,10 +60,10 @@ STAGNATION_USE_SLOPE_EARLY_STOP="False"
 STAGNATION_SLOPE_WINDOW="20"
 STAGNATION_SLOPE_TOLERANCE="5e-3"
 STAGNATION_MIN_SLOPE_CHECKS="12"
-N_ENVS="2"
+N_ENVS="1"
 # TASK_DIR=""  # Optional: set this to pass --task_dir
 DEDICATED_EXPLOITER="True"
-CONTINUE_EXPLOITERS="False"
+CONTINUE_EXPLOITERS="True"
 EXPLOITER_SAVE_FREQ="1000"
 RESET="round"
 SIDE="both"

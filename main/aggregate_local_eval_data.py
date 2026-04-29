@@ -9,12 +9,16 @@ from matplotlib.lines import Line2D
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# Optional <style>_ prefix (league|ippo|spar|2timescale|...) is captured but
-# allowed to be absent so legacy reward files still match.
+# Optional <style>_ prefix (league|ippo|spar|2timescale|...) and optional
+# <exp_type>_br<idx> suffix are captured but allowed to be absent so legacy
+# reward files still match. exp_type ∈ {continue, dedicated} distinguishes
+# continue-vs-from-scratch BR runs; br_idx is the per-job replicate index.
 FILENAME_RE = re.compile(
     r"^(?:(?P<style>[A-Za-z0-9]+)_)?"
     r"(?P<timestep>\d+)_main_(?P<main_side>left|right)_(?P<main_char>[A-Za-z0-9]+)"
-    r"_exploiter_(?P<exploiter_side>left|right)_(?P<exploiter_char>[A-Za-z0-9]+)_\.txt$"
+    r"_exploiter_(?P<exploiter_side>left|right)_(?P<exploiter_char>[A-Za-z0-9]+)"
+    r"(?:_(?P<exp_type>continue|dedicated)_br(?P<br_idx>\d+))?"
+    r"_\.txt$"
 )
 
 
@@ -99,6 +103,14 @@ def _parse_records(br_rewards_dir):
         # Style may be None (legacy unprefixed files); normalize to "" so
         # downstream code can treat it uniformly.
         rec["style"] = rec.get("style") or ""
+        # Exploiter-type and replicate index are also optional (legacy files
+        # don't carry them). Normalize: exp_type "" → treated as "continue"
+        # in plotting since legacy data was de-facto continue-mode; br_idx
+        # stays None when absent so downstream can detect "no replicate
+        # info" if needed.
+        rec["exp_type"] = rec.get("exp_type") or ""
+        br_idx_str = rec.get("br_idx")
+        rec["br_idx"] = int(br_idx_str) if br_idx_str is not None else None
         # Selfplay value populated later by _attach_selfplay_values once
         # the matching sibling folder is known.
         rec["selfplay_value"] = None
@@ -239,13 +251,19 @@ def _plot_master(records, pairs_by_timestep_matchup, out_dir):
     color_by_matchup = {k: cmap(i / denom) for i, k in enumerate(matchup_keys)}
     marker_by_direction = {"main_left": "o", "main_right": "^"}
 
-    # Scatter BR points (one per direction-record, filled markers).
+    # Scatter BR points. Continue-mode = filled, dedicated-mode = hollow,
+    # so the master plot can show both without expanding the color palette.
+    # Legacy records (exp_type == "") render as continue (filled) since
+    # pre-suffix runs were de-facto continue-mode.
     for rec in records:
+        is_dedicated = (rec.get("exp_type") or "continue") == "dedicated"
+        color = color_by_matchup[rec["matchup_key"]]
         ax.scatter(
             rec["timestep"], rec["value"],
-            color=color_by_matchup[rec["matchup_key"]],
+            facecolors=("none" if is_dedicated else color),
+            edgecolors=color,
             marker=marker_by_direction[rec["direction"]],
-            s=55, alpha=0.9,
+            s=55, alpha=0.9, linewidths=1.2,
         )
 
     # Connect paired BR points at same timestep/matchup (existing solid line).
@@ -309,16 +327,26 @@ def _plot_master(records, pairs_by_timestep_matchup, out_dir):
 
     legend_handles = left_handles + right_handles
 
-    # Append a small "metric" legend group at the end so the reader can
-    # tell BR from the averaged selfplay marker. Only added when any
-    # record has a selfplay value (otherwise it's noise on a BR-only plot).
-    if any(rec.get("selfplay_value") is not None for rec in records):
+    # Metric/exploiter-type legend group. Always include the continue vs
+    # dedicated entries when any record carries an explicit exp_type, so
+    # the filled/hollow convention is documented inline. Selfplay entry
+    # only appears if any selfplay data was paired.
+    has_explicit_exp_type = any(rec.get("exp_type") for rec in records)
+    if has_explicit_exp_type:
         legend_handles.append(
             Line2D(
                 [0], [0], marker="o", color="black", linestyle="None",
-                markersize=7, label="BR (filled circle/triangle)",
+                markersize=7, label="continue (filled)",
             )
         )
+        legend_handles.append(
+            Line2D(
+                [0], [0], marker="o", color="black", linestyle="None",
+                markersize=7, markerfacecolor="none", markeredgewidth=1.2,
+                label="dedicated (hollow)",
+            )
+        )
+    if any(rec.get("selfplay_value") is not None for rec in records):
         legend_handles.append(
             Line2D(
                 [0], [0], marker="s", color="black", linestyle="None",
@@ -356,6 +384,11 @@ def _plot_per_matchup(records, out_dir):
 
     marker_by_direction = {"main_left": "o", "main_right": "^"}
     color_by_direction = {"main_left": "#1f77b4", "main_right": "#ff7f0e"}
+    # Continue and dedicated share the per-direction color but differ by
+    # line style and marker fill — gives a consistent "left = blue, right
+    # = orange" reading across the two exploiter types without needing a
+    # 4-color palette.
+    linestyle_by_exp = {"continue": "-", "dedicated": "--"}
 
     style = _dominant_style(records)
     name_prefix = f"{style}_" if style else ""
@@ -364,22 +397,58 @@ def _plot_per_matchup(records, out_dir):
         fig, ax = plt.subplots(figsize=(10, 6))
         m_records = sorted(m_records, key=lambda x: (x["timestep"], x["direction"]))
 
-        for direction in ("main_left", "main_right"):
-            d_recs = [r for r in m_records if r["direction"] == direction]
-            if not d_recs:
-                continue
-            xs = [r["timestep"] for r in d_recs]
-            ys = [r["value"] for r in d_recs]
-            ax.plot(
-                xs,
-                ys,
-                marker=marker_by_direction[direction],
-                color=color_by_direction[direction],
-                linewidth=1.2,
-                markersize=5,
-                alpha=0.9,
-                label=f"BR {direction}",
-            )
+        # Four BR series: (continue, dedicated) × (main_left, main_right).
+        # Per replicate we plot a separate scatter point at the replicate's
+        # (timestep, value); per (type, direction) we also draw a line
+        # through the per-timestep MEAN across replicates so the trend is
+        # readable without averaging away the spread. Legacy records with
+        # no exp_type field are bucketed as "continue" since the original
+        # pre-suffix BR runs were continue-mode by default.
+        for exp_type in ("continue", "dedicated"):
+            for direction in ("main_left", "main_right"):
+                d_recs = [
+                    r for r in m_records
+                    if r["direction"] == direction
+                    and (r["exp_type"] or "continue") == exp_type
+                ]
+                if not d_recs:
+                    continue
+                # Per-timestep mean for the line.
+                by_ts = defaultdict(list)
+                for r in d_recs:
+                    by_ts[r["timestep"]].append(r["value"])
+                ts_sorted = sorted(by_ts.keys())
+                mean_ys = [
+                    sum(by_ts[t]) / len(by_ts[t]) for t in ts_sorted
+                ]
+                color = color_by_direction[direction]
+                marker = marker_by_direction[direction]
+                # Scatter every replicate at full alpha so spread is visible.
+                ax.scatter(
+                    [r["timestep"] for r in d_recs],
+                    [r["value"] for r in d_recs],
+                    color=color,
+                    marker=marker,
+                    s=28,
+                    alpha=0.55,
+                    facecolors=("none" if exp_type == "dedicated" else color),
+                    edgecolors=color,
+                    linewidths=1.0,
+                )
+                # Trend line through per-timestep means.
+                ax.plot(
+                    ts_sorted,
+                    mean_ys,
+                    color=color,
+                    linestyle=linestyle_by_exp[exp_type],
+                    linewidth=1.4,
+                    marker=marker,
+                    markersize=5,
+                    markerfacecolor=("none" if exp_type == "dedicated" else color),
+                    markeredgecolor=color,
+                    alpha=0.95,
+                    label=f"{exp_type} {direction}",
+                )
 
         # Selfplay overlay: ONE averaged line per matchup. The two
         # direction-records at the same timestep are two samples of the
