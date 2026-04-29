@@ -965,10 +965,11 @@ def main(args):
             #if hasattr(model, "num_adversaries"):
             #    for i in range(model.num_adversaries):
             #        model.adversaries[i]._setup_learn(model.adversaries[i].num_timesteps)
-            wandb.init(project="dfs_simple_ego_only",
-                       entity='jw4406',
-                       config={"eval_rew": 0,
-                               "epochs": 0})
+            if args.use_wandb:
+                wandb.init(project="dfs_simple_ego_only",
+                           entity='jw4406',
+                           config={"eval_rew": 0,
+                                   "epochs": 0})
             #test = CleanDerivativeFreeSPAR.load("/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/ppo_Guile_32000_steps.task")
             model.policy.to(model.device)
 
@@ -1018,7 +1019,6 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    wandb.login(key='d95a51c4001b862123a34a3853fe0306906d2f07')
     #parser.add_argument("--player", type=str, required=True)
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
     parser.add_argument("--opponents", type=str, nargs='+', required=False, default=None, help="One or more opponents.")
@@ -1069,10 +1069,17 @@ if __name__ == "__main__":
     parser.add_argument('--async_update', choices=['True', 'False'], help='Async update', required=True, default='False')
     parser.add_argument('--model_arch_type', type=str, help='Model architecture type', default="spar", required=True, choices=["spar", "ippo", "2timescale"])
     parser.add_argument('--total_timesteps', type=int, help='How many total steps to train', default=int(1e8))
+    parser.add_argument('--use_wandb', choices=['True', 'False'], help='Enable Weights & Biases logging', default='False')
     #parser.add_argument('--num_workers', type=int, help='Number of workers', default=5)
     #parser.add_argument('--num_adversary', type=int, help='Number of adversaries', default=1)
     #parser.add_argument('--n_global_env', type=int, help='Number of global environments', default=1)
     args = parser.parse_args()
+    args.use_wandb = args.use_wandb == 'True'
+    if not args.use_wandb:
+        os.environ["WANDB_DISABLED"] = "true"
+        os.environ["WANDB_MODE"] = "disabled"
+    else:
+        wandb.login(key='d95a51c4001b862123a34a3853fe0306906d2f07')
     args.async_update = True if args.async_update == 'True' else False
     args.use_mirror = True if args.use_mirror == 'True' else False
     args.render = True if args.render == 'True' else False

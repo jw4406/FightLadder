@@ -1639,7 +1639,7 @@ if __name__ == "__main__":
     parser.add_argument('--transform_action', choices=['True', 'False'], help='Transform action space to MultiDiscrete', default='False')
     parser.add_argument('--seed', type=int, help='Seed', default=0)
     parser.add_argument('--launch_local_br_eval', choices=['True', 'False'], help='Launch local br eval', default='False')
-    parser.add_argument('--use_wandb', choices=['True', 'False'], help='Enable Weights & Biases logging', default='True')
+    parser.add_argument('--use_wandb', choices=['True', 'False'], help='Enable Weights & Biases logging', default='False')
     parser.add_argument(
         '--device',
         type=str,
