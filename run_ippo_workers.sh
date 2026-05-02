@@ -14,7 +14,7 @@ IPPO_PATH="${SCRIPT_DIR}/main/ippo.py"
 
 # Arguments from launch.json (Python Debugger: ippo.py)
 PLAYER=("Guile")
-OPPONENTS=("Sagat" "Ryu" "EHonda")
+OPPONENTS=("Sagat" "Ryu") 
 NUM_ENV_TO_LOAD="1"
 ENV_BATCH_SIZE="24"
 C_LR="1e-5"
