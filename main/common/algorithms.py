@@ -5354,6 +5354,9 @@ class Exploiter(PPO):
         br_slope_window: int = 20,
         br_slope_tolerance: float = 5e-3,
         br_min_slope_checks: int = 10,
+        entropy_stop_ratio: float = 0.15,
+        entropy_window_size: int = 50,
+        entropy_warmup_checks: int = 100,
         use_wandb: bool = True,
     ):
 
@@ -5394,6 +5397,14 @@ class Exploiter(PPO):
         self.br_slope_window = int(br_slope_window)
         self.br_slope_tolerance = float(br_slope_tolerance)
         self.br_min_slope_checks = int(br_min_slope_checks)
+        # Entropy-window early-stop knobs (forwarded to the tracker).
+        # Stop fires when the running mean of EMA-smoothed rollout
+        # entropy over the last `entropy_window_size` checks drops to
+        # <= `entropy_stop_ratio` * initial entropy, after at least
+        # `entropy_warmup_checks` checks have elapsed.
+        self.entropy_stop_ratio = float(entropy_stop_ratio)
+        self.entropy_window_size = int(entropy_window_size)
+        self.entropy_warmup_checks = int(entropy_warmup_checks)
         self.br_convergence_tracker = RatingStagnationTracker(
             patience=self.br_tracker_patience,
             tolerance=self.br_tracker_tolerance,
@@ -5409,6 +5420,9 @@ class Exploiter(PPO):
             slope_window=self.br_slope_window,
             slope_tolerance=self.br_slope_tolerance,
             min_slope_checks=self.br_min_slope_checks,
+            entropy_stop_ratio=self.entropy_stop_ratio,
+            entropy_window_size=self.entropy_window_size,
+            entropy_warmup_checks=self.entropy_warmup_checks,
             enable_local_entropy_plot=True,
             enable_local_reward_plot=True,
             local_plot_prefix="dedicated_exploiter",

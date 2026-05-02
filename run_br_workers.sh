@@ -43,6 +43,13 @@ BR_USE_SLOPE_EARLY_STOP="False"
 BR_SLOPE_WINDOW="20"
 BR_SLOPE_TOLERANCE="5e-3"
 BR_MIN_SLOPE_CHECKS="12"
+# BR exploiter entropy-window early-stop knobs (RatingStagnationTracker).
+# Stop fires when mean of the last ENTROPY_WINDOW_SIZE smoothed-entropy
+# values <= ENTROPY_STOP_RATIO * initial entropy, after at least
+# ENTROPY_WARMUP_CHECKS checks have elapsed.
+ENTROPY_STOP_RATIO="0.05"
+ENTROPY_WINDOW_SIZE="50"
+ENTROPY_WARMUP_CHECKS="100"
 # Continue-exploiter CDS stagnation controls
 USE_STAGNATION_EARLY_STOP="True"
 USE_STAGNATION_VELOCITY_SIGNAL="False"
@@ -64,7 +71,7 @@ N_ENVS="1"
 # TASK_DIR=""  # Optional: set this to pass --task_dir
 DEDICATED_EXPLOITER="True"
 CONTINUE_EXPLOITERS="False"
-EXPLOITER_SAVE_FREQ="1000"
+EXPLOITER_SAVE_FREQ="100000"
 RESET="round"
 SIDE="both"
 RENDER="False"
@@ -115,6 +122,9 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --br_slope_window "${BR_SLOPE_WINDOW}"
         --br_slope_tolerance "${BR_SLOPE_TOLERANCE}"
         --br_min_slope_checks "${BR_MIN_SLOPE_CHECKS}"
+        --entropy_stop_ratio "${ENTROPY_STOP_RATIO}"
+        --entropy_window_size "${ENTROPY_WINDOW_SIZE}"
+        --entropy_warmup_checks "${ENTROPY_WARMUP_CHECKS}"
         --use_stagnation_early_stop "${USE_STAGNATION_EARLY_STOP}"
         --use_stagnation_velocity_signal "${USE_STAGNATION_VELOCITY_SIGNAL}"
         --use_stagnation_entropy_signal "${USE_STAGNATION_ENTROPY_SIGNAL}"

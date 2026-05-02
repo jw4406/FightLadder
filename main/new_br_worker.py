@@ -78,7 +78,7 @@ if not os.listdir(TASK_DIR):
     print("Warning: The TASK_DIR is empty. Please run ippo.py --player PLAYER to generate a task file.")
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
-BR_TRAINING_STEPS = 15000
+BR_TRAINING_STEPS = 150000000
 
 
 def _reap_finished(active: List[mp.Process]) -> List[mp.Process]:
@@ -1103,6 +1103,9 @@ def train_best_response(
     launch_local_br_eval: bool = False,
     use_wandb: bool = True,
     output_subdir: str = "",
+    entropy_stop_ratio: float = 0.15,
+    entropy_window_size: int = 50,
+    entropy_warmup_checks: int = 100,
 ) -> None:
     """
     The core logic for a single best-response training run.
@@ -1112,6 +1115,12 @@ def train_best_response(
             local_br_eval.py via --output_subdir. See _derive_spar_run_subdir
             and the league-branch computation in __main__ for how this is
             populated by the launcher.
+        entropy_stop_ratio / entropy_window_size / entropy_warmup_checks:
+            forwarded to the BR Exploiter's RatingStagnationTracker.
+            Together they define when the entropy-window early stop fires:
+            after `entropy_warmup_checks` checks have elapsed, if the
+            mean of the last `entropy_window_size` smoothed-entropy values
+            is <= `entropy_stop_ratio` * initial-entropy, training stops.
         TODO: Complete this.
     """
     checkpoint_path = task_file_path
@@ -1173,6 +1182,9 @@ def train_best_response(
         br_slope_window=br_slope_window,
         br_slope_tolerance=br_slope_tolerance,
         br_min_slope_checks=br_min_slope_checks,
+        entropy_stop_ratio=entropy_stop_ratio,
+        entropy_window_size=entropy_window_size,
+        entropy_warmup_checks=entropy_warmup_checks,
         use_wandb=use_wandb,
         verbose=1,
     )
@@ -1425,6 +1437,9 @@ def run_br_for_task_in_subprocess(
     is_league: bool = False,
     league_matchup_states: Optional[List[str]] = None,
     output_subdir: str = "",
+    entropy_stop_ratio: float = 0.15,
+    entropy_window_size: int = 50,
+    entropy_warmup_checks: int = 100,
 ) -> None:
     """
     Worker function for running a single BR training instance in a separate process.
@@ -1432,6 +1447,9 @@ def run_br_for_task_in_subprocess(
 
     *output_subdir* is forwarded to train_best_response and from there to
     local_br_eval.py so its outputs land in a per-training-process folder.
+
+    *entropy_*_* knobs* are forwarded to train_best_response and used to
+    parameterize the BR Exploiter's RatingStagnationTracker.
     """
     _ensure_cpu_only_env(device)
     if not use_wandb:
@@ -1578,6 +1596,9 @@ def run_br_for_task_in_subprocess(
         launch_local_br_eval=launch_local_br_eval,
         use_wandb=use_wandb,
         output_subdir=output_subdir,
+        entropy_stop_ratio=entropy_stop_ratio,
+        entropy_window_size=entropy_window_size,
+        entropy_warmup_checks=entropy_warmup_checks,
     )
 
 
@@ -1613,6 +1634,12 @@ if __name__ == "__main__":
     parser.add_argument("--br_slope_window", type=int, default=20, help="Number of BR checks to fit slope for plateau detection.")
     parser.add_argument("--br_slope_tolerance", type=float, default=5e-3, help="Normalized BR slope threshold for plateau-based stopping.")
     parser.add_argument("--br_min_slope_checks", type=int, default=10, help="Minimum BR checks before slope-based stopping can trigger.")
+    # Entropy-window early-stop knobs (passed to RatingStagnationTracker
+    # inside Exploiter). Stop fires when the running mean of EMA-smoothed
+    # rollout entropy drops to <= entropy_stop_ratio * (initial entropy).
+    parser.add_argument("--entropy_stop_ratio", type=float, default=0.15, help="Fraction of initial rollout entropy at which the BR exploiter early-stops (default 0.15 = 15%%).")
+    parser.add_argument("--entropy_window_size", type=int, default=50, help="Number of stagnation checks to average entropy over for the stop-ratio test.")
+    parser.add_argument("--entropy_warmup_checks", type=int, default=100, help="Stagnation checks that must elapse before the entropy-window stop can trigger.")
     parser.add_argument("--use_stagnation_early_stop", choices=['True', 'False'], default='False', help="Use stagnation tracker for CDS early stopping (continue exploiters).")
     parser.add_argument("--use_stagnation_velocity_signal", choices=['True', 'False'], default='False', help="Use rating-movement velocity in CDS stagnation tracker (continue exploiters).")
     parser.add_argument("--use_stagnation_entropy_signal", choices=['True', 'False'], default='True', help="Use entropy signal in CDS stagnation tracker (continue exploiters).")
@@ -1745,10 +1772,13 @@ if __name__ == "__main__":
     if args.task_dir is not None and args.task_dir != "":
         print(f"WARNING: Using custom task directory: {args.task_dir}")
         todo_dir = os.path.join(args.task_dir, "todo")
-    processing_dir = os.path.join(TASK_DIR, "processing")
-    error_dir = os.path.join(TASK_DIR, "error")
-    done_dir = os.path.join(TASK_DIR, "done")
-    stop_file = os.path.join(TASK_DIR, "STOP")
+    this_file_parents = os.path.dirname(os.path.abspath(__file__))
+    this_file_task_dir = this_file_parents + "/trained_models/tasks/"
+    processing_dir = os.path.join(this_file_task_dir, "processing")
+
+    error_dir = os.path.join(this_file_task_dir, "error")
+    done_dir = os.path.join(this_file_task_dir, "done")
+    stop_file = os.path.join(this_file_task_dir, "STOP")
     curr_dir = os.path.dirname(os.path.abspath(__file__))
 
     # if os.path.isfile(curr_dir + "/myfile.txt"):
@@ -1898,7 +1928,12 @@ if __name__ == "__main__":
                     # is_league/league_matchup_states defaults, so we pass the
                     # newer output_subdir as a kwarg rather than filling in
                     # unrelated positional defaults.
-                    training_kwargs = {"output_subdir": output_subdir}
+                    training_kwargs = {
+                        "output_subdir": output_subdir,
+                        "entropy_stop_ratio": args.entropy_stop_ratio,
+                        "entropy_window_size": args.entropy_window_size,
+                        "entropy_warmup_checks": args.entropy_warmup_checks,
+                    }
                     if args.DEBUG:
                         print(
                             "DEBUG: Launching BR job "
@@ -2190,7 +2225,12 @@ if __name__ == "__main__":
                     # Pass output_subdir as a kwarg to mirror the SPAR launch
                     # path; keeps the positional tuple stable so future param
                     # additions don't have to backfill defaults.
-                    training_kwargs = {"output_subdir": output_subdir}
+                    training_kwargs = {
+                        "output_subdir": output_subdir,
+                        "entropy_stop_ratio": args.entropy_stop_ratio,
+                        "entropy_window_size": args.entropy_window_size,
+                        "entropy_warmup_checks": args.entropy_warmup_checks,
+                    }
                     if args.DEBUG:
                         print(
                             "DEBUG: Launching league BR job "
