@@ -1,28 +1,25 @@
 """
-SLURM orchestrator for **dedicated** (from-scratch) BR exploiter jobs.
+SLURM orchestrator for **per-matchup continue** BR exploiter jobs.
 
-Watches a TASK_DIR for `.task` files (mirrors new_br_worker.py's polling
-pattern). When a task arrives:
-  1. Atomically claims it (rename to processing/).
-  2. Detects the model type (CDS spar/ippo or league).
-  3. Computes per-training-process output_subdir + training_style.
-  4. Builds dedicated job specs via `_build_dedicated_job_specs` —
-     one spec per (state, side, replicate).
-  5. For each spec, writes a per-job .sbatch file under
-     <slurm_log_dir>/<task_stem>/<spec>.sbatch and submits via `sbatch`.
-  6. Records `[<job_ids>]` in `processing/<task>_folder/_jobs.json`.
+Mental model (per the user):
+  "Generate the full factorial 1v1 matchup set. For each matchup, continue
+  the relevant side's training. For 2 egos × 3 advs you get 6 matchups; in
+  each one, the BR copy of that side continues training while the other
+  side is loaded from the same checkpoint."
 
-ASYNC: after submission the orchestrator does NOT block. On every
-subsequent loop iteration it sweeps `processing/`, checks each registered
-task's job ids via `squeue`, and when none of them remain, moves the
-task folder to `done/`.
+Per-matchup continue exploitation has the same scheduling shape as
+dedicated mode (one spec per matchup × side × replicate), so we reuse
+`build_dedicated_job_specs`. The only difference is downstream: the spawn
+sbatch runs `br_single_continue.py` instead of `br_single_matchup.py`,
+which forwards `from_scratch=False` to run_br_for_task_in_subprocess and
+the backend skips the FixedMatchupPolicyAdapter wrap so CDS's own learn
+loop can update the live model in-place.
 
-Continue-mode is handled by the parallel `br_continue_slurm_orchestrator.py`.
-
-All shared machinery (sbatch generation, sweeper, model-type detection,
-output_subdir, shared-config builder, CLI scaffolding) lives in
-`br_slurm_common.py` so this script and the continue-mode sibling stay
-in lockstep automatically.
+LEAGUE: per-matchup continue for league requires loading the right MA
+weights for the specific matchup into the LeaguePPO's policy_other (and
+similar for the ego side), which `_run_league_continue_exploiter`
+currently does not support. The orchestrator detects league tasks and
+prints a clear message + skips them so they don't get processed wrongly.
 """
 import argparse
 import os
@@ -36,7 +33,6 @@ socket.setdefaulttimeout(None)
 from new_br_worker import (
     TASK_DIR,
     _extract_unique_states_from_task,
-    _infer_league_matchup_states_from_dir,
     _sanitize_for_filename,
 )
 from br_preflight import build_dedicated_job_specs
@@ -47,12 +43,10 @@ from br_slurm_common import (
     build_python_cmd,
     build_shared_config,
     claim_task,
-    copy_aux_files,
     derive_output_subdir,
     detect_model_type,
     have_sbatch,
     normalize_bool_args,
-    peek_league_side_and_matchup,
     submit_sbatch,
     sweep_completed_tasks,
     write_registry,
@@ -67,63 +61,57 @@ def _process_task(
     processing_path: str,
     processing_folder: str,
 ) -> List[str]:
-    """
-    Detect type, build dedicated specs, write+submit one sbatch per spec,
-    return the list of submitted job ids (empty on dry_run).
-    """
-    print(f"[orch-dedicated] Processing task: {task_filename}")
-    print(f"[orch-dedicated] Processing path: {processing_path}")
+    print(f"[orch-continue] Processing task: {task_filename}")
+    print(f"[orch-continue] Processing path: {processing_path}")
 
     model_type = detect_model_type(processing_path, device="cpu")
     is_league = (model_type == "league")
-    print(f"[orch-dedicated] Detected model_type={model_type} (is_league={is_league})")
-
-    output_subdir = derive_output_subdir(processing_path, model_type, args.todo_dir)
-    training_style = "league" if is_league else model_type
-    print(f"[orch-dedicated] output_subdir={output_subdir!r} "
-          f"training_style={training_style!r}")
+    print(f"[orch-continue] Detected model_type={model_type} (is_league={is_league})")
 
     if is_league:
-        copy_aux_files(args.todo_dir, processing_folder)
-        league_states = _infer_league_matchup_states_from_dir(processing_path)
-        unique_states = list(league_states)
-        # Side flip: loaded LEFT task → BR trains right (eval_prot=True);
-        # loaded RIGHT task → BR trains left (eval_prot=False). Same
-        # convention as new_br_worker.py's league branch.
-        loaded_side, _matchup_key = peek_league_side_and_matchup(processing_path)
-        if loaded_side not in ("left", "right"):
-            raise ValueError(
-                f"League task {task_filename!r} has invalid side="
-                f"{loaded_side!r}; expected 'left' or 'right'."
-            )
-        eval_prot_for_this_task = (loaded_side == "left")
-        run_eval_prot = eval_prot_for_this_task
-        run_eval_adv = not eval_prot_for_this_task
-        print(
-            f"[orch-dedicated] League loaded_side={loaded_side} -> "
-            f"eval_prot={run_eval_prot} eval_adv={run_eval_adv}"
+        # League per-matchup continue is not yet supported. Surface a clear
+        # message and bail out. The .task stays in the processing folder
+        # with a stub registry so the user can move it back to todo for
+        # the dedicated orchestrator (or hand-process it).
+        msg = (
+            "[orch-continue] LEAGUE per-matchup continue is not yet "
+            "supported. Skipping this task without dispatching jobs. "
+            "Move the .task back to todo/ to retry, or run "
+            "br_slurm_orchestrator.py (dedicated) instead."
         )
-    else:
-        league_states = None
-        unique_states = _extract_unique_states_from_task(processing_path, device="cpu")
-        run_eval_prot = args.eval_prot
-        run_eval_adv = args.eval_adv
+        print(msg)
+        with open(os.path.join(processing_folder, "_skipped.txt"), "w") as f:
+            f.write(msg + "\n")
+        return []
 
+    output_subdir = derive_output_subdir(processing_path, model_type, args.todo_dir)
+    training_style = model_type
+    print(f"[orch-continue] output_subdir={output_subdir!r} "
+          f"training_style={training_style!r}")
+
+    unique_states = _extract_unique_states_from_task(processing_path, device="cpu")
+    run_eval_prot = args.eval_prot
+    run_eval_adv = args.eval_adv
+
+    # Reuse the dedicated spec builder — per-matchup × side × replicate
+    # cross-product is identical for continue mode. The downstream runner
+    # script (br_single_continue.py) is what forces from_scratch=False.
     specs = build_dedicated_job_specs(
         unique_states=unique_states,
-        replicates_per_matchup=args.num_full_exploiters,
+        replicates_per_matchup=args.num_continue_exploiters,
         run_eval_prot=run_eval_prot,
         run_eval_adv=run_eval_adv,
         launch_local_br_eval=args.launch_local_br_eval,
         state_to_matchup=state2matchup,
     )
-    print(f"[orch-dedicated] Built {len(specs)} dedicated job specs "
+    print(f"[orch-continue] Built {len(specs)} continue job specs "
           f"({len(unique_states)} matchups x replicates="
-          f"{args.num_full_exploiters} x sides=[ego={run_eval_prot}, adv={run_eval_adv}])")
+          f"{args.num_continue_exploiters} x sides=[ego={run_eval_prot}, "
+          f"adv={run_eval_adv}])")
 
     if not specs:
-        print("[orch-dedicated] No specs to submit (eval_prot/eval_adv both "
-              "False?). Returning task to done immediately.")
+        print("[orch-continue] No specs to submit. Returning task to done "
+              "immediately.")
         return []
 
     task_stem = os.path.splitext(task_filename)[0]
@@ -142,7 +130,7 @@ def _process_task(
 
     repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     runner_script = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "br_single_matchup.py")
+        os.path.join(os.path.dirname(__file__), "br_single_continue.py")
     )
 
     extra_sbatch_lines = ""
@@ -153,8 +141,12 @@ def _process_task(
     for spec in specs:
         side_label = "ego" if spec["eval_prot"] else "adv"
         matchup_safe = spec.get("matchup_label") or "unknown"
+        # "cont_" prefix in the job name so dedicated and continue
+        # squeue rows are easy to disambiguate when both orchestrators
+        # are running.
         job_name = (
-            f"br_{output_subdir}_{matchup_safe}_{side_label}_rep{spec['replicate_idx']}"
+            f"cont_{output_subdir}_{matchup_safe}_{side_label}_"
+            f"rep{spec['replicate_idx']}"
         )
         out_log = os.path.join(slurm_log_dir, f"{job_name}.out")
         err_log = os.path.join(slurm_log_dir, f"{job_name}.err")
@@ -172,8 +164,8 @@ def _process_task(
             matchup_label=spec.get("matchup_label"),
             output_subdir=output_subdir,
             training_style=training_style,
-            is_league=is_league,
-            league_matchup_states=league_states,
+            is_league=False,  # league is bailed out above
+            league_matchup_states=None,
             shared_config_json=shared_config_json,
         )
 
@@ -201,12 +193,12 @@ def _process_task(
                 local_err_log=err_log,
             )
         except subprocess.CalledProcessError as exc:
-            print(f"[orch-dedicated] sbatch FAILED for {sbatch_path}: {exc}; "
+            print(f"[orch-continue] sbatch FAILED for {sbatch_path}: {exc}; "
                   "continuing with remaining specs.")
             continue
         if job_id is not None:
             submitted.append(job_id)
-            print(f"[orch-dedicated] Submitted job_id={job_id} "
+            print(f"[orch-continue] Submitted job_id={job_id} "
                   f"script={sbatch_path}")
 
     return submitted
@@ -215,18 +207,23 @@ def _process_task(
 # ----------------------------- CLI -----------------------------
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="SLURM orchestrator for dedicated (from-scratch) BR "
-                    "exploiter jobs. One sbatch per (matchup, side, replicate).",
+        description="SLURM orchestrator for per-matchup continue BR "
+                    "exploiter jobs. CDS-only; league tasks are skipped "
+                    "with a clear message.",
     )
+    # Use distinct processing/done dirs so this orchestrator and the
+    # dedicated one don't try to claim each other's tasks. The user runs
+    # one or the other by convention; if both are running, the first to
+    # rename wins per task — same TODO_DIR is fine.
     add_shared_arguments(
         parser,
-        default_processing_subdir="slurm_processing",
-        default_done_subdir="slurm_done",
-        default_stop_file="STOP_SLURM",
+        default_processing_subdir="slurm_processing_continue",
+        default_done_subdir="slurm_done_continue",
+        default_stop_file="STOP_SLURM_CONTINUE",
     )
-    # Dedicated-only knob.
-    parser.add_argument("--num_full_exploiters", type=int, default=3,
-                        help="Replicates per (matchup, side).")
+    parser.add_argument("--num_continue_exploiters", type=int, default=1,
+                        help="Replicates per (matchup, side) for continue "
+                             "mode.")
     return parser
 
 
@@ -238,19 +235,20 @@ def main() -> None:
     os.makedirs(args.done_dir, exist_ok=True)
     os.makedirs(args.slurm_log_dir, exist_ok=True)
 
-    print(f"[orch-dedicated] Watching todo_dir={args.todo_dir}")
-    print(f"[orch-dedicated] processing_dir={args.processing_dir}")
-    print(f"[orch-dedicated] done_dir={args.done_dir}")
-    print(f"[orch-dedicated] slurm_log_dir={args.slurm_log_dir}")
-    print(f"[orch-dedicated] stop_file={args.stop_file}")
-    print(f"[orch-dedicated] dry_run={args.dry_run}")
+    print(f"[orch-continue] Watching todo_dir={args.todo_dir}")
+    print(f"[orch-continue] processing_dir={args.processing_dir}")
+    print(f"[orch-continue] done_dir={args.done_dir}")
+    print(f"[orch-continue] slurm_log_dir={args.slurm_log_dir}")
+    print(f"[orch-continue] stop_file={args.stop_file}")
+    print(f"[orch-continue] dry_run={args.dry_run}")
+    print(f"[orch-continue] num_continue_exploiters={args.num_continue_exploiters}")
     if have_sbatch():
-        print("[orch-dedicated] sbatch detected; jobs will be submitted to SLURM.")
+        print("[orch-continue] sbatch detected; jobs will be submitted to SLURM.")
     else:
-        print("[orch-dedicated] sbatch NOT on PATH; falling back to local "
+        print("[orch-continue] sbatch NOT on PATH; falling back to local "
               "`bash <sbatch>` execution. SBATCH directives are ignored as "
               "comments. Per-job stdout/stderr go to the same log paths.")
-    print(f"[orch-dedicated] SLURM: partition={args.slurm_partition} "
+    print(f"[orch-continue] SLURM: partition={args.slurm_partition} "
           f"time={args.slurm_time} mem={args.slurm_mem} "
           f"gres={args.slurm_gres} cpus={args.slurm_cpus_per_task}")
 
@@ -258,7 +256,7 @@ def main() -> None:
         try:
             sweep_completed_tasks(args.processing_dir, args.done_dir)
         except Exception as exc:
-            print(f"[orch-dedicated] sweeper error (non-fatal): {exc}")
+            print(f"[orch-continue] sweeper error (non-fatal): {exc}")
 
         claim = claim_task(args.todo_dir, args.processing_dir)
         if claim is None:
@@ -272,16 +270,16 @@ def main() -> None:
                 "submitted_at": time.time(),
                 "job_ids": job_ids,
                 "dry_run": args.dry_run,
-                "mode": "dedicated",
+                "mode": "continue",
             })
         except Exception as exc:
             err_path = os.path.join(processing_folder, "_dispatch_error.txt")
             with open(err_path, "w") as f:
                 f.write(f"{type(exc).__name__}: {exc}\n")
-            print(f"[orch-dedicated] dispatch error for {task_filename}: "
+            print(f"[orch-continue] dispatch error for {task_filename}: "
                   f"{exc}; see {err_path}")
 
-    print(f"[orch-dedicated] Stop file detected at {args.stop_file}; exiting.")
+    print(f"[orch-continue] Stop file detected at {args.stop_file}; exiting.")
 
 
 if __name__ == "__main__":

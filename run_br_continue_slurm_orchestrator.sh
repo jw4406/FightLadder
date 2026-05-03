@@ -1,38 +1,42 @@
 #!/bin/bash
-# Launch the SLURM orchestrator as a long-running watchdog. It watches
-# ${TODO_DIR} for .task files and, for each one, sbatches one SLURM job per
-# (matchup, side, replicate) dedicated spec. Mirrors the variable layout of
-# run_br_workers.sh so the two scripts stay easy to diff against each other.
+# Launch the per-matchup continue BR SLURM orchestrator as a long-running
+# watchdog. Mirrors run_br_slurm_orchestrator.sh's variable layout so the
+# two are easy to diff. CDS-only; league tasks are skipped with a clear
+# message inside the orchestrator.
 
 set -euo pipefail
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-# Path to br_slurm_orchestrator.py
-ORCH_PATH="${SCRIPT_DIR}/main/br_slurm_orchestrator.py"
+# Path to br_continue_slurm_orchestrator.py
+ORCH_PATH="${SCRIPT_DIR}/main/br_continue_slurm_orchestrator.py"
 
 # --- Watchdog / paths ---
-# Where incoming .task files appear. For league, also the dir containing
-# sibling .pt files needed for matchup state inference.
+# Same TODO_DIR as the dedicated orchestrator is OK — both watchers race
+# to atomically rename each .task; whichever wins handles it. By
+# convention you typically run only one orchestrator at a time. The
+# processing/done dirs are distinct so the two never collide on
+# in-flight state even when both are running.
 TODO_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo"
-PROCESSING_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/tasks/slurm_processing"
-DONE_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/tasks/slurm_done"
+PROCESSING_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/tasks/slurm_processing_continue"
+DONE_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/tasks/slurm_done_continue"
 SLURM_LOG_DIR="${SCRIPT_DIR}/slurm_logs"
-STOP_FILE="/home/jw4406/codebase/FightLadder/main/trained_models/tasks/STOP_SLURM"
+STOP_FILE="/home/jw4406/codebase/FightLadder/main/trained_models/tasks/STOP_SLURM_CONTINUE"
 
 # --- Job-side parity with new_br_worker (drives shared_config_json) ---
 EVAL_PROT="True"
 EVAL_ADV="True"
 EVAL_ONLY="False"
-PROJ_NAME="br_training_slurm"
+PROJ_NAME="br_training_slurm_continue"
 ANALYSIS_UPLOAD_PROJ_NAME="br_analysis"
 USE_MIRROR="False"
-NUM_FULL_EXPLOITERS="5"
+NUM_CONTINUE_EXPLOITERS="1"
 N_ENVS="2"
 EXPLOITER_SAVE_FREQ="100000"
 
-# BR convergence tracker
+# BR convergence tracker (used inside Exploiter; harmless in continue mode
+# but threaded for parity with dedicated orchestrator).
 BR_TRACKER_PATIENCE="300"
 BR_TRACKER_TOLERANCE="1e-4"
 BR_TRACKER_WINDOW_SIZE="50"
@@ -48,8 +52,7 @@ ENTROPY_STOP_RATIO="0.05"
 ENTROPY_WINDOW_SIZE="50"
 ENTROPY_WARMUP_CHECKS="100"
 
-# Continue-mode CDS stagnation knobs (unused in dedicated mode but
-# threaded for parity).
+# CDS continue-mode stagnation knobs (active in this orchestrator).
 USE_STAGNATION_EARLY_STOP="True"
 USE_STAGNATION_VELOCITY_SIGNAL="False"
 USE_STAGNATION_ENTROPY_SIGNAL="True"
@@ -85,11 +88,11 @@ SLURM_TIME="12:00:00"
 SLURM_MEM="16G"
 SLURM_GRES="gpu:1"
 SLURM_CPUS_PER_TASK="4"
-SLURM_ACCOUNT=""              # set if your cluster requires --account
+SLURM_ACCOUNT=""
 PYTHON_BIN="python"
-ENV_SETUP=""                  # e.g. "module load cuda; source /path/to/venv/bin/activate"
+ENV_SETUP=""
 
-DRY_RUN="True"               # "True" to write sbatch scripts without submitting
+DRY_RUN="False"
 
 # --- Logs ---
 LOGS_DIR="${SCRIPT_DIR}/logs"
@@ -108,7 +111,7 @@ CMD=(
     --proj_name "${PROJ_NAME}"
     --analysis_upload_proj_name "${ANALYSIS_UPLOAD_PROJ_NAME}"
     --use_mirror "${USE_MIRROR}"
-    --num_full_exploiters "${NUM_FULL_EXPLOITERS}"
+    --num_continue_exploiters "${NUM_CONTINUE_EXPLOITERS}"
     --n_envs "${N_ENVS}"
     --exploiter_save_freq "${EXPLOITER_SAVE_FREQ}"
     --br_tracker_patience "${BR_TRACKER_PATIENCE}"
@@ -164,8 +167,8 @@ if [ -n "${ENV_SETUP}" ]; then
     CMD+=(--env_setup "${ENV_SETUP}")
 fi
 
-echo "Starting br_slurm_orchestrator..."
-nohup "${CMD[@]}" > "${LOGS_DIR}/br_slurm_orchestrator.log" 2>&1 &
-echo "Orchestrator started with PID $!"
-echo "Log: ${LOGS_DIR}/br_slurm_orchestrator.log"
+echo "Starting br_continue_slurm_orchestrator..."
+nohup "${CMD[@]}" > "${LOGS_DIR}/br_continue_slurm_orchestrator.log" 2>&1 &
+echo "Continue orchestrator started with PID $!"
+echo "Log: ${LOGS_DIR}/br_continue_slurm_orchestrator.log"
 echo "Touch ${STOP_FILE} to stop the watchdog (in-flight SLURM jobs are unaffected)."

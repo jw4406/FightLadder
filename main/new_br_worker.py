@@ -1243,6 +1243,74 @@ def train_best_response(
             # n_envs than the checkpoint's loading env (mirrors LeaguePPO logic
             # at _continue_train_loaded_league_model).
             actual_n_envs = ftm.env.num_envs
+
+            # ---- Per-matchup continue topology override ----------------
+            # When a single-state subset is provided (per-matchup continue
+            # exploiter), reshape the model's view of its own topology to
+            # "1 adversary × n_envs slots, all on this matchup". CDS's
+            # collect_rollouts/train loops route slot i -> adv i (via
+            # `i*envs_per_matchup`), and the policy's per-matchup head
+            # dicts are keyed by f"{matchup}_{adv_index}". Since num_adv
+            # collapses to 1, the loop produces lookup key f"{matchup}_0",
+            # which doesn't exist in the loaded policy (the trained head
+            # is at f"{matchup}_<X>"). We add an alias entry on each
+            # per-matchup ModuleDict so f"{matchup}_0" points to the same
+            # nn.Module instance as f"{matchup}_<X>" — gradients update
+            # the original head's params during training. The save-time
+            # state_dict will contain duplicate entries under both keys
+            # (acceptable for analysis snapshots; not for round-tripping
+            # back into a multi-matchup training pipeline).
+            if (
+                is_spar_like
+                and dedicated_state_subset is not None
+                and len(dedicated_state_subset) >= 1
+                and not from_scratch
+            ):
+                _dedicated_state = dedicated_state_subset[0]
+                _fixed_matchup_idx = _resolve_matchup_index_for_state(ftm, _dedicated_state)
+                _matchup_label = ftm.matchups[_fixed_matchup_idx * ftm.envs_per_matchup]
+                _new_key = f"{_matchup_label}_0"
+                _old_key = f"{_matchup_label}_{_fixed_matchup_idx}"
+                _aliased = []
+                for _attr_name in ("value_net", "dstb_action_net"):
+                    _head_dict = getattr(ftm.policy, _attr_name, None)
+                    if _head_dict is None:
+                        continue
+                    if _old_key in _head_dict and _new_key not in _head_dict:
+                        _head_dict[_new_key] = _head_dict[_old_key]
+                        _aliased.append(_attr_name)
+                # Slice the elo trackers down to the single-matchup view.
+                if hasattr(ftm, "elo_adversary_ratings") and len(ftm.elo_adversary_ratings) > _fixed_matchup_idx:
+                    ftm.elo_adversary_ratings = ftm.elo_adversary_ratings[
+                        _fixed_matchup_idx:_fixed_matchup_idx + 1
+                    ].copy()
+                if hasattr(ftm, "elo_games_played") and len(ftm.elo_games_played) > _fixed_matchup_idx:
+                    ftm.elo_games_played = ftm.elo_games_played[
+                        _fixed_matchup_idx:_fixed_matchup_idx + 1
+                    ].copy()
+                # Override topology on the model AND the policy. The buffer
+                # reinit immediately below uses ftm.num_adversaries to size
+                # adversary_buffers, so this must happen first.
+                ftm.matchups = [_matchup_label] * actual_n_envs
+                ftm.envs_per_matchup = actual_n_envs
+                ftm.num_adversaries = 1
+                if hasattr(ftm.policy, "matchups"):
+                    ftm.policy.matchups = ftm.matchups
+                if hasattr(ftm.policy, "envs_per_matchup"):
+                    ftm.policy.envs_per_matchup = ftm.envs_per_matchup
+                if hasattr(ftm.policy, "num_adversaries"):
+                    ftm.policy.num_adversaries = ftm.num_adversaries
+                if hasattr(ftm.policy, "num_env_per_adv"):
+                    ftm.policy.num_env_per_adv = actual_n_envs
+                print(
+                    "[continue] Per-matchup topology override applied: "
+                    f"matchup_label={_matchup_label}, "
+                    f"fixed_matchup_idx={_fixed_matchup_idx}, "
+                    f"-> num_adversaries=1, envs_per_matchup={actual_n_envs}, "
+                    f"head alias {_old_key} -> {_new_key} on {_aliased}.",
+                    flush=True,
+                )
+
             if ftm.n_envs != actual_n_envs:
                 from stable_baselines3.common.buffers import DictRolloutBuffer, Q_RolloutBuffer
                 from gymnasium import spaces
@@ -1259,7 +1327,11 @@ def train_best_response(
                 )
                 if hasattr(ftm, "adversary_buffers") and ftm.adversary_buffers is not None:
                     adversary_buffers = []
-                    for _ in range(len(ftm.adversary_buffers)):
+                    # Use ftm.num_adversaries (post-override) so the per-
+                    # matchup continue case ends up with exactly one adv
+                    # buffer; full continue keeps the loaded length since
+                    # num_adversaries was unchanged.
+                    for _ in range(int(ftm.num_adversaries)):
                         adversary_buffers.append(
                             buffer_cls(
                                 ftm.n_steps,
@@ -1508,19 +1580,35 @@ def run_br_for_task_in_subprocess(
                 raise ValueError("state_subset was provided but empty.")
             dedicated_state = state_subset[0]
             dedicated_state_list_for_env = [dedicated_state for _ in range(n_envs)]
-            fixed_matchup_idx = _resolve_matchup_index_for_state(loaded_model, dedicated_state)
-
-            # Wrap exploited CDS policy so forward calls always use the selected
-            # matchup head. This avoids CDS full-topology assumptions breaking
-            # while still allowing single-matchup BR specialization.
-            loaded_model.policy = _FixedMatchupPolicyAdapter(
-                loaded_model.policy, fixed_matchup_idx=fixed_matchup_idx
-            )
-            print(
-                "Dedicated CDS adapter configured: "
-                f"state={dedicated_state}, fixed_matchup_idx={fixed_matchup_idx}, "
-                f"replicated_env_count={n_envs}"
-            )
+            if from_scratch:
+                # Dedicated CDS exploiter: wrap policy so all forwards on the
+                # exploited model route through one fixed matchup head. The
+                # adapter is consumed by Exploiter.collect_rollouts at
+                # *inference* time (BR is the trained side, exploited model
+                # is frozen).
+                #
+                # Continue mode is intentionally NOT wrapped: ftm.learn(...)
+                # runs CDS's own training loop and calls self.policy(...)
+                # with kwargs the adapter rejects, which would crash mid-
+                # update. With a single-state subset the env is already
+                # restricted to one matchup, so CDS routes data through the
+                # correct head naturally without the adapter.
+                fixed_matchup_idx = _resolve_matchup_index_for_state(loaded_model, dedicated_state)
+                loaded_model.policy = _FixedMatchupPolicyAdapter(
+                    loaded_model.policy, fixed_matchup_idx=fixed_matchup_idx
+                )
+                print(
+                    "Dedicated CDS adapter configured: "
+                    f"state={dedicated_state}, fixed_matchup_idx={fixed_matchup_idx}, "
+                    f"replicated_env_count={n_envs}"
+                )
+            else:
+                print(
+                    "Continue CDS exploiter on single-matchup subset: "
+                    f"state={dedicated_state}, replicated_env_count={n_envs} "
+                    "(skipping FixedMatchupPolicyAdapter — CDS will route "
+                    "data through the matching head via the env's state list)."
+                )
         if exploiter_save_freq * len(loaded_model.matchups) > BR_TRAINING_STEPS:
             print("-------------------------------------------\n\n ")
             print("ERROR!")

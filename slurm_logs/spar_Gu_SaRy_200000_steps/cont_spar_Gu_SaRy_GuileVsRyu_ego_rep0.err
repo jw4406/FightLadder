@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "/home/jw4406/codebase/FightLadder/main/br_single_continue.py", line 167, in <module>
+    main()
+  File "/home/jw4406/codebase/FightLadder/main/br_single_continue.py", line 95, in main
+    run_br_for_task_in_subprocess(
+  File "/home/jw4406/codebase/FightLadder/main/new_br_worker.py", line 1566, in run_br_for_task_in_subprocess
+    train_best_response(
+  File "/home/jw4406/codebase/FightLadder/main/new_br_worker.py", line 1354, in train_best_response
+    br_model_path = exploiter_callback.model_path
+AttributeError: 'ExploiterCheckpointCallback' object has no attribute 'model_path'
