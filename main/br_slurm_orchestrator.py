@@ -154,7 +154,7 @@ def _process_task(
         side_label = "ego" if spec["eval_prot"] else "adv"
         matchup_safe = spec.get("matchup_label") or "unknown"
         job_name = (
-            f"br_{output_subdir}_{matchup_safe}_{side_label}_rep{spec['replicate_idx']}"
+            f"br_{output_subdir}_{matchup_safe}_{side_label}_rep{spec['replicate_idx']}_{task_stem}"
         )
         out_log = os.path.join(slurm_log_dir, f"{job_name}.out")
         err_log = os.path.join(slurm_log_dir, f"{job_name}.err")
@@ -164,6 +164,7 @@ def _process_task(
             python_bin=args.python_bin,
             runner_script=runner_script,
             task_file=processing_path,
+            local_plot_dir=args.local_plot_dir,
             state=spec["state_subset"][0],
             eval_prot=spec["eval_prot"],
             replicate_idx=spec["replicate_idx"],
@@ -180,7 +181,6 @@ def _process_task(
         write_sbatch_script(
             sbatch_path=sbatch_path,
             job_name=job_name,
-            partition=args.slurm_partition,
             time_limit=args.slurm_time,
             mem=args.slurm_mem,
             gres=args.slurm_gres,
@@ -191,6 +191,8 @@ def _process_task(
             env_setup=args.env_setup,
             python_cmd=python_cmd,
             extra_sbatch_lines=extra_sbatch_lines,
+            workdir=args.workdir,
+            main_training_dir=args.main_training_dir,
         )
 
         try:
@@ -227,6 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Dedicated-only knob.
     parser.add_argument("--num_full_exploiters", type=int, default=3,
                         help="Replicates per (matchup, side).")
+    parser.add_argument("--local_plot_dir", type=str)
     return parser
 
 
@@ -250,7 +253,7 @@ def main() -> None:
         print("[orch-dedicated] sbatch NOT on PATH; falling back to local "
               "`bash <sbatch>` execution. SBATCH directives are ignored as "
               "comments. Per-job stdout/stderr go to the same log paths.")
-    print(f"[orch-dedicated] SLURM: partition={args.slurm_partition} "
+    print(f"[orch-dedicated] SLURM: "
           f"time={args.slurm_time} mem={args.slurm_mem} "
           f"gres={args.slurm_gres} cpus={args.slurm_cpus_per_task}")
 

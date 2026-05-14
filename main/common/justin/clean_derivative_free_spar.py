@@ -158,6 +158,7 @@ class CleanDerivativeFreeSPAR(PPO):
             stagnation_slope_window: int = 20,
             stagnation_slope_tolerance: float = 5e-3,
             stagnation_min_slope_checks: int = 10,
+            entropy_ratio_only: bool = False,
     ):
 
         self.matchups = [state2matchup(state) for state in state_list] if state_list is not None else None #This needs to happen before the super().__init__
@@ -254,6 +255,7 @@ class CleanDerivativeFreeSPAR(PPO):
         self.stagnation_slope_window_cfg = int(stagnation_slope_window)
         self.stagnation_slope_tolerance_cfg = float(stagnation_slope_tolerance)
         self.stagnation_min_slope_checks_cfg = int(stagnation_min_slope_checks)
+        self.entropy_ratio_only_cfg = bool(entropy_ratio_only)
         self.elo_initial_rating = 1000.0
         self.elo_k_factor = 24.0
         self._init_elo_trackers()
@@ -279,6 +281,7 @@ class CleanDerivativeFreeSPAR(PPO):
             slope_window=self.stagnation_slope_window_cfg,
             slope_tolerance=self.stagnation_slope_tolerance_cfg,
             min_slope_checks=self.stagnation_min_slope_checks_cfg,
+            entropy_ratio_only=self.entropy_ratio_only_cfg,
             enable_local_entropy_plot=True,
             enable_local_reward_plot=True,
             local_plot_prefix="continue_exploiter",
@@ -947,10 +950,14 @@ class CleanDerivativeFreeSPAR(PPO):
                     else "continue_exploiter_joint"
                 )
                 stop_key = getattr(self, "br_manual_stop_key", None)
+                ckpt_tag = getattr(self, "_checkpoint_basename", None)
                 if stop_key is not None and str(stop_key) != "":
-                    self.stagnation_tracker.local_plot_prefix = f"{base_plot_prefix}_{str(stop_key)}"
+                    prefix = f"{base_plot_prefix}_{str(stop_key)}"
                 else:
-                    self.stagnation_tracker.local_plot_prefix = base_plot_prefix
+                    prefix = base_plot_prefix
+                if ckpt_tag is not None:
+                    prefix = f"{prefix}_{ckpt_tag}"
+                self.stagnation_tracker.local_plot_prefix = prefix
                 self.stagnation_tracker.reset(self.elo_adversary_ratings)
             #from common.algorithms import Exploiter
             total_timesteps, callback = self._setup_learn(

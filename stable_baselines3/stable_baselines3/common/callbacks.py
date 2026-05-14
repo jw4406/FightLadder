@@ -343,11 +343,12 @@ class FileQueueTriggerCallback(CheckpointCallback):
     def __init__(self, task_dir: str, use_mirror: bool, num_workers: int, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.task_dir_todo = os.path.join(task_dir, "todo")
+        self.task_dir_todo_continue = os.path.join(task_dir, "todo_continue")
         self.use_mirror = use_mirror
         self.num_workers = num_workers
-        # Ensure the directory exists
         os.makedirs(self.task_dir_todo, exist_ok=True)
-        print(f"FileQueueTriggerCallback initialized. Task files will be created in: {self.task_dir_todo}")
+        os.makedirs(self.task_dir_todo_continue, exist_ok=True)
+        print(f"FileQueueTriggerCallback initialized. Task files will be created in: {self.task_dir_todo} + {self.task_dir_todo_continue}")
 
     def _on_step(self) -> None:
         """
@@ -423,6 +424,13 @@ cd main
 
             try:
                 os.rename(checkpoint_path, task_filepath)
+                continue_filepath = os.path.join(self.task_dir_todo_continue, task_filename)
+                try:
+                    os.link(task_filepath, continue_filepath)
+                except OSError as link_err:
+                    import shutil
+                    shutil.copy2(task_filepath, continue_filepath)
+                    print(f"CALLBACK: hardlink failed ({link_err}), copied to continue dir")
                 #TODO: Justin - time, output_log and error_lag are placeholders. Should probably be inputs. Note that _submit_br_worker has a return value (SLURM ID) that currently isn't used.
                 time = 8640
                 for i in range(self.num_workers):

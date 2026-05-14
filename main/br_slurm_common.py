@@ -127,17 +127,19 @@ def peek_league_side_and_matchup(model_path: str) -> Tuple[Optional[str], Option
 # ----------------------------- sbatch script generation -----------------------------
 SBATCH_TEMPLATE = """#!/bin/bash
 #SBATCH --job-name={job_name}
-#SBATCH --partition={partition}
 #SBATCH --time={time_limit}
 #SBATCH --mem={mem}
 #SBATCH --gres={gres}
 #SBATCH --cpus-per-task={cpus_per_task}
 #SBATCH --output={out_log}
 #SBATCH --error={err_log}
+#SBATCH --mail-type=begin
+#SBATCH --mail-type=end
+#SBATCH --mail-user=jw4406@princeton.edu
 {extra_sbatch_lines}
 set -euo pipefail
 cd {repo_dir}
-{env_setup}
+{data_dir_exports}{env_setup}
 {python_cmd}
 """
 
@@ -147,6 +149,7 @@ def build_python_cmd(
     python_bin: str,
     runner_script: str,
     task_file: str,
+    local_plot_dir: str,
     state: str,
     eval_prot: bool,
     replicate_idx: int,
@@ -181,6 +184,7 @@ def build_python_cmd(
     # line" UX while still being a valid bash array element.
     flag_groups: List[Tuple[str, List[str]]] = [
         ("--task_file", [task_file]),
+        ("--local_plot_dir", [local_plot_dir]),
         ("--state", [state]),
         ("--eval_prot", ["True" if eval_prot else "False"]),
         ("--replicate_idx", [str(replicate_idx)]),
@@ -212,7 +216,6 @@ def write_sbatch_script(
     *,
     sbatch_path: str,
     job_name: str,
-    partition: str,
     time_limit: str,
     mem: str,
     gres: str,
@@ -223,10 +226,18 @@ def write_sbatch_script(
     env_setup: str,
     python_cmd: str,
     extra_sbatch_lines: str,
+    workdir: str = "",
+    main_training_dir: str = "",
 ) -> None:
+    if workdir and main_training_dir:
+        data_dir_exports = (
+            f"export WORKDIR={shlex.quote(workdir)}\n"
+            f"export MAIN_TRAINING_DIR={shlex.quote(main_training_dir)}\n"
+        )
+    else:
+        data_dir_exports = ""
     contents = SBATCH_TEMPLATE.format(
         job_name=job_name,
-        partition=partition,
         time_limit=time_limit,
         mem=mem,
         gres=gres,
@@ -235,6 +246,7 @@ def write_sbatch_script(
         err_log=err_log,
         extra_sbatch_lines=extra_sbatch_lines,
         repo_dir=repo_dir,
+        data_dir_exports=data_dir_exports,
         env_setup=env_setup,
         python_cmd=python_cmd,
     )
@@ -530,6 +542,7 @@ def build_shared_config(args: argparse.Namespace, manual_stop_file: Optional[str
         "entropy_stop_ratio": args.entropy_stop_ratio,
         "entropy_window_size": args.entropy_window_size,
         "entropy_warmup_checks": args.entropy_warmup_checks,
+        "entropy_ratio_only": args.entropy_ratio_only == "True",
         "device": args.device,
         "manual_stop_file": manual_stop_file,
         "manual_stop_key": None,
@@ -696,6 +709,7 @@ def add_shared_arguments(parser: argparse.ArgumentParser, *, default_processing_
     parser.add_argument("--entropy_stop_ratio", type=float, default=0.15)
     parser.add_argument("--entropy_window_size", type=int, default=50)
     parser.add_argument("--entropy_warmup_checks", type=int, default=100)
+    parser.add_argument("--entropy_ratio_only", choices=["True", "False"], default="False")
 
     # Game args
     parser.add_argument("--reset", choices=["round", "match", "game"], default="round")
@@ -710,7 +724,7 @@ def add_shared_arguments(parser: argparse.ArgumentParser, *, default_processing_
     parser.add_argument("--use_wandb", choices=["True", "False"], default="False")
 
     # SLURM
-    parser.add_argument("--slurm_partition", type=str, default="gpu")
+    #parser.add_argument("--slurm_partition", type=str, default="gpu")
     parser.add_argument("--slurm_time", type=str, default="12:00:00")
     parser.add_argument("--slurm_mem", type=str, default="16G")
     parser.add_argument("--slurm_gres", type=str, default="gpu:1")
@@ -718,6 +732,12 @@ def add_shared_arguments(parser: argparse.ArgumentParser, *, default_processing_
     parser.add_argument("--slurm_account", type=str, default="")
     parser.add_argument("--python_bin", type=str, default="python")
     parser.add_argument("--env_setup", type=str, default="")
+
+    # Data directory (forwarded to sbatch so workers save to $WORKDIR/$MAIN_TRAINING_DIR)
+    parser.add_argument("--workdir", type=str,
+                        default=os.environ.get("WORKDIR", ""))
+    parser.add_argument("--main_training_dir", type=str,
+                        default=os.environ.get("MAIN_TRAINING_DIR", ""))
 
     # Behavior
     parser.add_argument("--dry_run", choices=["True", "False"], default="False")

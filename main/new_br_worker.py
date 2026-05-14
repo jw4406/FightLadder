@@ -57,13 +57,15 @@ from br_preflight import (
 )
 # --- Configuration ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
-#print(current_dir)
-TASK_DIR = os.path.join(current_dir, "trained_models/tasks")
-#TASK_DIR = '/n/fs/magics/2415498/FightLadder/main/trained_models/tasks/'
-#PROCESSING_DIR = os.path.join(current_dir, "main/trained_models/tasks/processing")
-DONE_DIR = os.path.join(current_dir, "trained_models/tasks/done")
-#ERROR_DIR = os.path.join(current_dir, "main/trained_models/tasks/error")
-BR_MODEL_DIR = os.path.join(current_dir, "trained_models/tasks/br_models")
+_workdir = os.environ.get("WORKDIR")
+_main_training_dir = os.environ.get("MAIN_TRAINING_DIR")
+if _workdir and _main_training_dir:
+    _base_dir = os.path.join(_workdir, _main_training_dir, "FightLadder", "main")
+else:
+    _base_dir = current_dir
+TASK_DIR = os.path.join(_base_dir, "trained_models/tasks")
+DONE_DIR = os.path.join(_base_dir, "trained_models/tasks/done")
+BR_MODEL_DIR = os.path.join(_base_dir, "trained_models/tasks/br_models")
 #WR_STATS_DIR = os.path.join(current_dir, "main/trained_models/wr_stats")
 #MEAN_REW_STATS_DIR = os.path.join(current_dir, "main/trained_models/mean_rew_stats")
 os.makedirs(BR_MODEL_DIR, exist_ok=True)
@@ -78,7 +80,7 @@ if not os.listdir(TASK_DIR):
     print("Warning: The TASK_DIR is empty. Please run ippo.py --player PLAYER to generate a task file.")
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
-BR_TRAINING_STEPS = 150000000
+BR_TRAINING_STEPS = 10000000
 
 
 def _reap_finished(active: List[mp.Process]) -> List[mp.Process]:
@@ -1106,6 +1108,8 @@ def train_best_response(
     entropy_stop_ratio: float = 0.15,
     entropy_window_size: int = 50,
     entropy_warmup_checks: int = 100,
+    entropy_ratio_only: bool = False,
+    local_plot_dir: str = None,
 ) -> None:
     """
     The core logic for a single best-response training run.
@@ -1121,10 +1125,14 @@ def train_best_response(
             after `entropy_warmup_checks` checks have elapsed, if the
             mean of the last `entropy_window_size` smoothed-entropy values
             is <= `entropy_stop_ratio` * initial-entropy, training stops.
+        entropy_ratio_only: when True, ONLY the entropy-window ratio check
+            can trigger early stopping (EMA plateau and rating stagnation
+            are ignored). Manual stop files still work.
         TODO: Complete this.
     """
     checkpoint_path = task_file_path
     done_model_checkpoint_path = os.path.join(DONE_DIR, os.path.basename(checkpoint_path))
+    checkpoint_basename = os.path.splitext(os.path.basename(checkpoint_path))[0]
     ftm = model_to_exploit
     # --- This is where your specific BR logic goes ---
     # 1. Load the frozen opponent
@@ -1185,8 +1193,10 @@ def train_best_response(
         entropy_stop_ratio=entropy_stop_ratio,
         entropy_window_size=entropy_window_size,
         entropy_warmup_checks=entropy_warmup_checks,
+        entropy_ratio_only=entropy_ratio_only,
         use_wandb=use_wandb,
         verbose=1,
+        local_plot_dir=local_plot_dir,
     )
     br_agent.is_spar_like = is_spar_like # TODO: This is a stupid hack to get the BR agent to know if it is a SPAR model or not. Remove this once we have a better way to do this.
     # 4. Train the BR agent
@@ -1231,7 +1241,7 @@ def train_best_response(
         if from_scratch == True:
             if hasattr(br_agent, "br_convergence_tracker") and br_agent.br_convergence_tracker is not None:
                 matchup_tag = f"_{_sanitize_for_filename(matchup_label)}" if matchup_label is not None else ""
-                br_agent.br_convergence_tracker.local_plot_prefix = f"dedicated_exploiter_{stop_key}{matchup_tag}"
+                br_agent.br_convergence_tracker.local_plot_prefix = f"dedicated_exploiter_{stop_key}{matchup_tag}_{checkpoint_basename}"
             br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=train_callback)
         else:
             # if eval prot is True we are training an optimal adversary so we need to update the adversary
@@ -1370,6 +1380,7 @@ def train_best_response(
             ftm.stagnation_slope_window_cfg = int(stagnation_slope_window)
             ftm.stagnation_slope_tolerance_cfg = float(stagnation_slope_tolerance)
             ftm.stagnation_min_slope_checks_cfg = int(stagnation_min_slope_checks)
+            ftm.entropy_ratio_only_cfg = bool(entropy_ratio_only)
             if hasattr(ftm, "stagnation_tracker") and ftm.stagnation_tracker is not None:
                 tracker = ftm.stagnation_tracker
                 tracker.patience = int(stagnation_patience)
@@ -1386,8 +1397,12 @@ def train_best_response(
                 tracker.slope_window = max(2, int(stagnation_slope_window))
                 tracker.slope_tolerance = float(stagnation_slope_tolerance)
                 tracker.min_slope_checks = max(1, int(stagnation_min_slope_checks))
+                tracker.entropy_ratio_only = bool(entropy_ratio_only)
+                if local_plot_dir is not None:
+                    tracker.local_plot_dir = local_plot_dir
             ftm.use_wandb = use_wandb
             ftm.br_manual_stop_key = stop_key
+            ftm._checkpoint_basename = checkpoint_basename
             if is_spar_like:
 
                 ftm.learn(total_timesteps=BR_TRAINING_STEPS, callback=train_callback, update_ego=not eval_prot, update_adversary=eval_prot)
@@ -1425,7 +1440,7 @@ def train_best_response(
         #br_model_path = os.path.join(BR_MODEL_DIR, f"{br_model_name}_{br_interval_num}000_steps.zip")
         br_model_path = exploiter_callback.model_path
         if launch_local_br_eval:
-            subprocess.Popen(["python", local_plot_and_eval_file,
+            subprocess.run(["python", local_plot_and_eval_file,
             "--eval_prot", str(eval_prot),
             "--main_checkpoint_model_path", checkpoint_path,
             "--done_model_checkpoint_path", done_model_checkpoint_path,
@@ -1512,6 +1527,8 @@ def run_br_for_task_in_subprocess(
     entropy_stop_ratio: float = 0.15,
     entropy_window_size: int = 50,
     entropy_warmup_checks: int = 100,
+    entropy_ratio_only: bool = False,
+    local_plot_dir: str = None
 ) -> None:
     """
     Worker function for running a single BR training instance in a separate process.
@@ -1687,6 +1704,8 @@ def run_br_for_task_in_subprocess(
         entropy_stop_ratio=entropy_stop_ratio,
         entropy_window_size=entropy_window_size,
         entropy_warmup_checks=entropy_warmup_checks,
+        entropy_ratio_only=entropy_ratio_only,
+        local_plot_dir=local_plot_dir,
     )
 
 
@@ -1728,6 +1747,7 @@ if __name__ == "__main__":
     parser.add_argument("--entropy_stop_ratio", type=float, default=0.15, help="Fraction of initial rollout entropy at which the BR exploiter early-stops (default 0.15 = 15%%).")
     parser.add_argument("--entropy_window_size", type=int, default=50, help="Number of stagnation checks to average entropy over for the stop-ratio test.")
     parser.add_argument("--entropy_warmup_checks", type=int, default=100, help="Stagnation checks that must elapse before the entropy-window stop can trigger.")
+    parser.add_argument("--entropy_ratio_only", choices=['True', 'False'], default='False', help="When True, ONLY the entropy-window ratio check triggers early stopping (EMA plateau and rating stagnation are ignored). Manual stop files still work.")
     parser.add_argument("--use_stagnation_early_stop", choices=['True', 'False'], default='False', help="Use stagnation tracker for CDS early stopping (continue exploiters).")
     parser.add_argument("--use_stagnation_velocity_signal", choices=['True', 'False'], default='False', help="Use rating-movement velocity in CDS stagnation tracker (continue exploiters).")
     parser.add_argument("--use_stagnation_entropy_signal", choices=['True', 'False'], default='True', help="Use entropy signal in CDS stagnation tracker (continue exploiters).")
@@ -2021,6 +2041,7 @@ if __name__ == "__main__":
                         "entropy_stop_ratio": args.entropy_stop_ratio,
                         "entropy_window_size": args.entropy_window_size,
                         "entropy_warmup_checks": args.entropy_warmup_checks,
+                        "entropy_ratio_only": args.entropy_ratio_only == 'True',
                     }
                     if args.DEBUG:
                         print(
@@ -2318,6 +2339,7 @@ if __name__ == "__main__":
                         "entropy_stop_ratio": args.entropy_stop_ratio,
                         "entropy_window_size": args.entropy_window_size,
                         "entropy_warmup_checks": args.entropy_warmup_checks,
+                        "entropy_ratio_only": args.entropy_ratio_only == 'True',
                     }
                     if args.DEBUG:
                         print(

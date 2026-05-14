@@ -146,7 +146,7 @@ def _process_task(
         # are running.
         job_name = (
             f"cont_{output_subdir}_{matchup_safe}_{side_label}_"
-            f"rep{spec['replicate_idx']}"
+            f"rep{spec['replicate_idx']}_{task_stem}"
         )
         out_log = os.path.join(slurm_log_dir, f"{job_name}.out")
         err_log = os.path.join(slurm_log_dir, f"{job_name}.err")
@@ -156,6 +156,7 @@ def _process_task(
             python_bin=args.python_bin,
             runner_script=runner_script,
             task_file=processing_path,
+            local_plot_dir=args.local_plot_dir,
             state=spec["state_subset"][0],
             eval_prot=spec["eval_prot"],
             replicate_idx=spec["replicate_idx"],
@@ -172,7 +173,6 @@ def _process_task(
         write_sbatch_script(
             sbatch_path=sbatch_path,
             job_name=job_name,
-            partition=args.slurm_partition,
             time_limit=args.slurm_time,
             mem=args.slurm_mem,
             gres=args.slurm_gres,
@@ -183,6 +183,8 @@ def _process_task(
             env_setup=args.env_setup,
             python_cmd=python_cmd,
             extra_sbatch_lines=extra_sbatch_lines,
+            workdir=args.workdir,
+            main_training_dir=args.main_training_dir,
         )
 
         try:
@@ -224,6 +226,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num_continue_exploiters", type=int, default=1,
                         help="Replicates per (matchup, side) for continue "
                              "mode.")
+    parser.add_argument("--local_plot_dir", type=str)
     return parser
 
 
@@ -234,21 +237,23 @@ def main() -> None:
     os.makedirs(args.processing_dir, exist_ok=True)
     os.makedirs(args.done_dir, exist_ok=True)
     os.makedirs(args.slurm_log_dir, exist_ok=True)
-
+    os.makedirs(args.local_plot_dir, exist_ok=True)
     print(f"[orch-continue] Watching todo_dir={args.todo_dir}")
     print(f"[orch-continue] processing_dir={args.processing_dir}")
     print(f"[orch-continue] done_dir={args.done_dir}")
     print(f"[orch-continue] slurm_log_dir={args.slurm_log_dir}")
+    print(f"[orch-continue] local_entropy_plot_dir={args.local_plot_dir}")
     print(f"[orch-continue] stop_file={args.stop_file}")
     print(f"[orch-continue] dry_run={args.dry_run}")
     print(f"[orch-continue] num_continue_exploiters={args.num_continue_exploiters}")
+
     if have_sbatch():
         print("[orch-continue] sbatch detected; jobs will be submitted to SLURM.")
     else:
         print("[orch-continue] sbatch NOT on PATH; falling back to local "
               "`bash <sbatch>` execution. SBATCH directives are ignored as "
               "comments. Per-job stdout/stderr go to the same log paths.")
-    print(f"[orch-continue] SLURM: partition={args.slurm_partition} "
+    print(f"[orch-continue] SLURM: "
           f"time={args.slurm_time} mem={args.slurm_mem} "
           f"gres={args.slurm_gres} cpus={args.slurm_cpus_per_task}")
 
