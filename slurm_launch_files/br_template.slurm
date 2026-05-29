@@ -1,16 +1,73 @@
 #!/bin/bash
+#SBATCH --job-name=br_spar_Gu_SaRy_2908732
+
+#SBATCH --nodes=1                # node count
+#SBATCH --ntasks=1               # total number of tasks across all nodes
+#SBATCH --cpus-per-task=52       # cpu-cores per task (>1 if multi-threaded tasks)
+#SBATCH --mem-per-cpu=8G        # memory per cpu-core (4G is default)
+#SBATCH --gres=gpu:1
+#SBATCH --time=144:00:00          # total run time limit (HH:MM:SS)
+#SBATCH --mail-type=begin        # send email when job begins
+#SBATCH --mail-type=end          # send email when job ends
+#SBATCH --mail-user=jw4406@princeton.edu
+echo $CUDA_VISIBLE_DEVICES
+JOBID=$SLURM_JOB_ID
+WORKDIR=/scratch/gpfs/FISAC/jw4406
+
+MAIN_TRAINING_DIR=2908732
+
+proj_name=guile_exploiter_1v6_noanneal
+analysis_upload_proj_name=guile_exploiter_1v6_noanneal_analysis
+
+mkdir -p $WORKDIR/$JOBID
+#cp -r /n/fs/magics/$MAIN_TRAINING_DIR/FightLadder ./
+cd $WORKDIR/$JOBID
+cp -r $HOME/FightLadder ./
+cd FightLadder
+cd main/trained_models/tasks/todo
+
+#cp -r /n/fs/magics/$MAIN_TRAINING_DIR/FightLadder/main/trained_models/tasks/todo/*.task ./
+
+cd $WORKDIR/$JOBID/FightLadder
+
+module purge
+module load anaconda3/2024.2
+# >>> conda initialize >>>
+# !! Contents within this block are managed by 'conda init' !!
+__conda_setup="$('/usr/local/anaconda3/2024.02/bin/conda' 'shell.bash' 'hook' 2> /dev/null)"
+if [ $? -eq 0 ]; then
+    eval "$__conda_setup"
+else
+    if [ -f "/usr/local/anaconda3/2024.02/etc/profile.d/conda.sh" ]; then
+        . "/usr/local/anaconda3/2024.02/etc/profile.d/conda.sh"
+    else
+        export PATH="/usr/local/anaconda3/2024.02/bin:$PATH"
+    fi
+fi
+unset __conda_setup
+# <<< conda initialize <<<
+conda activate fightladder
+cd main
+
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+# Number of parallel new_br_worker instances to run#!/bin/bash
 
 # Number of parallel new_br_worker instances to run
-NUM_WORKERS=1
+
+# Number of parallel new_br_worker instances to run
+
+# Number of parallel new_br_worker instances to run
+NUM_WORKERS=2
 # If True, run each worker detached with nohup and log redirection.
 # If False, run without nohup in the current shell.
-RUN_LIVE="False"
+RUN_LIVE="True"
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Path to new_br_worker.py
-BR_WORKER_PATH="${SCRIPT_DIR}/main/new_br_worker.py"
+BR_WORKER_PATH="$WORKDIR/$JOBID/FightLadder/main/new_br_worker.py"
 
 # Arguments from launch.json (Python Debugger: new_br_worker.py)
 EVAL_PROT="True"
@@ -31,10 +88,10 @@ LEAGUE_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/ma/"
 # )
 LEAGUE_MATCHUP_STATES=()
 USE_MIRROR="False"
-NUM_FULL_EXPLOITERS="2"
+NUM_FULL_EXPLOITERS="3"
 NUM_CONTINUE_EXPLOITERS="1"
 MAX_CONCURRENT_JOBS="0"  # 0 = auto-compute from NUM_CORES. -1 = unlimited.
-NUM_CORES="32"  # CPU cores for this worker. 0 = auto-detect. Divide total cores by NUM_WORKERS.
+NUM_CORES="26"  # CPU cores for this worker. 0 = auto-detect. Divide total cores by NUM_WORKERS.
 DEBUG="False"
 BR_TRACKER_PATIENCE="300"
 USE_BR_REWARD_STAGNATION="False"
@@ -43,14 +100,6 @@ BR_USE_SLOPE_EARLY_STOP="False"
 BR_SLOPE_WINDOW="20"
 BR_SLOPE_TOLERANCE="5e-3"
 BR_MIN_SLOPE_CHECKS="12"
-# BR exploiter entropy-window early-stop knobs (RatingStagnationTracker).
-# Stop fires when mean of the last ENTROPY_WINDOW_SIZE smoothed-entropy
-# values <= ENTROPY_STOP_RATIO * initial entropy, after at least
-# ENTROPY_WARMUP_CHECKS checks have elapsed.
-ENTROPY_STOP_RATIO="0.05"
-ENTROPY_WINDOW_SIZE="50"
-ENTROPY_WARMUP_CHECKS="100"
-ENTROPY_RATIO_ONLY="True"
 # Continue-exploiter CDS stagnation controls
 USE_STAGNATION_EARLY_STOP="True"
 USE_STAGNATION_VELOCITY_SIGNAL="False"
@@ -68,11 +117,12 @@ STAGNATION_USE_SLOPE_EARLY_STOP="False"
 STAGNATION_SLOPE_WINDOW="20"
 STAGNATION_SLOPE_TOLERANCE="5e-3"
 STAGNATION_MIN_SLOPE_CHECKS="12"
-N_ENVS="1"
-# TASK_DIR=""  # Optional: set this to pass --task_dir
+N_ENVS="4"
+TASK_DIR="$WORKDIR/$MAIN_TRAINING_DIR/FightLadder/main/trained_models/tasks/"  # Optional: set this to pass --task_dir
+echo $TASK_DIR
 DEDICATED_EXPLOITER="True"
 CONTINUE_EXPLOITERS="False"
-EXPLOITER_SAVE_FREQ="100000"
+EXPLOITER_SAVE_FREQ="500000"
 RESET="round"
 SIDE="both"
 RENDER="False"
@@ -89,10 +139,16 @@ if [ "${DEVICE}" = "cpu" ]; then
 fi
 
 # Create logs directory if it doesn't exist
-LOGS_DIR="${SCRIPT_DIR}/logs"
-mkdir -p "${LOGS_DIR}"
+#LOGS_DIR="${SCRIPT_DIR}/logs"
+#mkdir -p "${LOGS_DIR}"
 #conda activate mujoco_sb3_parallel
 # Run NUM_WORKERS copies of new_br_worker in parallel
+set -x                              # trace every command
+echo "DEBUG: pwd=$(pwd)"
+echo "DEBUG: which python=$(which python)"
+echo "DEBUG: python --version=$(python --version 2>&1)"
+echo "DEBUG: conda env=$CONDA_DEFAULT_ENV"
+echo "DEBUG: ls TASK_DIR=$(ls -la "${TASK_DIR}" 2>&1 | head)"
 for i in $(seq 1 ${NUM_WORKERS}); do
     echo "Starting new_br_worker instance ${i}..."
     CMD=(
@@ -106,6 +162,7 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --which_env "${WHICH_ENV}"
         --is_league "${IS_LEAGUE}"
         --league_dir "${LEAGUE_DIR}"
+	--task_dir "${TASK_DIR}"
         --use_mirror "${USE_MIRROR}"
         --num_full_exploiters "${NUM_FULL_EXPLOITERS}"
         --num_continue_exploiters "${NUM_CONTINUE_EXPLOITERS}"
@@ -123,10 +180,6 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --br_slope_window "${BR_SLOPE_WINDOW}"
         --br_slope_tolerance "${BR_SLOPE_TOLERANCE}"
         --br_min_slope_checks "${BR_MIN_SLOPE_CHECKS}"
-        --entropy_stop_ratio "${ENTROPY_STOP_RATIO}"
-        --entropy_window_size "${ENTROPY_WINDOW_SIZE}"
-        --entropy_warmup_checks "${ENTROPY_WARMUP_CHECKS}"
-        --entropy_ratio_only "${ENTROPY_RATIO_ONLY}"
         --use_stagnation_early_stop "${USE_STAGNATION_EARLY_STOP}"
         --use_stagnation_velocity_signal "${USE_STAGNATION_VELOCITY_SIGNAL}"
         --use_stagnation_entropy_signal "${USE_STAGNATION_ENTROPY_SIGNAL}"
@@ -170,5 +223,5 @@ for i in $(seq 1 ${NUM_WORKERS}); do
 done
 
 echo "Started ${NUM_WORKERS} new_br_worker instances."
-echo "Logs are being written to: ${LOGS_DIR}/"
+#echo "Logs are being written to: ${LOGS_DIR}/"
 echo "To stop all workers, create a STOP file in the task directory or kill the processes."

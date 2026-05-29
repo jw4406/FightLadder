@@ -47,6 +47,74 @@ from stable_baselines3.common.save_util import load_from_zip_file
 SQUEUE_FORMAT = "%A"  # job id only — `squeue -h -j ... -o %A`
 POLL_INTERVAL = 5     # seconds between watchdog iterations
 
+# Map from SBATCH directive names to argparse dest names.
+_SBATCH_TO_ARG = {
+    "time": "slurm_time",
+    "mem": "slurm_mem",
+    "mem-per-cpu": "slurm_mem",
+    "gres": "slurm_gres",
+    "cpus-per-task": "slurm_cpus_per_task",
+    "account": "slurm_account",
+}
+
+
+def load_template_config(path: str) -> Dict[str, str]:
+    """Parse a .slurm template and return ``{arg_name: value}`` pairs.
+
+    Extracts two kinds of lines:
+      - ``#SBATCH --key=value``  (mapped via ``_SBATCH_TO_ARG``)
+      - ``KEY="value"`` or ``KEY=value``  (lowercased key becomes the arg name)
+
+    The caller merges the returned dict with argparse defaults so that
+    explicit CLI flags still win.
+    """
+    config: Dict[str, str] = {}
+    with open(path) as fh:
+        for raw in fh:
+            line = raw.strip()
+
+            # #SBATCH directives
+            m = re.match(r"^#SBATCH\s+--(\S+?)=(.+)$", line)
+            if m:
+                key = _SBATCH_TO_ARG.get(m.group(1))
+                if key:
+                    config[key] = m.group(2).strip()
+                continue
+
+            # Bash variable assignments: KEY="val" or KEY=val
+            m = re.match(r'^([A-Z_][A-Z_0-9]*)="?(.*?)"?\s*$', line)
+            if m and not line.startswith("#"):
+                config[m.group(1).lower()] = m.group(2)
+
+    return config
+
+
+def apply_template_config(
+    args: argparse.Namespace,
+    config: Dict[str, str],
+    parser: argparse.ArgumentParser,
+) -> argparse.Namespace:
+    """Fill unset argparse attrs from *config*, respecting types."""
+    type_map: Dict[str, type] = {}
+    defaults: Dict[str, Any] = {}
+    for action in parser._actions:
+        if action.dest:
+            if action.type:
+                type_map[action.dest] = action.type
+            defaults[action.dest] = action.default
+
+    for key, val in config.items():
+        if not hasattr(args, key):
+            continue
+        if getattr(args, key) != defaults.get(key):
+            continue
+        cast = type_map.get(key)
+        try:
+            setattr(args, key, cast(val) if cast else val)
+        except (ValueError, TypeError):
+            setattr(args, key, val)
+    return args
+
 
 # ----------------------------- bool argparse -----------------------------
 def bool_choice(s: str) -> bool:
@@ -127,17 +195,19 @@ def peek_league_side_and_matchup(model_path: str) -> Tuple[Optional[str], Option
 # ----------------------------- sbatch script generation -----------------------------
 SBATCH_TEMPLATE = """#!/bin/bash
 #SBATCH --job-name={job_name}
-#SBATCH --partition={partition}
 #SBATCH --time={time_limit}
 #SBATCH --mem={mem}
 #SBATCH --gres={gres}
 #SBATCH --cpus-per-task={cpus_per_task}
 #SBATCH --output={out_log}
 #SBATCH --error={err_log}
+#SBATCH --mail-type=begin
+#SBATCH --mail-type=end
+#SBATCH --mail-user=jw4406@princeton.edu
 {extra_sbatch_lines}
 set -euo pipefail
 cd {repo_dir}
-{env_setup}
+{data_dir_exports}{env_setup}
 {python_cmd}
 """
 
@@ -147,6 +217,7 @@ def build_python_cmd(
     python_bin: str,
     runner_script: str,
     task_file: str,
+    local_plot_dir: str,
     state: str,
     eval_prot: bool,
     replicate_idx: int,
@@ -181,6 +252,7 @@ def build_python_cmd(
     # line" UX while still being a valid bash array element.
     flag_groups: List[Tuple[str, List[str]]] = [
         ("--task_file", [task_file]),
+        ("--local_plot_dir", [local_plot_dir]),
         ("--state", [state]),
         ("--eval_prot", ["True" if eval_prot else "False"]),
         ("--replicate_idx", [str(replicate_idx)]),
@@ -212,7 +284,6 @@ def write_sbatch_script(
     *,
     sbatch_path: str,
     job_name: str,
-    partition: str,
     time_limit: str,
     mem: str,
     gres: str,
@@ -223,10 +294,18 @@ def write_sbatch_script(
     env_setup: str,
     python_cmd: str,
     extra_sbatch_lines: str,
+    workdir: str = "",
+    main_training_dir: str = "",
 ) -> None:
+    if workdir and main_training_dir:
+        data_dir_exports = (
+            f"export WORKDIR={shlex.quote(workdir)}\n"
+            f"export MAIN_TRAINING_DIR={shlex.quote(main_training_dir)}\n"
+        )
+    else:
+        data_dir_exports = ""
     contents = SBATCH_TEMPLATE.format(
         job_name=job_name,
-        partition=partition,
         time_limit=time_limit,
         mem=mem,
         gres=gres,
@@ -235,11 +314,44 @@ def write_sbatch_script(
         err_log=err_log,
         extra_sbatch_lines=extra_sbatch_lines,
         repo_dir=repo_dir,
+        data_dir_exports=data_dir_exports,
         env_setup=env_setup,
         python_cmd=python_cmd,
     )
     with open(sbatch_path, "w") as f:
         f.write(contents)
+    os.chmod(sbatch_path, 0o755)
+
+
+def render_template_sbatch(
+    *,
+    template_text: str,
+    sbatch_path: str,
+    job_name: str,
+    out_log: str,
+    err_log: str,
+    python_cmd: str,
+    extra_sbatch_lines: str = "",
+) -> None:
+    """Render a .slurm template by substituting ``{{PLACEHOLDERS}}``."""
+    subs = {
+        "JOB_NAME": job_name,
+        "OUT_LOG": out_log,
+        "ERR_LOG": err_log,
+        "PYTHON_CMD": python_cmd,
+    }
+    rendered = template_text
+    for key, val in subs.items():
+        rendered = rendered.replace("{{" + key + "}}", val)
+
+    if extra_sbatch_lines:
+        rendered = rendered.replace(
+            "#SBATCH --mail-user=",
+            extra_sbatch_lines + "#SBATCH --mail-user=",
+        )
+
+    with open(sbatch_path, "w") as f:
+        f.write(rendered)
     os.chmod(sbatch_path, 0o755)
 
 
@@ -431,17 +543,37 @@ def still_running_job_ids(job_ids: List[str]) -> List[str]:
 
 
 # ----------------------------- task pickup + processing -----------------------------
-def claim_task(todo_dir: str, processing_dir: str) -> Optional[Tuple[str, str, str]]:
+_STEP_RE = re.compile(r"_(\d+)_steps\.task$")
+
+
+def _extract_step(filename: str) -> Optional[int]:
+    """Return the step count embedded in a task filename, or None."""
+    m = _STEP_RE.search(filename)
+    return int(m.group(1)) if m else None
+
+
+def claim_task(
+    todo_dir: str,
+    processing_dir: str,
+    step_stride: int = 0,
+) -> Optional[Tuple[str, str, str]]:
     """
     Grab a random `.task` file from *todo_dir*, atomically rename it into
     *processing_dir*/<task_filename>_folder/<task_filename>. Returns
     (task_filename, processing_path, processing_folder) on success, None
     when the dir is empty or another worker beat us to it.
 
+    If *step_stride* > 0, only tasks whose step count is divisible by
+    *step_stride* are eligible.  Tasks that don't match the stride are
+    left in todo_dir for a future run with a different stride (or stride 0).
+
     The "_folder" wrapper exists so we can also stash per-task state
     (e.g. _jobs.json) alongside the .task without polluting processing_dir.
     """
     tasks = [f for f in os.listdir(todo_dir) if f.endswith(".task")]
+    if step_stride > 0:
+        tasks = [f for f in tasks
+                 if (s := _extract_step(f)) is not None and s % step_stride == 0]
     if not tasks:
         return None
     task_filename = random.choice(tasks)
@@ -530,6 +662,7 @@ def build_shared_config(args: argparse.Namespace, manual_stop_file: Optional[str
         "entropy_stop_ratio": args.entropy_stop_ratio,
         "entropy_window_size": args.entropy_window_size,
         "entropy_warmup_checks": args.entropy_warmup_checks,
+        "entropy_ratio_only": args.entropy_ratio_only == "True",
         "device": args.device,
         "manual_stop_file": manual_stop_file,
         "manual_stop_key": None,
@@ -652,6 +785,9 @@ def add_shared_arguments(parser: argparse.ArgumentParser, *, default_processing_
                         default=os.path.join(TASK_DIR, default_stop_file),
                         help="Touch this file to stop the orchestrator "
                              "watchdog (in-flight SLURM jobs are unaffected).")
+    parser.add_argument("--step_stride", type=int, default=0,
+                        help="Only process tasks whose step count is "
+                             "divisible by this value. 0 = process all.")
 
     # Job-side parity with new_br_worker.
     parser.add_argument("--eval_prot", choices=["True", "False"], default="True")
@@ -696,6 +832,7 @@ def add_shared_arguments(parser: argparse.ArgumentParser, *, default_processing_
     parser.add_argument("--entropy_stop_ratio", type=float, default=0.15)
     parser.add_argument("--entropy_window_size", type=int, default=50)
     parser.add_argument("--entropy_warmup_checks", type=int, default=100)
+    parser.add_argument("--entropy_ratio_only", choices=["True", "False"], default="False")
 
     # Game args
     parser.add_argument("--reset", choices=["round", "match", "game"], default="round")
@@ -710,7 +847,7 @@ def add_shared_arguments(parser: argparse.ArgumentParser, *, default_processing_
     parser.add_argument("--use_wandb", choices=["True", "False"], default="False")
 
     # SLURM
-    parser.add_argument("--slurm_partition", type=str, default="gpu")
+    #parser.add_argument("--slurm_partition", type=str, default="gpu")
     parser.add_argument("--slurm_time", type=str, default="12:00:00")
     parser.add_argument("--slurm_mem", type=str, default="16G")
     parser.add_argument("--slurm_gres", type=str, default="gpu:1")
@@ -718,6 +855,12 @@ def add_shared_arguments(parser: argparse.ArgumentParser, *, default_processing_
     parser.add_argument("--slurm_account", type=str, default="")
     parser.add_argument("--python_bin", type=str, default="python")
     parser.add_argument("--env_setup", type=str, default="")
+
+    # Data directory (forwarded to sbatch so workers save to $WORKDIR/$MAIN_TRAINING_DIR)
+    parser.add_argument("--workdir", type=str,
+                        default=os.environ.get("WORKDIR", ""))
+    parser.add_argument("--main_training_dir", type=str,
+                        default=os.environ.get("MAIN_TRAINING_DIR", ""))
 
     # Behavior
     parser.add_argument("--dry_run", choices=["True", "False"], default="False")

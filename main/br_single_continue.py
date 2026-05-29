@@ -56,6 +56,8 @@ def main() -> None:
     )
     parser.add_argument("--task_file", type=str, required=True,
                         help="Path to the .task checkpoint file.")
+    parser.add_argument("--local_plot_dir", type=str, required=True,
+                        help="Path to the local entropy plotting dir -- should be $WORKDIR/$JOBID/FightLadder/logs/local_entropy_plots")
     parser.add_argument("--state", type=str, required=True,
                         help="Single retro state string for this matchup.")
     parser.add_argument("--eval_prot", type=str, required=True,
@@ -154,6 +156,8 @@ def main() -> None:
         entropy_stop_ratio=cfg.get("entropy_stop_ratio", 0.15),
         entropy_window_size=cfg.get("entropy_window_size", 50),
         entropy_warmup_checks=cfg.get("entropy_warmup_checks", 100),
+        entropy_ratio_only=cfg.get("entropy_ratio_only", False),
+        local_plot_dir=args.local_plot_dir,
     )
 
     print(

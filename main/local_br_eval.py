@@ -135,7 +135,12 @@ def main() -> None:
     # Per-training-process segregation. When --output_subdir is non-empty,
     # outputs nest under it so different main training runs don't collide.
     # Empty string preserves the legacy unsegregated layout.
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    _workdir = os.environ.get("WORKDIR")
+    _main_training_dir = os.environ.get("MAIN_TRAINING_DIR")
+    if _workdir and _main_training_dir:
+        base_dir = os.path.join(_workdir, _main_training_dir, "FightLadder", "main")
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
     br_rewards_folder = os.path.join(base_dir, "br_rewards")
     selfplay_rewards_folder = os.path.join(base_dir, "selfplay_rewards")
     if args.output_subdir:

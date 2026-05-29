@@ -38,6 +38,7 @@ class RatingStagnationTracker:
         local_plot_every_checks: int = 1,
         entropy_warmup_checks: int = 100,
         enable_local_reward_plot: bool = False,
+        entropy_ratio_only: bool = False,
     ) -> None:
         self.patience = int(patience)
         self.tolerance = float(tolerance)
@@ -61,6 +62,7 @@ class RatingStagnationTracker:
         self.local_plot_every_checks = max(1, int(local_plot_every_checks))
         self.entropy_warmup_checks = max(0, int(entropy_warmup_checks))
         self.enable_local_reward_plot = bool(enable_local_reward_plot)
+        self.entropy_ratio_only = bool(entropy_ratio_only)
         self.local_entropy_csv_path = None
         self.local_entropy_png_path = None
         self.local_reward_csv_path = None
@@ -466,6 +468,7 @@ class RatingStagnationTracker:
                 float(entropy_window_ratio) if entropy_window_ratio is not None else float("nan")
             ),
             "stag/ent_win_stop": float(bool(entropy_window_stop)),
+            "stag/ent_ratio_only": float(bool(self.entropy_ratio_only)),
         }
         if self.use_slope_early_stop:
             base_should_stop = bool(slope_ready and self.num_checks >= self.min_slope_checks and slope_is_flat)
@@ -496,7 +499,10 @@ class RatingStagnationTracker:
             self.reward_raw_history.append(float(current_reward))
             self.reward_ema_history.append(float(self.ema_reward))
 
-        should_stop = bool(base_should_stop or entropy_stability_stop or entropy_window_stop)
+        if self.entropy_ratio_only:
+            should_stop = bool(entropy_window_stop)
+        else:
+            should_stop = bool(base_should_stop or entropy_stability_stop or entropy_window_stop)
         self._save_local_entropy_plot(force=should_stop)
         self._save_local_reward_plot(force=should_stop)
         return should_stop, logs

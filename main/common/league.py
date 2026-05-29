@@ -1,3 +1,4 @@
+import os
 import torch
 import collections
 import numpy as np
@@ -120,6 +121,8 @@ class Payoff:
         self._games = collections.defaultdict(lambda: 0)
         self._decay = 0.99
         self.save_dir = save_dir
+        self.continue_dir = os.path.join(save_dir, "continue")
+        os.makedirs(self.continue_dir, exist_ok=True)
 
     def _win_rate(self, _home, _away, side):
         if self._games[_home, _away] == 0:
@@ -164,6 +167,15 @@ class Payoff:
         else:
             self._losses[home, away] += 1
 
+    def _hardlink_task_to_continue(self, task_path: str) -> None:
+        dst = os.path.join(self.continue_dir, os.path.basename(task_path))
+        try:
+            os.link(task_path, dst)
+        except OSError:
+            import shutil
+            shutil.copy2(task_path, dst)
+            print(f"[Payoff] hardlink failed, copied to continue dir", flush=True)
+
     def add_player(self, cls_name, kwargs):
         save_kwargs = {
             "cls_name": cls_name,
@@ -172,13 +184,17 @@ class Payoff:
         print(f"[Payoff] Saving model {kwargs['name']} at step {kwargs['checkpoint_step']}", flush=True)
         if cls_name == "Historical":
             if 'MA' in kwargs['name'] and 'left' in kwargs['name']:
-                torch.save(save_kwargs, f"{self.save_dir}/{kwargs['name']}_{kwargs['checkpoint_step']}.task")
+                task_path = f"{self.save_dir}/{kwargs['name']}_{kwargs['checkpoint_step']}.task"
+                torch.save(save_kwargs, task_path)
+                self._hardlink_task_to_continue(task_path)
             else:
                 torch.save(save_kwargs, f"{self.save_dir}/{kwargs['name']}_{kwargs['checkpoint_step']}.pt")
         else:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             if 'MA' in kwargs['name'] and 'left' in kwargs['name']:
-                torch.save(save_kwargs, f"{self.save_dir}/{kwargs['name']}_{kwargs['checkpoint_step']}_{ts}.task")
+                task_path = f"{self.save_dir}/{kwargs['name']}_{kwargs['checkpoint_step']}_{ts}.task"
+                torch.save(save_kwargs, task_path)
+                self._hardlink_task_to_continue(task_path)
             else:
                 torch.save(save_kwargs, f"{self.save_dir}/{kwargs['name']}_{kwargs['checkpoint_step']}_{ts}.pt")
         save_payoff = {

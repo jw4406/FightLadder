@@ -209,7 +209,8 @@ def load_and_continue(
             "ego" → adversary was learning (update_adversary=True).
             "adv" → ego was learning (update_ego=True).
         arch: "ippo" or "spar".
-        unique_states: Unique state strings from the checkpoint.
+        unique_states: Unique state strings from the checkpoint
+            (_worker_unique_states — the full pre-override set).
         n_envs: Number of environments per matchup.
         device: Torch device.
         total_timesteps: Total timesteps for the continued training run.
@@ -220,47 +221,127 @@ def load_and_continue(
     from common.justin.clean_derivative_free_spar_ippo import CleanDerivativeFreeSPARIPPO
     from stable_baselines3.common.save_util import load_from_zip_file
     from ippo import env_generator
+    from utils import state2matchup
+    import numpy as np
+
+    raw = _read_raw_json_from_zip(checkpoint_path)
+    ckpt_matchups = _safe_get(raw, "matchups", [])
+    ckpt_unique_matchups = list(dict.fromkeys(ckpt_matchups))
+    ckpt_num_adv = _safe_get(raw, "num_adversaries", None)
 
     if game_args is None:
-        data, _, _ = load_from_zip_file(checkpoint_path, device="cpu")
-        raw = data.get("game_args")
-        if raw is None:
+        data_tmp, _, _ = load_from_zip_file(checkpoint_path, device="cpu")
+        ga_raw = data_tmp.get("game_args")
+        if ga_raw is None:
             raise ValueError(
                 f"No game_args found in checkpoint {checkpoint_path} and none provided."
             )
-        game_args = vars(raw) if hasattr(raw, "__dict__") else dict(raw)
+        game_args = vars(ga_raw) if hasattr(ga_raw, "__dict__") else dict(ga_raw)
 
     cds_cls = CleanDerivativeFreeSPARIPPO if arch == "ippo" else CleanDerivativeFreeSPAR
 
-    STATE = [state for state in unique_states for _ in range(n_envs)]
+    FULL_STATE = [s for s in unique_states for _ in range(n_envs)]
     ns_game_args = argparse.Namespace(**game_args)
-    env = env_generator(ns_game_args, STATE=STATE)
+    env = env_generator(ns_game_args, STATE=FULL_STATE)
 
     try:
         ftm = cds_cls.load(
             path=checkpoint_path, env=env, game_args=ns_game_args,
             num_perturbed=1, device=device,
         )
-    except Exception:
+    except (RuntimeError, ValueError):
         data, params, _ = load_from_zip_file(checkpoint_path, device=device)
         ftm = cds_cls(
             "AACCnnPolicy", env, device=device, verbose=2,
             n_steps=256, batch_size=512, n_epochs=1,
-            state_list=STATE, envs_per_matchup=1,
+            state_list=FULL_STATE, envs_per_matchup=n_envs,
             env_generator_func=env_generator,
-            num_adversaries=1, n_env_per_adv=1, seed=0,
+            num_adversaries=len(unique_states), n_env_per_adv=n_envs, seed=0,
             target_kl=0.025, use_mirror=False, use_wandb=use_wandb,
         )
-        ftm.set_parameters(params, exact_match=True, device=ftm.device)
+        if "policy" in params:
+            missing, unexpected = ftm.policy.load_state_dict(
+                params["policy"], strict=False,
+            )
+            print(
+                f"[load_br_checkpoints] Policy loaded (strict=False): "
+                f"{len(missing)} missing, {len(unexpected)} unexpected keys",
+                flush=True,
+            )
+        elo_r = data.get("elo_adversary_ratings")
+        elo_g = data.get("elo_games_played")
+        if elo_r is not None:
+            ftm.elo_adversary_ratings = np.array(elo_r, dtype=np.float64)
+        if elo_g is not None:
+            ftm.elo_games_played = np.array(elo_g, dtype=np.int64)
 
     env.close()
     ftm.env = None
+
+    per_matchup = (
+        len(unique_states) > 1
+        and (
+            len(ckpt_unique_matchups) == 1
+            or (ckpt_num_adv is not None and ckpt_num_adv < len(unique_states))
+        )
+    )
+    if per_matchup:
+        dedicated_matchup = ckpt_unique_matchups[0] if ckpt_unique_matchups else state2matchup(unique_states[0])
+        dedicated_state = next(
+            (s for s in unique_states if state2matchup(s) == dedicated_matchup),
+            unique_states[0],
+        )
+        full_matchup_labels = [state2matchup(s) for s in unique_states]
+        fixed_idx = (
+            full_matchup_labels.index(dedicated_matchup)
+            if dedicated_matchup in full_matchup_labels
+            else 0
+        )
+        old_key = f"{dedicated_matchup}_{fixed_idx}"
+        new_key = f"{dedicated_matchup}_0"
+        aliased = []
+        for attr in ("value_net", "dstb_action_net"):
+            hd = getattr(ftm.policy, attr, None)
+            if hd is not None and old_key in hd and new_key not in hd:
+                hd[new_key] = hd[old_key]
+                aliased.append(attr)
+
+        if hasattr(ftm, "elo_adversary_ratings") and len(ftm.elo_adversary_ratings) > fixed_idx:
+            ftm.elo_adversary_ratings = ftm.elo_adversary_ratings[
+                fixed_idx : fixed_idx + 1
+            ].copy()
+        if hasattr(ftm, "elo_games_played") and len(ftm.elo_games_played) > fixed_idx:
+            ftm.elo_games_played = ftm.elo_games_played[
+                fixed_idx : fixed_idx + 1
+            ].copy()
+
+        ftm.matchups = [dedicated_matchup] * n_envs
+        ftm.state_list = [dedicated_state] * n_envs
+        ftm.envs_per_matchup = n_envs
+        ftm.num_adversaries = 1
+        for pattr, val in [
+            ("matchups", ftm.matchups),
+            ("envs_per_matchup", n_envs),
+            ("num_adversaries", 1),
+            ("num_env_per_adv", n_envs),
+        ]:
+            if hasattr(ftm.policy, pattr):
+                setattr(ftm.policy, pattr, val)
+
+        effective_state_list = [dedicated_state] * n_envs
+        print(
+            f"[load_br_checkpoints] Per-matchup override: "
+            f"matchup={dedicated_matchup}, idx={fixed_idx}, "
+            f"alias {old_key}->{new_key} on {aliased}",
+            flush=True,
+        )
+    else:
+        effective_state_list = FULL_STATE
 
     eval_prot = (exploit_side == "ego")
     update_ego = not eval_prot
     update_adversary = eval_prot
 
-    effective_state_list = STATE
     env = env_generator(ns_game_args, STATE=effective_state_list, n_envs=n_envs)
     ftm.env = env
 
@@ -309,12 +390,16 @@ def load_and_continue(
     ftm.policy.value_optimizer.param_groups[0]["lr"] = 2e-4
 
     learning_side = "adversary" if eval_prot else "ego"
+    elo_str = ""
+    if hasattr(ftm, "elo_adversary_ratings"):
+        elo_str = f"\n  elo_ratings={ftm.elo_adversary_ratings.tolist()}"
     print(
         f"[load_br_checkpoints] Continuing training from {os.path.basename(checkpoint_path)}\n"
         f"  arch={arch}, exploit_side={exploit_side}, learning_side={learning_side}\n"
         f"  update_ego={update_ego}, update_adversary={update_adversary}\n"
-        f"  states={unique_states}\n"
-        f"  total_timesteps={total_timesteps}, device={device}",
+        f"  unique_states={unique_states}\n"
+        f"  effective_states={list(dict.fromkeys(effective_state_list))}\n"
+        f"  total_timesteps={total_timesteps}, device={device}{elo_str}",
         flush=True,
     )
 
@@ -392,30 +477,42 @@ def main():
         "--use_wandb", action="store_true",
         help="Enable wandb logging during continued training.",
     )
+    parser.add_argument(
+        "--array_index", type=int, default=None,
+        help="If set, train only the model at this index in the sorted/filtered "
+             "list (0-based). Used by SLURM array jobs. Exits cleanly if the "
+             "index is out of range.",
+    )
+    parser.add_argument(
+        "--count_only", action="store_true",
+        help="Print the number of trainable models and exit. "
+             "Useful for setting SLURM --array upper bound.",
+    )
     args = parser.parse_args()
 
     print(f"Scanning BR checkpoint directory: {args.br_dir}")
     results = summarize_br_models(args.br_dir)
     print(f"\nFound {len(results)} unique BR models.\n")
 
-    for r in results:
-        meta = r.get("meta", {})
-        err = meta.get("error")
-        if err:
-            print(f"  {r['prefix']}")
-            print(f"    latest step: {r['steps']}")
-            print(f"    ERROR loading metadata: {err}\n")
-            continue
+    if not args.count_only:
+        for r in results:
+            meta = r.get("meta", {})
+            err = meta.get("error")
+            if err:
+                print(f"  {r['prefix']}")
+                print(f"    latest step: {r['steps']}")
+                print(f"    ERROR loading metadata: {err}\n")
+                continue
 
-        learning_side = "adversary" if r["exploit_side"] == "ego" else "ego"
-        print(f"  {r['prefix']}")
-        print(f"    latest step:    {r['steps']}")
-        print(f"    arch:           {meta['arch']}")
-        print(f"    exploit_side:   {r['exploit_side']} (learning: {learning_side})")
-        print(f"    unique_states:  {meta['unique_states']}")
-        print(f"    base_ckpt:      {meta['checkpoint_basename']}")
-        print(f"    matchups:       {meta['matchups']}")
-        print()
+            learning_side = "adversary" if r["exploit_side"] == "ego" else "ego"
+            print(f"  {r['prefix']}")
+            print(f"    latest step:    {r['steps']}")
+            print(f"    arch:           {meta['arch']}")
+            print(f"    exploit_side:   {r['exploit_side']} (learning: {learning_side})")
+            print(f"    unique_states:  {meta['unique_states']}")
+            print(f"    base_ckpt:      {meta['checkpoint_basename']}")
+            print(f"    matchups:       {meta['matchups']}")
+            print()
 
     if not args.continue_training:
         print("Pass --continue_training to resume training from these checkpoints.")
@@ -436,21 +533,31 @@ def main():
         filtered = [r for r in results if args.filter_prefix in r["prefix"]]
         print(f"Filtered to {len(filtered)} models matching '{args.filter_prefix}'.\n")
 
-    for r in filtered:
+    trainable = [
+        r for r in filtered
+        if not r.get("meta", {}).get("error") and r.get("exploit_side") is not None
+    ]
+    print(f"Trainable models: {len(trainable)}")
+
+    if args.count_only:
+        return
+
+    if args.array_index is not None:
+        if args.array_index >= len(trainable):
+            print(
+                f"Array index {args.array_index} >= {len(trainable)} trainable models. "
+                f"Nothing to do.",
+            )
+            return
+        trainable = [trainable[args.array_index]]
+        print(f"Array index {args.array_index}: {trainable[0]['prefix']}\n")
+
+    for r in trainable:
         meta = r.get("meta", {})
-        if meta.get("error"):
-            print(f"Skipping {r['prefix']} due to metadata error.")
-            continue
-
-        exploit_side = r["exploit_side"]
-        if exploit_side is None:
-            print(f"Skipping {r['prefix']}: could not determine exploit side.")
-            continue
-
         load_and_continue(
             checkpoint_path=r["path"],
             game_args=game_args,
-            exploit_side=exploit_side,
+            exploit_side=r["exploit_side"],
             arch=meta["arch"],
             unique_states=meta["unique_states"],
             n_envs=args.n_envs,

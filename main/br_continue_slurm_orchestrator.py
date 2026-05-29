@@ -40,13 +40,16 @@ from utils import state2matchup
 from br_slurm_common import (
     POLL_INTERVAL,
     add_shared_arguments,
+    apply_template_config,
     build_python_cmd,
     build_shared_config,
     claim_task,
     derive_output_subdir,
     detect_model_type,
     have_sbatch,
+    load_template_config,
     normalize_bool_args,
+    render_template_sbatch,
     submit_sbatch,
     sweep_completed_tasks,
     write_registry,
@@ -60,6 +63,7 @@ def _process_task(
     task_filename: str,
     processing_path: str,
     processing_folder: str,
+    template_text: str = "",
 ) -> List[str]:
     print(f"[orch-continue] Processing task: {task_filename}")
     print(f"[orch-continue] Processing path: {processing_path}")
@@ -146,7 +150,7 @@ def _process_task(
         # are running.
         job_name = (
             f"cont_{output_subdir}_{matchup_safe}_{side_label}_"
-            f"rep{spec['replicate_idx']}"
+            f"rep{spec['replicate_idx']}_{task_stem}"
         )
         out_log = os.path.join(slurm_log_dir, f"{job_name}.out")
         err_log = os.path.join(slurm_log_dir, f"{job_name}.err")
@@ -156,6 +160,7 @@ def _process_task(
             python_bin=args.python_bin,
             runner_script=runner_script,
             task_file=processing_path,
+            local_plot_dir=args.local_plot_dir,
             state=spec["state_subset"][0],
             eval_prot=spec["eval_prot"],
             replicate_idx=spec["replicate_idx"],
@@ -169,21 +174,33 @@ def _process_task(
             shared_config_json=shared_config_json,
         )
 
-        write_sbatch_script(
-            sbatch_path=sbatch_path,
-            job_name=job_name,
-            partition=args.slurm_partition,
-            time_limit=args.slurm_time,
-            mem=args.slurm_mem,
-            gres=args.slurm_gres,
-            cpus_per_task=args.slurm_cpus_per_task,
-            out_log=out_log,
-            err_log=err_log,
-            repo_dir=repo_dir,
-            env_setup=args.env_setup,
-            python_cmd=python_cmd,
-            extra_sbatch_lines=extra_sbatch_lines,
-        )
+        if template_text:
+            render_template_sbatch(
+                template_text=template_text,
+                sbatch_path=sbatch_path,
+                job_name=job_name,
+                out_log=out_log,
+                err_log=err_log,
+                python_cmd=python_cmd,
+                extra_sbatch_lines=extra_sbatch_lines,
+            )
+        else:
+            write_sbatch_script(
+                sbatch_path=sbatch_path,
+                job_name=job_name,
+                time_limit=args.slurm_time,
+                mem=args.slurm_mem,
+                gres=args.slurm_gres,
+                cpus_per_task=args.slurm_cpus_per_task,
+                out_log=out_log,
+                err_log=err_log,
+                repo_dir=repo_dir,
+                env_setup=args.env_setup,
+                python_cmd=python_cmd,
+                extra_sbatch_lines=extra_sbatch_lines,
+                workdir=args.workdir,
+                main_training_dir=args.main_training_dir,
+            )
 
         try:
             job_id = submit_sbatch(
@@ -221,34 +238,52 @@ def build_parser() -> argparse.ArgumentParser:
         default_done_subdir="slurm_done_continue",
         default_stop_file="STOP_SLURM_CONTINUE",
     )
+    parser.add_argument("--br_continue_sh_template", type=str, default="",
+                        help="Path to a .slurm template with default config "
+                             "values. CLI flags override template values.")
     parser.add_argument("--num_continue_exploiters", type=int, default=1,
                         help="Replicates per (matchup, side) for continue "
                              "mode.")
+    parser.add_argument("--local_plot_dir", type=str)
     return parser
 
 
 def main() -> None:
-    args = normalize_bool_args(build_parser().parse_args())
+    parser = build_parser()
+    args = parser.parse_args()
+
+    template_text = ""
+    if args.br_continue_sh_template:
+        template_path = os.path.abspath(args.br_continue_sh_template)
+        config = load_template_config(template_path)
+        apply_template_config(args, config, parser)
+        with open(template_path) as fh:
+            template_text = fh.read()
+        print(f"[orch-continue] template={template_path}")
+
+    args = normalize_bool_args(args)
 
     os.makedirs(args.todo_dir, exist_ok=True)
     os.makedirs(args.processing_dir, exist_ok=True)
     os.makedirs(args.done_dir, exist_ok=True)
     os.makedirs(args.slurm_log_dir, exist_ok=True)
-
+    os.makedirs(args.local_plot_dir, exist_ok=True)
     print(f"[orch-continue] Watching todo_dir={args.todo_dir}")
     print(f"[orch-continue] processing_dir={args.processing_dir}")
     print(f"[orch-continue] done_dir={args.done_dir}")
     print(f"[orch-continue] slurm_log_dir={args.slurm_log_dir}")
+    print(f"[orch-continue] local_entropy_plot_dir={args.local_plot_dir}")
     print(f"[orch-continue] stop_file={args.stop_file}")
     print(f"[orch-continue] dry_run={args.dry_run}")
     print(f"[orch-continue] num_continue_exploiters={args.num_continue_exploiters}")
+
     if have_sbatch():
         print("[orch-continue] sbatch detected; jobs will be submitted to SLURM.")
     else:
         print("[orch-continue] sbatch NOT on PATH; falling back to local "
               "`bash <sbatch>` execution. SBATCH directives are ignored as "
               "comments. Per-job stdout/stderr go to the same log paths.")
-    print(f"[orch-continue] SLURM: partition={args.slurm_partition} "
+    print(f"[orch-continue] SLURM: "
           f"time={args.slurm_time} mem={args.slurm_mem} "
           f"gres={args.slurm_gres} cpus={args.slurm_cpus_per_task}")
 
@@ -258,13 +293,16 @@ def main() -> None:
         except Exception as exc:
             print(f"[orch-continue] sweeper error (non-fatal): {exc}")
 
-        claim = claim_task(args.todo_dir, args.processing_dir)
+        claim = claim_task(args.todo_dir, args.processing_dir, step_stride=args.step_stride)
         if claim is None:
             time.sleep(POLL_INTERVAL)
             continue
         task_filename, processing_path, processing_folder = claim
         try:
-            job_ids = _process_task(args, task_filename, processing_path, processing_folder)
+            job_ids = _process_task(
+                args, task_filename, processing_path, processing_folder,
+                template_text=template_text,
+            )
             write_registry(processing_folder, {
                 "task_filename": task_filename,
                 "submitted_at": time.time(),

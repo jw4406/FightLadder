@@ -5357,7 +5357,9 @@ class Exploiter(PPO):
         entropy_stop_ratio: float = 0.15,
         entropy_window_size: int = 50,
         entropy_warmup_checks: int = 100,
+        entropy_ratio_only: bool = False,
         use_wandb: bool = True,
+        local_plot_dir: str = None
     ):
 
         super().__init__(policy=policy,
@@ -5405,6 +5407,7 @@ class Exploiter(PPO):
         self.entropy_stop_ratio = float(entropy_stop_ratio)
         self.entropy_window_size = int(entropy_window_size)
         self.entropy_warmup_checks = int(entropy_warmup_checks)
+        self.entropy_ratio_only = bool(entropy_ratio_only)
         self.br_convergence_tracker = RatingStagnationTracker(
             patience=self.br_tracker_patience,
             tolerance=self.br_tracker_tolerance,
@@ -5423,10 +5426,12 @@ class Exploiter(PPO):
             entropy_stop_ratio=self.entropy_stop_ratio,
             entropy_window_size=self.entropy_window_size,
             entropy_warmup_checks=self.entropy_warmup_checks,
+            entropy_ratio_only=self.entropy_ratio_only,
             enable_local_entropy_plot=True,
             enable_local_reward_plot=True,
             local_plot_prefix="dedicated_exploiter",
             local_plot_every_checks=1,
+            local_plot_dir=local_plot_dir
         )
         self.br_convergence_tracker.reset(np.array([0.0], dtype=np.float64))
         self.use_wandb = use_wandb
