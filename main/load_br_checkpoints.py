@@ -477,30 +477,42 @@ def main():
         "--use_wandb", action="store_true",
         help="Enable wandb logging during continued training.",
     )
+    parser.add_argument(
+        "--array_index", type=int, default=None,
+        help="If set, train only the model at this index in the sorted/filtered "
+             "list (0-based). Used by SLURM array jobs. Exits cleanly if the "
+             "index is out of range.",
+    )
+    parser.add_argument(
+        "--count_only", action="store_true",
+        help="Print the number of trainable models and exit. "
+             "Useful for setting SLURM --array upper bound.",
+    )
     args = parser.parse_args()
 
     print(f"Scanning BR checkpoint directory: {args.br_dir}")
     results = summarize_br_models(args.br_dir)
     print(f"\nFound {len(results)} unique BR models.\n")
 
-    for r in results:
-        meta = r.get("meta", {})
-        err = meta.get("error")
-        if err:
-            print(f"  {r['prefix']}")
-            print(f"    latest step: {r['steps']}")
-            print(f"    ERROR loading metadata: {err}\n")
-            continue
+    if not args.count_only:
+        for r in results:
+            meta = r.get("meta", {})
+            err = meta.get("error")
+            if err:
+                print(f"  {r['prefix']}")
+                print(f"    latest step: {r['steps']}")
+                print(f"    ERROR loading metadata: {err}\n")
+                continue
 
-        learning_side = "adversary" if r["exploit_side"] == "ego" else "ego"
-        print(f"  {r['prefix']}")
-        print(f"    latest step:    {r['steps']}")
-        print(f"    arch:           {meta['arch']}")
-        print(f"    exploit_side:   {r['exploit_side']} (learning: {learning_side})")
-        print(f"    unique_states:  {meta['unique_states']}")
-        print(f"    base_ckpt:      {meta['checkpoint_basename']}")
-        print(f"    matchups:       {meta['matchups']}")
-        print()
+            learning_side = "adversary" if r["exploit_side"] == "ego" else "ego"
+            print(f"  {r['prefix']}")
+            print(f"    latest step:    {r['steps']}")
+            print(f"    arch:           {meta['arch']}")
+            print(f"    exploit_side:   {r['exploit_side']} (learning: {learning_side})")
+            print(f"    unique_states:  {meta['unique_states']}")
+            print(f"    base_ckpt:      {meta['checkpoint_basename']}")
+            print(f"    matchups:       {meta['matchups']}")
+            print()
 
     if not args.continue_training:
         print("Pass --continue_training to resume training from these checkpoints.")
@@ -521,21 +533,31 @@ def main():
         filtered = [r for r in results if args.filter_prefix in r["prefix"]]
         print(f"Filtered to {len(filtered)} models matching '{args.filter_prefix}'.\n")
 
-    for r in filtered:
+    trainable = [
+        r for r in filtered
+        if not r.get("meta", {}).get("error") and r.get("exploit_side") is not None
+    ]
+    print(f"Trainable models: {len(trainable)}")
+
+    if args.count_only:
+        return
+
+    if args.array_index is not None:
+        if args.array_index >= len(trainable):
+            print(
+                f"Array index {args.array_index} >= {len(trainable)} trainable models. "
+                f"Nothing to do.",
+            )
+            return
+        trainable = [trainable[args.array_index]]
+        print(f"Array index {args.array_index}: {trainable[0]['prefix']}\n")
+
+    for r in trainable:
         meta = r.get("meta", {})
-        if meta.get("error"):
-            print(f"Skipping {r['prefix']} due to metadata error.")
-            continue
-
-        exploit_side = r["exploit_side"]
-        if exploit_side is None:
-            print(f"Skipping {r['prefix']}: could not determine exploit side.")
-            continue
-
         load_and_continue(
             checkpoint_path=r["path"],
             game_args=game_args,
-            exploit_side=exploit_side,
+            exploit_side=r["exploit_side"],
             arch=meta["arch"],
             unique_states=meta["unique_states"],
             n_envs=args.n_envs,

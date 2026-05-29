@@ -44,6 +44,7 @@ from utils import state2matchup
 from br_slurm_common import (
     POLL_INTERVAL,
     add_shared_arguments,
+    apply_template_config,
     build_python_cmd,
     build_shared_config,
     claim_task,
@@ -51,8 +52,10 @@ from br_slurm_common import (
     derive_output_subdir,
     detect_model_type,
     have_sbatch,
+    load_template_config,
     normalize_bool_args,
     peek_league_side_and_matchup,
+    render_template_sbatch,
     submit_sbatch,
     sweep_completed_tasks,
     write_registry,
@@ -66,6 +69,7 @@ def _process_task(
     task_filename: str,
     processing_path: str,
     processing_folder: str,
+    template_text: str = "",
 ) -> List[str]:
     """
     Detect type, build dedicated specs, write+submit one sbatch per spec,
@@ -178,22 +182,33 @@ def _process_task(
             shared_config_json=shared_config_json,
         )
 
-        write_sbatch_script(
-            sbatch_path=sbatch_path,
-            job_name=job_name,
-            time_limit=args.slurm_time,
-            mem=args.slurm_mem,
-            gres=args.slurm_gres,
-            cpus_per_task=args.slurm_cpus_per_task,
-            out_log=out_log,
-            err_log=err_log,
-            repo_dir=repo_dir,
-            env_setup=args.env_setup,
-            python_cmd=python_cmd,
-            extra_sbatch_lines=extra_sbatch_lines,
-            workdir=args.workdir,
-            main_training_dir=args.main_training_dir,
-        )
+        if template_text:
+            render_template_sbatch(
+                template_text=template_text,
+                sbatch_path=sbatch_path,
+                job_name=job_name,
+                out_log=out_log,
+                err_log=err_log,
+                python_cmd=python_cmd,
+                extra_sbatch_lines=extra_sbatch_lines,
+            )
+        else:
+            write_sbatch_script(
+                sbatch_path=sbatch_path,
+                job_name=job_name,
+                time_limit=args.slurm_time,
+                mem=args.slurm_mem,
+                gres=args.slurm_gres,
+                cpus_per_task=args.slurm_cpus_per_task,
+                out_log=out_log,
+                err_log=err_log,
+                repo_dir=repo_dir,
+                env_setup=args.env_setup,
+                python_cmd=python_cmd,
+                extra_sbatch_lines=extra_sbatch_lines,
+                workdir=args.workdir,
+                main_training_dir=args.main_training_dir,
+            )
 
         try:
             job_id = submit_sbatch(
@@ -226,6 +241,9 @@ def build_parser() -> argparse.ArgumentParser:
         default_done_subdir="slurm_done",
         default_stop_file="STOP_SLURM",
     )
+    parser.add_argument("--br_dedicated_sh_template", type=str, default="",
+                        help="Path to a .slurm template with default config "
+                             "values. CLI flags override template values.")
     # Dedicated-only knob.
     parser.add_argument("--num_full_exploiters", type=int, default=3,
                         help="Replicates per (matchup, side).")
@@ -234,7 +252,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    args = normalize_bool_args(build_parser().parse_args())
+    parser = build_parser()
+    args = parser.parse_args()
+
+    template_text = ""
+    if args.br_dedicated_sh_template:
+        template_path = os.path.abspath(args.br_dedicated_sh_template)
+        config = load_template_config(template_path)
+        apply_template_config(args, config, parser)
+        with open(template_path) as fh:
+            template_text = fh.read()
+        print(f"[orch-dedicated] template={template_path}")
+
+    args = normalize_bool_args(args)
 
     os.makedirs(args.todo_dir, exist_ok=True)
     os.makedirs(args.processing_dir, exist_ok=True)
@@ -263,13 +293,16 @@ def main() -> None:
         except Exception as exc:
             print(f"[orch-dedicated] sweeper error (non-fatal): {exc}")
 
-        claim = claim_task(args.todo_dir, args.processing_dir)
+        claim = claim_task(args.todo_dir, args.processing_dir, step_stride=args.step_stride)
         if claim is None:
             time.sleep(POLL_INTERVAL)
             continue
         task_filename, processing_path, processing_folder = claim
         try:
-            job_ids = _process_task(args, task_filename, processing_path, processing_folder)
+            job_ids = _process_task(
+                args, task_filename, processing_path, processing_folder,
+                template_text=template_text,
+            )
             write_registry(processing_folder, {
                 "task_filename": task_filename,
                 "submitted_at": time.time(),
