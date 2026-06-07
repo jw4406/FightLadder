@@ -80,7 +80,11 @@ if not os.listdir(TASK_DIR):
     print("Warning: The TASK_DIR is empty. Please run ippo.py --player PLAYER to generate a task file.")
 
 POLL_INTERVAL = 5  # Seconds to wait before checking for new tasks
-BR_TRAINING_STEPS = 10000000
+# BR_TRAINING_STEPS is now plumbed end-to-end from the launcher via
+# --br_training_steps (orchestrator argparse) -> shared_config_json
+# -> br_single_*.py -> run_br_for_task_in_subprocess(br_training_steps=...)
+# -> _run_br_for_task. The module-level constant was deleted so any
+# unplumbed code path fails loudly instead of silently using 10M.
 
 
 def _reap_finished(active: List[mp.Process]) -> List[mp.Process]:
@@ -1110,6 +1114,12 @@ def train_best_response(
     entropy_warmup_checks: int = 100,
     entropy_ratio_only: bool = False,
     local_plot_dir: str = None,
+    enable_local_kl_plot: bool = True,
+    *,
+    # Keyword-only required: total .learn() timesteps for this BR job.
+    # Plumbed from the launcher via --br_training_steps; absent value
+    # raises TypeError at call time.
+    br_training_steps: int,
 ) -> None:
     """
     The core logic for a single best-response training run.
@@ -1177,9 +1187,9 @@ def train_best_response(
         env,
         device=device,
         exploited=ftm,
-        n_steps=256,
-        batch_size=128,
-        n_epochs=5,
+        n_steps=1024,
+        batch_size=512,
+        n_epochs=4,
         exploiting='ego' if eval_prot is True else 'adv',
         br_tracker_patience=br_tracker_patience,
         br_tracker_tolerance=br_tracker_tolerance,
@@ -1197,6 +1207,7 @@ def train_best_response(
         use_wandb=use_wandb,
         verbose=1,
         local_plot_dir=local_plot_dir,
+        enable_local_kl_plot=enable_local_kl_plot,
     )
     br_agent.is_spar_like = is_spar_like # TODO: This is a stupid hack to get the BR agent to know if it is a SPAR model or not. Remove this once we have a better way to do this.
     # 4. Train the BR agent
@@ -1242,7 +1253,7 @@ def train_best_response(
             if hasattr(br_agent, "br_convergence_tracker") and br_agent.br_convergence_tracker is not None:
                 matchup_tag = f"_{_sanitize_for_filename(matchup_label)}" if matchup_label is not None else ""
                 br_agent.br_convergence_tracker.local_plot_prefix = f"dedicated_exploiter_{stop_key}{matchup_tag}_{checkpoint_basename}"
-            br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=train_callback)
+            br_agent.learn(total_timesteps=br_training_steps, callback=train_callback)
         else:
             # if eval prot is True we are training an optimal adversary so we need to update the adversary
             # if eval prot is False we are training an optimal ego against the current adversary so we need to update the ego
@@ -1405,7 +1416,7 @@ def train_best_response(
             ftm._checkpoint_basename = checkpoint_basename
             if is_spar_like:
 
-                ftm.learn(total_timesteps=BR_TRAINING_STEPS, callback=train_callback, update_ego=not eval_prot, update_adversary=eval_prot)
+                ftm.learn(total_timesteps=br_training_steps, callback=train_callback, update_ego=not eval_prot, update_adversary=eval_prot)
             elif isinstance(ftm, LeaguePPO):
                 rollout_opponent_num = getattr(
                     ftm.constructor_args,
@@ -1424,15 +1435,15 @@ def train_best_response(
                     constructor_args=ftm.constructor_args if ftm.constructor_args is not None else game_args,
                     agent_dict=ftm.get_parameters(),
                     league_matchup_states=league_states,
-                    total_timesteps=BR_TRAINING_STEPS,
+                    total_timesteps=br_training_steps,
                     rollout_opponent_num=rollout_opponent_num,
                     model_dir=os.path.dirname(checkpoint_path),
                     frozen_side=frozen_side,
                     loaded_matchup_key=loaded_matchup_key,
                 )
             else:
-                ftm.learn(total_timesteps=BR_TRAINING_STEPS, callback=train_callback)
-        #br_agent.learn(total_timesteps=BR_TRAINING_STEPS, callback=exploiter_callback)
+                ftm.learn(total_timesteps=br_training_steps, callback=train_callback)
+        #br_agent.learn(total_timesteps=br_training_steps, callback=exploiter_callback)
 
         local_plot_and_eval_file = os.path.join(current_dir, "local_br_eval.py")
         
@@ -1528,7 +1539,13 @@ def run_br_for_task_in_subprocess(
     entropy_window_size: int = 50,
     entropy_warmup_checks: int = 100,
     entropy_ratio_only: bool = False,
-    local_plot_dir: str = None
+    local_plot_dir: str = None,
+    enable_local_kl_plot: bool = True,
+    *,
+    # Keyword-only required: total .learn() timesteps for this BR job.
+    # Plumbed from the launcher via --br_training_steps; absent value
+    # raises TypeError at call time.
+    br_training_steps: int,
 ) -> None:
     """
     Worker function for running a single BR training instance in a separate process.
@@ -1626,7 +1643,7 @@ def run_br_for_task_in_subprocess(
                     "(skipping FixedMatchupPolicyAdapter — CDS will route "
                     "data through the matching head via the env's state list)."
                 )
-        if exploiter_save_freq * len(loaded_model.matchups) > BR_TRAINING_STEPS:
+        if exploiter_save_freq * len(loaded_model.matchups) > br_training_steps:
             print("-------------------------------------------\n\n ")
             print("ERROR!")
             print("ERROR! Exploiter save frequency is greater than BR training steps. This will result in no exploiter checkpoints being saved AND AN ERROR RIGHT BEFORE LOCAL BR EVAL")
@@ -1706,6 +1723,9 @@ def run_br_for_task_in_subprocess(
         entropy_warmup_checks=entropy_warmup_checks,
         entropy_ratio_only=entropy_ratio_only,
         local_plot_dir=local_plot_dir,
+        enable_local_kl_plot=enable_local_kl_plot,
+        # Keyword-only required on train_best_response
+        br_training_steps=br_training_steps,
     )
 
 
@@ -1732,6 +1752,10 @@ if __name__ == "__main__":
     parser.add_argument("--dedicated_exploiter", choices=['True', 'False'], default='False', required=True)
     parser.add_argument("--continue_exploiters", choices=['True', 'False'], default='False', required=True)
     parser.add_argument("--exploiter_save_freq", type=int, required=True, default=100000, help="Frequency of exploiter checkpoint saves.")
+    parser.add_argument("--br_training_steps", type=int, required=True,
+                        help="Total .learn() timesteps for each BR job. "
+                             "Required; orchestrator argparse should plumb "
+                             "this through from the launcher.")
     parser.add_argument("--br_tracker_patience", type=int, default=10, help="Patience (in checks) for BR convergence early stopping.")
     parser.add_argument("--br_tracker_tolerance", type=float, default=1e-4, help="Tolerance for BR convergence stagnation checks.")
     parser.add_argument("--br_tracker_window_size", type=int, default=50, help="Window size used to smooth BR convergence metric.")
@@ -1867,7 +1891,7 @@ if __name__ == "__main__":
     print("Number of cores (this worker): ", args.num_cores)
     print("Max concurrent jobs: ", args.max_concurrent_jobs if args.max_concurrent_jobs > 0 else "unlimited")
     print("Launch local br eval: ", args.launch_local_br_eval)
-    if args.exploiter_save_freq * args.n_envs > BR_TRAINING_STEPS:
+    if args.exploiter_save_freq * args.n_envs > args.br_training_steps:
         print("WARNING! Exploiter save frequency is greater than BR training steps. This will result in no exploiter checkpoints being saved AND AN ERROR RIGHT BEFORE LOCAL BR EVAL")
     args.eval_only = args.eval_only == 'True'
     if not args.use_wandb:
@@ -2042,6 +2066,8 @@ if __name__ == "__main__":
                         "entropy_window_size": args.entropy_window_size,
                         "entropy_warmup_checks": args.entropy_warmup_checks,
                         "entropy_ratio_only": args.entropy_ratio_only == 'True',
+                        # Keyword-only required on run_br_for_task_in_subprocess
+                        "br_training_steps": args.br_training_steps,
                     }
                     if args.DEBUG:
                         print(
@@ -2340,6 +2366,8 @@ if __name__ == "__main__":
                         "entropy_window_size": args.entropy_window_size,
                         "entropy_warmup_checks": args.entropy_warmup_checks,
                         "entropy_ratio_only": args.entropy_ratio_only == 'True',
+                        # Keyword-only required on run_br_for_task_in_subprocess
+                        "br_training_steps": args.br_training_steps,
                     }
                     if args.DEBUG:
                         print(

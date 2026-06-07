@@ -133,6 +133,13 @@ def main() -> None:
         # dedicated mode: from_scratch=True (BR PPO trained from scratch).
         from_scratch=True,
         exploiter_save_freq=cfg.get("exploiter_save_freq", 100000),
+        # Required from the launcher; KeyError here means the orchestrator
+        # was invoked without --br_training_steps (argparse should catch
+        # that first; this is the second gate).
+        br_training_steps=cfg["br_training_steps"],
+        # Optional from the launcher; defaults True to preserve existing
+        # behavior on launchers that don't set ENABLE_LOCAL_KL_PLOT.
+        enable_local_kl_plot=cfg.get("enable_local_kl_plot", True),
         # BR convergence tracker
         br_tracker_patience=cfg.get("br_tracker_patience", 10),
         br_tracker_tolerance=cfg.get("br_tracker_tolerance", 1e-4),

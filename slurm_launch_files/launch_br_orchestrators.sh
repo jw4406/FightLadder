@@ -8,6 +8,7 @@ set -euo pipefail
 LAUNCH_DEDICATED='True'
 LAUNCH_CONTINUE='True'
 STEP_STRIDE=500000  # 0 = process all tasks; e.g. 500000 = only every 500k steps
+BR_TRAINING_STEPS=10000000  # total .learn() timesteps per BR job
 
 WORKDIR=/scratch/gpfs/FISAC/jw4406
 MAIN_TRAINING_DIR=7500763
@@ -30,6 +31,7 @@ DEDICATED_CMD=(
     --local_plot_dir "$WORKDIR/$MAIN_TRAINING_DIR/FightLadder/logs/local_entropy_plots"
     --slurm_log_dir /home/jw4406
     --step_stride "$STEP_STRIDE"
+    --br_training_steps "$BR_TRAINING_STEPS"
     #--dry_run True
 )
 
@@ -56,6 +58,7 @@ CONTINUE_CMD=(
     --local_plot_dir "$WORKDIR/$MAIN_TRAINING_DIR/FightLadder/logs/local_entropy_plots_continue"
     --slurm_log_dir /home/jw4406
     --step_stride "$STEP_STRIDE"
+    --br_training_steps "$BR_TRAINING_STEPS"
     #--dry_run True
 )
 

@@ -38,6 +38,7 @@ class RatingStagnationTracker:
         local_plot_every_checks: int = 1,
         entropy_warmup_checks: int = 100,
         enable_local_reward_plot: bool = False,
+        enable_local_kl_plot: bool = False,
         entropy_ratio_only: bool = False,
     ) -> None:
         self.patience = int(patience)
@@ -62,11 +63,14 @@ class RatingStagnationTracker:
         self.local_plot_every_checks = max(1, int(local_plot_every_checks))
         self.entropy_warmup_checks = max(0, int(entropy_warmup_checks))
         self.enable_local_reward_plot = bool(enable_local_reward_plot)
+        self.enable_local_kl_plot = bool(enable_local_kl_plot)
         self.entropy_ratio_only = bool(entropy_ratio_only)
         self.local_entropy_csv_path = None
         self.local_entropy_png_path = None
         self.local_reward_csv_path = None
         self.local_reward_png_path = None
+        self.local_kl_csv_path = None
+        self.local_kl_png_path = None
         self.reset(np.array([], dtype=np.float64))
 
     def enabled(self) -> bool:
@@ -121,6 +125,15 @@ class RatingStagnationTracker:
         self.local_reward_csv_path = None
         self.local_reward_png_path = None
         self._reward_csv_rows_written = 0
+        # KL divergence (PPO train/approx_kl) -- recorded per check() call when
+        # the caller passes current_kl. EMA-smoothed like entropy/reward.
+        self.kl_ema = None
+        self.kl_timestep_history = []
+        self.kl_raw_history = []
+        self.kl_ema_history = []
+        self.local_kl_csv_path = None
+        self.local_kl_png_path = None
+        self._kl_csv_rows_written = 0
 
     def _update_ema_stability_state(
         self,
@@ -238,6 +251,51 @@ class RatingStagnationTracker:
             # Keep training robust even if plotting backend is unavailable.
             pass
 
+    def _save_local_kl_plot(self, force: bool = False) -> None:
+        if not self.enable_local_kl_plot:
+            return
+        if len(self.kl_timestep_history) == 0:
+            return
+        if (not force) and (self.num_checks % self.local_plot_every_checks != 0):
+            return
+        os.makedirs(self.local_plot_dir, exist_ok=True)
+        if self.local_kl_csv_path is None or self.local_kl_png_path is None:
+            base_name = f"{self.local_plot_prefix}_{self._plot_id}_KL"
+            self.local_kl_csv_path = os.path.join(self.local_plot_dir, f"{base_name}.csv")
+            self.local_kl_png_path = os.path.join(self.local_plot_dir, f"{base_name}.png")
+
+        start = self._kl_csv_rows_written
+        need_header = start == 0
+        with open(self.local_kl_csv_path, "a" if not need_header else "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if need_header:
+                writer.writerow(["timestep", "kl_raw", "kl_ema"])
+            for t, raw, ema in zip(
+                self.kl_timestep_history[start:],
+                self.kl_raw_history[start:],
+                self.kl_ema_history[start:],
+            ):
+                writer.writerow([t, raw, ema])
+        self._kl_csv_rows_written = len(self.kl_timestep_history)
+
+        try:
+            import matplotlib.pyplot as plt
+
+            plt.figure(figsize=(10, 5))
+            plt.plot(self.kl_timestep_history, self.kl_raw_history, label="kl_raw", alpha=0.5)
+            plt.plot(self.kl_timestep_history, self.kl_ema_history, label="kl_ema", linewidth=2.0)
+            plt.xlabel("exploiter training timestep")
+            plt.ylabel("approx_kl (PPO train/approx_kl)")
+            plt.title(f"KL divergence vs Timestep ({self.local_plot_prefix})")
+            plt.legend()
+            plt.grid(alpha=0.25)
+            plt.tight_layout()
+            plt.savefig(self.local_kl_png_path, dpi=150)
+            plt.close()
+        except Exception:
+            # Keep training robust even if plotting backend is unavailable.
+            pass
+
     def _compute_normalized_slope(self, history: np.ndarray, scale: float) -> Tuple[float, float]:
         x = np.arange(history.size, dtype=np.float64)
         x_centered = x - x.mean()
@@ -257,6 +315,7 @@ class RatingStagnationTracker:
         lr_adjustment_callback: Optional[Callable[[], None]] = None,
         timestep: Optional[float] = None,
         current_reward: Optional[float] = None,
+        current_kl: Optional[float] = None,
     ) -> Tuple[bool, Optional[Dict[str, float]]]:
         ratings = np.asarray(ratings, dtype=np.float64)
         if not self.enabled():
@@ -499,12 +558,31 @@ class RatingStagnationTracker:
             self.reward_raw_history.append(float(current_reward))
             self.reward_ema_history.append(float(self.ema_reward))
 
+        # KL divergence (e.g., PPO's train/approx_kl) -- recorded alongside
+        # entropy/reward when the caller supplies it. Same EMA smoothing as
+        # entropy. No effect on early-stopping logic; this is observability.
+        if current_kl is not None:
+            try:
+                kl_val = float(current_kl)
+            except (TypeError, ValueError):
+                kl_val = float("nan")
+            if np.isfinite(kl_val):
+                if self.kl_ema is None:
+                    self.kl_ema = kl_val
+                else:
+                    self.kl_ema = self.ema_beta * self.kl_ema + (1.0 - self.ema_beta) * kl_val
+                kl_t = float(self.num_checks if timestep is None else timestep)
+                self.kl_timestep_history.append(kl_t)
+                self.kl_raw_history.append(kl_val)
+                self.kl_ema_history.append(float(self.kl_ema))
+
         if self.entropy_ratio_only:
             should_stop = bool(entropy_window_stop)
         else:
             should_stop = bool(base_should_stop or entropy_stability_stop or entropy_window_stop)
         self._save_local_entropy_plot(force=should_stop)
         self._save_local_reward_plot(force=should_stop)
+        self._save_local_kl_plot(force=should_stop)
         return should_stop, logs
 
 class BRConvergenceTracker:

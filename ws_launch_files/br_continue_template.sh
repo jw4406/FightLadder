@@ -1,43 +1,36 @@
 #!/bin/bash
-#SBATCH --job-name={{JOB_NAME}}
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=6
-#SBATCH --mem=8G
-#SBATCH --gres=gpu:1
-#SBATCH --time=001:30:00
-#SBATCH --output={{OUT_LOG}}
-#SBATCH --error={{ERR_LOG}}
-#SBATCH --mail-type=begin
-#SBATCH --mail-type=end
-#SBATCH --mail-user=jw4406@princeton.edu
+# Workstation-mode BR continue job template.
+#
+# Parity with slurm_launch_files/br_continue_template.slurm but stripped of
+# all #SBATCH/module/mail directives and pointed at a local conda install.
+# The orchestrator spawns this via `bash <script>` (non-login, non-interactive)
+# so we cannot rely on ~/.bashrc to put conda on PATH — we source it manually.
+#
+# Placeholders (do NOT use {{...}} in any comment line of this file -- the
+# orchestrator's text-replace pass would expand them in-place, and a
+# multi-line value like PYTHON_CMD would spill un-commented code below this
+# header):
+#   JOB_NAME, OUT_LOG, ERR_LOG, PYTHON_CMD       -- filled by render_template_sbatch
+#   WS_WORKDIR, MAIN_TRAINING_DIR, WS_REPO_DIR   -- passed from the high-level launcher
 
 set -euo pipefail
 
-WORKDIR=/scratch/gpfs/FISAC/jw4406
-MAIN_TRAINING_DIR=7500763
+# -----------------------------------------------------------------------------
+# Workstation paths (edit to match this machine).
+# -----------------------------------------------------------------------------
+WORKDIR={{WS_WORKDIR}}
+MAIN_TRAINING_DIR={{MAIN_TRAINING_DIR}}
+REPO_DIR={{WS_REPO_DIR}}
 
 export WORKDIR
 export MAIN_TRAINING_DIR
 
-cd $HOME/FightLadder
+cd "$REPO_DIR"
 
-module purge
-module load anaconda3/2024.2
-# >>> conda initialize >>>
-# !! Contents within this block are managed by 'conda init' !!
-__conda_setup="$('/usr/local/anaconda3/2024.02/bin/conda' 'shell.bash' 'hook' 2> /dev/null)"
-if [ $? -eq 0 ]; then
-    eval "$__conda_setup"
-else
-    if [ -f "/usr/local/anaconda3/2024.02/etc/profile.d/conda.sh" ]; then
-        . "/usr/local/anaconda3/2024.02/etc/profile.d/conda.sh"
-    else
-        export PATH="/usr/local/anaconda3/2024.02/bin:$PATH"
-    fi
-fi
-unset __conda_setup
-# <<< conda initialize <<<
+# -----------------------------------------------------------------------------
+# Conda activation (Popen'd bash does not source ~/.bashrc).
+# -----------------------------------------------------------------------------
+source /home/jw4406/anaconda3/etc/profile.d/conda.sh
 conda activate fightladder
 
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -46,12 +39,12 @@ PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 EVAL_PROT="True"
 EVAL_ADV="True"
 EVAL_ONLY="False"
-PROJ_NAME="br_training_slurm"
+PROJ_NAME="br_training_ws_continue"
 ANALYSIS_UPLOAD_PROJ_NAME="br_analysis"
 USE_MIRROR="False"
-NUM_FULL_EXPLOITERS="5"
+NUM_CONTINUE_EXPLOITERS="1"
 N_ENVS="2"
-EXPLOITER_SAVE_FREQ="500000"
+EXPLOITER_SAVE_FREQ="7500"
 
 # --- BR convergence tracker ---
 BR_TRACKER_PATIENCE="300"
@@ -66,11 +59,11 @@ BR_MIN_SLOPE_CHECKS="12"
 
 # --- Entropy-window early-stop (RatingStagnationTracker) ---
 ENTROPY_STOP_RATIO="0.05"
-ENTROPY_WINDOW_SIZE="50"
+ENTROPY_WINDOW_SIZE="75"
 ENTROPY_WARMUP_CHECKS="100"
 ENTROPY_RATIO_ONLY="True"
 
-# --- CDS stagnation (unused in dedicated mode, threaded for parity) ---
+# --- CDS continue-mode stagnation ---
 USE_STAGNATION_EARLY_STOP="False"
 USE_STAGNATION_VELOCITY_SIGNAL="False"
 USE_STAGNATION_ENTROPY_SIGNAL="False"
@@ -99,9 +92,8 @@ SEED="0"
 DEVICE="cuda"
 LAUNCH_LOCAL_BR_EVAL="True"
 USE_WANDB="False"
-ENABLE_LOCAL_KL_PLOT="True"
 
-# --- SLURM resource defaults ---
+# --- SLURM resource defaults (unused on workstation, kept for parity) ---
 SLURM_ACCOUNT=""
 PYTHON_BIN="python"
 

@@ -2,6 +2,7 @@
 
 WORKDIR=/scratch/gpfs/FISAC/jw4406
 MAIN_TRAINING_DIR=7500763
+BR_TRAINING_STEPS=10000000   # total .learn() timesteps per BR job
 LOGS_DIR="${WORKDIR}/${MAIN_TRAINING_DIR}/logs"
 mkdir -p "${LOGS_DIR}"
 
@@ -21,6 +22,7 @@ CMD=(python -u /home/jw4406/FightLadder/main/br_continue_slurm_orchestrator.py
 	--stop_file "$STOP_FILE"
 	--local_plot_dir "$LOCAL_PLOT_DIR"
 	--slurm_log_dir /home/jw4406
+	--br_training_steps "$BR_TRAINING_STEPS"
 	#--dry_run True
 )
 

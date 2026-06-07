@@ -55,6 +55,7 @@ from br_slurm_common import (
     write_registry,
     write_sbatch_script,
 )
+from br_ws_concurrency import count_active_local_jobs
 
 
 # ----------------------------- per-task processing -----------------------------
@@ -183,6 +184,13 @@ def _process_task(
                 err_log=err_log,
                 python_cmd=python_cmd,
                 extra_sbatch_lines=extra_sbatch_lines,
+                extra_placeholders={
+                    "WS_WORKDIR": args.workdir,
+                    "MAIN_TRAINING_DIR": args.main_training_dir,
+                    "WS_REPO_DIR": os.path.dirname(
+                        os.path.dirname(os.path.abspath(__file__))
+                    ),
+                },
             )
         else:
             write_sbatch_script(
@@ -292,6 +300,12 @@ def main() -> None:
             sweep_completed_tasks(args.processing_dir, args.done_dir)
         except Exception as exc:
             print(f"[orch-continue] sweeper error (non-fatal): {exc}")
+
+        # Workstation-mode concurrency gate. No-op on SLURM clusters because
+        # have_sbatch() short-circuits the conjunction.
+        if not have_sbatch() and count_active_local_jobs(args.processing_dir) >= args.max_local_concurrent:
+            time.sleep(POLL_INTERVAL)
+            continue
 
         claim = claim_task(args.todo_dir, args.processing_dir, step_stride=args.step_stride)
         if claim is None:

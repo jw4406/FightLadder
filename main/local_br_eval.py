@@ -214,9 +214,79 @@ def main() -> None:
                 "Exploiter checkpoint), or eval league outputs via the "
                 "league-native eval path."
             )
-        br_model = CleanDerivativeFreeSPAR.load(
-            br_model_path, env=env, num_perturbed=1, device=args.device
-        )
+        try:
+            br_model = CleanDerivativeFreeSPAR.load(
+                br_model_path, env=env, num_perturbed=1, device=args.device
+            )
+        except RuntimeError as exc:
+            # Per-matchup override in load_br_checkpoints.load_and_continue
+            # aliases policy heads (value_net, dstb_action_net) without
+            # pruning the original ModuleDict entries, and never rebuilds
+            # the optimizers to match the post-override num_adversaries=1
+            # geometry. Two failure modes hit a normal SB3 load:
+            #   1) RuntimeError "Unexpected key(s) in state_dict" -- dormant
+            #      heads from other matchups (GuileVsRyu_*, etc.).
+            #   2) ValueError "parameter group that doesn't match the size
+            #      of optimizer's group" -- optimizer state was saved with
+            #      N param groups (pre-override geometry) but freshly built
+            #      with 1 group from the saved num_adversaries=1 metadata.
+            # SB3's BaseAlgorithm.load hard-codes exact_match=True and only
+            # has a retry path for SB3<1.7 missing-pi_features_extractor
+            # cases, so we bypass set_parameters entirely on retry: load
+            # the zip directly, rebuild the model, and load ONLY the policy
+            # weights with strict=False. Optimizers are skipped because
+            # eval never calls .learn().
+            if "Unexpected key(s) in state_dict" not in str(exc):
+                raise
+            print(
+                f"[local_br_eval] strict checkpoint load failed; retrying "
+                f"with policy-only strict=False load (bypassing optimizers) "
+                f"to tolerate per-matchup override dormant heads + optimizer "
+                f"geometry mismatch. Error: {exc}",
+                flush=True,
+            )
+            from stable_baselines3.common.save_util import load_from_zip_file
+            data, params, _ = load_from_zip_file(
+                br_model_path, device=args.device
+            )
+            # Mirror SB3's BaseAlgorithm.load preflight: strip stored device
+            # from policy_kwargs so the freshly-constructed policy uses ours.
+            if (
+                "policy_kwargs" in data
+                and isinstance(data["policy_kwargs"], dict)
+                and "device" in data["policy_kwargs"]
+            ):
+                del data["policy_kwargs"]["device"]
+            # `n_envs` must reflect the current env, not the saved one.
+            if env is not None and hasattr(env, "num_envs"):
+                data["n_envs"] = env.num_envs
+            br_model = CleanDerivativeFreeSPAR(
+                policy=data["policy_class"],
+                env=env,
+                device=args.device,
+                _init_setup_model=False,
+            )
+            br_model.__dict__.update(data)
+            br_model._setup_model()
+            # Eval-only: load policy weights, accept missing/unexpected keys.
+            # Missing keys (e.g., q_value_net.<matchup>_0 if the override
+            # didn't alias q_value_net) stay at their fresh init values.
+            missing, unexpected = br_model.policy.load_state_dict(
+                params["policy"], strict=False,
+            )
+            print(
+                f"[local_br_eval] policy.load_state_dict(strict=False): "
+                f"{len(missing)} missing, {len(unexpected)} unexpected keys.",
+                flush=True,
+            )
+            if missing:
+                print(
+                    f"[local_br_eval] WARNING: missing keys include: "
+                    f"{missing[:6]}{'...' if len(missing) > 6 else ''} -- "
+                    f"these will use random initialization (may affect eval "
+                    f"if the forward path exercises them).",
+                    flush=True,
+                )
     else:
         # if args.eval_prot is True:  # we're training an optimal adversary
         #     dstb_action_space = Box(

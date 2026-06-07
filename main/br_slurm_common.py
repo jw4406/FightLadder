@@ -332,14 +332,25 @@ def render_template_sbatch(
     err_log: str,
     python_cmd: str,
     extra_sbatch_lines: str = "",
+    extra_placeholders: Optional[Dict[str, str]] = None,
 ) -> None:
-    """Render a .slurm template by substituting ``{{PLACEHOLDERS}}``."""
+    """Render a .slurm template by substituting ``{{PLACEHOLDERS}}``.
+
+    *extra_placeholders* lets callers inject additional ``{{KEY}}`` -> value
+    substitutions on top of the always-substituted JOB_NAME/OUT_LOG/ERR_LOG/
+    PYTHON_CMD. Used by the workstation ws_launch_files/*.sh templates to
+    receive WS_WORKDIR / MAIN_TRAINING_DIR / WS_REPO_DIR from the
+    orchestrator. SLURM .slurm templates that don't contain those markers
+    are unaffected.
+    """
     subs = {
         "JOB_NAME": job_name,
         "OUT_LOG": out_log,
         "ERR_LOG": err_log,
         "PYTHON_CMD": python_cmd,
     }
+    if extra_placeholders:
+        subs.update(extra_placeholders)
     rendered = template_text
     for key, val in subs.items():
         rendered = rendered.replace("{{" + key + "}}", val)
@@ -634,6 +645,7 @@ def build_shared_config(args: argparse.Namespace, manual_stop_file: Optional[str
         "analysis_upload_proj_name": args.analysis_upload_proj_name,
         "n_envs": args.n_envs,
         "exploiter_save_freq": args.exploiter_save_freq,
+        "br_training_steps": args.br_training_steps,
         "br_tracker_patience": args.br_tracker_patience,
         "br_tracker_tolerance": args.br_tracker_tolerance,
         "br_tracker_window_size": args.br_tracker_window_size,
@@ -667,6 +679,7 @@ def build_shared_config(args: argparse.Namespace, manual_stop_file: Optional[str
         "manual_stop_file": manual_stop_file,
         "manual_stop_key": None,
         "launch_local_br_eval": args.launch_local_br_eval,
+        "enable_local_kl_plot": args.enable_local_kl_plot,
         "use_wandb": args.use_wandb,
     }
 
@@ -788,6 +801,10 @@ def add_shared_arguments(parser: argparse.ArgumentParser, *, default_processing_
     parser.add_argument("--step_stride", type=int, default=0,
                         help="Only process tasks whose step count is "
                              "divisible by this value. 0 = process all.")
+    parser.add_argument("--max_local_concurrent", type=int, default=1,
+                        help="Cap on simultaneous local-bash jobs (workstation "
+                             "mode). Only consulted when sbatch is NOT on PATH; "
+                             "ignored on SLURM clusters. Default 1.")
 
     # Job-side parity with new_br_worker.
     parser.add_argument("--eval_prot", choices=["True", "False"], default="True")
@@ -798,6 +815,10 @@ def add_shared_arguments(parser: argparse.ArgumentParser, *, default_processing_
     parser.add_argument("--use_mirror", choices=["True", "False"], default="False")
     parser.add_argument("--n_envs", type=int, default=2)
     parser.add_argument("--exploiter_save_freq", type=int, default=100000)
+    parser.add_argument("--br_training_steps", type=int, required=True,
+                        help="Total timesteps each BR job trains for. "
+                             "Required at the launcher level; raises "
+                             "argparse error if not passed.")
 
     # BR convergence tracker
     parser.add_argument("--br_tracker_patience", type=int, default=300)
@@ -845,6 +866,11 @@ def add_shared_arguments(parser: argparse.ArgumentParser, *, default_processing_
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--launch_local_br_eval", choices=["True", "False"], default="True")
     parser.add_argument("--use_wandb", choices=["True", "False"], default="False")
+    parser.add_argument("--enable_local_kl_plot", choices=["True", "False"], default="True",
+                        help="Whether the BR Exploiter tracker writes "
+                             "per-job KL-divergence CSV+PNG plots into "
+                             "--local_plot_dir. Default True (preserves "
+                             "existing behavior).")
 
     # SLURM
     #parser.add_argument("--slurm_partition", type=str, default="gpu")
@@ -876,6 +902,7 @@ def normalize_bool_args(args: argparse.Namespace) -> argparse.Namespace:
         "use_stagnation_entropy_signal", "stagnation_use_slope_early_stop",
         "render", "enable_combo", "null_combo", "transform_action",
         "launch_local_br_eval", "use_wandb", "dry_run",
+        "enable_local_kl_plot",
     ]
     for k in bool_fields:
         setattr(args, k, bool_choice(getattr(args, k)))

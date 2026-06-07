@@ -5359,7 +5359,8 @@ class Exploiter(PPO):
         entropy_warmup_checks: int = 100,
         entropy_ratio_only: bool = False,
         use_wandb: bool = True,
-        local_plot_dir: str = None
+        local_plot_dir: str = None,
+        enable_local_kl_plot: bool = True,
     ):
 
         super().__init__(policy=policy,
@@ -5429,6 +5430,7 @@ class Exploiter(PPO):
             entropy_ratio_only=self.entropy_ratio_only,
             enable_local_entropy_plot=True,
             enable_local_reward_plot=True,
+            enable_local_kl_plot=bool(enable_local_kl_plot),
             local_plot_prefix="dedicated_exploiter",
             local_plot_every_checks=1,
             local_plot_dir=local_plot_dir
@@ -5436,6 +5438,24 @@ class Exploiter(PPO):
         self.br_convergence_tracker.reset(np.array([0.0], dtype=np.float64))
         self.use_wandb = use_wandb
         _move_exploited_rl_agent_to_device(self.exploited, self.device)
+        # Snapshot slot for train/approx_kl. PPO writes it inside super().train(),
+        # then OnPolicyAlgorithm.learn() calls Logger.dump() which CLEARS
+        # name_to_value -- so by the time the next collect_rollouts->tracker.check
+        # runs, the value is gone. We override train() below to grab it before
+        # the clear, and the tracker reads from this attr instead of the logger.
+        self._last_train_approx_kl: Optional[float] = None
+
+    def train(self) -> None:
+        super().train()
+        # PPO's train() recorded "train/approx_kl" into the logger's
+        # name_to_value dict at line ~285 of ppo.py. Capture it BEFORE
+        # OnPolicyAlgorithm.learn()'s subsequent logger.dump() clears it.
+        val = self.logger.name_to_value.get("train/approx_kl")
+        if val is not None:
+            try:
+                self._last_train_approx_kl = float(val)
+            except (TypeError, ValueError):
+                self._last_train_approx_kl = None
 
     def collect_rollouts(
         self,
@@ -5592,12 +5612,19 @@ class Exploiter(PPO):
             dtype=np.float64,
         )
         tracker.register_games(1)
+        # train/approx_kl is captured in our Exploiter.train() override into
+        # self._last_train_approx_kl BEFORE OnPolicyAlgorithm.learn()'s dump()
+        # clears name_to_value. On the very first check() (iter 1, no train
+        # has run yet), the attr is None and the tracker skips KL recording;
+        # from iter 2 onward each check sees the previous train's value.
+        approx_kl = getattr(self, "_last_train_approx_kl", None)
         should_stop, stagnation_logs = tracker.check(
             ratings=ratings,
             current_entropy=self._last_rollout_policy_entropy,
             lr_adjustment_callback=None,
             timestep=float(self.num_timesteps),
             current_reward=float(mean_reward) if mean_reward is not None else None,
+            current_kl=float(approx_kl) if approx_kl is not None else None,
         )
         tracker_logs = {
             "exploiter/reward_mean": (

@@ -112,6 +112,10 @@ def main() -> None:
         # routes data through the matching matchup head naturally.
         from_scratch=False,
         exploiter_save_freq=cfg.get("exploiter_save_freq", 100000),
+        # Required from the launcher; KeyError here means the orchestrator
+        # was invoked without --br_training_steps (argparse should catch
+        # that first; this is the second gate).
+        br_training_steps=cfg["br_training_steps"],
         # BR convergence tracker (used for the Exploiter-trained-from-
         # scratch path; harmless here in continue mode but threaded for
         # parity with the dedicated runner).

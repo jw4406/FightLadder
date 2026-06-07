@@ -284,6 +284,7 @@ class CleanDerivativeFreeSPAR(PPO):
             entropy_ratio_only=self.entropy_ratio_only_cfg,
             enable_local_entropy_plot=True,
             enable_local_reward_plot=True,
+            enable_local_kl_plot=True,
             local_plot_prefix="continue_exploiter",
             local_plot_every_checks=1,
         )
@@ -1048,12 +1049,21 @@ class CleanDerivativeFreeSPAR(PPO):
                                 skip=not self.use_lr_annealing,
                             )
 
+                    # train/{ego,adv}_approx_kl is snapshotted into
+                    # self._last_train_approx_kl inside CDS.train() BEFORE the
+                    # outer learn() calls logger.dump() (which would clear
+                    # name_to_value). On the very first check (iter 1, no train
+                    # has run yet) the attr is unset -> None -> tracker skips
+                    # KL recording. From iter 2 onward each check gets the prev
+                    # train's value.
+                    _approx_kl = getattr(self, "_last_train_approx_kl", None)
                     stagnation_triggered, stagnation_logs = self.stagnation_tracker.check(
                         ratings=self.elo_adversary_ratings,
                         current_entropy=current_entropy,
                         lr_adjustment_callback=_lr_adjustment_callback,
                         timestep=float(self.num_timesteps),
                         current_reward=float(current_reward) if current_reward is not None else None,
+                        current_kl=float(_approx_kl) if _approx_kl is not None else None,
                     )
                     if stagnation_logs is not None:
                         for key, value in stagnation_logs.items():
@@ -1103,6 +1113,20 @@ class CleanDerivativeFreeSPAR(PPO):
         #self.train_standard(update_ego, update_adversary)
         if USE_PERTURBED:
             self.train_derivative_free(update_ego, update_adversary)
+        # Snapshot approx_kl BEFORE the outer learn() loop calls Logger.dump(),
+        # which would clear name_to_value before the next collect_rollouts ->
+        # stagnation_tracker.check() can read it. CDS uses prefixed keys
+        # (train/ego_approx_kl, train/adv_approx_kl) -- see _log_leader_metrics
+        # at ~line 1730. Pick the side that was actually updated this step;
+        # if both updated, take the mean.
+        ego_kl = self.logger.name_to_value.get("train/ego_approx_kl") if update_ego else None
+        adv_kl = self.logger.name_to_value.get("train/adv_approx_kl") if update_adversary else None
+        vals = [v for v in (ego_kl, adv_kl) if v is not None]
+        if vals:
+            try:
+                self._last_train_approx_kl = float(sum(float(v) for v in vals) / len(vals))
+            except (TypeError, ValueError):
+                self._last_train_approx_kl = None
     
     def train_derivative_free(self, update_ego: bool = True, update_adversary: bool = True) -> None:
         self.policy.set_training_mode(True)
