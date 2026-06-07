@@ -3,6 +3,9 @@
 WORKDIR=/scratch/gpfs/FISAC/jw4406
 MAIN_TRAINING_DIR=7500763
 BR_TRAINING_STEPS=10000000   # total .learn() timesteps per BR job
+# The repo is rsync'd into scratch alongside MAIN_TRAINING_DIR; orchestrators,
+# templates, and runners all live under it. Matches ws_launch_files pattern.
+REPO_DIR="$WORKDIR/$MAIN_TRAINING_DIR/FightLadder"
 LOGS_DIR="${WORKDIR}/${MAIN_TRAINING_DIR}/logs"
 mkdir -p "${LOGS_DIR}"
 
@@ -12,8 +15,8 @@ DONE_DIR="$WORKDIR/$MAIN_TRAINING_DIR/FightLadder/main/trained_models/tasks/slur
 STOP_FILE="$WORKDIR/$MAIN_TRAINING_DIR/FightLadder/main/trained_models/tasks/STOP_SLURM_CONTINUE"
 LOCAL_PLOT_DIR="$WORKDIR/$MAIN_TRAINING_DIR/FightLadder/logs/local_entropy_plots_continue"
 
-CMD=(python -u /home/jw4406/FightLadder/main/br_continue_slurm_orchestrator.py
-	--br_continue_sh_template /home/jw4406/FightLadder/slurm_launch_files/br_continue_template.slurm
+CMD=(python -u "$REPO_DIR/main/br_continue_slurm_orchestrator.py"
+	--br_continue_sh_template "$REPO_DIR/slurm_launch_files/br_continue_template.slurm"
 	--main_training_dir "$MAIN_TRAINING_DIR"
 	--workdir "$WORKDIR"
 	--todo_dir "$TODO_DIR"

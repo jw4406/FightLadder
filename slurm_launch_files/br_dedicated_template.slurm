@@ -14,13 +14,17 @@
 
 set -euo pipefail
 
-WORKDIR=/scratch/gpfs/FISAC/jw4406
-MAIN_TRAINING_DIR=7500763
+# Placeholders WS_WORKDIR / MAIN_TRAINING_DIR / WS_REPO_DIR are filled in by
+# render_template_sbatch (orchestrator-side); see ws_launch_files/*.sh for the
+# same pattern. The launcher (launch_br_*.sh) is the single source of truth.
+WORKDIR={{WS_WORKDIR}}
+MAIN_TRAINING_DIR={{MAIN_TRAINING_DIR}}
+REPO_DIR={{WS_REPO_DIR}}
 
 export WORKDIR
 export MAIN_TRAINING_DIR
 
-cd $HOME/FightLadder
+cd "$REPO_DIR"
 
 module purge
 module load anaconda3/2024.2
@@ -43,15 +47,15 @@ conda activate fightladder
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # --- Job-side config (parity with new_br_worker) ---
-EVAL_PROT="True"
+EVAL_PROT="False"
 EVAL_ADV="True"
 EVAL_ONLY="False"
 PROJ_NAME="br_training_slurm"
 ANALYSIS_UPLOAD_PROJ_NAME="br_analysis"
 USE_MIRROR="False"
-NUM_FULL_EXPLOITERS="5"
+NUM_FULL_EXPLOITERS="1"
 N_ENVS="2"
-EXPLOITER_SAVE_FREQ="500000"
+EXPLOITER_SAVE_FREQ="5000"
 
 # --- BR convergence tracker ---
 BR_TRACKER_PATIENCE="300"

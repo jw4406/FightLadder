@@ -7,11 +7,14 @@ set -euo pipefail
 
 LAUNCH_DEDICATED='True'
 LAUNCH_CONTINUE='True'
-STEP_STRIDE=500000  # 0 = process all tasks; e.g. 500000 = only every 500k steps
+STEP_STRIDE=40000  # 0 = process all tasks; e.g. 40000 = only every 40k steps (matches ws)
 BR_TRAINING_STEPS=10000000  # total .learn() timesteps per BR job
 
 WORKDIR=/scratch/gpfs/FISAC/jw4406
 MAIN_TRAINING_DIR=7500763
+# The repo is rsync'd into scratch alongside MAIN_TRAINING_DIR; orchestrators,
+# templates, and runners all live under it. Match ws_launch_files pattern.
+REPO_DIR="$WORKDIR/$MAIN_TRAINING_DIR/FightLadder"
 TASK_BASE="$WORKDIR/$MAIN_TRAINING_DIR/FightLadder/main/trained_models/tasks"
 LOGS_DIR="$WORKDIR/$MAIN_TRAINING_DIR/logs"
 mkdir -p "${LOGS_DIR}"
@@ -20,8 +23,8 @@ mkdir -p "${LOGS_DIR}"
 # 1. Dedicated orchestrator (watchdog: todo/ -> slurm_processing/ -> slurm_done/)
 # ==========================================================================
 DEDICATED_CMD=(
-    python -u /home/jw4406/FightLadder/main/br_slurm_orchestrator.py
-    --br_dedicated_sh_template /home/jw4406/FightLadder/slurm_launch_files/br_dedicated_template.slurm
+    python -u "$REPO_DIR/main/br_slurm_orchestrator.py"
+    --br_dedicated_sh_template "$REPO_DIR/slurm_launch_files/br_dedicated_template.slurm"
     --main_training_dir "$MAIN_TRAINING_DIR"
     --workdir "$WORKDIR"
     --todo_dir "$TASK_BASE/todo"
@@ -47,8 +50,8 @@ fi
 # 2. Continue orchestrator (watchdog: todo_continue/ -> slurm_processing_continue/ -> slurm_done_continue/)
 # ==========================================================================
 CONTINUE_CMD=(
-    python -u /home/jw4406/FightLadder/main/br_continue_slurm_orchestrator.py
-    --br_continue_sh_template /home/jw4406/FightLadder/slurm_launch_files/br_continue_template.slurm
+    python -u "$REPO_DIR/main/br_continue_slurm_orchestrator.py"
+    --br_continue_sh_template "$REPO_DIR/slurm_launch_files/br_continue_template.slurm"
     --main_training_dir "$MAIN_TRAINING_DIR"
     --workdir "$WORKDIR"
     --todo_dir "$TASK_BASE/todo_continue"
