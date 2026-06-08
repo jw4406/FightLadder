@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=8G
 #SBATCH --gres=gpu:1
-#SBATCH --time=001:30:00
+#SBATCH --time=000:30:00
 #SBATCH --output={{OUT_LOG}}
 #SBATCH --error={{ERR_LOG}}
 #SBATCH --mail-type=begin
@@ -28,26 +28,12 @@ cd "$REPO_DIR"
 
 module purge
 module load anaconda3/2024.2
-# >>> conda initialize >>>
-# !! Contents within this block are managed by 'conda init' !!
-__conda_setup="$('/usr/local/anaconda3/2024.02/bin/conda' 'shell.bash' 'hook' 2> /dev/null)"
-if [ $? -eq 0 ]; then
-    eval "$__conda_setup"
-else
-    if [ -f "/usr/local/anaconda3/2024.02/etc/profile.d/conda.sh" ]; then
-        . "/usr/local/anaconda3/2024.02/etc/profile.d/conda.sh"
-    else
-        export PATH="/usr/local/anaconda3/2024.02/bin:$PATH"
-    fi
-fi
-unset __conda_setup
-# <<< conda initialize <<<
 conda activate fightladder
 
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # --- Job-side config (parity with new_br_worker) ---
-EVAL_PROT="False"
+EVAL_PROT="True"
 EVAL_ADV="True"
 EVAL_ONLY="False"
 PROJ_NAME="br_training_slurm"

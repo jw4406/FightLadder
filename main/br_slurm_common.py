@@ -84,7 +84,9 @@ def load_template_config(path: str) -> Dict[str, str]:
             # Bash variable assignments: KEY="val" or KEY=val
             m = re.match(r'^([A-Z_][A-Z_0-9]*)="?(.*?)"?\s*$', line)
             if m and not line.startswith("#"):
-                config[m.group(1).lower()] = m.group(2)
+                val = m.group(2)
+                if "{{" not in val:
+                    config[m.group(1).lower()] = val
 
     return config
 

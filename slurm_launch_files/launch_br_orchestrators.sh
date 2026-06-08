@@ -7,14 +7,14 @@ set -euo pipefail
 
 LAUNCH_DEDICATED='True'
 LAUNCH_CONTINUE='True'
-STEP_STRIDE=40000  # 0 = process all tasks; e.g. 40000 = only every 40k steps (matches ws)
+STEP_STRIDE=10000  # 0 = process all tasks; e.g. 40000 = only every 40k steps (matches ws)
 BR_TRAINING_STEPS=10000000  # total .learn() timesteps per BR job
 
 WORKDIR=/scratch/gpfs/FISAC/jw4406
 MAIN_TRAINING_DIR=7500763
 # The repo is rsync'd into scratch alongside MAIN_TRAINING_DIR; orchestrators,
 # templates, and runners all live under it. Match ws_launch_files pattern.
-REPO_DIR="$WORKDIR/$MAIN_TRAINING_DIR/FightLadder"
+REPO_DIR="$HOME/FightLadder"
 TASK_BASE="$WORKDIR/$MAIN_TRAINING_DIR/FightLadder/main/trained_models/tasks"
 LOGS_DIR="$WORKDIR/$MAIN_TRAINING_DIR/logs"
 mkdir -p "${LOGS_DIR}"
