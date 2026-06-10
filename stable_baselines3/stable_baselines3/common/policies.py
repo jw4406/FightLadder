@@ -823,7 +823,9 @@ class ActorActorCriticPolicy(BasePolicy):
         dstb_action_space: spaces.Space = None,
         policy_memory_size: Optional[int] = None,
         num_adversaries=None,
-        device='auto'
+        device='auto',
+        use_mirror: bool = False,
+        side_dim: int = 2,
     ):
         if optimizer_kwargs is None:
             optimizer_kwargs = {}
@@ -866,6 +868,8 @@ class ActorActorCriticPolicy(BasePolicy):
         self.ortho_init = ortho_init
         self.adversarial = adversarial
         self.num_adversaries = num_adversaries
+        self.use_mirror = use_mirror
+        self.side_dim = side_dim
         self.share_features_extractor = share_features_extractor
         self.features_extractor = self.make_features_extractor()
         #self.features_extractor_class=
@@ -961,7 +965,8 @@ class ActorActorCriticPolicy(BasePolicy):
             activation_fn=self.activation_fn,
             device='auto',
             adversarial=True,
-            context_dim=0
+            context_dim=0,
+            side_dim=self.side_dim if self.use_mirror else 0,
         )
 
     def _build(self, joint_schedule) -> None:

@@ -314,6 +314,7 @@ class MlpExtractorAdv(nn.Module):
         context_dim=None,
         ego_action_dim=12,
         adv_action_dim=12,
+        side_dim: int = 0,
 
     ) -> None:
         super().__init__()
@@ -327,6 +328,7 @@ class MlpExtractorAdv(nn.Module):
         last_layer_dim_vf = feature_dim
         self.ego_action_dim = ego_action_dim
         self.adv_action_dim = adv_action_dim
+        self.side_dim = side_dim
 
         # save dimensions of layers in policy and value nets
         if isinstance(net_arch, dict):
@@ -338,10 +340,11 @@ class MlpExtractorAdv(nn.Module):
         # Iterate through the policy layers and build the policy net
         count = 0
         for curr_layer_dim in pi_layers_dims:
-            policy_net.append(nn.Linear(last_layer_dim_pi, curr_layer_dim))
             if count == 0:
+                policy_net.append(nn.Linear(last_layer_dim_pi + side_dim, curr_layer_dim))
                 dstb_net.append(nn.Linear(last_layer_dim_pi + context_dim, curr_layer_dim))
             else:
+                policy_net.append(nn.Linear(last_layer_dim_pi, curr_layer_dim))
                 dstb_net.append(nn.Linear(last_layer_dim_pi, curr_layer_dim))
             policy_net.append(activation_fn())
             dstb_net.append(activation_fn())
@@ -351,13 +354,15 @@ class MlpExtractorAdv(nn.Module):
         count = 0
         for curr_layer_dim in vf_layers_dims:
             if count == 0:
-                q_value_net.append(nn.Linear(last_layer_dim_vf + ego_action_dim + adv_action_dim, curr_layer_dim))
+                q_value_net.append(nn.Linear(last_layer_dim_vf + ego_action_dim + adv_action_dim + side_dim, curr_layer_dim))
+                ego_value_net.append(nn.Linear(last_layer_dim_vf + side_dim, curr_layer_dim))
+                value_net.append(nn.Linear(last_layer_dim_vf + side_dim, curr_layer_dim))
             else:
                 q_value_net.append(nn.Linear(last_layer_dim_vf, curr_layer_dim))
+                ego_value_net.append(nn.Linear(last_layer_dim_vf, curr_layer_dim))
+                value_net.append(nn.Linear(last_layer_dim_vf, curr_layer_dim))
             q_value_net.append(activation_fn())
-            ego_value_net.append(nn.Linear(last_layer_dim_vf, curr_layer_dim))
             ego_value_net.append(activation_fn())
-            value_net.append(nn.Linear(last_layer_dim_vf, curr_layer_dim))
             value_net.append(activation_fn())
             last_layer_dim_vf = curr_layer_dim
             count = count + 1
@@ -384,35 +389,42 @@ class MlpExtractorAdv(nn.Module):
         )
         self.dstb_net = nn.Sequential(*dstb_net).to(device)
 
-    def forward(self, ctrl_features: th.Tensor, dstb_features: th.Tensor) -> Tuple[th.Tensor, th.Tensor]:
+    def _maybe_cat_side(self, features: th.Tensor, side_flag: th.Tensor) -> th.Tensor:
+        if self.side_dim == 0:
+            return features
+        assert side_flag is not None, "side_flag required when side_dim > 0"
+        return th.cat([features, side_flag], dim=-1)
+
+    def forward(self, ctrl_features: th.Tensor, dstb_features: th.Tensor, side_flag: th.Tensor = None) -> Tuple[th.Tensor, th.Tensor]:
         """
         :return: latent_policy, latent_value of the specified network.
             If all layers are shared, then ``latent_policy == latent_value``
         """
-        return self.forward_actor(ctrl_features), self.forward_critic(dstb_features)
+        return self.forward_actor(ctrl_features, side_flag=side_flag), self.forward_critic(dstb_features, side_flag=side_flag)
 
-    def forward_actor(self, ctrl_features: th.Tensor, dstb_features: th.Tensor = None) -> [th.Tensor, th.Tensor]:
+    def forward_actor(self, ctrl_features: th.Tensor, dstb_features: th.Tensor = None, side_flag: th.Tensor = None) -> [th.Tensor, th.Tensor]:
         if dstb_features is None:
-            return self.policy_net(ctrl_features)
+            return self.policy_net(self._maybe_cat_side(ctrl_features, side_flag))
         else:
-            return self.policy_net(ctrl_features), self.dstb_net(dstb_features)
-    
+            return self.policy_net(self._maybe_cat_side(ctrl_features, side_flag)), self.dstb_net(dstb_features)
+
     def adv_forward(self, dstb_features: th.Tensor) -> th.Tensor:
         return self.dstb_net(dstb_features)
 
-    def ego_forward(self, ctrl_features: th.Tensor) -> th.Tensor:
-        return self.policy_net(ctrl_features)
+    def ego_forward(self, ctrl_features: th.Tensor, side_flag: th.Tensor = None) -> th.Tensor:
+        return self.policy_net(self._maybe_cat_side(ctrl_features, side_flag))
 
-    def forward_critic(self, vf_features: th.Tensor) -> th.Tensor:
-        return self.value_net(vf_features)
+    def forward_critic(self, vf_features: th.Tensor, side_flag: th.Tensor = None) -> th.Tensor:
+        return self.value_net(self._maybe_cat_side(vf_features, side_flag))
 
-    def forward_q_value(self, vf_features: th.Tensor, ego_actions: th.Tensor, adv_actions: th.Tensor) -> th.Tensor:
+    def forward_q_value(self, vf_features: th.Tensor, ego_actions: th.Tensor, adv_actions: th.Tensor, side_flag: th.Tensor = None) -> th.Tensor:
         ego_actions_transformed = self.ego_action_extractor(ego_actions)
         adv_actions_transformed = self.adv_action_extractor(adv_actions)
-        return self.q_value_net(th.cat([vf_features, ego_actions_transformed, adv_actions_transformed], dim=1))
-    
-    def forward_ego_value(self, vf_features: th.Tensor) -> th.Tensor:
-        return self.ego_value_net(vf_features)
+        combined = th.cat([vf_features, ego_actions_transformed, adv_actions_transformed], dim=1)
+        return self.q_value_net(self._maybe_cat_side(combined, side_flag))
+
+    def forward_ego_value(self, vf_features: th.Tensor, side_flag: th.Tensor = None) -> th.Tensor:
+        return self.ego_value_net(self._maybe_cat_side(vf_features, side_flag))
 
 class IPPOMlpExtractorAdv(nn.Module):
     """

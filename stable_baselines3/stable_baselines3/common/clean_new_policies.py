@@ -58,6 +58,8 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         envs_per_matchup=None,
         num_adversaries=None,
         dstb_action_space=None,
+        use_mirror: bool = False,
+        side_dim: int = 2,
     ):
         # self.matchups = matchups
         # self.envs_per_matchup = envs_per_matchup
@@ -99,6 +101,8 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         self.num_adversaries = num_adversaries
         self.matchups = matchups
         self.envs_per_matchup = envs_per_matchup
+        self.use_mirror = use_mirror
+        self.side_dim = side_dim
         self.dstb_action_dist = [make_proba_distribution(self.dstb_action_space, use_sde=self.use_sde, dist_kwargs=None) for i in range(self.num_adversaries)]
         self.pi_dstb_features_extractor = self.make_features_extractor()
         self.pi_ctrl_features_extractor = self.features_extractor
@@ -122,8 +126,9 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             activation_fn=self.activation_fn,
             device='auto',
             adversarial=True,
-            context_dim=0
-        ) 
+            context_dim=0,
+            side_dim=self.side_dim if self.use_mirror else 0,
+        )
 
     def _build_network(self, joint_schedule: Schedule) -> None:
         """
@@ -373,10 +378,13 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         else:
             raise ValueError("Invalid action distribution")
         
-    def ego_forward(self, obs, deterministic=False) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+    def ego_forward(self, obs, deterministic=False, side_flag=None) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
         new_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
         pi_ctrl_features = self.pi_ctrl_features_extractor(new_obs)
-        latent_pi = self.mlp_extractor.ego_forward(pi_ctrl_features)
+        if self.use_mirror:
+            latent_pi = self.mlp_extractor.ego_forward(pi_ctrl_features, side_flag=side_flag)
+        else:
+            latent_pi = self.mlp_extractor.ego_forward(pi_ctrl_features)
         ctrl_distribution = self._get_ego_action_dist_from_latent(latent_pi)
         ctrl_actions = ctrl_distribution.get_actions(deterministic=deterministic)
         ctrl_log_prob = ctrl_distribution.log_prob(ctrl_actions)
@@ -402,10 +410,13 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         #dstb_log_prob = test
         return dstb_actions, dstb_log_prob
 
-    def value_forward(self, obs) -> Tuple[th.Tensor, th.Tensor]:
+    def value_forward(self, obs, side_flag=None) -> Tuple[th.Tensor, th.Tensor]:
         new_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
         vf_features = self.vf_features_extractor(new_obs)
-        latent_vf = self.mlp_extractor.forward_critic(vf_features)
+        if self.use_mirror:
+            latent_vf = self.mlp_extractor.forward_critic(vf_features, side_flag=side_flag)
+        else:
+            latent_vf = self.mlp_extractor.forward_critic(vf_features)
         latents_per_adv = latent_vf.shape[0] // self.num_adversaries
         values = th.zeros((latent_vf.shape[0], 1), device=self.device)
         for i in range(self.num_adversaries):
@@ -413,25 +424,31 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             key = select_matchup_env(self.matchups, i, self.envs_per_matchup)
             values[i * latents_per_adv : (i+1) * latents_per_adv, :] = self.value_net[key](latent_vf[i * latents_per_adv : (i+1) * latents_per_adv, :])
         return values
-    
-    def q_value_forward(self, obs, ego_actions, adv_actions) -> Tuple[th.Tensor, th.Tensor]:
+
+    def q_value_forward(self, obs, ego_actions, adv_actions, side_flag=None) -> Tuple[th.Tensor, th.Tensor]:
         new_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
         vf_features = self.vf_features_extractor(new_obs)
-        latent_vf = self.mlp_extractor.forward_q_value(vf_features, ego_actions, adv_actions)
+        if self.use_mirror:
+            latent_vf = self.mlp_extractor.forward_q_value(vf_features, ego_actions, adv_actions, side_flag=side_flag)
+        else:
+            latent_vf = self.mlp_extractor.forward_q_value(vf_features, ego_actions, adv_actions)
         latents_per_adv = latent_vf.shape[0] // self.num_adversaries
         q_values = th.zeros((latent_vf.shape[0], 1), device=self.device)
         for i in range(self.num_adversaries):
             key = select_matchup_env(self.matchups, i, self.envs_per_matchup)
             q_values[i * latents_per_adv : (i+1) * latents_per_adv, :] = self.q_value_net[key](latent_vf[i * latents_per_adv : (i+1) * latents_per_adv, :])
         return q_values
-    
-    def forward(self, obs, deterministic=False, ego_forward=True, adv_forward=True, network_keys=None, zero_ego_action=False, zero_adv_action=False, value_forward=True, q_value_forward=True) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+
+    def forward(self, obs, deterministic=False, ego_forward=True, adv_forward=True, network_keys=None, zero_ego_action=False, zero_adv_action=False, value_forward=True, q_value_forward=True, side_flag=None) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
 
         # by default, we run both ego and adv forward
 
         if ego_forward:
-            ego_actions, ego_log_prob = self.ego_forward(obs, deterministic)
-        if zero_ego_action: 
+            if self.use_mirror:
+                ego_actions, ego_log_prob = self.ego_forward(obs, deterministic, side_flag=side_flag)
+            else:
+                ego_actions, ego_log_prob = self.ego_forward(obs, deterministic)
+        if zero_ego_action:
             ego_actions = th.ones(self.num_adversaries * self.envs_per_matchup, self.action_space.shape[0]).to(self.device)
             ego_log_prob = th.zeros(self.num_adversaries * self.envs_per_matchup).to(self.device)
             #ego_entropy = th.zeros()
@@ -443,18 +460,24 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             adv_actions = th.ones_like(ego_actions)
             adv_log_prob = th.zeros_like(ego_log_prob)
             #adv_entropy = th.zeros()
-        
+
         if value_forward:
-            values = self.value_forward(obs)
+            if self.use_mirror:
+                values = self.value_forward(obs, side_flag=side_flag)
+            else:
+                values = self.value_forward(obs)
         else:
             values = th.zeros(ego_actions.shape[0], 1) if ego_forward else th.zeros(adv_actions.shape[0], 1)
         #q_values = self.q_value_forward(obs, ego_actions, adv_actions)
         return ego_actions, ego_log_prob, adv_actions, adv_log_prob, values, th.zeros_like(values)
 
-    def evaluate_ego_actions(self, obs, ego_actions) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+    def evaluate_ego_actions(self, obs, ego_actions, side_flag=None) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
         preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
         features = self.pi_ctrl_features_extractor(preprocessed_obs)
-        latent_pi = self.mlp_extractor.ego_forward(features)
+        if self.use_mirror:
+            latent_pi = self.mlp_extractor.ego_forward(features, side_flag=side_flag)
+        else:
+            latent_pi = self.mlp_extractor.ego_forward(features)
         ctrl_distribution = self._get_ego_action_dist_from_latent(latent_pi)
         ctrl_log_prob = ctrl_distribution.log_prob(ego_actions)
         ctrl_entropy = ctrl_distribution.entropy()
@@ -475,12 +498,15 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         #dstb_entropy = th.vstack(dstb_entropy)
         return dstb_log_prob, dstb_entropy
 
-    def evaluate_states(self, obs, buf_num, env_indices=None) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+    def evaluate_states(self, obs, buf_num, env_indices=None, side_flag=None) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
         if len(buf_num) != 1:
             assert self.num_adversaries > 1
         preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
         features = self.vf_features_extractor(preprocessed_obs)
-        latent_vf = self.mlp_extractor.forward_critic(features)
+        if self.use_mirror:
+            latent_vf = self.mlp_extractor.forward_critic(features, side_flag=side_flag)
+        else:
+            latent_vf = self.mlp_extractor.forward_critic(features)
         latents_per_adv = latent_vf.shape[0] // self.num_adversaries
         values = th.zeros((latent_vf.shape[0], 1), device=self.device)
         env_ids = env_indices // self.envs_per_matchup
@@ -505,8 +531,11 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
     def evaluate_states_and_actions(self, obs, ego_actions, adv_actions, buf_num, env_indices=None):
         pass
 
-    def predict(self, obs, deterministic=False) -> Tuple[th.Tensor, th.Tensor]:
-       ego_actions, ego_log_prob = self.ego_forward(obs, deterministic)
+    def predict(self, obs, deterministic=False, side_flag=None) -> Tuple[th.Tensor, th.Tensor]:
+       if self.use_mirror:
+           ego_actions, ego_log_prob = self.ego_forward(obs, deterministic, side_flag=side_flag)
+       else:
+           ego_actions, ego_log_prob = self.ego_forward(obs, deterministic)
        adv_actions, adv_log_prob = self.adv_forward(obs, deterministic)
        return (ego_actions, ego_log_prob), (adv_actions, adv_log_prob)
     
