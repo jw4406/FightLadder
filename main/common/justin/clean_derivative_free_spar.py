@@ -229,6 +229,7 @@ class CleanDerivativeFreeSPAR(PPO):
         self.adversarial = True
         self.num_adversaries = num_adversaries
         self.n_env_per_adv = n_env_per_adv
+        self.use_mirror = use_mirror
         self.state_list = state_list if state_list is not None else None
         if _init_setup_model:
             self.env.num_envs = self.n_envs
@@ -237,7 +238,6 @@ class CleanDerivativeFreeSPAR(PPO):
         self.parallel_updater = None
         self.n_global_env = self.n_envs
         self.env.num_envs = self.n_envs
-        self.use_mirror = use_mirror
         self.num_workers = num_workers
         self.use_stagnation_early_stop = use_stagnation_early_stop
         self.use_stagnation_velocity_signal = bool(use_stagnation_velocity_signal)
@@ -489,6 +489,11 @@ class CleanDerivativeFreeSPAR(PPO):
         else:
             self.policy_kwargs['features_extractor_class'] = FlattenExtractor
 
+        if self.use_mirror:
+            self.policy_kwargs['side_dim'] = 1
+            self.policy_kwargs['use_mirror'] = True
+            print("Mirror mode training enabled: side_dim = %d" % self.policy_kwargs['side_dim'])
+
         self.policy = self.policy_class(  # pytype:disable=not-instantiable
             self.observation_space,
             self.action_space,
@@ -715,8 +720,11 @@ class CleanDerivativeFreeSPAR(PPO):
 
         return True
     
-    def collect_rollouts_mirror(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, update_ego: bool = True, update_adversary: bool = True) -> bool:
+    def collect_rollouts_mirror(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, run_ego_forward: bool = True, run_adv_forward: bool = True, zero_ego_action=False, zero_adv_action=False) -> bool:
         assert self.use_mirror is True, "Use mirror is not True"
+        if self.policy.use_mirror is False:
+            self.policy.use_mirror = True
+            print("Mirror mode training enabled: policy use_mirror set to %d" % self.policy.use_mirror)
         assert self._last_obs is not None, "No previous observation was provided"
         self.policy.set_training_mode(False)
 
@@ -744,10 +752,10 @@ class CleanDerivativeFreeSPAR(PPO):
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values = self.policy(obs_tensor, deterministic=False, ego_forward=update_ego, adv_forward=update_adversary)
-                ego_entropy_sum += float((-ego_log_probs.detach()).mean().item())
-                adv_entropy_sum += float((-adv_log_probs.detach()).mean().item())
-                entropy_count += 1
+                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values, _ = self.policy(obs_tensor, deterministic=False, ego_forward=run_ego_forward, adv_forward=run_adv_forward, zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action)
+                #ego_entropy_sum += float((-ego_log_probs.detach()).mean().item())
+                #adv_entropy_sum += float((-adv_log_probs.detach()).mean().item())
+                #entropy_count += 1
                 
                 # The value network predicts value from the left player's perspective.
                 # In mirrored rollouts, the ego is on the right for the second half of envs.
@@ -758,56 +766,43 @@ class CleanDerivativeFreeSPAR(PPO):
                 other_values = -values
 
             actions = ego_actions.cpu().numpy()
-            actions_other = adv_actions.cpu().numpy()
+            other_actions = adv_actions.cpu().numpy()
 
-            # Rescale and perform action
 
-            mirror_master_copy_actions = deepcopy(actions)
-            mirror_master_copy_adv_actions = deepcopy(adv_actions)
+            # let's write a short test here
+            # suppose we have 1 ego char and 6 adv chars.
+            # when mirror mode is on, we have 12 envs with ego playing both sides
+            # policy forward pass outputs 24 ego actions -- 12 ego left, 12 ego right
+            # policy forward pass outputs 12 adv actions -- 6 adv left, 6 adv right
 
-            # upper half, lower half
+            test_mirror_ego_action = np.ones((24, 1)) * 9
+            test_mirror_adv_action = np.ones((12, 1)) * 99
+            test_mirror_ego_log_probs = th.ones((24, 1)) * 999
+            test_mirror_adv_log_probs = th.ones((12, 1)) * 9999
+            test_mirror_left_actions, test_mirror_right_actions = mirror_flip_attributes(test_mirror_ego_action, test_mirror_adv_action)
+            test_left_log_probs, test_right_log_probs = mirror_flip_attributes(test_mirror_ego_log_probs, test_mirror_adv_log_probs)
 
-            
-            # print("SINGLE TRAIN EXTRACTOR MIRROR")
-
-            '''
-            assume wlog Ehonda is the prot.
-
-            action right now is:                  adv_action right now is:
-            EHonda left                                              Sagat    right
-            EHonda left                                              Sagat    right
-            EHonda left                                             MBison    right
-            EHonda left                                             MBison    right
-
-            EHonda v Sagat       0
-            Sagat v. EHonda      1
-            EHonda v. MBison     2
-            MBison v. EHonda     3
-
-            action[odds] needs to go to the other side because our design makes prot actions left
-
-            same with adversary[odds] -- adversary is on the right so adv[ods] is backwards
-
-            '''
-            halfway = actions.shape[0] // 2 #halfway split between upper & lower + left & right
-            actions, actions_other = mirror_flip_attributes(actions, actions_other)
-            ego_log_probs, adv_log_probs = mirror_flip_attributes(ego_log_probs, adv_log_probs)
-            values, other_values = mirror_flip_attributes(values, other_values)
-                
-                
-                
-
-            clipped_actions = np.hstack([actions, actions_other])
-            # print(clipped_actions, flush=True)
-            # print(np.shape(clipped_actions),flush=True)
+            left_actions, right_actions = mirror_flip_attributes(actions, other_actions)
+            left_log_probs, right_log_probs = mirror_flip_attributes(ego_log_probs, adv_log_probs)
+            clipped_actions = np.hstack([left_actions, right_actions])
             # Clip the actions to avoid out of bound error
             if isinstance(self.action_space, _BoxTypes):
-                clipped_actions = np.clip(np.hstack([actions, actions_other]), self.action_space.low,
+                clipped_actions = np.clip(np.hstack([left_actions, right_actions]), self.action_space.low,
                                           self.action_space.high)
 
             new_obs, rewards, rewards_other, dones, infos = env.step(clipped_actions)
-            #rewards[halfway:] = -rewards[halfway:]
-            rewards, rewards_other = mirror_flip_attributes(rewards, rewards_other)
+            halfway = rewards.shape[0] // 2
+            rewards[halfway:] = -rewards[halfway:]
+            rewards_other[halfway:] = -rewards_other[halfway:]
+
+            corrected_ego_log_probs = th.concatenate([left_log_probs[:halfway], right_log_probs[halfway:]])
+            corrected_adv_log_probs = th.concatenate([right_log_probs[:halfway], left_log_probs[halfway:]])
+            corrected_ego_actions = np.concatenate([left_actions[:halfway], right_actions[halfway:]])
+            corrected_adv_actions = np.concatenate([right_actions[:halfway], left_actions[halfway:]])
+
+            test_buffer_ego_log_probs = th.concatenate([test_left_log_probs[:halfway], test_right_log_probs[halfway:]])
+            test_buffer_adv_log_probs = th.concatenate([test_right_log_probs[:halfway], test_left_log_probs[halfway:]])
+            #rewards, rewards_other = mirror_flip_attributes(rewards, rewards_other)
             #np.random.seed(0)
             #random.seed(0)
             #torch.manual_seed(0)
@@ -869,11 +864,12 @@ class CleanDerivativeFreeSPAR(PPO):
             #         rewards_other[idx] += self.gamma * terminal_value_other
 
                     # from IPython import embed; embed()
-            rollout_buffer.add(self._last_obs.copy(), actions, rewards, self._last_episode_starts, values,
-                                   ego_log_probs)
+            rollout_buffer.add(self._last_obs.copy(), corrected_ego_actions, corrected_adv_actions, rewards, new_obs, dones, self._last_episode_starts, values,
+                                   corrected_ego_log_probs, values)
+            indices = slice(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
             for i in range(self.num_adversaries):
-                adversary_buffers[i].add(self._last_obs[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv].copy(), actions_other[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], rewards_other[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], self._last_episode_starts[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], other_values[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv],
-                                         adv_log_probs[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv])
+                adversary_buffers[i].add(self._last_obs[indices].copy(), corrected_ego_actions[indices], corrected_adv_actions[indices], rewards_other[indices], new_obs[indices], dones[indices], self._last_episode_starts[indices], other_values[indices],
+                                         corrected_adv_log_probs[indices], other_values[indices])
             #for i in range(self.num_adversaries):
             #    adversary_buffers[i].add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts, values_other,
             #                             adv_log_probs)

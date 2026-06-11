@@ -125,24 +125,21 @@ def unpickle_policy(policy: Any) -> torch.nn.Module:
     return policy
 
 def mirror_flip_attributes(attribute1, attribute2):
-    assert attribute1.shape == attribute2.shape
-    #assert attribute1.shape[1] == attribute2.shape[1]
+    ego_halfway = attribute1.shape[0] // 2
+    adv_halfway = attribute2.shape[0] // 2
+    second_halfway = ego_halfway // 2
+    all_envs_ego_left_ = attribute1[:ego_halfway]
+    all_envs_ego_right_ = attribute1[ego_halfway:]
 
-    halfway = attribute1.shape[0] // 2
-    prot_left = attribute1[:halfway]  # actions for the prot when he is on the left
-    prot_left_pre = attribute1[halfway:]  
+    left_ego_ = all_envs_ego_left_[:second_halfway]
+    right_ego_ = all_envs_ego_right_[second_halfway:]
 
-    adv_right = attribute2[:halfway]
-    adv_right_pre = attribute2[halfway:]
+    adv_left_ = attribute2[:adv_halfway]
+    adv_right_ = attribute2[adv_halfway:]
 
-    prot_actions = np.empty_like(attribute1) if isinstance(attribute1, np.ndarray) else torch.empty_like(attribute1, device=attribute1.device)
-    prot_actions[:halfway] = prot_left
-    prot_actions[halfway:] = adv_right_pre
-
-    adv_actions = np.empty_like(attribute2) if isinstance(attribute2, np.ndarray) else torch.empty_like(attribute2, device=attribute2.device)
-    adv_actions[:halfway] = adv_right
-    adv_actions[halfway:] = prot_left_pre
-    return prot_actions, adv_actions
+    left_ = np.concatenate([left_ego_, adv_left_], axis=0) if isinstance(left_ego_, np.ndarray) else torch.cat([left_ego_, adv_left_], dim=0)
+    right_ = np.concatenate([adv_right_, right_ego_], axis=0) if isinstance(right_ego_, np.ndarray) else torch.cat([adv_right_, right_ego_], dim=0)
+    return left_, right_
 
 def move_optimizer_to_device(optimizer: torch.optim.Optimizer, device: torch.device) -> None:
     """Move all optimizer state tensors to the specified device."""

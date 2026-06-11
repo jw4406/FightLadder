@@ -59,7 +59,7 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         num_adversaries=None,
         dstb_action_space=None,
         use_mirror: bool = False,
-        side_dim: int = 2,
+        side_dim: int = 1,
     ):
         # self.matchups = matchups
         # self.envs_per_matchup = envs_per_matchup
@@ -73,6 +73,8 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         #     dstb_action_space = action_space
         # self.dstb_action_dist = [make_proba_distribution(self.dstb_action_space, use_sde=self.use_sde, dist_kwargs=None) for i in range(self.num_adversaries)]
         # self.pi_dstb_features_extractor = self.make_features_extractor()
+        self.use_mirror = use_mirror
+        self.side_dim = side_dim
         super().__init__(observation_space = observation_space,
         action_space = action_space,
         lr_schedule = lr_schedule[0],
@@ -101,8 +103,6 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         self.num_adversaries = num_adversaries
         self.matchups = matchups
         self.envs_per_matchup = envs_per_matchup
-        self.use_mirror = use_mirror
-        self.side_dim = side_dim
         self.dstb_action_dist = [make_proba_distribution(self.dstb_action_space, use_sde=self.use_sde, dist_kwargs=None) for i in range(self.num_adversaries)]
         self.pi_dstb_features_extractor = self.make_features_extractor()
         self.pi_ctrl_features_extractor = self.features_extractor
@@ -382,7 +382,7 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         new_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
         pi_ctrl_features = self.pi_ctrl_features_extractor(new_obs)
         if self.use_mirror:
-            latent_pi = self.mlp_extractor.ego_forward(pi_ctrl_features, side_flag=side_flag)
+            latent_pi = self.mlp_extractor.ego_forward(pi_ctrl_features, side_flag=th.ones(pi_ctrl_features.shape[0], 1).to(self.device) * side_flag)
         else:
             latent_pi = self.mlp_extractor.ego_forward(pi_ctrl_features)
         ctrl_distribution = self._get_ego_action_dist_from_latent(latent_pi)
@@ -414,7 +414,7 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         new_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
         vf_features = self.vf_features_extractor(new_obs)
         if self.use_mirror:
-            latent_vf = self.mlp_extractor.forward_critic(vf_features, side_flag=side_flag)
+            latent_vf = self.mlp_extractor.forward_critic(vf_features, side_flag=th.ones(vf_features.shape[0], 1).to(self.device) * side_flag)
         else:
             latent_vf = self.mlp_extractor.forward_critic(vf_features)
         latents_per_adv = latent_vf.shape[0] // self.num_adversaries
@@ -439,13 +439,16 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             q_values[i * latents_per_adv : (i+1) * latents_per_adv, :] = self.q_value_net[key](latent_vf[i * latents_per_adv : (i+1) * latents_per_adv, :])
         return q_values
 
-    def forward(self, obs, deterministic=False, ego_forward=True, adv_forward=True, network_keys=None, zero_ego_action=False, zero_adv_action=False, value_forward=True, q_value_forward=True, side_flag=None) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+    def forward(self, obs, deterministic=False, ego_forward=True, adv_forward=True, network_keys=None, zero_ego_action=False, zero_adv_action=False, value_forward=True, q_value_forward=True) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
 
         # by default, we run both ego and adv forward
 
         if ego_forward:
             if self.use_mirror:
-                ego_actions, ego_log_prob = self.ego_forward(obs, deterministic, side_flag=side_flag)
+                left_ego_actions, left_ego_log_prob = self.ego_forward(obs, deterministic, side_flag=th.Tensor([0]).to(self.device))
+                right_ego_actions, right_ego_log_prob = self.ego_forward(obs, deterministic, side_flag=th.Tensor([1]).to(self.device))
+                ego_actions = th.cat([left_ego_actions, right_ego_actions], dim=0)
+                ego_log_prob = th.cat([left_ego_log_prob, right_ego_log_prob], dim=0)
             else:
                 ego_actions, ego_log_prob = self.ego_forward(obs, deterministic)
         if zero_ego_action:
@@ -463,7 +466,7 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
 
         if value_forward:
             if self.use_mirror:
-                values = self.value_forward(obs, side_flag=side_flag)
+                values = self.value_forward(obs, side_flag=th.Tensor([0]).to(self.device))
             else:
                 values = self.value_forward(obs)
         else:
