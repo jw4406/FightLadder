@@ -137,8 +137,9 @@ def mirror_flip_attributes(attribute1, attribute2):
     adv_left_ = attribute2[:adv_halfway]
     adv_right_ = attribute2[adv_halfway:]
 
-    left_ = np.concatenate([left_ego_, adv_left_], axis=0) if isinstance(left_ego_, np.ndarray) else torch.cat([left_ego_, adv_left_], dim=0)
-    right_ = np.concatenate([adv_right_, right_ego_], axis=0) if isinstance(right_ego_, np.ndarray) else torch.cat([adv_right_, right_ego_], dim=0)
+    # adv is in env order: adv_left_ = top-half envs (adv on RIGHT), adv_right_ = bottom-half envs (adv on LEFT)
+    left_ = np.concatenate([left_ego_, adv_right_], axis=0) if isinstance(left_ego_, np.ndarray) else torch.cat([left_ego_, adv_right_], dim=0)
+    right_ = np.concatenate([adv_left_, right_ego_], axis=0) if isinstance(right_ego_, np.ndarray) else torch.cat([adv_left_, right_ego_], dim=0)
     return left_, right_
 
 def move_optimizer_to_device(optimizer: torch.optim.Optimizer, device: torch.device) -> None:

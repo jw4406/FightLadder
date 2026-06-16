@@ -760,10 +760,13 @@ class CleanDerivativeFreeSPAR(PPO):
                 # The value network predicts value from the left player's perspective.
                 # In mirrored rollouts, the ego is on the right for the second half of envs.
                 # Thus, `values` contains ego values for the top half and adversary values for the bottom half.
-                # `other_values` is computed to hold adversary values for the top and ego values for the bottom.
-                # We first negate, then use `mirror_flip_attributes` to swap the bottom halves,
-                # consolidating all ego values in `values` and all adversary values in `other_values`.
+                # We negate then swap the bottom halves so `values` holds all ego values
+                # and `other_values` holds all adversary values.
                 other_values = -values
+                val_halfway = values.shape[0] // 2
+                temp = values[val_halfway:].clone()
+                values[val_halfway:] = other_values[val_halfway:]
+                other_values[val_halfway:] = temp
 
             actions = ego_actions.cpu().numpy()
             other_actions = adv_actions.cpu().numpy()
@@ -866,8 +869,8 @@ class CleanDerivativeFreeSPAR(PPO):
                     # from IPython import embed; embed()
             rollout_buffer.add(self._last_obs.copy(), corrected_ego_actions, corrected_adv_actions, rewards, new_obs, dones, self._last_episode_starts, values,
                                    corrected_ego_log_probs, values)
-            indices = slice(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
             for i in range(self.num_adversaries):
+                indices = slice(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
                 adversary_buffers[i].add(self._last_obs[indices].copy(), corrected_ego_actions[indices], corrected_adv_actions[indices], rewards_other[indices], new_obs[indices], dones[indices], self._last_episode_starts[indices], other_values[indices],
                                          corrected_adv_log_probs[indices], other_values[indices])
             #for i in range(self.num_adversaries):
@@ -878,7 +881,7 @@ class CleanDerivativeFreeSPAR(PPO):
 
         with th.no_grad():
             # Compute value for the last timestep
-            values = self.policy.value_forward(obs_as_tensor(new_obs, self.device))
+            values = self.policy.value_forward(obs_as_tensor(new_obs, self.device), side_flag=th.Tensor([0]).to(self.device))
             values[halfway:] = -values[halfway:]
             #values_other = rollout_policy_other.predict_values(obs_as_tensor(new_obs, self.device))
 
