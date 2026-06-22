@@ -17,11 +17,11 @@ PLAYER=("Guile")
 OPPONENTS=("Sagat" "Ryu") 
 NUM_ENV_TO_LOAD="1"
 ENV_BATCH_SIZE="24"
-C_LR="1e-5"
-D_LR="2e-5"
-V_LR="5e-4"
+C_LR="1e-4"
+D_LR="2e-4"
+V_LR="1e-3"
 NUM_PERTURBS="10"
-USE_MIRROR="False"
+USE_MIRROR="True"
 # LOAD_PATH=""  # Optional: set this to pass --load_path
 # TRAINING_STYLE=""  # Optional: set this to pass --training_style
 # CONTINUE_TRAINING=""  # Optional: set this to pass --continue_training
@@ -34,9 +34,9 @@ CHECKPOINT_INTERVAL="10000"
 TOTAL_TIMESTEPS="150000000"
 TRAINING_BATCH_SIZE="512"
 TRANSFORM_ACTION="True"
-NUM_ENV_STEPS="1024"
+NUM_ENV_STEPS="2048"
 EGO_STYLE="learning"
-ADV_STYLE="learning"
+ADV_STYLE="random_action"
 ENVS_PER_MATCHUP="2"
 SIDE="both"
 RENDER="False"
@@ -58,6 +58,7 @@ STAGNATION_EVAL_GAMES="0"
 ENTROPY_STAGNATION_WEIGHT="1.0"
 STAGNATION_LR_FACTOR="0.999"
 STAGNATION_LR_PATIENCE="150"
+OBS_TYPE="image"
 # Create logs directory if it doesn't exist
 LOGS_DIR="${SCRIPT_DIR}/logs"
 mkdir -p "${LOGS_DIR}"
@@ -105,6 +106,7 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --entropy_stagnation_weight "${ENTROPY_STAGNATION_WEIGHT}"
         --stagnation_lr_factor "${STAGNATION_LR_FACTOR}"
         --stagnation_lr_patience "${STAGNATION_LR_PATIENCE}"
+        --obs_type "${OBS_TYPE}"
     )
 
     if [ "${RUN_LIVE}" = "False" ]; then

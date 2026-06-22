@@ -279,6 +279,24 @@ class MlpExtractor(nn.Module):
     def forward_critic(self, features: th.Tensor) -> th.Tensor:
         return self.value_net(self.shared_net(features))
 
+class FiLMLayer(nn.Module):
+    """Feature-wise Linear Modulation layer.
+    Learns per-feature affine transform conditioned on a scalar side_flag.
+    Initialized to identity (gamma=1, beta=0) so both sides start equivalent.
+    """
+    def __init__(self, feature_dim):
+        super().__init__()
+        self.gamma = nn.Linear(1, feature_dim)
+        self.beta = nn.Linear(1, feature_dim)
+        nn.init.zeros_(self.gamma.weight)
+        nn.init.ones_(self.gamma.bias)
+        nn.init.zeros_(self.beta.weight)
+        nn.init.zeros_(self.beta.bias)
+
+    def forward(self, features, side_flag):
+        return self.gamma(side_flag) * features + self.beta(side_flag)
+
+
 class MlpExtractorAdv(nn.Module):
     """
     Constructs an MLP that receives the output from a previous features extractor (i.e. a CNN) or directly
@@ -319,6 +337,7 @@ class MlpExtractorAdv(nn.Module):
     ) -> None:
         super().__init__()
         device = get_device(device)
+        self.feature_dim = feature_dim
         policy_net: List[nn.Module] = []
         dstb_net: List[nn.Module] = []
         value_net: List[nn.Module] = []
@@ -341,7 +360,7 @@ class MlpExtractorAdv(nn.Module):
         count = 0
         for curr_layer_dim in pi_layers_dims:
             if count == 0:
-                policy_net.append(nn.Linear(last_layer_dim_pi + side_dim, curr_layer_dim))
+                policy_net.append(nn.Linear(last_layer_dim_pi, curr_layer_dim))
                 dstb_net.append(nn.Linear(last_layer_dim_pi + context_dim, curr_layer_dim))
             else:
                 policy_net.append(nn.Linear(last_layer_dim_pi, curr_layer_dim))
@@ -354,9 +373,9 @@ class MlpExtractorAdv(nn.Module):
         count = 0
         for curr_layer_dim in vf_layers_dims:
             if count == 0:
-                q_value_net.append(nn.Linear(last_layer_dim_vf + ego_action_dim + adv_action_dim + side_dim, curr_layer_dim))
-                ego_value_net.append(nn.Linear(last_layer_dim_vf + side_dim, curr_layer_dim))
-                value_net.append(nn.Linear(last_layer_dim_vf + side_dim, curr_layer_dim))
+                q_value_net.append(nn.Linear(last_layer_dim_vf + ego_action_dim + adv_action_dim, curr_layer_dim))
+                ego_value_net.append(nn.Linear(last_layer_dim_vf, curr_layer_dim))
+                value_net.append(nn.Linear(last_layer_dim_vf, curr_layer_dim))
             else:
                 q_value_net.append(nn.Linear(last_layer_dim_vf, curr_layer_dim))
                 ego_value_net.append(nn.Linear(last_layer_dim_vf, curr_layer_dim))
@@ -389,11 +408,18 @@ class MlpExtractorAdv(nn.Module):
         )
         self.dstb_net = nn.Sequential(*dstb_net).to(device)
 
-    def _maybe_cat_side(self, features: th.Tensor, side_flag: th.Tensor) -> th.Tensor:
+        if self.side_dim > 0:
+            self.policy_film = FiLMLayer(feature_dim).to(device)
+            self.value_film = FiLMLayer(feature_dim).to(device)
+            self.dstb_film = FiLMLayer(feature_dim).to(device)
+            self.ego_value_film = FiLMLayer(feature_dim).to(device)
+            self.q_value_film = FiLMLayer(feature_dim).to(device)
+
+    def _film_condition(self, features, side_flag, film_layer):
         if self.side_dim == 0:
             return features
         assert side_flag is not None, "side_flag required when side_dim > 0"
-        return th.cat([features, side_flag], dim=-1)
+        return film_layer(features, side_flag)
 
     def forward(self, ctrl_features: th.Tensor, dstb_features: th.Tensor, side_flag: th.Tensor = None) -> Tuple[th.Tensor, th.Tensor]:
         """
@@ -404,27 +430,28 @@ class MlpExtractorAdv(nn.Module):
 
     def forward_actor(self, ctrl_features: th.Tensor, dstb_features: th.Tensor = None, side_flag: th.Tensor = None) -> [th.Tensor, th.Tensor]:
         if dstb_features is None:
-            return self.policy_net(self._maybe_cat_side(ctrl_features, side_flag))
+            return self.policy_net(self._film_condition(ctrl_features, side_flag, getattr(self, 'policy_film', None)))
         else:
-            return self.policy_net(self._maybe_cat_side(ctrl_features, side_flag)), self.dstb_net(dstb_features)
+            return self.policy_net(self._film_condition(ctrl_features, side_flag, getattr(self, 'policy_film', None))), self.dstb_net(self._film_condition(dstb_features, side_flag, getattr(self, 'dstb_film', None)))
 
-    def adv_forward(self, dstb_features: th.Tensor) -> th.Tensor:
-        return self.dstb_net(dstb_features)
+    def adv_forward(self, dstb_features: th.Tensor, side_flag: th.Tensor = None) -> th.Tensor:
+        return self.dstb_net(self._film_condition(dstb_features, side_flag, getattr(self, 'dstb_film', None)))
 
     def ego_forward(self, ctrl_features: th.Tensor, side_flag: th.Tensor = None) -> th.Tensor:
-        return self.policy_net(self._maybe_cat_side(ctrl_features, side_flag))
+        return self.policy_net(self._film_condition(ctrl_features, side_flag, getattr(self, 'policy_film', None)))
 
     def forward_critic(self, vf_features: th.Tensor, side_flag: th.Tensor = None) -> th.Tensor:
-        return self.value_net(self._maybe_cat_side(vf_features, side_flag))
+        return self.value_net(self._film_condition(vf_features, side_flag, getattr(self, 'value_film', None)))
 
     def forward_q_value(self, vf_features: th.Tensor, ego_actions: th.Tensor, adv_actions: th.Tensor, side_flag: th.Tensor = None) -> th.Tensor:
+        vf_features = self._film_condition(vf_features, side_flag, getattr(self, 'q_value_film', None))
         ego_actions_transformed = self.ego_action_extractor(ego_actions)
         adv_actions_transformed = self.adv_action_extractor(adv_actions)
         combined = th.cat([vf_features, ego_actions_transformed, adv_actions_transformed], dim=1)
-        return self.q_value_net(self._maybe_cat_side(combined, side_flag))
+        return self.q_value_net(combined)
 
     def forward_ego_value(self, vf_features: th.Tensor, side_flag: th.Tensor = None) -> th.Tensor:
-        return self.ego_value_net(self._maybe_cat_side(vf_features, side_flag))
+        return self.ego_value_net(self._film_condition(vf_features, side_flag, getattr(self, 'ego_value_film', None)))
 
 class IPPOMlpExtractorAdv(nn.Module):
     """

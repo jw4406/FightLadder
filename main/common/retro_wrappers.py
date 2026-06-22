@@ -385,3 +385,78 @@ class Monitor2P(Monitor):
             info["episode"] = ep_info
         self.total_steps += 1
         return observation, reward, reward_other, done, info
+
+
+class InfoObsWrapper(gym.Wrapper):
+    """Replaces image observations with a normalized ego-centric feature vector from the info dict.
+    Must wrap SFWrapper (which provides 2P step returns with info containing game state).
+    Features 0-4 are always ego, 5-9 are always opponent, regardless of controller assignment.
+    """
+
+    _AGENT_KEYS = ['agent_hp', 'agent_x', 'agent_y', 'agent_status', 'agent_victories']
+    _ENEMY_KEYS = ['enemy_hp', 'enemy_x', 'enemy_y', 'enemy_status', 'enemy_victories']
+    _META_KEYS = ['enemy_character', 'round_countdown', 'reset_countdown', 'score']
+
+    NORM_SCALES = np.array([
+        176.0, 512.0, 400.0, 1024.0, 2.0,
+        176.0, 512.0, 400.0, 1024.0, 2.0,
+        11.0, 40000.0, 255.0, 1e6,
+    ], dtype=np.float32)
+
+    _DEFAULT_AGENT_VALS = [176, 205, 192, 512, 0]
+    _DEFAULT_ENEMY_VALS = [176, 307, 192, 512, 0]
+    _DEFAULT_META_VALS = [0, 39208, 0, 0]
+
+    def __init__(self, env, ego_is_left=True):
+        super().__init__(env)
+        if ego_is_left:
+            self._info_keys = self._AGENT_KEYS + self._ENEMY_KEYS + self._META_KEYS
+            default_raw = self._DEFAULT_AGENT_VALS + self._DEFAULT_ENEMY_VALS + self._DEFAULT_META_VALS
+        else:
+            self._info_keys = self._ENEMY_KEYS + self._AGENT_KEYS + self._META_KEYS
+            default_raw = self._DEFAULT_ENEMY_VALS + self._DEFAULT_AGENT_VALS + self._DEFAULT_META_VALS
+        n = len(self._info_keys)
+        self.observation_space = Box(low=0.0, high=1.0, shape=(n,), dtype=np.float32)
+        self._default_obs = np.array(default_raw, dtype=np.float32) / self.NORM_SCALES
+
+    def _info_to_obs(self, info):
+        raw = np.array([info.get(k, 0) for k in self._info_keys], dtype=np.float32)
+        return np.clip(raw / self.NORM_SCALES, 0.0, 1.0)
+
+    def reset(self, **kwargs):
+        self.env.reset(**kwargs)
+        return self._default_obs.copy()
+
+    def step(self, action):
+        result = self.env.step(action)
+        if len(result) == 5:
+            _, reward, reward_other, done, info = result
+            return self._info_to_obs(info), reward, reward_other, done, info
+        else:
+            _, reward, done, info = result
+            return self._info_to_obs(info), reward, done, info
+
+
+class EgoCentricImageWrapper(gym.Wrapper):
+    """Horizontally flips image observations when ego is P2 (right controller),
+    so the CNN always sees ego's character on the left side of the screen.
+    """
+
+    def __init__(self, env):
+        super().__init__(env)
+        print("EgoCentricImageWrapper active")
+
+    def _flip(self, obs):
+        return np.ascontiguousarray(obs[:, ::-1, :])
+
+    def reset(self, **kwargs):
+        return self._flip(self.env.reset(**kwargs))
+
+    def step(self, action):
+        result = self.env.step(action)
+        if len(result) == 5:
+            obs, reward, reward_other, done, info = result
+            return self._flip(obs), reward, reward_other, done, info
+        else:
+            obs, reward, done, info = result
+            return self._flip(obs), reward, done, info

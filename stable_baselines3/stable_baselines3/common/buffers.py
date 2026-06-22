@@ -744,9 +744,10 @@ class Q_RolloutBuffer(RolloutBuffer):
         self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.q_values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.dones = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.side_flags = np.zeros((self.buffer_size, self.n_envs, 1), dtype=np.float32)
         self.generator_ready = False
         super().reset()
-    def add(self, obs: np.ndarray, action: np.ndarray, adv_action: np.ndarray, reward: np.ndarray, next_obs: np.ndarray, dones, episode_start: np.ndarray, value: th.Tensor, log_prob: th.Tensor, q_value: th.Tensor) -> None:
+    def add(self, obs: np.ndarray, action: np.ndarray, adv_action: np.ndarray, reward: np.ndarray, next_obs: np.ndarray, dones, episode_start: np.ndarray, value: th.Tensor, log_prob: th.Tensor, q_value: th.Tensor, side_flags=None) -> None:
         self.observations[self.pos] = _numpy_cpu(obs).copy()
         self.ego_actions[self.pos] = _numpy_cpu(action).copy()
         self.adv_actions[self.pos] = _numpy_cpu(adv_action).copy()
@@ -757,6 +758,8 @@ class Q_RolloutBuffer(RolloutBuffer):
         self.values[self.pos] = value.clone().cpu().numpy().flatten()
         self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
         self.q_values[self.pos] = q_value.clone().cpu().numpy().flatten()
+        if side_flags is not None:
+            self.side_flags[self.pos] = _numpy_cpu(side_flags).copy()
         self.pos += 1
         if self.pos == self.buffer_size:
             self.full = True
@@ -781,7 +784,8 @@ class Q_RolloutBuffer(RolloutBuffer):
                 "q_values",
                 "env_indices",
                 "rewards",
-                "dones"
+                "dones",
+                "side_flags",
             ]
 
             for tensor in _tensor_names:
@@ -810,7 +814,8 @@ class Q_RolloutBuffer(RolloutBuffer):
             self.q_values[batch_inds].flatten(),
             self.env_indices[batch_inds].flatten(),
             self.rewards[batch_inds].flatten(),
-            self.dones[batch_inds].flatten()
+            self.dones[batch_inds].flatten(),
+            self.side_flags[batch_inds],
         )
         return Q_RolloutBufferSamples(*tuple(map(self.to_torch, data))) 
     def prepare_data_for_training(self) -> None:
@@ -833,7 +838,8 @@ class Q_RolloutBuffer(RolloutBuffer):
                 "returns",
                 "q_values",
                 "rewards",
-                "dones"
+                "dones",
+                "side_flags",
             ]
             for tensor_name in _torch_tensor_names:
                 tensor = self.__dict__[tensor_name]
@@ -938,6 +944,7 @@ class AdvRolloutBuffer(BaseBuffer):
             self.dstb_log_probs = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
             self.advantages = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
             self.dones = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
+            self.side_flags = th.zeros((self.buffer_size, self.n_envs, 1), dtype=th.float32).pin_memory()
         else:
             self.observations = np.zeros(obs_shape, dtype=np.uint8)
             self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
@@ -950,6 +957,7 @@ class AdvRolloutBuffer(BaseBuffer):
             self.dstb_log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
             self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
             self.dones = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+            self.side_flags = np.zeros((self.buffer_size, self.n_envs, 1), dtype=np.float32)
 
         self.generator_ready = False
         self.env_indices = np.tile(np.arange(self.n_envs), (self.buffer_size, 1))  # Shape: (buffer_size, n_envs)
@@ -1124,7 +1132,8 @@ class AdvRolloutBuffer(BaseBuffer):
             value: th.Tensor,
             log_prob: th.Tensor,
             dstb_log_prob: th.Tensor,
-            dones = None
+            dones = None,
+            side_flags = None,
     ) -> None:
         """
         :param obs: Observation
@@ -1169,6 +1178,8 @@ class AdvRolloutBuffer(BaseBuffer):
             self.dstb_log_probs[self.pos].copy_(dstb_log_prob.cpu())
             if dones is not None:
                 self.dones[self.pos].copy_(dones.cpu())
+            if side_flags is not None:
+                self.side_flags[self.pos].copy_(th.as_tensor(side_flags, dtype=th.float32))
         else:
             self.observations[self.pos] = np.array(obs)
             self.actions[self.pos] = np.array(action)
@@ -1180,6 +1191,8 @@ class AdvRolloutBuffer(BaseBuffer):
             self.dstb_log_probs[self.pos] = dstb_log_prob.clone().cpu().numpy()
             if dones is not None:
                 self.dones[self.pos] = dones.clone().cpu().numpy()
+            if side_flags is not None:
+                self.side_flags[self.pos] = np.array(side_flags)
 
         self.pos += 1
         if self.pos == self.buffer_size:
@@ -1200,7 +1213,8 @@ class AdvRolloutBuffer(BaseBuffer):
             "dstb_log_probs",
             "flat_advantages",
             "returns",
-            "env_indices"
+            "env_indices",
+            "side_flags",
         ]
         for tensor in _tensor_names:
             if tensor == 'flat_advantages':
@@ -1227,6 +1241,7 @@ class AdvRolloutBuffer(BaseBuffer):
                 "dstb_log_probs",
                 "advantages",
                 "returns",
+                "side_flags",
             ]
             for tensor_name in _torch_tensor_names:
                 tensor = self.__dict__[tensor_name]
@@ -1281,7 +1296,8 @@ class AdvRolloutBuffer(BaseBuffer):
                 "dstb_log_probs",
                 "advantages",
                 "returns",
-                "env_indices"
+                "env_indices",
+                "side_flags",
             ]
 
             for tensor in _tensor_names:
@@ -1310,7 +1326,8 @@ class AdvRolloutBuffer(BaseBuffer):
             self.dstb_log_probs[batch_inds].flatten(),
             self.advantages[batch_inds].flatten(),
             self.returns[batch_inds].flatten(),
-            self.env_indices[batch_inds].flatten()
+            self.env_indices[batch_inds].flatten(),
+            self.side_flags[batch_inds],
         )
         return AdvRolloutBufferSamples(*data)
 

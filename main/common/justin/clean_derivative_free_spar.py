@@ -37,6 +37,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import StepLR  #TODO: This can be changed to another scheduler.
 from torch.optim.lr_scheduler import ExponentialLR
+DEBUG_VIDEO = False
 from anyio import value
 from gymnasium import spaces
 # Also import gym.spaces for backwards compatibility with FightLadder environments
@@ -116,9 +117,9 @@ class CleanDerivativeFreeSPAR(PPO):
             clip_range: Union[float, Schedule] = 0.1,
             clip_range_vf: Union[None, float, Schedule] = None,
             normalize_advantage: bool = False,
-            ent_coef: float = 5e-6,
-            dstb_ent_coef: float = 5e-6,
-            vf_coef: float = 0.5,
+            ent_coef: float = 0.0,
+            dstb_ent_coef: float = 0.0,
+            vf_coef: float = 1.0,
             max_grad_norm: float = 0.5,
             use_sde: bool = False,
             sde_sample_freq: int = -1,
@@ -543,13 +544,13 @@ class CleanDerivativeFreeSPAR(PPO):
         self.policy.dstb_optimizer.param_groups[0]['lr'] = adv_lr
         self.policy.value_optimizer.param_groups[0]['lr'] = value_lr
 
-    def collect_rollouts(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, run_ego_forward:bool, run_adv_forward:bool, use_mirror: bool, zero_ego_action, zero_adv_action) -> bool:
+    def collect_rollouts(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, run_ego_forward:bool, run_adv_forward:bool, use_mirror: bool, zero_ego_action, zero_adv_action, random_ego_action=False,random_adv_action=False) -> bool:
         if self.use_mirror:
-            return self.collect_rollouts_mirror(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action)
+            return self.collect_rollouts_mirror(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action, random_ego_action, random_adv_action)
         else:
-            return self.collect_rollouts_standard(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action)
+            return self.collect_rollouts_standard(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action, random_ego_action, random_adv_action)
     
-    def collect_rollouts_standard(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, run_ego_forward: bool = True, run_adv_forward: bool = True, zero_ego_action=False, zero_adv_action=False) -> bool:
+    def collect_rollouts_standard(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, run_ego_forward: bool = True, run_adv_forward: bool = True, zero_ego_action=False, zero_adv_action=False, random_ego_action=False, random_adv_action=False) -> bool:
         timenow = time.time()
         video_log = [Image.fromarray(env.render(mode="rgb_array"))]
         assert self._last_obs is not None, "No previous observation was provided"
@@ -584,7 +585,7 @@ class CleanDerivativeFreeSPAR(PPO):
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values, q_values = self.policy(obs_tensor, deterministic=False, ego_forward=run_ego_forward, adv_forward=run_adv_forward, zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action)
+                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values, q_values = self.policy(obs_tensor, deterministic=False, ego_forward=run_ego_forward, adv_forward=run_adv_forward, zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action, random_adv_action=random_adv_action)
                 ego_entropy_sum += float((-ego_log_probs.detach()).mean().item())
                 adv_entropy_sum += float((-adv_log_probs.detach()).mean().item())
                 entropy_count += 1
@@ -720,7 +721,7 @@ class CleanDerivativeFreeSPAR(PPO):
 
         return True
     
-    def collect_rollouts_mirror(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, run_ego_forward: bool = True, run_adv_forward: bool = True, zero_ego_action=False, zero_adv_action=False) -> bool:
+    def collect_rollouts_mirror(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, run_ego_forward: bool = True, run_adv_forward: bool = True, zero_ego_action=False, zero_adv_action=False, random_ego_action=False,random_adv_action=False) -> bool:
         assert self.use_mirror is True, "Use mirror is not True"
         if self.policy.use_mirror is False:
             self.policy.use_mirror = True
@@ -740,10 +741,16 @@ class CleanDerivativeFreeSPAR(PPO):
             for _ in range(self.num_adversaries)
         ]
 
+        video_log = [Image.fromarray(env.render(mode="rgb_array"))]
         callback.on_rollout_start()
-        #np.random.seed(0)
-        #random.seed(0)
-        #torch.manual_seed(0)
+
+        halfway = env.num_envs // 2
+        if not hasattr(self, '_ego_side_flags') or self._ego_side_flags.shape[0] != env.num_envs:
+            self._ego_side_flags = np.zeros((env.num_envs, 1), dtype=np.float32)
+            for idx in range(halfway, env.num_envs):
+                self._ego_side_flags[idx, 0] = 1.0
+        ego_side_flags = self._ego_side_flags
+
         while n_steps < n_rollout_steps:
             if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
                 # Sample a new noise matrix
@@ -752,59 +759,36 @@ class CleanDerivativeFreeSPAR(PPO):
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values, _ = self.policy(obs_tensor, deterministic=False, ego_forward=run_ego_forward, adv_forward=run_adv_forward, zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action)
-                #ego_entropy_sum += float((-ego_log_probs.detach()).mean().item())
-                #adv_entropy_sum += float((-adv_log_probs.detach()).mean().item())
-                #entropy_count += 1
-                
-                # The value network predicts value from the left player's perspective.
-                # In mirrored rollouts, the ego is on the right for the second half of envs.
-                # Thus, `values` contains ego values for the top half and adversary values for the bottom half.
-                # We negate then swap the bottom halves so `values` holds all ego values
-                # and `other_values` holds all adversary values.
+                ego_side_tensor = th.tensor(ego_side_flags, device=self.device)
+                adv_side_tensor = 1.0 - ego_side_tensor
+                ego_actions, ego_log_probs, adv_actions, adv_log_probs, _, _ = self.policy(obs_tensor, deterministic=False, ego_forward=run_ego_forward, adv_forward=run_adv_forward, zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action, random_ego_action=random_ego_action, random_adv_action=random_adv_action, value_forward=False, ego_side_flag=ego_side_tensor, adv_side_flag=adv_side_tensor)
+                values = self.policy.value_forward(obs_tensor, side_flag=ego_side_tensor)
                 other_values = -values
-                val_halfway = values.shape[0] // 2
-                temp = values[val_halfway:].clone()
-                values[val_halfway:] = other_values[val_halfway:]
-                other_values[val_halfway:] = temp
 
+            # ego_actions/adv_actions are N each (per-env conditioned)
+            # Top half: ego=P1(left), adv=P2(right). Bottom half: adv=P1(left), ego=P2(right).
             actions = ego_actions.cpu().numpy()
             other_actions = adv_actions.cpu().numpy()
-
-
-            # let's write a short test here
-            # suppose we have 1 ego char and 6 adv chars.
-            # when mirror mode is on, we have 12 envs with ego playing both sides
-            # policy forward pass outputs 24 ego actions -- 12 ego left, 12 ego right
-            # policy forward pass outputs 12 adv actions -- 6 adv left, 6 adv right
-
-            test_mirror_ego_action = np.ones((24, 1)) * 9
-            test_mirror_adv_action = np.ones((12, 1)) * 99
-            test_mirror_ego_log_probs = th.ones((24, 1)) * 999
-            test_mirror_adv_log_probs = th.ones((12, 1)) * 9999
-            test_mirror_left_actions, test_mirror_right_actions = mirror_flip_attributes(test_mirror_ego_action, test_mirror_adv_action)
-            test_left_log_probs, test_right_log_probs = mirror_flip_attributes(test_mirror_ego_log_probs, test_mirror_adv_log_probs)
-
-            left_actions, right_actions = mirror_flip_attributes(actions, other_actions)
-            left_log_probs, right_log_probs = mirror_flip_attributes(ego_log_probs, adv_log_probs)
+            halfway = actions.shape[0] // 2
+            left_actions = np.concatenate([actions[:halfway], other_actions[halfway:]])
+            right_actions = np.concatenate([other_actions[:halfway], actions[halfway:]])
             clipped_actions = np.hstack([left_actions, right_actions])
-            # Clip the actions to avoid out of bound error
             if isinstance(self.action_space, _BoxTypes):
-                clipped_actions = np.clip(np.hstack([left_actions, right_actions]), self.action_space.low,
-                                          self.action_space.high)
+                clipped_actions = np.clip(clipped_actions, self.action_space.low, self.action_space.high)
 
             new_obs, rewards, rewards_other, dones, infos = env.step(clipped_actions)
-            halfway = rewards.shape[0] // 2
-            rewards[halfway:] = -rewards[halfway:]
-            rewards_other[halfway:] = -rewards_other[halfway:]
+            #rewards = np.ones_like(rewards) * 9
+            #rewards_other = np.ones_like(rewards_other) * -9
+            video_log.append(Image.fromarray(env.render(mode="rgb_array")))
+            # Bottom half: ego is on right, adv is on left. Swap so rewards=ego, rewards_other=adv.
+            temp_rew = rewards[halfway:].copy()
+            rewards[halfway:] = rewards_other[halfway:]
+            rewards_other[halfway:] = temp_rew
 
-            corrected_ego_log_probs = th.concatenate([left_log_probs[:halfway], right_log_probs[halfway:]])
-            corrected_adv_log_probs = th.concatenate([right_log_probs[:halfway], left_log_probs[halfway:]])
-            corrected_ego_actions = np.concatenate([left_actions[:halfway], right_actions[halfway:]])
-            corrected_adv_actions = np.concatenate([right_actions[:halfway], left_actions[halfway:]])
-
-            test_buffer_ego_log_probs = th.concatenate([test_left_log_probs[:halfway], test_right_log_probs[halfway:]])
-            test_buffer_adv_log_probs = th.concatenate([test_right_log_probs[:halfway], test_left_log_probs[halfway:]])
+            corrected_ego_log_probs = ego_log_probs
+            corrected_adv_log_probs = adv_log_probs
+            corrected_ego_actions = actions
+            corrected_adv_actions = other_actions
             #rewards, rewards_other = mirror_flip_attributes(rewards, rewards_other)
             #np.random.seed(0)
             #random.seed(0)
@@ -816,6 +800,14 @@ class CleanDerivativeFreeSPAR(PPO):
             callback.update_locals(locals())
             if callback.on_step() is False:
                 return False
+
+            # Swap episode reward and outcome for bottom-half envs so logger/ELO reports ego perspective
+            for idx in range(halfway, len(infos)):
+                if "episode" in infos[idx]:
+                    infos[idx]["episode"]["r"], infos[idx]["episode"]["ro"] = infos[idx]["episode"]["ro"], infos[idx]["episode"]["r"]
+                if "outcome" in infos[idx]:
+                    o = infos[idx]["outcome"]
+                    infos[idx]["outcome"] = "lose" if o == "win" else ("win" if o == "lose" else o)
 
             self._update_info_buffer(infos)
             n_steps += 1
@@ -868,26 +860,49 @@ class CleanDerivativeFreeSPAR(PPO):
 
                     # from IPython import embed; embed()
             rollout_buffer.add(self._last_obs.copy(), corrected_ego_actions, corrected_adv_actions, rewards, new_obs, dones, self._last_episode_starts, values,
-                                   corrected_ego_log_probs, values)
+                                   corrected_ego_log_probs, values, side_flags=ego_side_flags)
+            adv_side_flags = 1.0 - ego_side_flags
             for i in range(self.num_adversaries):
                 indices = slice(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
-                adversary_buffers[i].add(self._last_obs[indices].copy(), corrected_ego_actions[indices], corrected_adv_actions[indices], rewards_other[indices], new_obs[indices], dones[indices], self._last_episode_starts[indices], other_values[indices],
-                                         corrected_adv_log_probs[indices], other_values[indices])
-            #for i in range(self.num_adversaries):
-            #    adversary_buffers[i].add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts, values_other,
-            #                             adv_log_probs)
+                adversary_buffers[i].add(self._last_obs[indices].copy(), corrected_ego_actions[indices], corrected_adv_actions[indices], -rewards[indices], new_obs[indices], dones[indices], self._last_episode_starts[indices], other_values[indices],
+                                         corrected_adv_log_probs[indices], other_values[indices], side_flags=adv_side_flags[indices])
+
+            for idx in range(env.num_envs):
+                agent_x = infos[idx].get('agent_x', 0)
+                enemy_x = infos[idx].get('enemy_x', 0)
+                if idx < halfway:
+                    ego_side_flags[idx, 0] = 0.0 if agent_x <= enemy_x else 1.0
+                else:
+                    ego_side_flags[idx, 0] = 0.0 if enemy_x <= agent_x else 1.0
+
+            debug_dir = getattr(self, 'debug_frame_dir', None)
+            if DEBUG_VIDEO and debug_dir is not None:
+                import os
+                os.makedirs(debug_dir, exist_ok=True)
+                flags_str = ''.join([str(int(ego_side_flags[i, 0])) for i in range(env.num_envs)])
+                positions = []
+                for idx in range(env.num_envs):
+                    ax = infos[idx].get('agent_x', 0)
+                    ex = infos[idx].get('enemy_x', 0)
+                    positions.append(f"e{idx}_ax{ax}_ex{ex}")
+                pos_str = '_'.join(positions)
+                frame = Image.fromarray(env.render(mode="rgb_array"))
+                frame.save(os.path.join(debug_dir, f"step{n_steps:04d}_flags{flags_str}_{pos_str}.png"))
+
             self._last_obs = new_obs
             self._last_episode_starts = dones
 
         with th.no_grad():
-            # Compute value for the last timestep
-            values = self.policy.value_forward(obs_as_tensor(new_obs, self.device), side_flag=th.Tensor([0]).to(self.device))
-            values[halfway:] = -values[halfway:]
-            #values_other = rollout_policy_other.predict_values(obs_as_tensor(new_obs, self.device))
+            # Compute ego values for the last timestep, negate for adversary (zero-sum)
+            last_obs_tensor = obs_as_tensor(new_obs, self.device)
+            last_ego_side_tensor = th.tensor(ego_side_flags, device=self.device)
+            last_adv_side_tensor = 1 - last_ego_side_tensor
+            last_ego_values = self.policy.value_forward(last_obs_tensor, side_flag=last_ego_side_tensor)
+            last_adv_values = -last_ego_values
 
-        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+        rollout_buffer.compute_returns_and_advantage(last_values=last_ego_values, dones=dones)
         for i in range(self.num_adversaries):
-            adversary_buffers[i].compute_returns_and_advantage(last_values=-values[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], dones=dones[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv])
+            adversary_buffers[i].compute_returns_and_advantage(last_values=last_adv_values[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], dones=dones[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv])
         if entropy_count > 0:
             self._last_rollout_entropy_ego = ego_entropy_sum / entropy_count
             self._last_rollout_entropy_adv = adv_entropy_sum / entropy_count
@@ -929,6 +944,8 @@ class CleanDerivativeFreeSPAR(PPO):
         update_adversary: bool = False,
         zero_ego_action: bool = False,
         zero_adv_action: bool = False,
+        random_ego_action: bool = False,
+        random_adv_action: bool = False,
         num_perturbs: int = 1,
     ):
         try:
@@ -982,16 +999,16 @@ class CleanDerivativeFreeSPAR(PPO):
 
                 if USE_PERTURBED:
                     with ThreadPoolExecutor(max_workers=num_perturbs + 1) as executor:
-                        futures = [executor.submit(perturbed_agent.env_perturb_params, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action) for perturbed_agent in self.perturbed_agents]
+                        futures = [executor.submit(perturbed_agent.env_perturb_params, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action, random_adv_action) for perturbed_agent in self.perturbed_agents]
                         perturbed_bufs, perturbed_adv_bufs = zip(*[future.result() for future in futures])
-                        future_standard = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward,self.use_mirror, zero_ego_action, zero_adv_action)
+                        future_standard = executor.submit(self.collect_rollouts, self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward, self.use_mirror, zero_ego_action, zero_adv_action, random_adv_action)
                         continue_training = future_standard.result()
                     self.perturbed_bufs = list(perturbed_bufs)
                     self.perturbed_adv_bufs = list(perturbed_adv_bufs)
 
                     self.perturbed_agents_policy = [perturbed_agent.policy for perturbed_agent in self.perturbed_agents]
                 else:
-                    continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward, self.use_mirror, zero_ego_action, zero_adv_action)
+                    continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, self.adversary_buffers, self.n_steps, run_ego_forward, run_adv_forward, self.use_mirror, zero_ego_action, zero_adv_action, random_ego_action, random_adv_action)
 
 
                 if continue_training is False:
@@ -1246,7 +1263,11 @@ class CleanDerivativeFreeSPAR(PPO):
                     th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                     optimizer.step()
                     with torch.no_grad():
-                        log_prob, _ = self.policy.evaluate_ego_actions(ori_buf.observations, ori_buf.actions) if ego else self.policy.evaluate_adv_actions(ori_buf[i].observations, ori_buf[i].adv_actions, buf_num=[i])
+                        if self.use_mirror:
+                            df_side_flag = ori_buf.side_flags if ego else ori_buf[i].side_flags
+                        else:
+                            df_side_flag = None
+                        log_prob, _ = self.policy.evaluate_ego_actions(ori_buf.observations, ori_buf.actions, side_flag=df_side_flag) if ego else self.policy.evaluate_adv_actions(ori_buf[i].observations, ori_buf[i].adv_actions, buf_num=[i], side_flag=df_side_flag)
                         log_ratio = log_prob - ori_buf.log_probs if ego else log_prob - ori_buf[i].log_probs
                         # 0 bug
                         approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
@@ -1343,18 +1364,23 @@ class CleanDerivativeFreeSPAR(PPO):
                     if self.use_sde:
                         self.policy.reset_noise(self.batch_size)
                     
+                    if self.use_mirror:
+                        side_flag = rollout_data.side_flags
+                    else:
+                        side_flag = None
+
                     if update_ego:
-                        log_prob, entropy = self.policy.evaluate_ego_actions(rollout_data.observations, actions)
+                        log_prob, entropy = self.policy.evaluate_ego_actions(rollout_data.observations, actions, side_flag=side_flag)
                         #from stable_baselines3.common.save_util import load_from_zip_file
                         #data, params, pytorch_variables = load_from_zip_file("test_ego_save.pth", device=self.device)
                         #entropy = ego_entropy
                     if update_adversary:
-                        log_prob, entropy = self.policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=[i])
+                        log_prob, entropy = self.policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=[i], side_flag=side_flag)
                         #entropy = adv_entropy
                     if update_ego:
-                        values = self.policy.evaluate_states(rollout_data.observations, env_indices=rollout_data.env_indices, buf_num=[i for i in range(self.num_adversaries)])
+                        values = self.policy.evaluate_states(rollout_data.observations, env_indices=rollout_data.env_indices, buf_num=[i for i in range(self.num_adversaries)], side_flag= 1 - side_flag)
                     else:
-                        values = self.policy.evaluate_states(rollout_data.observations, env_indices=rollout_data.env_indices, buf_num=[i])
+                        values = self.policy.evaluate_states(rollout_data.observations, env_indices=rollout_data.env_indices, buf_num=[i], side_flag=side_flag)
                     if update_adversary:
                         values = -values
                     values = values.flatten()
@@ -1514,7 +1540,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 count = count + torch.numel(p)
         return
     
-    def env_perturb_params(self, update_ego=True, update_adversary=True, zero_ego_action=False, zero_adv_action=False):
+    def env_perturb_params(self, update_ego=True, update_adversary=True, zero_ego_action=False, zero_adv_action=False, random_adv_action=False):
         buf = self.rollout_buffer_class(self.n_steps,
             self.observation_space,
             self.action_space,
@@ -1533,7 +1559,7 @@ class CleanDerivativeFreeSPAR(PPO):
             gae_lambda=self.gae_lambda,
             n_envs= self.n_env_per_adv) for i in range(self.num_adversaries)]
         #[adv_buf[i].reset() for i in range(len(adv_buf))]
-        self.collect_rollouts(self.env, self.callback, buf, adv_buf, n_rollout_steps=self.n_steps, run_ego_forward=update_ego, run_adv_forward=update_adversary, use_mirror=self.use_mirror, zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action)
+        self.collect_rollouts(self.env, self.callback, buf, adv_buf, n_rollout_steps=self.n_steps, run_ego_forward=update_ego, run_adv_forward=update_adversary, use_mirror=self.use_mirror, zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action, random_adv_action=random_adv_action)
         
         #buf.prepare_data_for_training()
         #for i in range(len(adv_buf)):
@@ -1814,7 +1840,7 @@ class CleanDerivativeFreeSPAR(PPO):
                         log_prob, entropy = self.policy.evaluate_ego_actions(rollout_data.observations, actions)
                         #entropy = ego_entropy
                     if update_adversary:
-                        log_prob, entropy = self.policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=[i])
+                        log_prob, entropy = self.policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=[i], side_flag=side_flag)
                         #entropy = adv_entropy
                     if update_ego:
                         values = self.policy.evaluate_states(rollout_data.observations, env_indices=rollout_data.env_indices, buf_num=[i for i in range(self.num_adversaries)])

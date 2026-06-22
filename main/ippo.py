@@ -28,7 +28,7 @@ from common.justin.Generalist_SPAR import Generalist_SPAR
 from common.justin.derivative_free_spar import Derivative_Free_SPAR
 #from common.justin.derivative_free_spar_parallel import Derivative_Free_SPAR
 from stable_baselines3 import MAGICS_AL
-from common.retro_wrappers import SFWrapper, Monitor2P
+from common.retro_wrappers import SFWrapper, Monitor2P, InfoObsWrapper, EgoCentricImageWrapper
 import wandb
 
 PRETRAIN = True
@@ -104,7 +104,7 @@ def constructor(args, side, log_name=None, single_env=False):
 
 
 def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True,
-             null_combo=False, transform_action=False, seed=0):
+             null_combo=False, transform_action=False, seed=0, obs_type='image', ego_is_left=True):
     def _init():
         players = 2
         env = retro.make(
@@ -117,6 +117,10 @@ def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=N
         env = SFWrapper(env, side=side, rendering=rendering, reset_type=reset_type, init_level=init_level,
                         state_dir=state_dir, verbose=verbose, enable_combo=enable_combo, null_combo=null_combo,
                         transform_action=transform_action)
+        #if obs_type == 'info':
+        #    env = InfoObsWrapper(env, ego_is_left=ego_is_left)
+        #elif not ego_is_left:
+        #    env = EgoCentricImageWrapper(env)
         env = Monitor2P(env)
         env.seed(seed)
         return env
@@ -360,13 +364,18 @@ def env_generator(args, max_envs: int = 0, i_start: int = 0, j_start: int = 0, S
         print("Generating %d envs per character matchup:" % each_env_count)
         env = []
         env_count = 0
+        obs_type = getattr(args, 'obs_type', 'image')
+        halfway = len(STATE) // 2
+        use_mirror = getattr(args, 'use_mirror', False)
         for i in range(i_start, len(STATE)):
             if exceed_max_envs(env_count, max_envs):
                 break
+            ego_is_left = (i < halfway) if use_mirror else True
             env.append(
                 make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render,
                             enable_combo=args.enable_combo, null_combo=args.null_combo,
-                            transform_action=args.transform_action, seed=0))
+                            transform_action=args.transform_action, seed=0, obs_type=obs_type,
+                            ego_is_left=ego_is_left))
             env_count += 1
             if exceed_max_envs(env_count, max_envs):
                 break
@@ -374,7 +383,10 @@ def env_generator(args, max_envs: int = 0, i_start: int = 0, j_start: int = 0, S
         # env = make_env(sf_game, state=STATE, side=args.side, reset_type=args.reset, rendering=args.render,
         #         enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action,
         #         seed=0)
-        return VecTransposeImage2P(SubprocVecEnv2P(env))
+        vec_env = SubprocVecEnv2P(env)
+        if getattr(args, 'obs_type', 'image') == 'image':
+            return VecTransposeImage2P(vec_env)
+        return vec_env
 def main(args):
     PLAYER = args.player
     # global REMOVAL
@@ -547,10 +559,16 @@ def main(args):
         # return SubprocVecEnv2P(env)
 
     def many_char_env_generator():
+        obs_type = getattr(args, 'obs_type', 'image')
+        halfway = len(STATE) // 2
         env = [make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render,
                         enable_combo=args.enable_combo, null_combo=args.null_combo,
-                        transform_action=args.transform_action, seed=0) for i in range(len(STATE))]
-        return VecTransposeImage2P(SubprocVecEnv2P(env))
+                        transform_action=args.transform_action, seed=0, obs_type=obs_type,
+                        ego_is_left=(i < halfway) if use_mirror else True) for i in range(len(STATE))]
+        vec_env = SubprocVecEnv2P(env)
+        if obs_type == 'image':
+            return VecTransposeImage2P(vec_env)
+        return vec_env
         # return SubprocVecEnv2P(env)
 
     checkpoint_interval = args.checkpoint_interval # checkpoint_interval * num_envs = total_steps_per_checkpoint
@@ -569,8 +587,9 @@ def main(args):
         # remove seeds
 
         
+        _ippo_policy = "MlpPolicy" if getattr(args, 'obs_type', 'image') == 'info' else "CnnPolicy"
         finetune_model = IPPO(
-            "CnnPolicy",
+            _ippo_policy,
             finetune_env,
             device="cpu",
             verbose=1,
@@ -663,7 +682,7 @@ def main(args):
                 verbose=2,
                 n_steps=args.num_env_steps,
                 batch_size=args.training_batch_size,
-                n_epochs=6,
+                n_epochs=10,
                 state_list=state_list,
                 envs_per_matchup=args.envs_per_matchup,
                 env_generator_func=env_generator,
@@ -671,7 +690,7 @@ def main(args):
                 clip_range=clip_range_schedule,
                 n_env_per_adv=args.num_env // num_adversary,
                 seed= 0,
-                target_kl=None,
+                target_kl=0.05,
                 use_mirror=use_mirror,
                 use_lr_annealing=args.use_lr_annealing,
                 lr_anneal_coeff=args.lr_anneal_coeff,
@@ -976,30 +995,37 @@ def main(args):
             if args.ego_style == 'learning':
                 update_ego=True
                 zero_ego_action=False
+                random_ego_action=False
             elif args.ego_style == 'zero_action':
                 update_ego=False
                 zero_ego_action=True
+                random_ego_action=False
             elif args.ego_style == 'random_action':
                 update_ego=False
                 zero_ego_action=False
+                random_ego_action=True
             else:
                 raise ValueError(f"Invalid ego style: {args.ego_style}")
             if args.adv_style == 'learning':
                 update_adversary=True
                 zero_adv_action=False
+                random_adv_action=False
             elif args.adv_style == 'zero_action':
                 update_adversary=False
                 zero_adv_action=True
+                random_adv_action=False
             elif args.adv_style == 'random_action':
                 update_adversary=False
                 zero_adv_action=False
+                random_adv_action=True
             else:
                 raise ValueError(f"Invalid adv style: {args.adv_style}")
+            model.debug_frame_dir = os.path.join(args.save_dir, "debug_frames")
             model.learn(
                 total_timesteps=args.total_timesteps,
                 num_perturbs = args.num_perturbs,
                 callback=[checkpoint_callback, file_queue_callback, video_callback], update_ego=update_ego, update_adversary=update_adversary, run_ego_forward=True, run_adv_forward=True,
-                zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action
+                zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action, random_ego_action=random_ego_action, random_adv_action=random_adv_action
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)
         # for i in range(len(model.adversaries)):
@@ -1070,6 +1096,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_arch_type', type=str, help='Model architecture type', default="spar", required=True, choices=["spar", "ippo", "2timescale"])
     parser.add_argument('--total_timesteps', type=int, help='How many total steps to train', default=int(1e8))
     parser.add_argument('--use_wandb', choices=['True', 'False'], help='Enable Weights & Biases logging', default='False')
+    parser.add_argument('--obs_type', type=str, help='Observation type: image or info', default='image', choices=['image', 'info'])
     #parser.add_argument('--num_workers', type=int, help='Number of workers', default=5)
     #parser.add_argument('--num_adversary', type=int, help='Number of adversaries', default=1)
     #parser.add_argument('--n_global_env', type=int, help='Number of global environments', default=1)

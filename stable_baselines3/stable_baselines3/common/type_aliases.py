@@ -46,6 +46,7 @@ class AdvRolloutBufferSamples(NamedTuple):
     advantages: th.Tensor
     returns: th.Tensor
     env_indices: np.ndarray
+    side_flags: th.Tensor
 
 class Q_RolloutBufferSamples(NamedTuple):
     observations: th.Tensor
@@ -60,6 +61,7 @@ class Q_RolloutBufferSamples(NamedTuple):
     env_indices: np.ndarray
     rewards: np.ndarray
     dones: np.ndarray
+    side_flags: th.Tensor
 
 class DictRolloutBufferSamples(NamedTuple):
     observations: TensorDict
