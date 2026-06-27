@@ -312,6 +312,7 @@ def main() -> None:
     exploiter_rewards, selfplay_rewards = [], []
     model_policy_for_eval = model.policy
     use_fixed_matchup_adapter = False
+    ego_is_left = True
     if args.dedicated_exploiter and not args.is_league:
         # CDS-only: dedicated runs pass a repeated singleton state list;
         # intercept policy forward calls on the exploited CDS model through
@@ -328,11 +329,28 @@ def main() -> None:
                     model.policy, fixed_matchup_idx=fixed_matchup_idx
                 )
                 use_fixed_matchup_adapter = True
+                halfway = len(model_unique_states) // 2
+                ego_is_left = fixed_matchup_idx < halfway
                 print(
                     "Configured fixed-matchup eval adapter: "
-                    f"state={dedicated_state}, fixed_matchup_idx={fixed_matchup_idx}",
+                    f"state={dedicated_state}, fixed_matchup_idx={fixed_matchup_idx}, "
+                    f"ego_is_left={ego_is_left}",
                     flush=True,
                 )
+
+    use_mirror = getattr(args.game_args, 'use_mirror', False)
+
+    def _build_side_flags(n_envs, state_list):
+        if use_mirror:
+            halfway = len(state_list) // 2
+            vals = np.array([0.0 if i < halfway else 1.0 for i in range(n_envs)], dtype=np.float32)
+        else:
+            vals = np.zeros(n_envs, dtype=np.float32)
+        ego_sf = th.tensor(vals, device=model.device).unsqueeze(1)
+        return ego_sf, 1.0 - ego_sf
+
+    exp_ego_sf, exp_adv_sf = _build_side_flags(env.num_envs, args.state_list)
+    full_ego_sf, full_adv_sf = _build_side_flags(full_env.num_envs, args.full_state_list)
 
     def exploiter_action_fn(obs):
         with th.no_grad():
@@ -347,17 +365,26 @@ def main() -> None:
                 else:
                     action, _, _ = model.policy_other(obs_model_tensor)
             elif args.dedicated_exploiter and use_fixed_matchup_adapter:
+                ego_sf_val = 0.0 if ego_is_left else 1.0
+                ego_sf = th.full((obs_model_tensor.shape[0], 1), ego_sf_val, device=model.device)
+                adv_sf = 1.0 - ego_sf
                 action, _ = model_policy_for_eval(
                     obs_model_tensor,
                     deterministic=False,
                     ego_forward=args.eval_prot,
                     adv_forward=not args.eval_prot,
+                    ego_side_flag=ego_sf,
+                    adv_side_flag=adv_sf,
                 )
             else:
                 if args.eval_prot:
-                    action, _, _, _, _, _ = model.policy(obs_model_tensor)
+                    action, _, _, _, _, _ = model.policy(
+                        obs_model_tensor, ego_side_flag=exp_ego_sf, adv_side_flag=exp_adv_sf,
+                    )
                 else:
-                    _, _, action, _, _, _ = model.policy(obs_model_tensor)
+                    _, _, action, _, _, _ = model.policy(
+                        obs_model_tensor, ego_side_flag=exp_ego_sf, adv_side_flag=exp_adv_sf,
+                    )
             # BR is always an Exploiter for league (continue+league guarded
             # above), so the dedicated branch covers it.
             if args.dedicated_exploiter:
@@ -369,7 +396,10 @@ def main() -> None:
                     action_br, _, _, _, _, _ = br_model.policy(obs_as_tensor(obs, br_model.device))
         action = action.cpu().numpy()
         action_br = action_br.cpu().numpy()
-        if args.eval_prot:
+        # eval_prot=True → exploiting="ego"; mirrors Exploiter's
+        # (self.exploiting=="ego") == self.ego_is_left logic.
+        exploited_on_left = args.eval_prot == ego_is_left
+        if exploited_on_left:
             return np.hstack([action, action_br])
         return np.hstack([action_br, action])
 # for i in range(nr):
@@ -401,7 +431,11 @@ def main() -> None:
                 action, _, _ = model.policy(obs_t)
                 adv_action, _, _ = model.policy_other(obs_t)
             else:
-                action, _, adv_action, _, _, _ = model.policy(obs_as_tensor(obs, model.device))
+                action, _, adv_action, _, _, _ = model.policy(
+                    obs_as_tensor(obs, model.device),
+                    ego_side_flag=full_ego_sf,
+                    adv_side_flag=full_adv_sf,
+                )
         action = action.cpu().numpy()
         adv_action = adv_action.cpu().numpy()
         return np.hstack([action, adv_action])

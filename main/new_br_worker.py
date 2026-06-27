@@ -310,9 +310,11 @@ class _FixedMatchupPolicyAdapter:
             raise ValueError("cannot have both ego and adv forward -- we can only exploit one at a time")
 
         if ego_forward:
-            exploited_actions, exploited_log_probs = self._base_policy.ego_forward(obs_tensor)
+            side_flag = kwargs.get('ego_side_flag', None)
+            exploited_actions, exploited_log_probs = self._base_policy.ego_forward(obs_tensor, side_flag=side_flag)
         elif adv_forward:
-            exploited_actions, exploited_log_probs = self._base_policy.adv_forward(obs_tensor, buf_num=[self._fixed_matchup_idx])
+            side_flag = kwargs.get('adv_side_flag', None)
+            exploited_actions, exploited_log_probs = self._base_policy.adv_forward(obs_tensor, buf_num=[self._fixed_matchup_idx], side_flag=side_flag)
         else:
             raise ValueError(f"Invalid forward flag: {ego_forward} or {adv_forward}")
 
@@ -326,6 +328,20 @@ class _FixedMatchupPolicyAdapter:
     def __getattr__(self, name):
         # Delegate all other attributes/methods transparently.
         return getattr(self._base_policy, name)
+
+
+def _is_ego_left_for_state(loaded_model, dedicated_state: str) -> bool:
+    """In mirror-mode models, the first half of unique states have ego on the left (P1)
+    and the second half have ego on the right (P2). Returns True if ego is P1/left."""
+    unique_states = getattr(loaded_model, "_worker_unique_states", None)
+    if not isinstance(unique_states, list) or len(unique_states) == 0:
+        return True
+    halfway = len(unique_states) // 2
+    try:
+        idx = unique_states.index(dedicated_state)
+    except ValueError:
+        return True
+    return idx < halfway
 
 
 def _resolve_matchup_index_for_state(loaded_model, dedicated_state: str) -> int:
@@ -1182,6 +1198,8 @@ def train_best_response(
         env = env_generator(game_args, STATE=effective_state_list, n_envs=n_envs)
 
     # 3. Create a new agent to be the best response
+    dedicated_state = dedicated_state_subset[0] if dedicated_state_subset else None
+    ego_is_left = _is_ego_left_for_state(ftm, dedicated_state) if dedicated_state else True
     br_agent = Exploiter(
         'CnnPolicy' if is_image_space(env.observation_space) else 'MlpPolicy',
         env,
@@ -1191,6 +1209,7 @@ def train_best_response(
         batch_size=512,
         n_epochs=4,
         exploiting='ego' if eval_prot is True else 'adv',
+        ego_is_left=ego_is_left,
         br_tracker_patience=br_tracker_patience,
         br_tracker_tolerance=br_tracker_tolerance,
         br_tracker_window_size=br_tracker_window_size,

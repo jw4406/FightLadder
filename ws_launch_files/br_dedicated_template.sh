@@ -36,12 +36,12 @@ conda activate fightladder
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # --- Job-side config (parity with new_br_worker) ---
-EVAL_PROT="False"
+EVAL_PROT="True"
 EVAL_ADV="True"
 EVAL_ONLY="False"
 PROJ_NAME="br_training_ws"
 ANALYSIS_UPLOAD_PROJ_NAME="br_analysis"
-USE_MIRROR="False"
+USE_MIRROR="True"
 NUM_FULL_EXPLOITERS="1"
 N_ENVS="2"
 EXPLOITER_SAVE_FREQ="5000"

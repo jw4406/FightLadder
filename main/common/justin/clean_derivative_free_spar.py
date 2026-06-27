@@ -1352,6 +1352,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 #approx_kl_divs = []
                 # Do a complete pass on the rollout buffer
                 for rollout_data in buf.get(self.batch_size):
+                    stop_policy_training = False
                     if update_ego and not update_adversary:
                         actions = rollout_data.actions
                     else:
@@ -1378,7 +1379,7 @@ class CleanDerivativeFreeSPAR(PPO):
                         log_prob, entropy = self.policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=[i], side_flag=side_flag)
                         #entropy = adv_entropy
                     if update_ego:
-                        values = self.policy.evaluate_states(rollout_data.observations, env_indices=rollout_data.env_indices, buf_num=[i for i in range(self.num_adversaries)], side_flag= 1 - side_flag)
+                        values = self.policy.evaluate_states(rollout_data.observations, env_indices=rollout_data.env_indices, buf_num=[i for i in range(self.num_adversaries)], side_flag= side_flag)
                     else:
                         values = self.policy.evaluate_states(rollout_data.observations, env_indices=rollout_data.env_indices, buf_num=[i], side_flag=side_flag)
                     if update_adversary:
@@ -1456,9 +1457,10 @@ class CleanDerivativeFreeSPAR(PPO):
                         approx_kl_divs.append(approx_kl_div)
 
                     if self.target_kl is not None and approx_kl_div > 1.5 * self.target_kl:
-                        continue_training = False
+                        #continue_training = False
+                        stop_policy_training = True
                         if self.verbose >= 1:
-                            print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
+                            print(f"training stopped at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
                         break
 
                     # Optimization step
@@ -1475,18 +1477,22 @@ class CleanDerivativeFreeSPAR(PPO):
                     self.policy.value_loss.append(value_loss)
                     # Clip grad norm
                     th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                    if update_ego:
+                    if update_ego and not stop_policy_training: # stop_policy_training is True when the policy is not training anymore
                         self.policy.ctrl_optimizer.step()
                     else:
-                        self.policy.dstb_optimizer.step()
+                        if not stop_policy_training:
+                            self.policy.dstb_optimizer.step()
+                    
+                    # regardless of stop_policy_training, we always update the value optimizer
+
                     if hasattr(self.policy, "ego_value_optimizer") and update_ego:
                         self.policy.ego_value_optimizer.step()
                     else:
                         self.policy.value_optimizer.step()
                     #self.policy.value_optimizer.step()
 
-                if not continue_training:
-                    break
+                #if not continue_training:
+                #    break
         #self._update_schedulers(step_ego=update_ego, step_adv=(not update_ego), step_val=True, skip=not self.use_lr_annealing)
         # check location in train derivative free
         self._n_updates += self.n_epochs

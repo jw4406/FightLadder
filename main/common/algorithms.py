@@ -5345,6 +5345,7 @@ class Exploiter(PPO):
         _init_setup_model: bool = True,
         exploited: Union[Specialized_Agent, Specialized_Agent_IPPO]=None,
         exploiting = 'ego',
+        ego_is_left: bool = True,
         br_tracker_patience: int = 10,
         br_tracker_tolerance: float = 1e-4,
         br_tracker_window_size: int = 50,
@@ -5390,6 +5391,7 @@ class Exploiter(PPO):
         #assert exploited is not None
         assert exploiting == "ego" or exploiting == "adv"
         self.exploiting = exploiting
+        self.ego_is_left = ego_is_left
         self.exploited = exploited
         self.br_tracker_patience = br_tracker_patience
         self.br_tracker_tolerance = br_tracker_tolerance
@@ -5519,7 +5521,10 @@ class Exploiter(PPO):
                         # ego action will be provided by exploiter model
                         ego_forward = False
                         adv_forward = True
-                    EXPLOITED_ACTIONS, _, = self.exploited.policy(obs_tensor, ego_forward=ego_forward, adv_forward=adv_forward, zero_ego_action=False, zero_adv_action=False,value_forward=False, q_value_forward=False)
+                    ego_sf_val = 0.0 if self.ego_is_left else 1.0
+                    ego_sf = th.full((obs_tensor.shape[0], 1), ego_sf_val, device=self.device)
+                    adv_sf = 1.0 - ego_sf
+                    EXPLOITED_ACTIONS, _, = self.exploited.policy(obs_tensor, ego_forward=ego_forward, adv_forward=adv_forward, zero_ego_action=False, zero_adv_action=False, value_forward=False, q_value_forward=False, ego_side_flag=ego_sf, adv_side_flag=adv_sf)
                 else:
                     # league is not spar-like in the signatures
                     EXPLOITED_ACTIONS, DEAD_VALUES, DEAD_LOG_PROBS = self.exploited.policy(obs_tensor, deterministic=False)
@@ -5527,7 +5532,8 @@ class Exploiter(PPO):
                 
                 
 
-            if self.exploiting == "ego":
+            exploited_on_left = (self.exploiting == "ego") == self.ego_is_left
+            if exploited_on_left:
                 clipped_actions = th.cat([EXPLOITED_ACTIONS, actions], dim=-1).cpu().numpy()
             else:
                 clipped_actions = th.cat([actions, EXPLOITED_ACTIONS], dim=-1).cpu().numpy()
@@ -5564,24 +5570,15 @@ class Exploiter(PPO):
                     with th.no_grad():
                         terminal_value = self.policy.predict_values(terminal_obs)[0]
                     rewards[idx] += self.gamma * terminal_value
-            if self.exploiting == "ego":
-                rollout_buffer.add(
-                    self._last_obs,  # type: ignore[arg-type]
-                    actions,
-                    rew_other,
-                    self._last_episode_starts,  # type: ignore[arg-type]
-                    values,
-                    log_probs
-                    )
-            else:
-                rollout_buffer.add(
-                    self._last_obs,  # type: ignore[arg-type]
-                    actions,
-                    rewards,
-                    self._last_episode_starts,  # type: ignore[arg-type]
-                    values,
-                    log_probs
-                    )
+            exploiter_reward = rew_other if exploited_on_left else rewards
+            rollout_buffer.add(
+                self._last_obs,  # type: ignore[arg-type]
+                actions,
+                exploiter_reward,
+                self._last_episode_starts,  # type: ignore[arg-type]
+                values,
+                log_probs
+                )
             self._last_obs = new_obs
             self._last_episode_starts = dones
 

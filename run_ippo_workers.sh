@@ -13,8 +13,8 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 IPPO_PATH="${SCRIPT_DIR}/main/ippo.py"
 
 # Arguments from launch.json (Python Debugger: ippo.py)
-PLAYER=("Guile")
-OPPONENTS=("Sagat" "Ryu") 
+PLAYER=("Vega")
+OPPONENTS=("Sagat" "Ryu")
 NUM_ENV_TO_LOAD="1"
 ENV_BATCH_SIZE="24"
 C_LR="1e-4"
@@ -30,13 +30,13 @@ USE_MIRROR="True"
 SAVE_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/"
 USE_LR_ANNEALING="False"
 LR_ANNEAL_COEFF=".995"
-CHECKPOINT_INTERVAL="10000"
+CHECKPOINT_INTERVAL="100000"
 TOTAL_TIMESTEPS="150000000"
 TRAINING_BATCH_SIZE="512"
 TRANSFORM_ACTION="True"
 NUM_ENV_STEPS="2048"
-EGO_STYLE="learning"
-ADV_STYLE="random_action"
+EGO_STYLE="random_action"
+ADV_STYLE="learning"
 ENVS_PER_MATCHUP="2"
 SIDE="both"
 RENDER="False"

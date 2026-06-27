@@ -462,8 +462,8 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             #ego_entropy = th.zeros()
         if random_ego_action:
             if ego_forward is False:
-                raise ValueError("Cannot random adv actions if adv forward is False")
-            if not hasattr(self, '_random_adv_step'):
+                raise ValueError("Cannot random ego actions if ego forward is False")
+            if not hasattr(self, '_random_ego_step'):
                 self._random_ego_step = 0
             if hasattr(self.action_space, 'nvec'):
                 action_val = self._random_ego_step % int(self.action_space.nvec[0])
