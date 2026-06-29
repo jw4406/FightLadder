@@ -51,6 +51,7 @@ D_LR="2e-5"
 V_LR="4e-4"
 NUM_PERTURBS="10"
 USE_MIRROR="False"
+EGO_SIDE="left"
 # LOAD_PATH=""  # Optional: set this to pass --load_path
 # TRAINING_STYLE=""  # Optional: set this to pass --training_style
 # CONTINUE_TRAINING=""  # Optional: set this to pass --continue_training
@@ -106,6 +107,7 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --v_lr "${V_LR}"
         --num_perturbs "${NUM_PERTURBS}"
         --use_mirror "${USE_MIRROR}"
+        --ego_side "${EGO_SIDE}"
         --save_dir "${SAVE_DIR}"
         --use_lr_annealing "${USE_LR_ANNEALING}"
         --lr_anneal_coeff "${LR_ANNEAL_COEFF}"

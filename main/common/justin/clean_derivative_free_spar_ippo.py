@@ -90,21 +90,35 @@ class CleanDerivativeFreeSPARIPPO(CleanDerivativeFreeSPAR):
 
             actions = ego_actions.cpu().numpy()
             actions_other = adv_actions.cpu().numpy()
+            left_actions = actions if self.ego_side == "left" else actions_other
+            right_actions = actions_other if self.ego_side == "left" else actions
 
-            clipped_actions = np.hstack([actions, actions_other])
+            clipped_actions = np.hstack([left_actions, right_actions])
             if isinstance(self.action_space, _BoxTypes):
                 clipped_actions = np.clip(
-                    np.hstack([actions, actions_other]),
+                    np.hstack([left_actions, right_actions]),
                     self.action_space.low,
                     self.action_space.high,
                 )
 
             new_obs, rewards, rewards_other, dones, infos = env.step(clipped_actions)
 
+            if self.ego_side == 'right':
+                rewards = rewards_other
+                rewards_other = -rewards
+
             self.num_timesteps += env.num_envs
             callback.update_locals(locals())
             if callback.on_step() is False:
                 return False
+
+            if self.ego_side == 'right':
+                for idx in range(len(infos)):
+                    if "episode" in infos[idx]:
+                        infos[idx]["episode"]["r"], infos[idx]["episode"]["ro"] = infos[idx]["episode"]["ro"], infos[idx]["episode"]["r"]
+                    if "outcome" in infos[idx]:
+                        o = infos[idx]["outcome"]
+                        infos[idx]["outcome"] = "lose" if o == "win" else ("win" if o == "lose" else o)
 
             self._update_info_buffer(infos)
             n_steps += 1

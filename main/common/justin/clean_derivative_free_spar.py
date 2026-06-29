@@ -160,6 +160,7 @@ class CleanDerivativeFreeSPAR(PPO):
             stagnation_slope_tolerance: float = 5e-3,
             stagnation_min_slope_checks: int = 10,
             entropy_ratio_only: bool = False,
+            ego_side: str = "left",
     ):
 
         self.matchups = [state2matchup(state) for state in state_list] if state_list is not None else None #This needs to happen before the super().__init__
@@ -290,6 +291,7 @@ class CleanDerivativeFreeSPAR(PPO):
             local_plot_every_checks=1,
         )
         self.stagnation_tracker.reset(self.elo_adversary_ratings)
+        self.ego_side = ego_side
         #Create learning rate schedulers
 
     def _init_elo_trackers(self) -> None:
@@ -551,6 +553,8 @@ class CleanDerivativeFreeSPAR(PPO):
             return self.collect_rollouts_standard(env, callback, rollout_buffer, adversary_buffers, n_rollout_steps, run_ego_forward, run_adv_forward, zero_ego_action, zero_adv_action, random_ego_action, random_adv_action)
     
     def collect_rollouts_standard(self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, adversary_buffers, n_rollout_steps: int, run_ego_forward: bool = True, run_adv_forward: bool = True, zero_ego_action=False, zero_adv_action=False, random_ego_action=False, random_adv_action=False) -> bool:
+        if not hasattr(self, 'ego_side'):
+            raise ValueError("Ego side not set. Please set ego_side when initializing the agent.")
         timenow = time.time()
         video_log = [Image.fromarray(env.render(mode="rgb_array"))]
         assert self._last_obs is not None, "No previous observation was provided"
@@ -596,9 +600,10 @@ class CleanDerivativeFreeSPAR(PPO):
 
             actions = ego_actions.cpu().numpy()
             actions_other = adv_actions.cpu().numpy()
-
+            left_actions = actions if self.ego_side == "left" else actions_other
+            right_actions = actions_other if self.ego_side == "left" else actions
             # Rescale and perform action
-            clipped_actions = np.hstack([actions, actions_other])
+            clipped_actions = np.hstack([left_actions, right_actions])
             # print(clipped_actions, flush=True)
             # print(np.shape(clipped_actions),flush=True)
             # Clip the actions to avoid out of bound error
@@ -608,6 +613,11 @@ class CleanDerivativeFreeSPAR(PPO):
 
             new_obs, rewards, rewards_other, dones, infos = env.step(clipped_actions)
             video_log.append(Image.fromarray(env.render(mode="rgb_array")))
+
+            if self.ego_side == 'right':
+                rewards = rewards_other
+                rewards_other = -rewards
+            
             #env.render(mode="rgb_array")
             #np.random.seed(0)
             #random.seed(0)
@@ -619,6 +629,14 @@ class CleanDerivativeFreeSPAR(PPO):
             callback.update_locals(locals())
             if callback.on_step() is False:
                 return False
+
+            if self.ego_side == 'right':
+                for idx in range(len(infos)):
+                    if "episode" in infos[idx]:
+                        infos[idx]["episode"]["r"], infos[idx]["episode"]["ro"] = infos[idx]["episode"]["ro"], infos[idx]["episode"]["r"]
+                    if "outcome" in infos[idx]:
+                        o = infos[idx]["outcome"]
+                        infos[idx]["outcome"] = "lose" if o == "win" else ("win" if o == "lose" else o)
 
             self._update_info_buffer(infos)
             n_steps += 1

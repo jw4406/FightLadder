@@ -498,10 +498,17 @@ def main(args):
         STATE = STATE_prot_left + STATE_prot_right
     else:
 
-        STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name[i], PLAYER[i], OPPONENT_LIST[j])
-                 for i in range(len(PLAYER))
-                 for j in range(len(OPPONENT_LIST))
-                 for k in range(args.envs_per_matchup)]
+        if args.ego_side == 'right':
+            opp_left_folder_name = [opponent + "_" + SIDE for opponent in OPPONENT_LIST]
+            STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (opp_left_folder_name[j], OPPONENT_LIST[j], PLAYER[i])
+                     for i in range(len(PLAYER))
+                     for j in range(len(OPPONENT_LIST))
+                     for k in range(args.envs_per_matchup)]
+        else:
+            STATE = ["two_player/%s/Champion.Level1.%sVs%s.2Player.state" % (player_folder_name[i], PLAYER[i], OPPONENT_LIST[j])
+                     for i in range(len(PLAYER))
+                     for j in range(len(OPPONENT_LIST))
+                     for k in range(args.envs_per_matchup)]
     state_list = STATE
 
     # PLAYER = args.player
@@ -692,6 +699,7 @@ def main(args):
                 seed= 0,
                 target_kl=0.05,
                 use_mirror=use_mirror,
+                ego_side=args.ego_side,
                 use_lr_annealing=args.use_lr_annealing,
                 lr_anneal_coeff=args.lr_anneal_coeff,
                 use_stagnation_early_stop=args.use_stagnation_early_stop,
@@ -727,6 +735,7 @@ def main(args):
                 seed= 0,
                 target_kl=None,
                 use_mirror=use_mirror,
+                ego_side=args.ego_side,
                 use_lr_annealing=args.use_lr_annealing,
                 lr_anneal_coeff=args.lr_anneal_coeff,
                 # Stagnation gates: CleanDerivativeFreeSPARIPPO inherits
@@ -759,6 +768,7 @@ def main(args):
                 seed= 0,
                 target_kl=None,
                 use_mirror=use_mirror,
+                ego_side=args.ego_side,
                 use_lr_annealing=args.use_lr_annealing,
                 lr_anneal_coeff=args.lr_anneal_coeff,
                 # See note above on the ippo branch — same inheritance
@@ -1092,6 +1102,7 @@ if __name__ == "__main__":
     parser.add_argument('--seed', type=int, help='Seed', default=0)
     parser.add_argument('--model_file', type=str, help='Model file', default=None)
     parser.add_argument('--use_mirror', choices=['True', 'False'], help='Use mirror', required=True, default='False')
+    parser.add_argument('--ego_side', type=str, choices=['left', 'right'], help='Which side the ego controls in cds-style training', required=True, default='left')
     parser.add_argument('--async_update', choices=['True', 'False'], help='Async update', required=True, default='False')
     parser.add_argument('--model_arch_type', type=str, help='Model architecture type', default="spar", required=True, choices=["spar", "ippo", "2timescale"])
     parser.add_argument('--total_timesteps', type=int, help='How many total steps to train', default=int(1e8))
