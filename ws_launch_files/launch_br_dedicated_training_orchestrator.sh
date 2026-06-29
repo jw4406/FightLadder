@@ -13,7 +13,7 @@ WORKDIR=/home/jw4406
 MAIN_TRAINING_DIR=codebase
 REPO_DIR=/home/jw4406/codebase/FightLadder
 MAX_LOCAL_CONCURRENT=1   # how many local-bash jobs may run at once on this GPU
-BR_TRAINING_STEPS=1000000000   # total .learn() timesteps per BR job (set small for debug)
+BR_TRAINING_STEPS=100000   # total .learn() timesteps per BR job (set small for debug)
 
 LOGS_DIR="${WORKDIR}/${MAIN_TRAINING_DIR}/logs"
 mkdir -p "${LOGS_DIR}"

@@ -24,7 +24,7 @@ LAUNCH_DEDICATED='True'
 LAUNCH_CONTINUE='False'
 STEP_STRIDE=40000        # 0 = process all tasks; e.g. 500000 = only every 500k steps
 MAX_LOCAL_CONCURRENT=1    # per-orchestrator cap on simultaneous local-bash jobs
-BR_TRAINING_STEPS=10000000  # total .learn() timesteps per BR job (set small for debug)
+BR_TRAINING_STEPS=250000  # total .learn() timesteps per BR job (set small for debug)
 
 WORKDIR=/home/jw4406/
 MAIN_TRAINING_DIR=codebase

@@ -306,8 +306,8 @@ class _FixedMatchupPolicyAdapter:
         ego_forward = kwargs['ego_forward']
         adv_forward = kwargs['adv_forward']
 
-        if ego_forward is True and adv_forward is True:
-            raise ValueError("cannot have both ego and adv forward -- we can only exploit one at a time")
+        #if ego_forward is True and adv_forward is True:
+        #    raise ValueError("cannot have both ego and adv forward -- we can only exploit one at a time")
 
         if ego_forward:
             side_flag = kwargs.get('ego_side_flag', None)
@@ -1482,6 +1482,7 @@ def train_best_response(
             "--br_index", str(br_index),
             "--game_args", json.dumps(vars(game_args)),
             "--device", device,
+            "--use_mirror", str(use_mirror),
             # Tell local_br_eval whether to use load_league_model +
             # policy/policy_other (league) or CleanDerivativeFreeSPAR.load
             # (CDS). Derived from the loaded model class so it stays in

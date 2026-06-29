@@ -41,6 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--br_checkpoint_model_path", type=str, required=True)
     parser.add_argument("--full_state_list", type=str, required=True)
     parser.add_argument("--state_list", type=str, required=True)
+    parser.add_argument("--use_mirror", type=str, required=True)
     parser.add_argument("--dedicated_exploiter", type=str, required=True)
     parser.add_argument("--br_index", type=int, required=True)
     parser.add_argument("--game_args", type=str, required=True)
@@ -338,19 +339,25 @@ def main() -> None:
                     flush=True,
                 )
 
-    use_mirror = getattr(args.game_args, 'use_mirror', False)
+    #use_mirror = getattr(args.game_args, 'use_mirror', False)
 
-    def _build_side_flags(n_envs, state_list):
+    def _build_side_flags(n_envs, reduced_state_list, full_state_list, use_mirror):
+        if len(set(reduced_state_list)) ==1:
+            index = full_state_list.index(reduced_state_list[0])
+            ego_is_left = index < len(full_state_list) // 2
+            vals = np.zero(n_envs, dtype=np.float32) if ego_is_left else np.ones(n_envs, dtype=np.float32)
+            return th.tensor(vals, device=model.device).unsqueeze(1), 1.0 - th.tensor(vals, device=model.device).unsqueeze(1)
         if use_mirror:
-            halfway = len(state_list) // 2
+            halfway = len(full_state_list) // 2
             vals = np.array([0.0 if i < halfway else 1.0 for i in range(n_envs)], dtype=np.float32)
+            #vals = np.ones(n_envs, dtype=np.float32)
         else:
             vals = np.zeros(n_envs, dtype=np.float32)
         ego_sf = th.tensor(vals, device=model.device).unsqueeze(1)
         return ego_sf, 1.0 - ego_sf
 
-    exp_ego_sf, exp_adv_sf = _build_side_flags(env.num_envs, args.state_list)
-    full_ego_sf, full_adv_sf = _build_side_flags(full_env.num_envs, args.full_state_list)
+    exp_ego_sf, exp_adv_sf = _build_side_flags(env.num_envs, args.state_list, args.full_state_list, args.use_mirror)
+    full_ego_sf, full_adv_sf = _build_side_flags(full_env.num_envs, args.full_state_list, args.full_state_list, args.use_mirror)
 
     def exploiter_action_fn(obs):
         with th.no_grad():
@@ -365,16 +372,16 @@ def main() -> None:
                 else:
                     action, _, _ = model.policy_other(obs_model_tensor)
             elif args.dedicated_exploiter and use_fixed_matchup_adapter:
-                ego_sf_val = 0.0 if ego_is_left else 1.0
-                ego_sf = th.full((obs_model_tensor.shape[0], 1), ego_sf_val, device=model.device)
-                adv_sf = 1.0 - ego_sf
+                #ego_sf_val = 0.0 if ego_is_left else 1.0
+                #ego_sf = th.full((obs_model_tensor.shape[0], 1), ego_sf_val, device=model.device)
+                #adv_sf = 1.0 - ego_sf
                 action, _ = model_policy_for_eval(
                     obs_model_tensor,
                     deterministic=False,
                     ego_forward=args.eval_prot,
                     adv_forward=not args.eval_prot,
-                    ego_side_flag=ego_sf,
-                    adv_side_flag=adv_sf,
+                    ego_side_flag=exp_ego_sf,
+                    adv_side_flag=exp_adv_sf,
                 )
             else:
                 if args.eval_prot:
@@ -424,17 +431,31 @@ def main() -> None:
 
     def selfplay_action_fn(obs):
         with th.no_grad():
+            obs_tensor = obs_as_tensor(obs, model.device)
             if args.is_league:
                 # LeaguePPO stores left and right policies separately;
                 # query both for the joint [left, right] action vector.
-                obs_t = obs_as_tensor(obs, model.device)
-                action, _, _ = model.policy(obs_t)
-                adv_action, _, _ = model.policy_other(obs_t)
+                action, _, _ = model.policy(obs_tensor)
+                adv_action, _, _ = model.policy_other(obs_tensor)
+            # elif args.use_mirror:
+            #     #ego_sf_val = 0.0 if ego_is_left else 1.0
+            #     #ego_sf = th.full((obs_tensor.shape[0], 1), ego_sf_val, device=model.device)
+            #     #adv_sf = 1.0 - ego_sf
+            #     action, adv_action = model_policy_for_eval(
+            #         obs_tensor,
+            #         deterministic=False,
+            #         ego_forward=True,
+            #         adv_forward=True,
+            #         ego_side_flag=full_ego_sf,
+            #         adv_side_flag=full_adv_sf,
+            #     )
             else:
                 action, _, adv_action, _, _, _ = model.policy(
-                    obs_as_tensor(obs, model.device),
+                    obs_tensor,
                     ego_side_flag=full_ego_sf,
                     adv_side_flag=full_adv_sf,
+                    value_forward=False,
+                    q_value_forward=False
                 )
         action = action.cpu().numpy()
         adv_action = adv_action.cpu().numpy()
