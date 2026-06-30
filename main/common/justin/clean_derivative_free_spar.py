@@ -54,6 +54,7 @@ from utils import select_matchup_env, select_device, get_n_workers, move_policy,
 from concurrent.futures import ThreadPoolExecutor
 from .parallel_updater import ParallelUpdater
 from br_tracker import RatingStagnationTracker
+from common.justin.vtrace import VTraceReplayBuffer, VTraceValueTrainer
 
 TIMING = False
 DEBUG = False
@@ -161,6 +162,13 @@ class CleanDerivativeFreeSPAR(PPO):
             stagnation_min_slope_checks: int = 10,
             entropy_ratio_only: bool = False,
             ego_side: str = "left",
+            vtrace_enabled: bool = False,
+            vtrace_replay_capacity: int = 200_000,
+            vtrace_seq_len: Optional[int] = None,
+            vtrace_batch_size: int = 32,
+            vtrace_rho_bar: float = 1.0,
+            vtrace_c_bar: float = 1.0,
+            vtrace_keep_onpolicy_value: bool = True,
     ):
 
         self.matchups = [state2matchup(state) for state in state_list] if state_list is not None else None #This needs to happen before the super().__init__
@@ -233,6 +241,22 @@ class CleanDerivativeFreeSPAR(PPO):
         self.n_env_per_adv = n_env_per_adv
         self.use_mirror = use_mirror
         self.state_list = state_list if state_list is not None else None
+        self.vtrace_enabled = bool(vtrace_enabled)
+        self.vtrace_replay_capacity = int(vtrace_replay_capacity)
+        # Default T = n_steps // 4 but capped: long unrolls make each worker update
+        # heavy (B*(T+1) CNN passes) and, with c_bar=1, the trace washes out the far end.
+        self.vtrace_seq_len = int(vtrace_seq_len) if vtrace_seq_len is not None else min(max(1, n_steps // 4), 64)
+        self.vtrace_batch_size = int(vtrace_batch_size)
+        self.vtrace_rho_bar = float(vtrace_rho_bar)
+        self.vtrace_c_bar = float(vtrace_c_bar)
+        # Hybrid: also run the usual on-policy value update in train_standard on the
+        # freshly collected rollout, anchoring V_theta to current data and correcting
+        # the drift accumulated from stale replay. Safe because the async worker is
+        # parked for the whole train() window (it is the sole value writer otherwise).
+        self.vtrace_keep_onpolicy_value = bool(vtrace_keep_onpolicy_value)
+        self.vtrace_ego_replay = None
+        self.vtrace_adv_replays = None
+        self.vtrace_trainer = None
         if _init_setup_model:
             self.env.num_envs = self.n_envs
             self._setup_model()
@@ -479,6 +503,35 @@ class CleanDerivativeFreeSPAR(PPO):
                 )
             self.adversary_buffers = adversary_buffers
 
+        if self.vtrace_enabled:
+            from stable_baselines3.common.preprocessing import get_action_dim, get_obs_shape
+            _obs_shape = get_obs_shape(self.observation_space)
+            _obs_dtype = self.observation_space.dtype
+            _action_dim = get_action_dim(self.action_space)
+            _action_dtype = np.float32
+            self.vtrace_ego_replay = VTraceReplayBuffer(
+                capacity=self.vtrace_replay_capacity,
+                n_envs=self.n_envs,
+                obs_shape=_obs_shape,
+                obs_dtype=_obs_dtype,
+                action_dim=_action_dim,
+                action_dtype=_action_dtype,
+                device=self.device,
+            )
+            self.vtrace_adv_replays = [
+                VTraceReplayBuffer(
+                    capacity=self.vtrace_replay_capacity,
+                    n_envs=self.envs_per_matchup,
+                    obs_shape=_obs_shape,
+                    obs_dtype=_obs_dtype,
+                    action_dim=_action_dim,
+                    action_dtype=_action_dtype,
+                    device=self.device,
+                    env_index_offset=i * self.envs_per_matchup,
+                )
+                for i in range(self.num_adversaries)
+            ]
+
         if hasattr(self, "num_adversaries"):
             self.policy_kwargs['num_adversaries'] = self.num_adversaries
             #self.policy_kwargs['num_env_per_adv'] = self.num_env_per_adv
@@ -698,6 +751,25 @@ class CleanDerivativeFreeSPAR(PPO):
                 #                         adv_log_probs[indices])
                 adversary_buffers[i].add(self._last_obs[indices].copy(), actions[indices], actions_other[indices], rewards_other[indices], new_obs[indices], dones[indices], self._last_episode_starts[indices], other_values[indices],
                                          adv_log_probs[indices], -q_values[indices])
+            if self.vtrace_enabled and self.vtrace_ego_replay is not None:
+                _ego_log_probs_np = ego_log_probs.detach().cpu().numpy()
+                _adv_log_probs_np = adv_log_probs.detach().cpu().numpy()
+                self.vtrace_ego_replay.add(
+                    obs=self._last_obs,
+                    action=actions,
+                    reward=rewards,
+                    done=dones,
+                    mu_log_prob=_ego_log_probs_np,
+                )
+                for i in range(self.num_adversaries):
+                    indices = slice(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
+                    self.vtrace_adv_replays[i].add(
+                        obs=self._last_obs[indices],
+                        action=actions_other[indices],
+                        reward=rewards[indices],
+                        done=dones[indices],
+                        mu_log_prob=_adv_log_probs_np[indices],
+                    )
             #for i in range(self.num_adversaries):
             #    adversary_buffers[i].add(self._last_obs.copy(), actions_other, rewards_other, self._last_episode_starts, values_other,
             #                             adv_log_probs)
@@ -1008,6 +1080,32 @@ class CleanDerivativeFreeSPAR(PPO):
             tolerance = .05 # movable
             rews = []
 
+            if self.vtrace_enabled and self.vtrace_ego_replay is not None and self.vtrace_trainer is None:
+                self.vtrace_trainer = VTraceValueTrainer(
+                    policy=self.policy,
+                    value_optimizer=self.policy.value_optimizer,
+                    ego_replay=self.vtrace_ego_replay,
+                    adv_replays=self.vtrace_adv_replays,
+                    num_adversaries=int(self.num_adversaries),
+                    is_discrete_action=isinstance(self.action_space, _DiscreteTypes),
+                    gamma=float(self.gamma),
+                    rho_bar=self.vtrace_rho_bar,
+                    c_bar=self.vtrace_c_bar,
+                    seq_len=self.vtrace_seq_len,
+                    batch_size=self.vtrace_batch_size,
+                    max_grad_norm=float(self.max_grad_norm),
+                    device=self.device,
+                    warmup_transitions=self.vtrace_seq_len + 1,
+                )
+                self.vtrace_trainer.start()
+                if self.verbose >= 1:
+                    print(
+                        f"[V-trace] worker started (T={self.vtrace_seq_len}, "
+                        f"B={self.vtrace_batch_size}, capacity={self.vtrace_replay_capacity}, "
+                        f"rho_bar={self.vtrace_rho_bar}, c_bar={self.vtrace_c_bar})",
+                        flush=True,
+                    )
+
             callback.on_training_start(locals(), globals())
 
             while self.num_timesteps < total_timesteps:
@@ -1057,6 +1155,23 @@ class CleanDerivativeFreeSPAR(PPO):
                             "train/lr/ego_critic",
                             float(self.policy.ego_value_optimizer.param_groups[0]["lr"]),
                         )
+                    if self.vtrace_trainer is not None:
+                        _vt_metrics = self.vtrace_trainer.drain_metrics()
+                        if _vt_metrics:
+                            _agg: Dict[str, List[float]] = {}
+                            for _m in _vt_metrics:
+                                for _k, _v in _m.items():
+                                    _agg.setdefault(_k, []).append(_v)
+                            for _k, _vs in _agg.items():
+                                self.logger.record(f"train/{_k}", float(np.mean(_vs)))
+                            self.logger.record("train/vtrace_updates_in_window", len(_vt_metrics))
+                        self.logger.record("train/vtrace_updates_total", int(self.vtrace_trainer.updates_count))
+                        self.logger.record("train/vtrace_ego_replay_size", int(self.vtrace_ego_replay.num_steps()))
+                        if self.vtrace_adv_replays:
+                            self.logger.record(
+                                "train/vtrace_adv_replay_size_mean",
+                                float(np.mean([b.num_steps() for b in self.vtrace_adv_replays])),
+                            )
                     self.logger.dump(step=self.num_timesteps)
                 if use_elo_tracker:
                     current_reward = None
@@ -1131,6 +1246,12 @@ class CleanDerivativeFreeSPAR(PPO):
             print(e)
         
         finally:
+            if self.vtrace_trainer is not None:
+                try:
+                    self.vtrace_trainer.stop()
+                except Exception as _exc:
+                    print(f"[V-trace] worker stop error: {_exc}", flush=True)
+                self.vtrace_trainer = None
             #IMPORTANT! Persistent workers must be cleaned up.
             self.cleanup()
             if torch.cuda.is_available():
@@ -1139,14 +1260,24 @@ class CleanDerivativeFreeSPAR(PPO):
         return self
     
     def train(self, update_ego: bool = True, update_adversary: bool = True) -> None:
-        if update_ego:
-            self.train_standard(update_ego=True, update_adversary=False)
-            pass
-        if update_adversary:
-            self.train_standard(update_ego=False, update_adversary=True)
-        #self.train_standard(update_ego, update_adversary)
-        if USE_PERTURBED:
-            self.train_derivative_free(update_ego, update_adversary)
+        # Park the async V-trace value worker for the duration of the on-policy
+        # ego/adv update so it does not write the value head while this thread
+        # reads params / steps optimizers. Resumed in finally.
+        _vt = getattr(self, "vtrace_trainer", None)
+        if _vt is not None:
+            _vt.pause()
+        try:
+            if update_ego:
+                self.train_standard(update_ego=True, update_adversary=False)
+                pass
+            if update_adversary:
+                self.train_standard(update_ego=False, update_adversary=True)
+            #self.train_standard(update_ego, update_adversary)
+            if USE_PERTURBED:
+                self.train_derivative_free(update_ego, update_adversary)
+        finally:
+            if _vt is not None:
+                _vt.resume()
         # Snapshot approx_kl BEFORE the outer learn() loop calls Logger.dump(),
         # which would clear name_to_value before the next collect_rollouts ->
         # stagnation_tracker.check() can read it. CDS uses prefixed keys
@@ -1459,7 +1590,15 @@ class CleanDerivativeFreeSPAR(PPO):
                     coef = self.ent_coef if update_ego else self.dstb_ent_coef
                     pl = policy_loss#_ego if update_ego else policy_loss_adv
                     self.ego_params = self.policy.ctrl_optimizer.param_groups[0]['params']
-                    loss = pl + coef * entropy_loss + self.vf_coef * value_loss
+                    # On-policy value update runs here unless V-trace is in pure-offload mode.
+                    # In hybrid mode (vtrace + keep_onpolicy) the async worker is parked for all
+                    # of train(), so this thread is the sole value writer right now -> safe.
+                    do_onpolicy_value = (not self.vtrace_enabled) or self.vtrace_keep_onpolicy_value
+                    if do_onpolicy_value:
+                        loss = pl + coef * entropy_loss + self.vf_coef * value_loss
+                    else:
+                        # Value head is owned exclusively by the async V-trace worker.
+                        loss = pl + coef * entropy_loss
 
                     # Calculate approximate form of reverse KL Divergence for early stopping
                     # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
@@ -1484,17 +1623,33 @@ class CleanDerivativeFreeSPAR(PPO):
                     # Optimization step
                     self.policy.ctrl_optimizer.zero_grad()
                     self.policy.dstb_optimizer.zero_grad()
-                    self.policy.value_optimizer.zero_grad()
-                    if hasattr(self.policy, "ego_value_optimizer"):
-                        self.policy.ego_value_optimizer.zero_grad()
+                    if do_onpolicy_value:
+                        self.policy.value_optimizer.zero_grad()
+                        if hasattr(self.policy, "ego_value_optimizer"):
+                            self.policy.ego_value_optimizer.zero_grad()
                     loss.backward()
 
                     self.ego_grads_autograd_order.append([self.policy.ctrl_optimizer.param_groups[0]['params'][i].grad for i in range(len(self.policy.ctrl_optimizer.param_groups[0]['params']))])
                     self.policy.adv_grads_autograd_order.append([self.policy.dstb_optimizer.param_groups[0]['params'][i].grad for i in range(len(self.policy.dstb_optimizer.param_groups[0]['params']))])
-                    self.policy.value_grads_autograd_order.append([self.policy.value_optimizer.param_groups[0]['params'][i].grad for i in range(len(self.policy.value_optimizer.param_groups[0]['params']))])
+                    if do_onpolicy_value:
+                        self.policy.value_grads_autograd_order.append([self.policy.value_optimizer.param_groups[0]['params'][i].grad for i in range(len(self.policy.value_optimizer.param_groups[0]['params']))])
                     self.policy.value_loss.append(value_loss)
                     # Clip grad norm
-                    th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                    if do_onpolicy_value:
+                        # Worker is parked (pure-offload disabled or paused during train),
+                        # so value grads here are this thread's own -> clip all params.
+                        th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                    else:
+                        # Pure offload: value .grad is written by the async worker; clipping
+                        # self.policy.parameters() would read/scale it -> race + corruption.
+                        # Clip only the params this thread steps (ego + adv).
+                        _clip_params = [
+                            p
+                            for opt in (self.policy.ctrl_optimizer, self.policy.dstb_optimizer)
+                            for group in opt.param_groups
+                            for p in group["params"]
+                        ]
+                        th.nn.utils.clip_grad_norm_(_clip_params, self.max_grad_norm)
                     if update_ego and not stop_policy_training: # stop_policy_training is True when the policy is not training anymore
                         self.policy.ctrl_optimizer.step()
                     else:
@@ -1502,11 +1657,13 @@ class CleanDerivativeFreeSPAR(PPO):
                             self.policy.dstb_optimizer.step()
                     
                     # regardless of stop_policy_training, we always update the value optimizer
+                    # (unless V-trace owns the value head in pure-offload mode)
 
-                    if hasattr(self.policy, "ego_value_optimizer") and update_ego:
-                        self.policy.ego_value_optimizer.step()
-                    else:
-                        self.policy.value_optimizer.step()
+                    if do_onpolicy_value:
+                        if hasattr(self.policy, "ego_value_optimizer") and update_ego:
+                            self.policy.ego_value_optimizer.step()
+                        else:
+                            self.policy.value_optimizer.step()
                     #self.policy.value_optimizer.step()
 
                 #if not continue_training:
