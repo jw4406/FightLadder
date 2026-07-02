@@ -1947,9 +1947,10 @@ class CleanDerivativeFreeSPAR(PPO):
         excluded = super()._excluded_save_params()
         excluded.extend(
             ["parallel_updater", "callback", "perturbed_agents", "adversary_buffers",
-             # V-trace: worker holds threads/events/CUDA stream (unpicklable) and the
-             # replay buffers hold multi-GB arrays + a Lock -- never serialize into a save.
-             "vtrace_trainer", "vtrace_ego_replay", "vtrace_adv_replays"]
+             # V-trace: worker holds threads/events/CUDA stream (unpicklable), the
+             # replay buffers hold multi-GB arrays + a Lock, and vtrace_policy_lock is a
+             # bare threading.Lock -- none should ever be serialized into a save.
+             "vtrace_trainer", "vtrace_ego_replay", "vtrace_adv_replays", "vtrace_policy_lock"]
         )
         return excluded
     
