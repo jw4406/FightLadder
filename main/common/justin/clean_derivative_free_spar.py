@@ -54,8 +54,8 @@ from utils import select_matchup_env, select_device, get_n_workers, move_policy,
 from concurrent.futures import ThreadPoolExecutor
 from .parallel_updater import ParallelUpdater
 from br_tracker import RatingStagnationTracker
-from common.justin.vtrace import VTraceReplayBuffer
-import threading, VTraceValueTrainer
+from common.justin.vtrace import VTraceReplayBuffer, VTraceValueTrainer
+import threading
 
 TIMING = False
 DEBUG = False
@@ -780,7 +780,10 @@ class CleanDerivativeFreeSPAR(PPO):
                     self.vtrace_adv_replays[i].add(
                         obs=self._last_obs[indices],
                         action=actions_other[indices],
-                        reward=rewards[indices],
+                        # Adversary-perspective reward (= -ego reward), matching the
+                        # on-policy adversary_buffers.add() convention. The worker
+                        # negates the value head to pair with this.
+                        reward=rewards_other[indices],
                         done=dones[indices],
                         mu_log_prob=_adv_log_probs_np[indices],
                     )

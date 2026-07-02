@@ -8,8 +8,12 @@ Per-side marginal correction:
   - Ego buffer uses ratio  pi_ego(a_ego|s) / mu_ego(a_ego|s)
   - Adv buffer i uses ratio pi_adv_i(a_adv|s) / mu_adv_i(a_adv|s)
 
-All transitions are stored in canonical ego-perspective sign (positive r, V):
-the worker's V-trace recursion runs identically for both sides.
+Sign convention matches the on-policy update:
+  - Ego buffer stores ego-perspective rewards; value used as-is (V_ego).
+  - Adv buffer i stores adversary-perspective rewards (rewards_other = -ego reward);
+    the worker negates the value head (V_adv = -V_ego) to pair with them.
+Both cases regress the shared value_net toward V_ego (the adv loss equals the
+ego-perspective loss up to the differentiable negation).
 """
 
 from __future__ import annotations
@@ -491,6 +495,12 @@ class VTraceValueTrainer:
                 side_flag=None,
             )
             values_flat = values_flat.squeeze(-1)                  # (B*(T+1),)
+            if not is_ego:
+                # Match the on-policy convention: adversary value is -V_ego, paired
+                # with adversary-perspective rewards (rewards_other) in the adv replay.
+                # Gradient still flows into value_net (negation is differentiable), and
+                # the loss equals the canonical ego-perspective loss (both train V_ego).
+                values_flat = -values_flat
             values_chunk = values_flat.reshape(B, T_plus_1)
             values_T = values_chunk[:, :T]                          # (B, T)
             bootstrap_value = values_chunk[:, T]                    # (B,)
