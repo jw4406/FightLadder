@@ -263,8 +263,14 @@ class VTraceValueTrainer:
         device: th.device,
         poll_sleep: float = 0.002,
         warmup_transitions: int = 0,
+        policy_lock: Any = None,
     ) -> None:
         self.policy = policy
+        # Shared with the rollout thread: serializes forward passes through the policy
+        # so SB3's stateful, SHARED distribution objects (self.action_dist /
+        # self.dstb_action_dist, mutated by proba_distribution()) aren't clobbered mid
+        # rollout sample by this worker's log_pi forward. None => no locking.
+        self.policy_lock = policy_lock
         self.value_optimizer = value_optimizer
         self.ego_replay = ego_replay
         self.adv_replays = list(adv_replays)
@@ -464,39 +470,48 @@ class VTraceValueTrainer:
         env_T1 = env_indices.unsqueeze(1).expand(B, T_plus_1).reshape(-1)
         env_T = env_indices.unsqueeze(1).expand(B, T).reshape(-1)
 
-        # ---- value forward (with grad) ----
         if is_ego:
             buf_num_for_states = list(range(self.num_adversaries))
         else:
             buf_num_for_states = buf_num  # [adv_i]
-        values_flat = self.policy.evaluate_states(
-            flat_obs_full,
-            buf_num=buf_num_for_states,
-            env_indices=env_T1,
-            side_flag=None,
-        )
-        values_flat = values_flat.squeeze(-1)                  # (B*(T+1),)
-        values_chunk = values_flat.reshape(B, T_plus_1)
-        values_T = values_chunk[:, :T]                          # (B, T)
-        bootstrap_value = values_chunk[:, T]                    # (B,)
 
-        # ---- log pi forward (no grad) ----
-        with th.no_grad():
-            if is_ego:
-                pi_actions = flat_actions.long().flatten() if self.is_discrete_action else flat_actions
-                log_pi_flat, _ = self.policy.evaluate_ego_actions(
-                    flat_obs_T,
-                    pi_actions,
-                    side_flag=None,
-                )
-            else:
-                pi_actions = flat_actions.long().flatten() if self.is_discrete_action else flat_actions
-                log_pi_flat, _ = self.policy.evaluate_adv_actions(
-                    flat_obs_T,
-                    pi_actions,
-                    buf_num=buf_num,
-                    side_flag=None,
-                )
+        # All policy forward passes (value + log_pi) run under the shared lock so they
+        # never overlap the rollout thread's self.policy() sampling. SB3's distribution
+        # objects are shared instance attributes mutated by proba_distribution(); a
+        # concurrent forward here would clobber them and corrupt the rollout's action
+        # sampling. Backward + optimizer step stay OUTSIDE the lock (they touch no
+        # shared forward state), so the expensive parts still overlap the rollout.
+        _fwd_lock = self.policy_lock if self.policy_lock is not None else contextlib.nullcontext()
+        with _fwd_lock:
+            # ---- value forward (with grad) ----
+            values_flat = self.policy.evaluate_states(
+                flat_obs_full,
+                buf_num=buf_num_for_states,
+                env_indices=env_T1,
+                side_flag=None,
+            )
+            values_flat = values_flat.squeeze(-1)                  # (B*(T+1),)
+            values_chunk = values_flat.reshape(B, T_plus_1)
+            values_T = values_chunk[:, :T]                          # (B, T)
+            bootstrap_value = values_chunk[:, T]                    # (B,)
+
+            # ---- log pi forward (no grad) ----
+            with th.no_grad():
+                if is_ego:
+                    pi_actions = flat_actions.long().flatten() if self.is_discrete_action else flat_actions
+                    log_pi_flat, _ = self.policy.evaluate_ego_actions(
+                        flat_obs_T,
+                        pi_actions,
+                        side_flag=None,
+                    )
+                else:
+                    pi_actions = flat_actions.long().flatten() if self.is_discrete_action else flat_actions
+                    log_pi_flat, _ = self.policy.evaluate_adv_actions(
+                        flat_obs_T,
+                        pi_actions,
+                        buf_num=buf_num,
+                        side_flag=None,
+                    )
         log_pi = log_pi_flat.reshape(B, T)
 
         # ---- V-trace target (no grad through target) ----

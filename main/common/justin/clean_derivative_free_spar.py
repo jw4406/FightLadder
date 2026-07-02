@@ -54,7 +54,8 @@ from utils import select_matchup_env, select_device, get_n_workers, move_policy,
 from concurrent.futures import ThreadPoolExecutor
 from .parallel_updater import ParallelUpdater
 from br_tracker import RatingStagnationTracker
-from common.justin.vtrace import VTraceReplayBuffer, VTraceValueTrainer
+from common.justin.vtrace import VTraceReplayBuffer
+import threading, VTraceValueTrainer
 
 TIMING = False
 DEBUG = False
@@ -257,6 +258,7 @@ class CleanDerivativeFreeSPAR(PPO):
         self.vtrace_ego_replay = None
         self.vtrace_adv_replays = None
         self.vtrace_trainer = None
+        self.vtrace_policy_lock = None  # serializes rollout vs worker policy forwards
         if _init_setup_model:
             self.env.num_envs = self.n_envs
             self._setup_model()
@@ -531,6 +533,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 )
                 for i in range(self.num_adversaries)
             ]
+            self.vtrace_policy_lock = threading.Lock()
 
         if hasattr(self, "num_adversaries"):
             self.policy_kwargs['num_adversaries'] = self.num_adversaries
@@ -642,7 +645,18 @@ class CleanDerivativeFreeSPAR(PPO):
             with th.no_grad():
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                ego_actions, ego_log_probs, adv_actions, adv_log_probs, values, q_values = self.policy(obs_tensor, deterministic=False, ego_forward=run_ego_forward, adv_forward=run_adv_forward, zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action, random_adv_action=random_adv_action)
+                # Serialize against the async V-trace worker's policy forward: SB3's
+                # shared distribution objects are mutated by proba_distribution(), so a
+                # concurrent worker forward would corrupt this sampling (mismatched
+                # action counts -> hstack failure downstream). No-op when vtrace is off.
+                _fwd_lock = self.vtrace_policy_lock
+                if _fwd_lock is not None:
+                    _fwd_lock.acquire()
+                try:
+                    ego_actions, ego_log_probs, adv_actions, adv_log_probs, values, q_values = self.policy(obs_tensor, deterministic=False, ego_forward=run_ego_forward, adv_forward=run_adv_forward, zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action, random_adv_action=random_adv_action)
+                finally:
+                    if _fwd_lock is not None:
+                        _fwd_lock.release()
                 ego_entropy_sum += float((-ego_log_probs.detach()).mean().item())
                 adv_entropy_sum += float((-adv_log_probs.detach()).mean().item())
                 entropy_count += 1
@@ -1096,6 +1110,7 @@ class CleanDerivativeFreeSPAR(PPO):
                     max_grad_norm=float(self.max_grad_norm),
                     device=self.device,
                     warmup_transitions=self.vtrace_seq_len + 1,
+                    policy_lock=self.vtrace_policy_lock,
                 )
                 self.vtrace_trainer.start()
                 if self.verbose >= 1:
