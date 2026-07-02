@@ -135,6 +135,16 @@ class VTraceReplayBuffer:
         self.write_pos = 0  # monotonically increasing global step counter
         self.lock = threading.Lock()
 
+    def __getstate__(self):
+        # threading.Lock is unpicklable; drop it (recreated on unpickle).
+        state = self.__dict__.copy()
+        state.pop("lock", None)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self.lock = threading.Lock()
+
     def add(
         self,
         obs: np.ndarray,
@@ -288,6 +298,25 @@ class VTraceValueTrainer:
         self.metrics_lock = threading.Lock()
         self.metrics_buffer: Deque[Dict[str, float]] = deque(maxlen=4096)
         self.updates_count = 0
+
+    def __getstate__(self):
+        # Threads, Events, Locks and CUDA streams are unpicklable. Drop them; a
+        # pickled/deep-copied trainer is inert (it is never restored to run -- the
+        # model excludes vtrace_trainer from save and re-creates it in learn()).
+        state = self.__dict__.copy()
+        for key in ("stop_event", "_resume_event", "_idle_event", "metrics_lock", "thread", "stream"):
+            state.pop(key, None)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self.stop_event = threading.Event()
+        self._resume_event = threading.Event()
+        self._resume_event.set()
+        self._idle_event = threading.Event()
+        self.metrics_lock = threading.Lock()
+        self.thread = None
+        self.stream = None
 
     def _value_params(self) -> List[th.nn.Parameter]:
         if self._param_iter_cache is None:
