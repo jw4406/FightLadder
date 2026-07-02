@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import threading
 import time
+import traceback
 from collections import deque
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
@@ -421,17 +422,21 @@ class VTraceValueTrainer:
                     buf_num = [adv_i]
                     is_ego = False
 
-                batch = replay.sample_chunks(self.batch_size, self.seq_len)
-                if batch is None:
-                    time.sleep(self.poll_sleep)
-                    continue
-
                 try:
+                    batch = replay.sample_chunks(self.batch_size, self.seq_len)
+                    if batch is None:
+                        time.sleep(self.poll_sleep)
+                        continue
                     self._update(batch, is_ego=is_ego, buf_num=buf_num)
                 except Exception as exc:  # pragma: no cover - keep worker alive
                     with self.metrics_lock:
                         self.metrics_buffer.append({"vtrace_error": 1.0})
-                    print(f"[VTraceValueTrainer] update error: {exc}", flush=True)
+                    print(
+                        f"[VTraceValueTrainer] update error (is_ego={is_ego}, buf_num={buf_num}): {exc}\n"
+                        f"{traceback.format_exc()}",
+                        flush=True,
+                    )
+                    time.sleep(self.poll_sleep)
 
     def _update(
         self,

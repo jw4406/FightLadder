@@ -1244,7 +1244,9 @@ class CleanDerivativeFreeSPAR(PPO):
         
         except Exception as e:
             print(e)
-        
+            import traceback as _tb
+            _tb.print_exc()
+
         finally:
             if self.vtrace_trainer is not None:
                 try:
