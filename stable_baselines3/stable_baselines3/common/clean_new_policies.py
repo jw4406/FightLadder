@@ -207,8 +207,8 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
                 self.activation_fn(),
                 nn.Linear(lstm_hidden_size, 1))
             self.value_net[matchup_key] = nn.Sequential(
-                nn.LSTM(input_size=self.mlp_extractor.latent_dim_vf, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
-                SelectLastLSTMOutput(),
+                nn.Linear(self.mlp_extractor.latent_dim_vf, lstm_hidden_size),
+                self.activation_fn(),
                 nn.Linear(lstm_hidden_size, lstm_hidden_size),
                 self.activation_fn(),
                 nn.Linear(lstm_hidden_size, lstm_hidden_size),

@@ -714,6 +714,8 @@ def main(args):
                 entropy_stagnation_weight=args.entropy_stagnation_weight,
                 stagnation_lr_factor=args.stagnation_lr_factor,
                 stagnation_lr_patience=args.stagnation_lr_patience,
+                vtrace_enabled=True,
+                vtrace_replay_capacity=10000
             )
         elif model_arch_type == "ippo":
             finetune_model = CleanDerivativeFreeSPARIPPO(
