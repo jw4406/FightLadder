@@ -17,6 +17,7 @@ import ast
 import re
 
 from common.justin.clean_derivative_free_spar import CleanDerivativeFreeSPAR
+from common.justin.clean_derivative_free_spar_ippo import CleanDerivativeFreeSPARIPPO
 from common.algorithms import Exploiter
 from ippo import env_generator
 import json
@@ -31,6 +32,58 @@ from new_br_worker import (
     _sanitize_for_filename,
     load_league_model,
 )
+
+
+# Actor-side policy submodules that MUST be present for a valid eval. If any of
+# these are missing after a strict=False load, the actor is random-initialized
+# and eval results are meaningless -> we fail loud instead.
+_ACTOR_KEY_PREFIXES = (
+    "action_net",
+    "dstb_action_net",
+    "pi_ctrl_features_extractor",
+    "pi_dstb_features_extractor",
+)
+
+
+def _resolve_cds_family_class(path):
+    """Pick the algorithm class for a (non-league) SPAR-family checkpoint.
+
+    Taxonomy mirrors duel.py's MODEL_TYPES:
+      - spar               -> CleanDerivativeFreeSPAR
+      - ippo / 2timescale  -> CleanDerivativeFreeSPARIPPO  (dedicated ego value head)
+      - league (FSP/PSRO)  -> handled by the separate load_league_model path,
+                              NOT here (their checkpoints are LeaguePPO/agent_dict
+                              torch-saves, not SB3 zips). FSP vs PSRO is a
+                              training-time meta-solver distinction only, so a
+                              single "league" path covers both.
+
+    ippo/2timescale are distinguished from spar by the IPPO-only ego value head
+    in the *saved policy weights* (ego_vf_features_extractor.* / ego_value_net.*).
+    Keying on the state_dict is architecture ground-truth and does not depend on
+    the policy_class metadata being populated.
+
+    Raises FileNotFoundError if `path` is missing (so callers' done-checkpoint
+    fallback still works), and ValueError if `path` is not a readable SB3 zip
+    (e.g. a league/PSRO checkpoint reached this path without --is_league).
+    """
+    from stable_baselines3.common.save_util import load_from_zip_file
+    try:
+        _data, _params, _ = load_from_zip_file(path, device="cpu")
+    except FileNotFoundError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - surface a clear, actionable message
+        raise ValueError(
+            f"[local_br_eval] {path!r} is not a readable SB3 checkpoint zip. "
+            f"If this is a league/PSRO checkpoint, pass --is_league True (the "
+            f"league eval path handles LeaguePPO/agent_dict files). "
+            f"Underlying error: {exc}"
+        ) from exc
+    policy_sd = (_params or {}).get("policy", {}) or {}
+    is_ippo = any(
+        k.startswith("ego_vf_features_extractor") or k.startswith("ego_value_net")
+        for k in policy_sd.keys()
+    )
+    return CleanDerivativeFreeSPARIPPO if is_ippo else CleanDerivativeFreeSPAR
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -179,12 +232,14 @@ def main() -> None:
             )
         model.env = env
     else:
+        # Auto-select spar vs ippo/2timescale from the checkpoint's policy weights
+        # (resolver lets FileNotFoundError through so the done-checkpoint fallback works).
         try:
-            model = CleanDerivativeFreeSPAR.load(
+            model = _resolve_cds_family_class(main_checkpoint_model_path).load(
                 main_checkpoint_model_path, env=env, num_perturbed=1, device=args.device
             )
         except FileNotFoundError:
-            model = CleanDerivativeFreeSPAR.load(
+            model = _resolve_cds_family_class(done_model_checkpoint_path).load(
                 done_model_checkpoint_path, env=env, num_perturbed=1, device=args.device
             )
 
@@ -215,8 +270,11 @@ def main() -> None:
                 "Exploiter checkpoint), or eval league outputs via the "
                 "league-native eval path."
             )
+        # Auto-select spar vs ippo/2timescale; resolved before the try so it is
+        # also used by the strict=False reconstruction fallback below.
+        _br_cls = _resolve_cds_family_class(br_model_path)
         try:
-            br_model = CleanDerivativeFreeSPAR.load(
+            br_model = _br_cls.load(
                 br_model_path, env=env, num_perturbed=1, device=args.device
             )
         except RuntimeError as exc:
@@ -261,7 +319,7 @@ def main() -> None:
             # `n_envs` must reflect the current env, not the saved one.
             if env is not None and hasattr(env, "num_envs"):
                 data["n_envs"] = env.num_envs
-            br_model = CleanDerivativeFreeSPAR(
+            br_model = _br_cls(
                 policy=data["policy_class"],
                 env=env,
                 device=args.device,
@@ -280,6 +338,18 @@ def main() -> None:
                 f"{len(missing)} missing, {len(unexpected)} unexpected keys.",
                 flush=True,
             )
+            # Missing value/q-value heads are harmless for eval (value_forward=False),
+            # but missing ACTOR weights mean a random-init actor -> invalid eval. Fail
+            # loud rather than silently reporting garbage win rates.
+            missing_actor = [k for k in missing if k.startswith(_ACTOR_KEY_PREFIXES)]
+            if missing_actor:
+                raise RuntimeError(
+                    f"[local_br_eval] policy load is missing ACTOR weights "
+                    f"{missing_actor[:6]}{'...' if len(missing_actor) > 6 else ''} -- "
+                    f"eval would run a random-initialized actor. Aborting. This usually "
+                    f"means the checkpoint's architecture does not match the resolved "
+                    f"class ({_br_cls.__name__})."
+                )
             if missing:
                 print(
                     f"[local_br_eval] WARNING: missing keys include: "
