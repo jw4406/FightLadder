@@ -72,8 +72,11 @@ def _resolve_cds_family_class(path):
     Redundancy check: models saved after ippo.py sets
     ``finetune_model.model_arch_type`` carry that string in the checkpoint's
     ``data``. It is cross-checked against the weight-based detection; the weights
-    stay authoritative (they determine what actually loads), and a disagreement
-    is flagged loudly as a stale/incorrect-metadata signal.
+    stay authoritative for the spar-vs-ippo class choice (they determine what
+    actually loads), and a spar/ippo disagreement is flagged loudly as a
+    stale/incorrect-metadata signal. A non-SPAR-family declaration (``league``,
+    or any unrecognized type, which defaults to league/PSRO) raises and directs
+    to the league path -- these are not SB3 SPAR-family checkpoints.
 
     Raises FileNotFoundError if `path` is missing (so callers' done-checkpoint
     fallback still works), and ValueError if `path` is not a readable SB3 zip
@@ -108,10 +111,14 @@ def _resolve_cds_family_class(path):
                 flush=True,
             )
         elif arch not in ("spar", "ippo", "2timescale"):
-            print(
-                f"[local_br_eval] NOTE: unrecognized model_arch_type={arch!r} on a "
-                f"SPAR-family checkpoint; using weight-based detection -> {cls.__name__}.",
-                flush=True,
+            # Non-SPAR-family declaration (league/PSRO, or an unrecognized type we
+            # default to league/PSRO). These are not SB3 SPAR-family checkpoints,
+            # so route to the league path instead of mis-loading here.
+            raise ValueError(
+                f"[local_br_eval] checkpoint model_arch_type={arch!r} indicates a "
+                f"league/PSRO (non-SPAR-family) model. Load it with --is_league True "
+                f"via the league eval path (load_league_model), not the SPAR-family "
+                f"path."
             )
     return cls
 
