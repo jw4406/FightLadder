@@ -57,10 +57,17 @@ def _resolve_cds_family_class(path):
                               training-time meta-solver distinction only, so a
                               single "league" path covers both.
 
-    ippo/2timescale are distinguished from spar by the IPPO-only ego value head
-    in the *saved policy weights* (ego_vf_features_extractor.* / ego_value_net.*).
-    Keying on the state_dict is architecture ground-truth and does not depend on
-    the policy_class metadata being populated.
+    ippo/2timescale are distinguished from spar by the IPPO-only top-level
+    ego value-feature extractor in the *saved policy weights*
+    (ego_vf_features_extractor.*), which CleanIPPOActorActorCriticPolicy always
+    creates and the base CleanActorActorCriticPolicy never does. Keying on the
+    state_dict is architecture ground-truth and does not depend on policy_class
+    metadata being populated.
+
+    NB: do NOT key on "ego_value_net" -- the base MlpExtractorAdv builds an
+    ``ego_value_net`` submodule, so CDS checkpoints legitimately contain
+    ``mlp_extractor.ego_value_net.*`` keys. ``ego_vf_features_extractor`` is the
+    only unambiguous top-level, IPPO-exclusive module name.
 
     Raises FileNotFoundError if `path` is missing (so callers' done-checkpoint
     fallback still works), and ValueError if `path` is not a readable SB3 zip
@@ -79,10 +86,7 @@ def _resolve_cds_family_class(path):
             f"Underlying error: {exc}"
         ) from exc
     policy_sd = (_params or {}).get("policy", {}) or {}
-    is_ippo = any(
-        k.startswith("ego_vf_features_extractor") or k.startswith("ego_value_net")
-        for k in policy_sd.keys()
-    )
+    is_ippo = any(k.startswith("ego_vf_features_extractor") for k in policy_sd.keys())
     return CleanDerivativeFreeSPARIPPO if is_ippo else CleanDerivativeFreeSPAR
 
 
