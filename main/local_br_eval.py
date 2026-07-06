@@ -69,13 +69,19 @@ def _resolve_cds_family_class(path):
     ``mlp_extractor.ego_value_net.*`` keys. ``ego_vf_features_extractor`` is the
     only unambiguous top-level, IPPO-exclusive module name.
 
+    Redundancy check: models saved after ippo.py sets
+    ``finetune_model.model_arch_type`` carry that string in the checkpoint's
+    ``data``. It is cross-checked against the weight-based detection; the weights
+    stay authoritative (they determine what actually loads), and a disagreement
+    is flagged loudly as a stale/incorrect-metadata signal.
+
     Raises FileNotFoundError if `path` is missing (so callers' done-checkpoint
     fallback still works), and ValueError if `path` is not a readable SB3 zip
     (e.g. a league/PSRO checkpoint reached this path without --is_league).
     """
     from stable_baselines3.common.save_util import load_from_zip_file
     try:
-        _data, _params, _ = load_from_zip_file(path, device="cpu")
+        data, _params, _ = load_from_zip_file(path, device="cpu")
     except FileNotFoundError:
         raise
     except Exception as exc:  # noqa: BLE001 - surface a clear, actionable message
@@ -86,8 +92,28 @@ def _resolve_cds_family_class(path):
             f"Underlying error: {exc}"
         ) from exc
     policy_sd = (_params or {}).get("policy", {}) or {}
-    is_ippo = any(k.startswith("ego_vf_features_extractor") for k in policy_sd.keys())
-    return CleanDerivativeFreeSPARIPPO if is_ippo else CleanDerivativeFreeSPAR
+    has_ego = any(k.startswith("ego_vf_features_extractor") for k in policy_sd.keys())
+    cls = CleanDerivativeFreeSPARIPPO if has_ego else CleanDerivativeFreeSPAR
+
+    # Redundancy check against the training-declared arch type (absent on older
+    # checkpoints). Weights are ground truth; a mismatch means bad metadata.
+    arch = (data or {}).get("model_arch_type")
+    if isinstance(arch, str):
+        if (arch in ("ippo", "2timescale") and not has_ego) or (arch == "spar" and has_ego):
+            print(
+                f"[local_br_eval] WARNING: checkpoint model_arch_type={arch!r} disagrees "
+                f"with the saved policy weights (ego value head "
+                f"{'present' if has_ego else 'absent'}). Trusting the weights and loading "
+                f"as {cls.__name__} -- checkpoint metadata is stale/incorrect; investigate.",
+                flush=True,
+            )
+        elif arch not in ("spar", "ippo", "2timescale"):
+            print(
+                f"[local_br_eval] NOTE: unrecognized model_arch_type={arch!r} on a "
+                f"SPAR-family checkpoint; using weight-based detection -> {cls.__name__}.",
+                flush=True,
+            )
+    return cls
 
 
 def build_parser() -> argparse.ArgumentParser:
