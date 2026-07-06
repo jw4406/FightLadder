@@ -101,16 +101,21 @@ def _resolve_cds_family_class(path):
     # Redundancy check against the training-declared arch type (absent on older
     # checkpoints). Weights are ground truth; a mismatch means bad metadata.
     arch = (data or {}).get("model_arch_type")
+    note = "model_arch_type absent (older checkpoint); used weights"
     if isinstance(arch, str):
-        if (arch in ("ippo", "2timescale") and not has_ego) or (arch == "spar" and has_ego):
-            print(
-                f"[local_br_eval] WARNING: checkpoint model_arch_type={arch!r} disagrees "
-                f"with the saved policy weights (ego value head "
-                f"{'present' if has_ego else 'absent'}). Trusting the weights and loading "
-                f"as {cls.__name__} -- checkpoint metadata is stale/incorrect; investigate.",
-                flush=True,
-            )
-        elif arch not in ("spar", "ippo", "2timescale"):
+        if arch in ("spar", "ippo", "2timescale"):
+            if (arch in ("ippo", "2timescale") and not has_ego) or (arch == "spar" and has_ego):
+                print(
+                    f"[local_br_eval] WARNING: checkpoint model_arch_type={arch!r} disagrees "
+                    f"with the saved policy weights (ego value head "
+                    f"{'present' if has_ego else 'absent'}). Trusting the weights and loading "
+                    f"as {cls.__name__} -- checkpoint metadata is stale/incorrect; investigate.",
+                    flush=True,
+                )
+                note = f"model_arch_type={arch!r} MISMATCH with weights -- trusted weights"
+            else:
+                note = f"model_arch_type={arch!r} agrees with weights"
+        else:
             # Non-SPAR-family declaration (league/PSRO, or an unrecognized type we
             # default to league/PSRO). These are not SB3 SPAR-family checkpoints,
             # so route to the league path instead of mis-loading here.
@@ -120,7 +125,16 @@ def _resolve_cds_family_class(path):
                 f"via the league eval path (load_league_model), not the SPAR-family "
                 f"path."
             )
-    return cls
+    info = {
+        "resolved_class": cls.__name__,
+        "model_arch_type": arch,
+        "ego_head_in_weights": has_ego,
+        "detection_path": (
+            f"{cls.__name__} (ego value head "
+            f"{'present' if has_ego else 'absent'} in weights); {note}"
+        ),
+    }
+    return cls, info
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -243,6 +257,9 @@ def main() -> None:
     env = env_generator(args.game_args, STATE=args.state_list)
     full_env = env_generator(args.game_args, STATE=args.full_state_list)
     # ENV_ID = args.env_id
+    # Which load path / arch each model went down, for the end-of-run printout.
+    model_detection = None
+    br_detection = None
     if args.is_league:
         # League path: reuse load_league_model so the unpickling /
         # league_constructor logic stays in one place. The function builds
@@ -268,15 +285,23 @@ def main() -> None:
                 use_wandb=False,
             )
         model.env = env
+        model_detection = {
+            "resolved_class": type(model).__name__,
+            "model_arch_type": getattr(model, "model_arch_type", None),
+            "ego_head_in_weights": None,
+            "detection_path": "league path (--is_league) via load_league_model",
+        }
     else:
         # Auto-select spar vs ippo/2timescale from the checkpoint's policy weights
         # (resolver lets FileNotFoundError through so the done-checkpoint fallback works).
         try:
-            model = _resolve_cds_family_class(main_checkpoint_model_path).load(
+            _mcls, model_detection = _resolve_cds_family_class(main_checkpoint_model_path)
+            model = _mcls.load(
                 main_checkpoint_model_path, env=env, num_perturbed=1, device=args.device
             )
         except FileNotFoundError:
-            model = _resolve_cds_family_class(done_model_checkpoint_path).load(
+            _mcls, model_detection = _resolve_cds_family_class(done_model_checkpoint_path)
+            model = _mcls.load(
                 done_model_checkpoint_path, env=env, num_perturbed=1, device=args.device
             )
 
@@ -309,7 +334,7 @@ def main() -> None:
             )
         # Auto-select spar vs ippo/2timescale; resolved before the try so it is
         # also used by the strict=False reconstruction fallback below.
-        _br_cls = _resolve_cds_family_class(br_model_path)
+        _br_cls, br_detection = _resolve_cds_family_class(br_model_path)
         try:
             br_model = _br_cls.load(
                 br_model_path, env=env, num_perturbed=1, device=args.device
@@ -415,6 +440,12 @@ def main() -> None:
         # print("#$%*&^%$EVAL PROT: %s$%^&*", args.eval_prot)
         # print("$@#$%^&*()(*&^%$#@)%s$#%^&*()(*&^%$#@", args.exploiter_is_cds)
         br_model = Exploiter.load(br_model_path, env=env, n_envs=1, device=args.device)
+        br_detection = {
+            "resolved_class": type(br_model).__name__,
+            "model_arch_type": getattr(br_model, "model_arch_type", None),
+            "ego_head_in_weights": None,
+            "detection_path": "dedicated Exploiter (Exploiter.load)",
+        }
 
     nr = 50
     exploiter_rewards, selfplay_rewards = [], []
@@ -618,12 +649,22 @@ def main() -> None:
         "br_checkpoint_model_path": args.br_checkpoint_model_path,
         "full_state_list": args.full_state_list,
         "state_list": args.state_list,
+        "model_detection": model_detection,
+        "br_detection": br_detection,
     }
     print(
         f"local br eval complete for checkpoint {model.num_timesteps} | "
         f"br_index={args.br_index} | state={tested_state_for_print} | eval_target={eval_target}",
         flush=True,
     )
+
+    def _fmt_detection(d):
+        if not d:
+            return "unknown"
+        return f"{d.get('detection_path', '?')} | model_arch_type={d.get('model_arch_type')!r}"
+
+    print(f"[local_br_eval] main model detection: {_fmt_detection(model_detection)}", flush=True)
+    print(f"[local_br_eval] br model detection:   {_fmt_detection(br_detection)}", flush=True)
     print("local br eval args:", flush=True)
     print(json.dumps(run_summary, indent=2, sort_keys=True), flush=True)
 
