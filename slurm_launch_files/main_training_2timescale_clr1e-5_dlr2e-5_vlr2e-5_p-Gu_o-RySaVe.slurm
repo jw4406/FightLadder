@@ -1,25 +1,57 @@
 #!/bin/bash
+#SBATCH --job-name=2timescale_Gu_RySaVe  # create a short name for your job
+#SBATCH --nodes=1                # node count
+#SBATCH --ntasks=1               # total number of tasks across all nodes
+#SBATCH --cpus-per-task=8      # cpu-cores per task (>1 if multi-threaded tasks)
+#SBATCH --mem-per-cpu=9G        # memory per cpu-core (4G is default)
+#SBATCH --gres=gpu:1
+#SBATCH --time=120:30:00          # total run time limit (HH:MM:SS)
+#SBATCH --mail-type=begin        # send email when job begins
+#SBATCH --mail-type=end          # send email when job ends
+#SBATCH --mail-user=jw4406@princeton.edu
+echo $CUDA_VISIBLE_DEVICES
+JOBID=$SLURM_JOB_ID
+WORKDIR=/scratch/gpfs/FISAC/jw4406/
+mkdir -p $WORKDIR/$JOBID
+#cd /n/fs/magics/2415498/FightLadder
+cd $WORKDIR/$JOBID
+echo "starting copy op"
+cp -r $HOME/FightLadder/ ./
+echo "copy op successful"
+cd FightLadder/
+module purge
+module load anaconda3/2024.2
+conda activate fightladder
+echo "fightladder environment activated"
+# options: my_pendulum, my_half_cheetah, my_hopper, my_ant
+#!/bin/bash
+
+# Number of parallel ippo instances to run
+#!/bin/bash
 
 # Number of parallel ippo instances to run
 NUM_WORKERS=1
 # If True, run each worker detached with nohup and log redirection.
 # If False, run without nohup in the current shell.
-RUN_LIVE="False"
+RUN_LIVE="True"
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Path to ippo.py
-IPPO_PATH="${SCRIPT_DIR}/main/ippo.py"
+IPPO_PATH="$WORKDIR/$JOBID/FightLadder/main/ippo.py"
 
 # Arguments from launch.json (Python Debugger: ippo.py)
-PLAYER=("Vega")
-OPPONENTS=("Sagat" "Ryu")
+PLAYER=("Guile")
+OPPONENTS=("Ryu" "Sagat" "Vega")
 NUM_ENV_TO_LOAD="1"
 ENV_BATCH_SIZE="24"
-C_LR="1e-4"
-D_LR="2e-4"
-V_LR="1e-3"
+C_LR="1e-5"
+D_LR="2e-5"
+V_LR="2e-5"
+# Ego value-head LR. Leave empty for spar (optional/ignored). The orchestrator
+# sets this for ippo/2timescale runs, where ippo.py requires it.
+EGO_VALUE_HEAD_LR="999e999"
 NUM_PERTURBS="10"
 USE_MIRROR="False"
 EGO_SIDE="left"
@@ -28,25 +60,26 @@ EGO_SIDE="left"
 # CONTINUE_TRAINING=""  # Optional: set this to pass --continue_training
 # LEFT_MODEL_FILE=""  # Optional: set this to pass --left-model-file
 # RIGHT_MODEL_FILE=""  # Optional: set this to pass --right-model-file
-SAVE_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/"
+SAVE_DIR="$WORKDIR/$JOBID/FightLadder/main/trained_models/tasks/todo/"
 USE_LR_ANNEALING="False"
 LR_ANNEAL_COEFF=".995"
-CHECKPOINT_INTERVAL="250000"
+CHECKPOINT_INTERVAL="1000"
 TOTAL_TIMESTEPS="150000000"
-TRAINING_BATCH_SIZE="128"
-TRANSFORM_ACTION="True"
+TRAINING_BATCH_SIZE="256"
 NUM_ENV_STEPS="512"
 EGO_STYLE="learning"
-ADV_STYLE="random_action"
+ADV_STYLE="learning"
 ENVS_PER_MATCHUP="2"
 SIDE="both"
 RENDER="False"
 MODEL_FILE=""
 
-MASTER_USE_STAG="False"
+USE_WANDB="False"
 
+MASTER_USE_STAG="False"
+TRANSFORM_ACTION="True"
 ASYNC_UPDATE="False"
-MODEL_ARCH_TYPE="spar"
+MODEL_ARCH_TYPE="2timescale"
 USE_STAGNATION_EARLY_STOP="False"
 USE_STAGNATION_VELOCITY_SIGNAL="False"
 USE_STAGNATION_ENTROPY_SIGNAL="False"
@@ -59,7 +92,6 @@ STAGNATION_EVAL_GAMES="0"
 ENTROPY_STAGNATION_WEIGHT="1.0"
 STAGNATION_LR_FACTOR="0.999"
 STAGNATION_LR_PATIENCE="150"
-OBS_TYPE="image"
 # Create logs directory if it doesn't exist
 LOGS_DIR="${SCRIPT_DIR}/logs"
 mkdir -p "${LOGS_DIR}"
@@ -78,20 +110,20 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --v_lr "${V_LR}"
         --num_perturbs "${NUM_PERTURBS}"
         --use_mirror "${USE_MIRROR}"
-	--ego_side "${EGO_SIDE}"
+        --ego_side "${EGO_SIDE}"
         --save_dir "${SAVE_DIR}"
         --use_lr_annealing "${USE_LR_ANNEALING}"
         --lr_anneal_coeff "${LR_ANNEAL_COEFF}"
-        --transform_action "${TRANSFORM_ACTION}"
 	    --training_batch_size "${TRAINING_BATCH_SIZE}"
         --checkpoint_interval "${CHECKPOINT_INTERVAL}"
+	--total_timesteps "${TOTAL_TIMESTEPS}"
         --num_env_steps "${NUM_ENV_STEPS}"
-        --total_timesteps "${TOTAL_TIMESTEPS}"
         --ego_style "${EGO_STYLE}"
         --adv_style "${ADV_STYLE}"
-        --master_use_stag "${MASTER_USE_STAG}"
         --envs_per_matchup "${ENVS_PER_MATCHUP}"
+	--transform_action "${TRANSFORM_ACTION}"
         --side "${SIDE}"
+	--use_wandb "${USE_WANDB}"
         --render "${RENDER}"
         --model_file "${MODEL_FILE}"
         --async_update "${ASYNC_UPDATE}"
@@ -108,8 +140,13 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --entropy_stagnation_weight "${ENTROPY_STAGNATION_WEIGHT}"
         --stagnation_lr_factor "${STAGNATION_LR_FACTOR}"
         --stagnation_lr_patience "${STAGNATION_LR_PATIENCE}"
-        --obs_type "${OBS_TYPE}"
     )
+
+    # Only pass ego value-head LR when set (ippo/2timescale). Omitted for spar,
+    # where ippo.py treats it as optional.
+    if [ -n "${EGO_VALUE_HEAD_LR}" ]; then
+        CMD+=( --ego_value_head_lr "${EGO_VALUE_HEAD_LR}" )
+    fi
 
     if [ "${RUN_LIVE}" = "False" ]; then
         nohup "${CMD[@]}" > "${LOGS_DIR}/ippo_worker_${i}.log" 2>&1 &

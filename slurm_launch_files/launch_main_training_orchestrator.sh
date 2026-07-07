@@ -12,7 +12,7 @@ CMD=(python "${SCRIPT_DIR}/main_training_orchestrator.py"
 	--v_lr 2e-5
 	--ego_value_head_lr 999e999
 	--player Guile
-	--opponent-list Ryu Sagat Vega Blanka Chunli Zangief Ken Dhalsim EHonda Guile Balrog MBison
+	--opponent-list Ryu Sagat Vega # Blanka Chunli Zangief Ken Dhalsim EHonda Guile Balrog MBison
 	--main_training_steps 150000000
 	#--dry-run
 )

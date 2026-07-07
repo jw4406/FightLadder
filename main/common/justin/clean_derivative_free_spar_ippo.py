@@ -47,6 +47,8 @@ class CleanDerivativeFreeSPARIPPO(CleanDerivativeFreeSPAR):
         run_adv_forward: bool = True,
         zero_ego_action: bool = False,
         zero_adv_action: bool = False,
+        random_ego_action: bool = False,
+        random_adv_action: bool = False,
     ) -> bool:
         _ = time.time()
         _ = [Image.fromarray(env.render(mode="rgb_array"))]
@@ -208,7 +210,7 @@ class CleanDerivativeFreeSPARIPPO(CleanDerivativeFreeSPAR):
         if update_ego and not update_adversary:
             original_evaluate_states = self.policy.evaluate_states
 
-            def _evaluate_ego_values(obs, buf_num=None, env_indices=None):
+            def _evaluate_ego_values(obs, buf_num=None, env_indices=None, side_flag=None):
                 return self.policy.evaluate_ego_values(obs)
 
             self.policy.evaluate_states = _evaluate_ego_values

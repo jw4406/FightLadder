@@ -483,7 +483,7 @@ def main() -> None:
         if len(set(reduced_state_list)) ==1:
             index = full_state_list.index(reduced_state_list[0])
             ego_is_left = index < len(full_state_list) // 2
-            vals = np.zero(n_envs, dtype=np.float32) if ego_is_left else np.ones(n_envs, dtype=np.float32)
+            vals = np.zeros(n_envs, dtype=np.float32) if ego_is_left else np.ones(n_envs, dtype=np.float32)
             return th.tensor(vals, device=model.device).unsqueeze(1), 1.0 - th.tensor(vals, device=model.device).unsqueeze(1)
         if use_mirror:
             halfway = len(full_state_list) // 2
