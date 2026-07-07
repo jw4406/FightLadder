@@ -905,6 +905,14 @@ def main(args):
                 model_file = torch.load(model_file, map_location=torch.device('cpu'))["kwargs"]["agent_dict"]
             finetune_model.set_parameters(model_file)
         print("model generated")
+        finetune_model.model_arch_type = model_arch_type
+        # Ego value-head LR: only ippo/2timescale build a dedicated ego_value_optimizer.
+        # Guarded (arch check + hasattr) so CDS/spar models -- which have no such
+        # optimizer -- never touch it and never fail on a missing attribute.
+        if model_arch_type in ("ippo", "2timescale") and hasattr(finetune_model.policy, "ego_value_optimizer"):
+            for _pg in finetune_model.policy.ego_value_optimizer.param_groups:
+                _pg["lr"] = args.ego_value_head_lr
+            print(f"[ippo] ego_value_optimizer lr set to {args.ego_value_head_lr}", flush=True)
         return finetune_model
 
     #finetune_epoch_model_path = os.path.join(args.save_dir, args.model_name_prefix + f"_final_steps")
@@ -1069,6 +1077,11 @@ if __name__ == "__main__":
     parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-4, required=True)
     parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=7e-4, required=True)
     parser.add_argument("--v_lr", type=float, help="value learning rate", default=7e-4, required=True)
+    # Ego value-head LR. Conditionally required (see validation after parse_args):
+    # REQUIRED for --model_arch_type ippo/2timescale, optional (ignored) otherwise.
+    parser.add_argument("--ego_value_head_lr", type=float, default=None, required=False,
+                        help="Ego value-head learning rate. REQUIRED for --model_arch_type "
+                             "ippo/2timescale; optional and ignored for spar/other.")
     parser.add_argument("--training_batch_size", type=int, help="Training batch size", default=256, required=True)
     parser.add_argument("--checkpoint_interval", type=int, help="Checkpoint interval", default=10000, required=True)
     parser.add_argument("--save_dir", type=str, help="Save directory", default="trained_models/ippo", required=True)
@@ -1114,6 +1127,12 @@ if __name__ == "__main__":
     #parser.add_argument('--num_adversary', type=int, help='Number of adversaries', default=1)
     #parser.add_argument('--n_global_env', type=int, help='Number of global environments', default=1)
     args = parser.parse_args()
+    # ego_value_head_lr is required for arch types that have a dedicated ego value
+    # head (ippo/2timescale); optional otherwise.
+    if args.model_arch_type in ("ippo", "2timescale") and args.ego_value_head_lr is None:
+        parser.error(
+            "--ego_value_head_lr is required when --model_arch_type is 'ippo' or '2timescale'"
+        )
     args.use_wandb = args.use_wandb == 'True'
     if not args.use_wandb:
         os.environ["WANDB_DISABLED"] = "true"

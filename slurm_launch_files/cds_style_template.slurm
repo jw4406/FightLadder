@@ -49,6 +49,9 @@ ENV_BATCH_SIZE="24"
 C_LR="1e-5"
 D_LR="2e-5"
 V_LR="4e-4"
+# Ego value-head LR. Leave empty for spar (optional/ignored). The orchestrator
+# sets this for ippo/2timescale runs, where ippo.py requires it.
+EGO_VALUE_HEAD_LR=""
 NUM_PERTURBS="10"
 USE_MIRROR="False"
 EGO_SIDE="left"
@@ -138,6 +141,12 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --stagnation_lr_factor "${STAGNATION_LR_FACTOR}"
         --stagnation_lr_patience "${STAGNATION_LR_PATIENCE}"
     )
+
+    # Only pass ego value-head LR when set (ippo/2timescale). Omitted for spar,
+    # where ippo.py treats it as optional.
+    if [ -n "${EGO_VALUE_HEAD_LR}" ]; then
+        CMD+=( --ego_value_head_lr "${EGO_VALUE_HEAD_LR}" )
+    fi
 
     if [ "${RUN_LIVE}" = "False" ]; then
         nohup "${CMD[@]}" > "${LOGS_DIR}/ippo_worker_${i}.log" 2>&1 &
