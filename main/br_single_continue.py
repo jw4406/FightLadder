@@ -153,6 +153,7 @@ def main() -> None:
         manual_stop_file=cfg.get("manual_stop_file"),
         manual_stop_key=cfg.get("manual_stop_key"),
         launch_local_br_eval=cfg.get("launch_local_br_eval", True),
+        periodic_eval_freq=cfg.get("periodic_eval_freq", 5_000_000),
         use_wandb=cfg.get("use_wandb", False),
         is_league=is_league,
         league_matchup_states=args.league_matchup_states,

@@ -166,6 +166,20 @@ def build_parser() -> argparse.ArgumentParser:
     # unprefixed filename format.
     parser.add_argument("--training_style", type=str, default="")
     parser.add_argument(
+        "--filename_suffix",
+        type=str,
+        default="",
+        help="If set, this string is sanitized and injected into the "
+             "reward .txt filename just before the trailing '_.txt'. "
+             "Used by the BR worker's periodic-eval callback to keep "
+             "mid-training snapshots (every N env-steps) from "
+             "overwriting each other or the final eval. Format the "
+             "caller uses: 'brstep<N>_<YYYYMMDDTHHMMSS>'. Empty "
+             "(default) preserves the legacy filename — the final "
+             "post-learn() eval call leaves this empty so it lands at "
+             "the canonical filename the aggregator parses.",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="cuda",
@@ -232,6 +246,7 @@ def main() -> None:
     # we re-apply to guard against direct CLI invocations).
     args.output_subdir = _sanitize_for_filename(args.output_subdir or "")
     args.training_style = _sanitize_for_filename(args.training_style or "")
+    args.filename_suffix = _sanitize_for_filename(args.filename_suffix or "")
 
     main_checkpoint_model_path = args.main_checkpoint_model_path
     done_model_checkpoint_path = args.done_model_checkpoint_path
@@ -622,10 +637,17 @@ def main() -> None:
     # to plot continue and dedicated as separate series and to keep
     # replicates as separate scatter points.
     exp_type = "dedicated" if args.dedicated_exploiter else "continue"
+    # Optional periodic-eval suffix: when the BR worker's periodic
+    # callback invokes us mid-training, it passes a sanitized string
+    # like "brstep5000000_20260616T143055" which gets inserted between
+    # the br index and the trailing "_.txt". Empty for the final eval
+    # so canonical filenames remain unchanged (and the aggregator
+    # regex keeps matching).
+    suffix_part = f"{args.filename_suffix}_" if args.filename_suffix else ""
     filename = (
         f"{style_prefix}{model.num_timesteps}_main_{main_side}_{main_name}_"
         f"exploiter_{exploiter_side}_{exploiter_name}_"
-        f"{exp_type}_br{args.br_index}_.txt"
+        f"{exp_type}_br{args.br_index}_{suffix_part}.txt"
     )
     with open(os.path.join(br_rewards_folder, filename), "w") as f:
         f.write(str(np.mean(exploiter_rewards)))

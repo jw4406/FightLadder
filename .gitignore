@@ -45,3 +45,4 @@ main/br_rewards/*
 main/br_rewards
 main/main/videos/*
 main/main/videos
+main/elo_data/elo_history.jsonl

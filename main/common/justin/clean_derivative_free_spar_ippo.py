@@ -48,7 +48,7 @@ class CleanDerivativeFreeSPARIPPO(CleanDerivativeFreeSPAR):
         zero_ego_action: bool = False,
         zero_adv_action: bool = False,
         random_ego_action: bool = False,
-        random_adv_action: bool = False,
+        random_adv_action: bool = False
     ) -> bool:
         _ = time.time()
         _ = [Image.fromarray(env.render(mode="rgb_array"))]
@@ -83,6 +83,8 @@ class CleanDerivativeFreeSPARIPPO(CleanDerivativeFreeSPAR):
                     adv_forward=run_adv_forward,
                     zero_ego_action=zero_ego_action,
                     zero_adv_action=zero_adv_action,
+                    random_ego_action=random_ego_action,
+                    random_adv_action=random_adv_action
                 )
                 ego_entropy_sum += float((-ego_log_probs.detach()).mean().item())
                 adv_entropy_sum += float((-adv_log_probs.detach()).mean().item())

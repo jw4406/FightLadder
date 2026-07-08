@@ -166,7 +166,7 @@ class CleanDerivativeFreeSPAR(PPO):
             vtrace_enabled: bool = False,
             vtrace_replay_capacity: int = 200_000,
             vtrace_seq_len: Optional[int] = None,
-            vtrace_batch_size: int = 32,
+            vtrace_batch_size: int = 256,
             vtrace_rho_bar: float = 1.0,
             vtrace_c_bar: float = 1.0,
             vtrace_keep_onpolicy_value: bool = True,

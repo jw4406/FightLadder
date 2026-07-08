@@ -317,9 +317,23 @@ class RatingStagnationTracker:
         current_reward: Optional[float] = None,
         current_kl: Optional[float] = None,
     ) -> Tuple[bool, Optional[Dict[str, float]]]:
+        # NOTE: This tracker no longer makes early-stop decisions. All
+        # stagnation / EMA-velocity / slope / entropy-window logic was
+        # removed. The method now only:
+        #   * gates calls by eval_games (preserves caller pacing),
+        #   * records entropy/reward/KL into the per-signal histories the
+        #     local plot helpers consume,
+        #   * triggers the three local plot writers,
+        #   * returns (False, logs) so callers' `if should_stop:` branches
+        #     are effectively dead code.
+        # The `lr_adjustment_callback`, `use_velocity_signal`,
+        # `use_entropy_signal`, `entropy_stop_ratio`, `entropy_ratio_only`,
+        # `use_slope_early_stop`, `patience`, `slope_*`, `entropy_window_*`,
+        # and `entropy_warmup_*` knobs are now no-ops; they remain in
+        # __init__ only so existing callers continue to work without
+        # signature changes. Manual stop-key (STOP_<key>) files still
+        # work — that's a separate mechanism in ManualStopFileCallback.
         ratings = np.asarray(ratings, dtype=np.float64)
-        if not self.enabled():
-            return False, None
         if ratings.size == 0:
             return False, None
         if self.games_since_eval < self.eval_games:
@@ -327,240 +341,41 @@ class RatingStagnationTracker:
 
         rating_movements = np.abs(ratings - self.last_eval_ratings)
         mean_velocity = float(np.mean(rating_movements))
-        entropy_loss = float(current_entropy) if current_entropy is not None else 0.0
-        velocity_component = mean_velocity if self.use_velocity_signal else 0.0
-        entropy_component = entropy_loss * self.entropy_weight if self.use_entropy_signal else 0.0
-        metric = velocity_component + entropy_component
-
         self.num_checks += 1
         self.last_velocity = mean_velocity
-        self.last_metric = metric
 
-        if self.ema_metric is None:
-            self.ema_metric = metric
-            self.ema_abs_metric = abs(metric)
-        else:
-            beta = self.ema_beta
-            self.ema_metric = beta * self.ema_metric + (1.0 - beta) * metric
-            self.ema_abs_metric = beta * self.ema_abs_metric + (1.0 - beta) * abs(metric)
-
-        dynamic_improvement_threshold = max(
-            self.tolerance,
-            self.rel_tolerance * max(self.ema_abs_metric, self.eps),
-        )
-        self.dynamic_threshold = dynamic_improvement_threshold
-        # Use EMA-smoothed metric for slope detection to reduce rollout noise.
-        slope_signal_value = float(self.ema_metric if self.ema_metric is not None else metric)
-        self.metric_history.append(slope_signal_value)
-
-        slope = None
-        normalized_slope = None
-        slope_ready = len(self.metric_history) >= self.slope_window
-        slope_is_flat = False
-        if slope_ready:
-            slope, normalized_slope = self._compute_normalized_slope(
-                np.asarray(self.metric_history, dtype=np.float64),
-                scale=float(self.ema_abs_metric if self.ema_abs_metric is not None else metric),
-            )
-            slope_is_flat = normalized_slope <= self.slope_tolerance
-        self.last_metric_slope = slope
-        self.last_metric_slope_normalized = normalized_slope
-        self.last_slope_is_flat = slope_is_flat if slope_ready else False
-
-        entropy_window_ready = False
-        entropy_window_avg = None
-        entropy_window_ratio = None
-        entropy_window_stop = False
-        entropy_stability_stop = False
-        entropy_signal_slope = None
-        entropy_signal_slope_normalized = None
-        entropy_signal_slope_is_flat = False
-        entropy_slope_ready = False
-        if self.use_entropy_signal and current_entropy is not None:
-            current_entropy = float(current_entropy)
+        # Entropy: record raw + EMA-smoothed values regardless of
+        # use_entropy_signal so the local entropy plot always has data.
+        if current_entropy is not None:
+            current_entropy_f = float(current_entropy)
             if self.entropy_ema is None:
-                self.entropy_ema = current_entropy
-                self.ema_abs_entropy = abs(current_entropy)
-                self.ema_abs_entropy_dev = 0.0
-                self.last_entropy_tolerance = max(
-                    self.tolerance,
-                    self.rel_tolerance * max(self.ema_abs_entropy, self.eps),
-                )
-                self.last_entropy_is_stable = False
+                self.entropy_ema = current_entropy_f
             else:
-                (
-                    self.entropy_ema,
-                    self.ema_abs_entropy,
-                    self.ema_abs_entropy_dev,
-                    entropy_tolerance,
-                    entropy_is_stable,
-                ) = self._update_ema_stability_state(
-                    current_entropy,
-                    self.entropy_ema,
-                    self.ema_abs_entropy if self.ema_abs_entropy is not None else abs(self.entropy_ema),
-                    self.ema_abs_entropy_dev if self.ema_abs_entropy_dev is not None else 0.0,
+                self.entropy_ema = (
+                    self.ema_beta * self.entropy_ema
+                    + (1.0 - self.ema_beta) * current_entropy_f
                 )
-                self.last_entropy_tolerance = entropy_tolerance
-                self.last_entropy_is_stable = bool(entropy_is_stable)
-            if self.entropy_start is None:
-                self.entropy_start = max(float(self.entropy_ema), self.eps)
             t = float(self.num_checks if timestep is None else timestep)
             self.entropy_timestep_history.append(t)
-            self.entropy_raw_history.append(current_entropy)
+            self.entropy_raw_history.append(current_entropy_f)
             self.entropy_ema_history.append(float(self.entropy_ema))
-            self.entropy_history.append(float(self.entropy_ema))
-            self.entropy_smoothed_history.append(float(self.entropy_ema))
-            entropy_window_ready = len(self.entropy_smoothed_history) >= self.entropy_window_size
-            if entropy_window_ready:
-                entropy_window_avg = float(np.mean(np.asarray(self.entropy_smoothed_history, dtype=np.float64)))
-                entropy_window_ratio = entropy_window_avg / max(float(self.entropy_start), self.eps)
-                entropy_window_stop = entropy_window_ratio <= self.entropy_stop_ratio
-            self.last_within_entropy_warmup = self.num_checks <= self.entropy_warmup_checks
 
-            entropy_slope_ready = len(self.entropy_history) >= self.slope_window
-            if entropy_slope_ready:
-                entropy_signal_slope, entropy_signal_slope_normalized = self._compute_normalized_slope(
-                    np.asarray(self.entropy_history, dtype=np.float64),
-                    scale=float(self.ema_abs_entropy if self.ema_abs_entropy is not None else abs(current_entropy)),
-                )
-                entropy_signal_slope_is_flat = (
-                    float(entropy_signal_slope_normalized) <= self.slope_tolerance
-                )
-
-            self.last_entropy_signal_slope = entropy_signal_slope
-            self.last_entropy_signal_slope_normalized = entropy_signal_slope_normalized
-            self.last_entropy_signal_slope_is_flat = (
-                entropy_signal_slope_is_flat if entropy_slope_ready else False
-            )
-
-            if not self.last_within_entropy_warmup:
-                if self.use_slope_early_stop and entropy_slope_ready and self.num_checks >= self.min_slope_checks and entropy_signal_slope_is_flat:
-                    entropy_stability_stop = True
-                else:
-                    if bool(self.last_entropy_is_stable):
-                        self.entropy_stable_checks += 1
-                    else:
-                        self.entropy_stable_checks = 0
-                    if self.entropy_stable_checks >= self.patience:
-                        entropy_stability_stop = True
-        else:
-            self.last_entropy_tolerance = None
-            self.last_entropy_is_stable = True
-            self.last_within_entropy_warmup = self.num_checks <= self.entropy_warmup_checks
-            self.entropy_stable_checks = 0
-            self.last_entropy_signal_slope = None
-            self.last_entropy_signal_slope_normalized = None
-            self.last_entropy_signal_slope_is_flat = False
-        self.last_entropy_window_avg = entropy_window_avg
-        self.last_entropy_window_ratio = entropy_window_ratio
-        self.last_entropy_window_stop = entropy_window_stop
-        self.last_entropy_stability_stop = entropy_stability_stop
-
-        if metric < (self.best_metric - dynamic_improvement_threshold):
-            self.best_metric = metric
-            self.wait_count = 0
-        else:
-            self.wait_count += 1
-            if (
-                lr_adjustment_callback is not None
-                and self.lr_patience > 0
-                and self.wait_count % self.lr_patience == 0
-            ):
-                lr_adjustment_callback()
-
-        self.games_since_eval = 0
-        self.last_eval_ratings = np.copy(ratings)
-
-        logs = {
-            "stag/velocity": mean_velocity,
-            "stag/velocity_component": velocity_component,
-            "stag/metric": metric,
-            "stag/entropy": entropy_loss,
-            "stag/entropy_component": entropy_component,
-            "stag/use_vel_stag": float(bool(self.use_velocity_signal)),
-            "stag/use_ent_stag": float(bool(self.use_entropy_signal)),
-            "stag/threshold": dynamic_improvement_threshold,
-            "stag/wait_count": float(self.wait_count),
-            "stag/patience": float(self.patience),
-            "stag/num_checks": float(self.num_checks),
-            "stag/use_slope_stop": float(bool(self.use_slope_early_stop)),
-            "stag/slope_window": float(self.slope_window),
-            "stag/slope_tol": float(self.slope_tolerance),
-            "stag/min_slope_checks": float(self.min_slope_checks),
-            "stag/slope": float(slope) if slope is not None else float("nan"),
-            "stag/slope_norm": (
-                float(normalized_slope) if normalized_slope is not None else float("nan")
-            ),
-            "stag/slope_is_flat": float(bool(self.last_slope_is_flat)),
-            "stag/ent_ema": (
-                float(self.entropy_ema) if self.entropy_ema is not None else float("nan")
-            ),
-            "stag/ent_start": (
-                float(self.entropy_start) if self.entropy_start is not None else float("nan")
-            ),
-            "stag/ent_tol": (
-                float(self.last_entropy_tolerance)
-                if self.last_entropy_tolerance is not None
-                else float("nan")
-            ),
-            "stag/ent_is_stable": float(bool(self.last_entropy_is_stable)),
-            "stag/ent_warmup_checks": float(self.entropy_warmup_checks),
-            "stag/ent_within_warmup": float(bool(self.last_within_entropy_warmup)),
-            "stag/ent_stable_checks": float(self.entropy_stable_checks),
-            "stag/ent_stability_stop": float(bool(entropy_stability_stop)),
-            "stag/ent_slope": (
-                float(entropy_signal_slope) if entropy_signal_slope is not None else float("nan")
-            ),
-            "stag/ent_slope_norm": (
-                float(entropy_signal_slope_normalized)
-                if entropy_signal_slope_normalized is not None
-                else float("nan")
-            ),
-            "stag/ent_slope_is_flat": float(bool(self.last_entropy_signal_slope_is_flat)),
-            "stag/ent_win_size": float(self.entropy_window_size),
-            "stag/ent_stop_ratio": float(self.entropy_stop_ratio),
-            "stag/ent_win_ready": float(bool(entropy_window_ready)),
-            "stag/ent_win_avg": (
-                float(entropy_window_avg) if entropy_window_avg is not None else float("nan")
-            ),
-            "stag/ent_win_ratio": (
-                float(entropy_window_ratio) if entropy_window_ratio is not None else float("nan")
-            ),
-            "stag/ent_win_stop": float(bool(entropy_window_stop)),
-            "stag/ent_ratio_only": float(bool(self.entropy_ratio_only)),
-        }
-        if self.use_slope_early_stop:
-            base_should_stop = bool(slope_ready and self.num_checks >= self.min_slope_checks and slope_is_flat)
-        else:
-            base_should_stop = self.wait_count >= self.patience
-
+        # Reward: same shape, drives the local reward plot.
         if current_reward is not None:
-            current_reward = float(current_reward)
+            current_reward_f = float(current_reward)
             if self.ema_reward is None:
-                self.ema_reward = current_reward
-                self.ema_abs_reward = abs(current_reward)
-                self.ema_abs_reward_dev = 0.0
+                self.ema_reward = current_reward_f
             else:
-                (
-                    self.ema_reward,
-                    self.ema_abs_reward,
-                    self.ema_abs_reward_dev,
-                    _reward_tol,
-                    _reward_is_stable,
-                ) = self._update_ema_stability_state(
-                    current_reward,
-                    self.ema_reward,
-                    self.ema_abs_reward if self.ema_abs_reward is not None else abs(self.ema_reward),
-                    self.ema_abs_reward_dev if self.ema_abs_reward_dev is not None else 0.0,
+                self.ema_reward = (
+                    self.ema_beta * self.ema_reward
+                    + (1.0 - self.ema_beta) * current_reward_f
                 )
             reward_t = float(self.num_checks if timestep is None else timestep)
             self.reward_timestep_history.append(reward_t)
-            self.reward_raw_history.append(float(current_reward))
+            self.reward_raw_history.append(current_reward_f)
             self.reward_ema_history.append(float(self.ema_reward))
 
-        # KL divergence (e.g., PPO's train/approx_kl) -- recorded alongside
-        # entropy/reward when the caller supplies it. Same EMA smoothing as
-        # entropy. No effect on early-stopping logic; this is observability.
+        # KL: same shape, drives the local KL plot.
         if current_kl is not None:
             try:
                 kl_val = float(current_kl)
@@ -570,20 +385,39 @@ class RatingStagnationTracker:
                 if self.kl_ema is None:
                     self.kl_ema = kl_val
                 else:
-                    self.kl_ema = self.ema_beta * self.kl_ema + (1.0 - self.ema_beta) * kl_val
+                    self.kl_ema = (
+                        self.ema_beta * self.kl_ema
+                        + (1.0 - self.ema_beta) * kl_val
+                    )
                 kl_t = float(self.num_checks if timestep is None else timestep)
                 self.kl_timestep_history.append(kl_t)
                 self.kl_raw_history.append(kl_val)
                 self.kl_ema_history.append(float(self.kl_ema))
 
-        if self.entropy_ratio_only:
-            should_stop = bool(entropy_window_stop)
-        else:
-            should_stop = bool(base_should_stop or entropy_stability_stop or entropy_window_stop)
-        self._save_local_entropy_plot(force=should_stop)
-        self._save_local_reward_plot(force=should_stop)
-        self._save_local_kl_plot(force=should_stop)
-        return should_stop, logs
+        self.games_since_eval = 0
+        self.last_eval_ratings = np.copy(ratings)
+
+        logs = {
+            "stag/velocity": mean_velocity,
+            "stag/entropy": (
+                float(current_entropy) if current_entropy is not None else float("nan")
+            ),
+            "stag/ent_ema": (
+                float(self.entropy_ema) if self.entropy_ema is not None else float("nan")
+            ),
+            "stag/reward_ema": (
+                float(self.ema_reward) if self.ema_reward is not None else float("nan")
+            ),
+            "stag/kl_ema": (
+                float(self.kl_ema) if self.kl_ema is not None else float("nan")
+            ),
+            "stag/num_checks": float(self.num_checks),
+        }
+
+        self._save_local_entropy_plot(force=False)
+        self._save_local_reward_plot(force=False)
+        self._save_local_kl_plot(force=False)
+        return False, logs
 
 class BRConvergenceTracker:
     def __init__(
