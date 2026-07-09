@@ -3,15 +3,15 @@
 #SBATCH --nodes=1                # node count
 #SBATCH --ntasks=1               # total number of tasks across all nodes
 #SBATCH --cpus-per-task=8      # cpu-cores per task (>1 if multi-threaded tasks)
-#SBATCH --mem-per-cpu=9G        # memory per cpu-core (4G is default)
+#SBATCH --mem-per-cpu=4G        # memory per cpu-core (4G is default)
 #SBATCH --gres=gpu:1
-#SBATCH --time=120:30:00          # total run time limit (HH:MM:SS)
+#SBATCH --time=72:00:00          # total run time limit (HH:MM:SS)
 #SBATCH --mail-type=begin        # send email when job begins
 #SBATCH --mail-type=end          # send email when job ends
 #SBATCH --mail-user=jw4406@princeton.edu
 echo $CUDA_VISIBLE_DEVICES
 JOBID=$SLURM_JOB_ID
-WORKDIR=/scratch/gpfs/FISAC/jw4406/
+WORKDIR=/n/fs/magics/
 mkdir -p $WORKDIR/$JOBID
 #cd /n/fs/magics/2415498/FightLadder
 cd $WORKDIR/$JOBID
@@ -20,7 +20,20 @@ cp -r $HOME/FightLadder/ ./
 echo "copy op successful"
 cd FightLadder/
 module purge
-module load anaconda3/2024.2
+# >>> conda initialize >>>
+# !! Contents within this block are managed by 'conda init' !!
+__conda_setup="$('/usr/local/anaconda3/2024.02/bin/conda' 'shell.bash' 'hook' 2> /dev/null)"
+if [ $? -eq 0 ]; then
+    eval "$__conda_setup"
+else
+    if [ -f "/usr/local/anaconda3/2024.02/etc/profile.d/conda.sh" ]; then
+        . "/usr/local/anaconda3/2024.02/etc/profile.d/conda.sh"
+    else
+        export PATH="/usr/local/anaconda3/2024.02/bin:$PATH"
+    fi
+fi
+unset __conda_setup
+# <<< conda initialize <<<
 conda activate fightladder
 echo "fightladder environment activated"
 # options: my_pendulum, my_half_cheetah, my_hopper, my_ant
@@ -51,7 +64,7 @@ D_LR="2e-5"
 V_LR="2e-5"
 # Ego value-head LR. Leave empty for spar (optional/ignored). The orchestrator
 # sets this for ippo/2timescale runs, where ippo.py requires it.
-EGO_VALUE_HEAD_LR="999e999"
+EGO_VALUE_HEAD_LR="1e-5"
 NUM_PERTURBS="10"
 USE_MIRROR="False"
 EGO_SIDE="left"
@@ -63,10 +76,10 @@ EGO_SIDE="left"
 SAVE_DIR="$WORKDIR/$JOBID/FightLadder/main/trained_models/tasks/todo/"
 USE_LR_ANNEALING="False"
 LR_ANNEAL_COEFF=".995"
-CHECKPOINT_INTERVAL="1000"
+CHECKPOINT_INTERVAL="50000"
 TOTAL_TIMESTEPS="150000000"
-TRAINING_BATCH_SIZE="256"
-NUM_ENV_STEPS="512"
+TRAINING_BATCH_SIZE="512"
+NUM_ENV_STEPS="1024"
 EGO_STYLE="learning"
 ADV_STYLE="learning"
 ENVS_PER_MATCHUP="2"

@@ -6,12 +6,14 @@
 set -euo pipefail
 
 LAUNCH_DEDICATED='True'
-LAUNCH_CONTINUE='True'
-STEP_STRIDE=10000  # 0 = process all tasks; e.g. 40000 = only every 40k steps (matches ws)
-BR_TRAINING_STEPS=10000000  # total .learn() timesteps per BR job
+LAUNCH_CONTINUE='False'
+LAUNCH_LOCAL_BR_EVAL='True'  # forwarded to both orchestrators via --launch_local_br_eval
+PERIODIC_EVAL_FREQ=500000   # env-steps between mid-training local_br_eval snapshots (PeriodicLocalBREvalCallback)
+STEP_STRIDE=0  # 0 = process all tasks; e.g. 40000 = only every 40k steps (matches ws)
+BR_TRAINING_STEPS=1000000000  # total .learn() timesteps per BR job
 
-WORKDIR=/scratch/gpfs/FISAC/jw4406
-MAIN_TRAINING_DIR=7500763
+WORKDIR=/n/fs/magics
+MAIN_TRAINING_DIR=3454769
 # The repo is rsync'd into scratch alongside MAIN_TRAINING_DIR; orchestrators,
 # templates, and runners all live under it. Match ws_launch_files pattern.
 REPO_DIR="$HOME/FightLadder"
@@ -32,9 +34,11 @@ DEDICATED_CMD=(
     --done_dir "$TASK_BASE/slurm_done"
     --stop_file "$TASK_BASE/STOP_SLURM"
     --local_plot_dir "$WORKDIR/$MAIN_TRAINING_DIR/FightLadder/logs/local_entropy_plots"
-    --slurm_log_dir /home/jw4406
+    --slurm_log_dir /u/jw4406/
     --step_stride "$STEP_STRIDE"
     --br_training_steps "$BR_TRAINING_STEPS"
+    --launch_local_br_eval "$LAUNCH_LOCAL_BR_EVAL"
+    --periodic_eval_freq "$PERIODIC_EVAL_FREQ"
     #--dry_run True
 )
 
@@ -59,9 +63,11 @@ CONTINUE_CMD=(
     --done_dir "$TASK_BASE/slurm_done_continue"
     --stop_file "$TASK_BASE/STOP_SLURM_CONTINUE"
     --local_plot_dir "$WORKDIR/$MAIN_TRAINING_DIR/FightLadder/logs/local_entropy_plots_continue"
-    --slurm_log_dir /home/jw4406
+    --slurm_log_dir /u/jw4406/
     --step_stride "$STEP_STRIDE"
     --br_training_steps "$BR_TRAINING_STEPS"
+    --launch_local_br_eval "$LAUNCH_LOCAL_BR_EVAL"
+    --periodic_eval_freq "$PERIODIC_EVAL_FREQ"
     #--dry_run True
 )
 

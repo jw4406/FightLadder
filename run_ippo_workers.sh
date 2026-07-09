@@ -4,7 +4,7 @@
 NUM_WORKERS=1
 # If True, run each worker detached with nohup and log redirection.
 # If False, run without nohup in the current shell.
-RUN_LIVE="False"
+RUN_LIVE="True"
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -28,7 +28,7 @@ EGO_SIDE="left"
 # CONTINUE_TRAINING=""  # Optional: set this to pass --continue_training
 # LEFT_MODEL_FILE=""  # Optional: set this to pass --left-model-file
 # RIGHT_MODEL_FILE=""  # Optional: set this to pass --right-model-file
-SAVE_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/"
+SAVE_DIR="/u/jw4406/FightLadder/main/trained_models/tasks/todo/"
 USE_LR_ANNEALING="False"
 LR_ANNEAL_COEFF=".995"
 CHECKPOINT_INTERVAL="250000"

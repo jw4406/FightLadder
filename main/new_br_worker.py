@@ -191,6 +191,122 @@ class ManualStopFileCallback(BaseCallback):
         return True
 
 
+class PeriodicLocalBREvalCallback(BaseCallback):
+    """
+    Fire local_br_eval.py periodically during BR training so a crash
+    doesn't lose all eval data. Every `freq` env-steps, this callback
+    grabs the latest exploiter checkpoint saved by
+    ExploiterCheckpointCallback and invokes local_br_eval as a
+    subprocess with a `--filename_suffix` of "brstep<N>_<timestamp>"
+    so intermediate snapshots don't collide with each other or the
+    final post-learn() eval.
+
+    Used for BOTH dedicated and continue mode — the SB3 callback
+    machinery is honored by Exploiter.learn (dedicated) AND CDS's
+    learn loop (continue), so a single callback chained into
+    train_callback covers both paths.
+
+    Skips silently when no exploiter checkpoint has been saved yet
+    (first save happens at exploiter_save_freq env-steps). subprocess
+    invocation is blocking — at ~5M step cadence the few-minute eval
+    overhead is negligible vs hours-long training, and blocking
+    avoids parallel GPU contention from many concurrent local_br_eval
+    procs.
+    """
+
+    def __init__(
+        self,
+        freq: int,
+        script_path: str,
+        exploiter_callback,
+        eval_prot: bool,
+        main_checkpoint_path: str,
+        done_model_checkpoint_path: str,
+        full_state_list,
+        state_list,
+        from_scratch: bool,
+        br_index: int,
+        game_args,
+        device: str,
+        is_league: bool,
+        output_subdir: str,
+        training_style_fn,
+        verbose: int = 1,
+    ):
+        super().__init__(verbose=verbose)
+        self.freq = max(1, int(freq))
+        self.script_path = script_path
+        self.exploiter_callback = exploiter_callback
+        self.eval_prot = eval_prot
+        self.main_checkpoint_path = main_checkpoint_path
+        self.done_model_checkpoint_path = done_model_checkpoint_path
+        self.full_state_list = full_state_list
+        self.state_list = state_list
+        self.from_scratch = from_scratch
+        self.br_index = br_index
+        self.game_args = game_args
+        self.device = device
+        self.is_league = is_league
+        self.output_subdir = output_subdir
+        # training_style is a callable so we evaluate it lazily — the
+        # ftm class identity is locked in by the closure but the
+        # _worker_cds_arch attr may not exist until load_spar_model
+        # returns.
+        self.training_style_fn = training_style_fn
+        self._next_step = self.freq
+
+    def _on_step(self) -> bool:
+        cur = int(self.num_timesteps)
+        if cur < self._next_step:
+            return True
+        # Slide the gate forward unconditionally so a missing-checkpoint
+        # skip doesn't try to fire on every subsequent step.
+        self._next_step = cur + self.freq
+
+        latest_path = getattr(self.exploiter_callback, "model_path", None)
+        if not latest_path or not os.path.isfile(latest_path):
+            print(
+                f"[periodic local_br_eval] step={cur}: no exploiter "
+                f"checkpoint yet (path={latest_path!r}); skipping",
+                flush=True,
+            )
+            return True
+
+        suffix = f"brstep{cur}_{time.strftime('%Y%m%dT%H%M%S')}"
+        print(
+            f"[periodic local_br_eval] step={cur}: invoking eval with "
+            f"suffix={suffix}",
+            flush=True,
+        )
+        try:
+            subprocess.run(
+                [
+                    "python", self.script_path,
+                    "--eval_prot", str(self.eval_prot),
+                    "--main_checkpoint_model_path", self.main_checkpoint_path,
+                    "--done_model_checkpoint_path", self.done_model_checkpoint_path,
+                    "--br_checkpoint_model_path", latest_path,
+                    "--full_state_list", str(self.full_state_list),
+                    "--state_list", str(self.state_list),
+                    "--dedicated_exploiter", str(self.from_scratch),
+                    "--br_index", str(self.br_index),
+                    "--game_args", json.dumps(vars(self.game_args)),
+                    "--device", self.device,
+                    "--is_league", str(self.is_league),
+                    "--output_subdir", self.output_subdir,
+                    "--training_style", str(self.training_style_fn()),
+                    "--filename_suffix", suffix,
+                ],
+                check=False,
+            )
+        except Exception as exc:
+            print(
+                f"[periodic local_br_eval] step={cur}: subprocess error: {exc}",
+                flush=True,
+            )
+        return True
+
+
 def _dedupe_preserve_order(values: List[str]) -> List[str]:
     """Backward-compatible wrapper around br_preflight helper."""
     return dedupe_preserve_order(values)
@@ -1123,6 +1239,7 @@ def train_best_response(
     manual_stop_file: Optional[str] = None,
     manual_stop_key: Optional[str] = None,
     launch_local_br_eval: bool = False,
+    periodic_eval_freq: int = 5_000_000,
     use_wandb: bool = True,
     output_subdir: str = "",
     entropy_stop_ratio: float = 0.15,
@@ -1260,7 +1377,38 @@ def train_best_response(
     stop_file_path = str(manual_stop_file) if manual_stop_file is not None else default_stop_file
     os.makedirs(os.path.dirname(stop_file_path), exist_ok=True)
     manual_stop_callback = ManualStopFileCallback(stop_file=stop_file_path, stop_key=stop_key)
-    train_callback = CallbackList([exploiter_callback, manual_stop_callback])
+
+    _callbacks = [exploiter_callback, manual_stop_callback]
+    # Periodic mid-training local_br_eval: snapshot exploitability
+    # every PERIODIC_LOCAL_BR_EVAL_FREQ env-steps so a crashed run
+    # still leaves usable artifacts on disk. Only attach when the
+    # final-eval gate is on — `launch_local_br_eval=False` means the
+    # user doesn't want ANY eval invocations from this worker.
+    if launch_local_br_eval:
+        periodic_eval_callback = PeriodicLocalBREvalCallback(
+            freq=periodic_eval_freq,
+            script_path=os.path.join(current_dir, "local_br_eval.py"),
+            exploiter_callback=exploiter_callback,
+            eval_prot=eval_prot,
+            main_checkpoint_path=checkpoint_path,
+            done_model_checkpoint_path=done_model_checkpoint_path,
+            full_state_list=ftm.state_list,
+            state_list=effective_state_list,
+            from_scratch=from_scratch,
+            br_index=br_index,
+            game_args=game_args,
+            device=device,
+            is_league=isinstance(ftm, LeaguePPO),
+            output_subdir=output_subdir,
+            # Lazy-eval style at fire time — matches the final-eval
+            # arg computation below.
+            training_style_fn=lambda: (
+                "league" if isinstance(ftm, LeaguePPO)
+                else getattr(ftm, "_worker_cds_arch", "spar")
+            ),
+        )
+        _callbacks.append(periodic_eval_callback)
+    train_callback = CallbackList(_callbacks)
     print(
         f"Manual per-job stop configured: key={stop_key}, stop_file={stop_file_path}",
         flush=True,
@@ -1551,6 +1699,7 @@ def run_br_for_task_in_subprocess(
     manual_stop_file: Optional[str] = None,
     manual_stop_key: Optional[str] = None,
     launch_local_br_eval: bool = False,
+    periodic_eval_freq: int = 5_000_000,
     use_wandb: bool = True,
     is_league: bool = False,
     league_matchup_states: Optional[List[str]] = None,
@@ -1736,6 +1885,7 @@ def run_br_for_task_in_subprocess(
         manual_stop_file=manual_stop_file,
         manual_stop_key=manual_stop_key,
         launch_local_br_eval=launch_local_br_eval,
+        periodic_eval_freq=periodic_eval_freq,
         use_wandb=use_wandb,
         output_subdir=output_subdir,
         entropy_stop_ratio=entropy_stop_ratio,

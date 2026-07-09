@@ -594,6 +594,15 @@ def claim_task(
     folder = os.path.join(processing_dir, f"{task_filename}_folder")
     os.makedirs(folder, exist_ok=True)
     processing_path = os.path.join(folder, task_filename)
+    # Defensive: if the destination already exists, the task is already in
+    # flight (sweeper hasn't moved it to done yet). Re-claiming would either
+    # double-submit (fresh inodes) or no-op (same inode — POSIX rename(2)
+    # is a no-op when src/dst are hard links of the same file, which leaves
+    # todo_path in place and causes the orchestrator to spin re-claiming
+    # forever). Refuse the claim; the orchestrator will pick another task
+    # or sleep until this one is swept.
+    if os.path.exists(processing_path):
+        return None
     try:
         os.rename(todo_path, processing_path)
     except FileNotFoundError:
@@ -681,6 +690,7 @@ def build_shared_config(args: argparse.Namespace, manual_stop_file: Optional[str
         "manual_stop_file": manual_stop_file,
         "manual_stop_key": None,
         "launch_local_br_eval": args.launch_local_br_eval,
+        "periodic_eval_freq": args.periodic_eval_freq,
         "enable_local_kl_plot": args.enable_local_kl_plot,
         "use_wandb": args.use_wandb,
     }
@@ -867,6 +877,16 @@ def add_shared_arguments(parser: argparse.ArgumentParser, *, default_processing_
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--launch_local_br_eval", choices=["True", "False"], default="True")
+    parser.add_argument(
+        "--periodic_eval_freq",
+        type=int,
+        default=5_000_000,
+        help="Env-steps between mid-training local_br_eval snapshots "
+             "fired by PeriodicLocalBREvalCallback. The suffixed .txt "
+             "files (brstep<N>_<timestamp>) survive a crashed run so "
+             "you don't lose all eval data. Only takes effect when "
+             "--launch_local_br_eval is True.",
+    )
     parser.add_argument("--use_wandb", choices=["True", "False"], default="False")
     parser.add_argument("--enable_local_kl_plot", choices=["True", "False"], default="True",
                         help="Whether the BR Exploiter tracker writes "

@@ -18,6 +18,16 @@ FILENAME_RE = re.compile(
     r"(?P<timestep>\d+)_main_(?P<main_side>left|right)_(?P<main_char>[A-Za-z0-9]+)"
     r"_exploiter_(?P<exploiter_side>left|right)_(?P<exploiter_char>[A-Za-z0-9]+)"
     r"(?:_(?P<exp_type>continue|dedicated)_br(?P<br_idx>\d+))?"
+    # Optional periodic-snapshot suffix written by
+    # PeriodicLocalBREvalCallback in new_br_worker.py while a BR run is
+    # still in flight. Format: "_brstep<N>_<YYYYMMDDTHHMMSS>". When
+    # absent, the file is the canonical post-learn() final-eval output.
+    # The selector below prefers canonical files; periodic snapshots are
+    # only used as a fallback when no canonical exists for a bucket
+    # (i.e. the BR run never reached its final eval — crashed / still
+    # running). For periodic fallbacks, the latest snapshot (highest
+    # br_step) wins.
+    r"(?:_brstep(?P<br_step>\d+)_(?P<periodic_ts>\d{8}T\d{6}))?"
     r"_\.txt$"
 )
 
@@ -71,8 +81,14 @@ def _state_string(left_char, right_char):
 
 
 def _canonical_matchup(left_char, right_char):
-    a, b = sorted([left_char, right_char])
-    return f"{a}_vs_{b}"
+    # Keep physical left/right order from _matchup_from_record. Both
+    # directional samples of the same matchup (main_left + main_right)
+    # already resolve to the same (left_char, right_char) pair, so no
+    # alphabetical sort is needed to canonicalize. Preserving the on-screen
+    # order means main-training conventions like "Vega_left" surface as
+    # "Vega_vs_<adv>" in plot titles and file names, matching the
+    # "ego vs adversary" mental model.
+    return f"{left_char}_vs_{right_char}"
 
 
 def _parse_records(br_rewards_dir):
@@ -111,11 +127,73 @@ def _parse_records(br_rewards_dir):
         rec["exp_type"] = rec.get("exp_type") or ""
         br_idx_str = rec.get("br_idx")
         rec["br_idx"] = int(br_idx_str) if br_idx_str is not None else None
+        # Periodic-snapshot fields. br_step is the BR-side env-step count
+        # at which the snapshot was taken; periodic_ts is its wall-clock
+        # timestamp. Both None for canonical (final-eval) files.
+        br_step_str = rec.get("br_step")
+        rec["br_step"] = int(br_step_str) if br_step_str is not None else None
+        rec["periodic_ts"] = rec.get("periodic_ts") or None
         # Selfplay value populated later by _attach_selfplay_values once
         # the matching sibling folder is known.
         rec["selfplay_value"] = None
         records.append(rec)
     return records
+
+
+def _select_canonical_or_latest_periodic(records):
+    """
+    Collapse periodic-snapshot duplicates by picking, for each
+    (timestep, matchup_key, direction, exp_type, br_idx) bucket, the
+    single most authoritative record. Priority:
+
+      1. Canonical (br_step is None) — the post-learn() final eval —
+         wins over any periodic snapshot. This is what the canonical
+         pipeline emits when a BR run completes normally.
+      2. If no canonical exists, the periodic snapshot with the highest
+         br_step wins — i.e. the latest mid-training eval, closest to
+         where the run actually got. This is the crash-recovery path:
+         the BR run never reached its final eval, so we use the freshest
+         snapshot we have on disk.
+
+    Returns: list with one record per bucket. All downstream stages
+    (replicate averaging, selfplay attach, plotting) then treat the
+    selected records uniformly — they no longer have to know whether a
+    given value came from a canonical eval or a periodic surrogate.
+    """
+    grouped = defaultdict(list)
+    for rec in records:
+        key = (
+            rec["timestep"],
+            rec["matchup_key"],
+            rec["direction"],
+            rec["exp_type"] or "continue",
+            rec["br_idx"],
+        )
+        grouped[key].append(rec)
+
+    selected = []
+    n_canonical = 0
+    n_periodic_fallback = 0
+    n_periodic_dropped = 0
+    for _, group in grouped.items():
+        canonical = [r for r in group if r["br_step"] is None]
+        if canonical:
+            # Multiple canonical files for the same bucket shouldn't
+            # happen (same filename written twice) — pick the first.
+            selected.append(canonical[0])
+            n_canonical += 1
+            n_periodic_dropped += len(group) - len(canonical)
+        else:
+            latest = max(group, key=lambda r: r["br_step"])
+            selected.append(latest)
+            n_periodic_fallback += 1
+            n_periodic_dropped += len(group) - 1
+    if n_periodic_fallback or n_periodic_dropped:
+        print(
+            f"  [info] canonical={n_canonical} periodic-as-fallback="
+            f"{n_periodic_fallback} periodic-dropped={n_periodic_dropped}"
+        )
+    return selected
 
 
 def _aggregate_replicates(records):
@@ -418,96 +496,109 @@ def _plot_master(records, pairs_by_timestep_matchup, out_dir):
     return output_path
 
 
+def _plot_matchup_for_exp_type(m_records, matchup_key, exp_type, out_path):
+    """
+    Render ONE per-matchup figure scoped to a single BR exp_type
+    ("continue" or "dedicated"), with the matchup's selfplay average
+    drawn as an overlay so the BR curves are comparable to the
+    self-play baseline in either plot.
+
+    Records arriving here have already been replicate-averaged in
+    _process_run, so each (timestep, direction) bucket has exactly one
+    BR value for this exp_type.
+    """
+    marker_by_direction = {"main_left": "o", "main_right": "^"}
+    color_by_direction = {"main_left": "#1f77b4", "main_right": "#ff7f0e"}
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    m_records = sorted(m_records, key=lambda x: (x["timestep"], x["direction"]))
+
+    for direction in ("main_left", "main_right"):
+        d_recs = sorted(
+            (r for r in m_records
+             if r["direction"] == direction
+             and (r["exp_type"] or "continue") == exp_type),
+            key=lambda r: r["timestep"],
+        )
+        if not d_recs:
+            continue
+        xs = [r["timestep"] for r in d_recs]
+        ys = [r["value"] for r in d_recs]
+        color = color_by_direction[direction]
+        ax.plot(
+            xs,
+            ys,
+            color=color,
+            linestyle="-",
+            linewidth=1.4,
+            marker=marker_by_direction[direction],
+            markersize=5,
+            markerfacecolor=color,
+            markeredgecolor=color,
+            alpha=0.95,
+            label=f"{exp_type} {direction}",
+        )
+
+    # Selfplay overlay: ONE averaged line per matchup. The two
+    # direction-records at the same timestep are two samples of the same
+    # selfplay matchup, so we average them. Same overlay is drawn in
+    # both the continue plot and the dedicated plot so each can be read
+    # against the self-play baseline on its own.
+    sp_means = _compute_selfplay_means(m_records)
+    if sp_means:
+        sp_sorted = sorted(sp_means.items(), key=lambda kv: kv[0][0])
+        sp_xs = [k[0] for k, _ in sp_sorted]
+        sp_ys = [v for _, v in sp_sorted]
+        ax.plot(
+            sp_xs,
+            sp_ys,
+            marker="s",
+            color="#555555",
+            linewidth=1.2,
+            markersize=5,
+            alpha=0.85,
+            linestyle="--",
+            markerfacecolor="none",
+            label="selfplay (avg of directions)",
+        )
+
+    ax.set_title(f"Local BR Eval ({exp_type}): {matchup_key}")
+    ax.set_xlabel("Timestep")
+    ax.set_ylabel("Reward")
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="best", fontsize=8)
+
+    fig.savefig(out_path, dpi=600, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _plot_per_matchup(records, out_dir):
+    """
+    For every (matchup, exp_type) combination present in *records*, emit
+    one PNG. So a matchup that has both continue and dedicated runs
+    produces two files; one with only one exp_type produces just one.
+    Selfplay overlay is drawn in every plot so each BR curve set can be
+    read against the same self-play baseline.
+    """
     paths = []
     records_by_matchup = defaultdict(list)
     for rec in records:
         records_by_matchup[rec["matchup_key"]].append(rec)
 
-    marker_by_direction = {"main_left": "o", "main_right": "^"}
-    color_by_direction = {"main_left": "#1f77b4", "main_right": "#ff7f0e"}
-    # Continue and dedicated share the per-direction color but differ by
-    # line style and marker fill — gives a consistent "left = blue, right
-    # = orange" reading across the two exploiter types without needing a
-    # 4-color palette.
-    linestyle_by_exp = {"continue": "-", "dedicated": "--"}
-
     style = _dominant_style(records)
     name_prefix = f"{style}_" if style else ""
 
     for matchup_key, m_records in sorted(records_by_matchup.items()):
-        fig, ax = plt.subplots(figsize=(10, 6))
-        m_records = sorted(m_records, key=lambda x: (x["timestep"], x["direction"]))
-
-        # Four BR series: (continue, dedicated) × (main_left, main_right).
-        # Records arriving here have already been replicate-averaged in
-        # _process_run, so each (timestep, direction, exp_type) bucket has
-        # exactly one value. We plot a single line per series, marker
-        # filled (continue) or hollow (dedicated). Legacy records without
-        # an explicit exp_type are bucketed as "continue" by the
-        # aggregator.
         for exp_type in ("continue", "dedicated"):
-            for direction in ("main_left", "main_right"):
-                d_recs = sorted(
-                    (r for r in m_records
-                     if r["direction"] == direction
-                     and (r["exp_type"] or "continue") == exp_type),
-                    key=lambda r: r["timestep"],
-                )
-                if not d_recs:
-                    continue
-                xs = [r["timestep"] for r in d_recs]
-                ys = [r["value"] for r in d_recs]
-                color = color_by_direction[direction]
-                marker = marker_by_direction[direction]
-                ax.plot(
-                    xs,
-                    ys,
-                    color=color,
-                    linestyle=linestyle_by_exp[exp_type],
-                    linewidth=1.4,
-                    marker=marker,
-                    markersize=5,
-                    markerfacecolor=("none" if exp_type == "dedicated" else color),
-                    markeredgecolor=color,
-                    alpha=0.95,
-                    label=f"{exp_type} {direction}",
-                )
-
-        # Selfplay overlay: ONE averaged line per matchup. The two
-        # direction-records at the same timestep are two samples of the
-        # same selfplay matchup, so we average them. Drawn dashed in a
-        # neutral color so it doesn't compete with the per-direction BR
-        # colors. Skipped silently when no selfplay data exists.
-        sp_means = _compute_selfplay_means(m_records)
-        if sp_means:
-            sp_sorted = sorted(sp_means.items(), key=lambda kv: kv[0][0])
-            sp_xs = [k[0] for k, _ in sp_sorted]
-            sp_ys = [v for _, v in sp_sorted]
-            ax.plot(
-                sp_xs,
-                sp_ys,
-                marker="s",
-                color="#555555",
-                linewidth=1.2,
-                markersize=5,
-                alpha=0.85,
-                linestyle="--",
-                markerfacecolor="none",
-                label="selfplay (avg of directions)",
+            has_records = any(
+                (r["exp_type"] or "continue") == exp_type for r in m_records
             )
-
-        ax.set_title(f"Local BR Eval: {matchup_key}")
-        ax.set_xlabel("Timestep")
-        ax.set_ylabel("Reward")
-        ax.grid(True, alpha=0.25)
-        ax.legend(loc="best", fontsize=8)
-
-        out_name = f"{name_prefix}matchup_{matchup_key}.png"
-        out_path = os.path.join(out_dir, out_name)
-        fig.savefig(out_path, dpi=600, bbox_inches="tight")
-        plt.close(fig)
-        paths.append(out_path)
+            if not has_records:
+                continue
+            out_name = f"{name_prefix}matchup_{matchup_key}_{exp_type}.png"
+            out_path = os.path.join(out_dir, out_name)
+            _plot_matchup_for_exp_type(m_records, matchup_key, exp_type, out_path)
+            paths.append(out_path)
 
     return paths
 
@@ -536,10 +627,19 @@ def _process_run(input_dir, output_dir, label, selfplay_dir=None):
     selfplay_paired = _attach_selfplay_values(records, selfplay_dir)
     raw_count = len(records)
 
-    # Collapse replicates: multiple (br_idx) files for the same (timestep,
-    # matchup, direction, exp_type) get averaged into one record. Plotters
-    # downstream then see one point per (timestep, matchup, direction,
-    # exp_type) instead of N separate replicates.
+    # Step 1: per-bucket selector. For each (timestep, matchup, direction,
+    # exp_type, br_idx), keep the canonical (post-learn() final) record
+    # if it exists; otherwise fall back to the latest periodic snapshot.
+    # Without this, periodic-snapshot files (written every N env-steps by
+    # PeriodicLocalBREvalCallback while the BR run is mid-flight) would
+    # never plot — when no final-eval file exists yet, this pass surfaces
+    # the freshest mid-training value so plots aren't empty.
+    records = _select_canonical_or_latest_periodic(records)
+
+    # Step 2: replicate averaging. Multiple (br_idx) records for the same
+    # (timestep, matchup, direction, exp_type) get averaged into one
+    # record. Plotters downstream then see one point per (timestep,
+    # matchup, direction, exp_type) instead of N separate replicates.
     records = _aggregate_replicates(records)
 
     pairs = _build_pairs(records)
