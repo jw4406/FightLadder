@@ -14,6 +14,9 @@ CMD=(python "${SCRIPT_DIR}/main_training_orchestrator.py"
 	--player Guile
 	--opponent-list Ryu Sagat Vega # Blanka Chunli Zangief Ken Dhalsim EHonda Guile Balrog MBison
 	--main_training_steps 150000000
+	--time 001:00:00
+	--workdir /scratch/gpfs/FISAC/jw4406/
+	--checkpoint_interval 50000
 	#--dry-run
 )
 

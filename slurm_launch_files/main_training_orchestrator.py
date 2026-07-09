@@ -31,18 +31,23 @@ def _bash_array(values) -> str:
 
 def _render(text: str, arch_type: str, c_lr: str, d_lr: str, v_lr: str,
             players, opponents, main_training_steps: str,
-            ego_value_head_lr: str = None) -> str:
+            ego_value_head_lr: str = None,
+            sbatch_time: str = None, workdir: str = None,
+            checkpoint_interval: str = None) -> str:
     jobname = f"{arch_type}_{_concat_short(players)}_{_concat_short(opponents)}"
 
     subs = [
         (r"(?m)^(#SBATCH --job-name=)\S+", rf"\g<1>{jobname}"),
+        (r"(?m)^(#SBATCH --time=)\S+", rf"\g<1>{sbatch_time}"),
         (r"(?m)^PLAYER=\(.*\)$", f"PLAYER=({_bash_array(players)})"),
         (r"(?m)^OPPONENTS=\(.*\)$", f"OPPONENTS=({_bash_array(opponents)})"),
+        (r"(?m)^WORKDIR=\S+$", f"WORKDIR={workdir}"),
         (r'(?m)^C_LR=".*"$', f'C_LR="{c_lr}"'),
         (r'(?m)^D_LR=".*"$', f'D_LR="{d_lr}"'),
         (r'(?m)^V_LR=".*"$', f'V_LR="{v_lr}"'),
         (r'(?m)^MODEL_ARCH_TYPE=".*"$', f'MODEL_ARCH_TYPE="{arch_type}"'),
         (r'(?m)^TOTAL_TIMESTEPS=".*"$', f'TOTAL_TIMESTEPS="{main_training_steps}"'),
+        (r'(?m)^CHECKPOINT_INTERVAL=".*"$', f'CHECKPOINT_INTERVAL="{checkpoint_interval}"'),
     ]
 
     for pattern, repl in subs:
@@ -100,6 +105,12 @@ def parse_args():
                    help="One or more opponent character names.")
     p.add_argument("--main_training_steps", required=True,
                    help="Value to substitute for TOTAL_TIMESTEPS in the template.")
+    p.add_argument("--time", required=True, dest="sbatch_time",
+                   help="SLURM walltime (HH:MM:SS) for #SBATCH --time in the template.")
+    p.add_argument("--workdir", required=True,
+                   help="Scratch WORKDIR path substituted into the template.")
+    p.add_argument("--checkpoint_interval", required=True,
+                   help="CHECKPOINT_INTERVAL substituted into the template.")
     p.add_argument("--dry-run", action="store_true",
                    help="Generate scripts but skip sbatch submission.")
     return p.parse_args()
@@ -138,6 +149,9 @@ def main():
             opponents=args.opponent_list,
             main_training_steps=args.main_training_steps,
             ego_value_head_lr=args.ego_value_head_lr,
+            sbatch_time=args.sbatch_time,
+            workdir=args.workdir,
+            checkpoint_interval=args.checkpoint_interval,
         )
         out_path = _output_path(
             template_path, arch_type, args.c_lr, args.d_lr, args.v_lr,
