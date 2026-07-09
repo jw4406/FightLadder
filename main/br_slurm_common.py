@@ -77,7 +77,10 @@ def load_template_config(path: str) -> Dict[str, str]:
             m = re.match(r"^#SBATCH\s+--(\S+?)=(.+)$", line)
             if m:
                 key = _SBATCH_TO_ARG.get(m.group(1))
-                if key:
+                # Skip render-time placeholders (e.g. --time={{SBATCH_TIME}}):
+                # they are substituted by render_template_sbatch, not config
+                # defaults. Mirrors the KEY="val" branch's `{{` guard below.
+                if key and "{{" not in m.group(2):
                     config[key] = m.group(2).strip()
                 continue
 

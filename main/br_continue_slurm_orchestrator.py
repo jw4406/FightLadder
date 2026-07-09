@@ -185,6 +185,7 @@ def _process_task(
                 python_cmd=python_cmd,
                 extra_sbatch_lines=extra_sbatch_lines,
                 extra_placeholders={
+                    "SBATCH_TIME": args.slurm_time,
                     "WS_WORKDIR": args.workdir,
                     "MAIN_TRAINING_DIR": args.main_training_dir,
                     "WS_REPO_DIR": os.path.dirname(

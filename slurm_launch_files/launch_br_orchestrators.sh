@@ -11,6 +11,8 @@ LAUNCH_LOCAL_BR_EVAL='True'  # forwarded to both orchestrators via --launch_loca
 PERIODIC_EVAL_FREQ=500000   # env-steps between mid-training local_br_eval snapshots (PeriodicLocalBREvalCallback)
 STEP_STRIDE=0  # 0 = process all tasks; e.g. 40000 = only every 40k steps (matches ws)
 BR_TRAINING_STEPS=1000000000  # total .learn() timesteps per BR job
+SLURM_TIME=001:00:00  # #SBATCH --time for each BR sbatch (HH:MM:SS)
+EXPLOITER_SAVE_FREQ=50000  # env-steps between BR exploiter checkpoints
 
 WORKDIR=/n/fs/magics
 MAIN_TRAINING_DIR=3454769
@@ -37,6 +39,8 @@ DEDICATED_CMD=(
     --slurm_log_dir /u/jw4406/
     --step_stride "$STEP_STRIDE"
     --br_training_steps "$BR_TRAINING_STEPS"
+    --slurm_time "$SLURM_TIME"
+    --exploiter_save_freq "$EXPLOITER_SAVE_FREQ"
     --launch_local_br_eval "$LAUNCH_LOCAL_BR_EVAL"
     --periodic_eval_freq "$PERIODIC_EVAL_FREQ"
     #--dry_run True
@@ -66,6 +70,8 @@ CONTINUE_CMD=(
     --slurm_log_dir /u/jw4406/
     --step_stride "$STEP_STRIDE"
     --br_training_steps "$BR_TRAINING_STEPS"
+    --slurm_time "$SLURM_TIME"
+    --exploiter_save_freq "$EXPLOITER_SAVE_FREQ"
     --launch_local_br_eval "$LAUNCH_LOCAL_BR_EVAL"
     --periodic_eval_freq "$PERIODIC_EVAL_FREQ"
     #--dry_run True
