@@ -14,6 +14,7 @@ Usage examples:
 
 import argparse
 import os
+import pickle as _pickle
 import random
 import sys
 from types import SimpleNamespace
@@ -37,9 +38,11 @@ import torch as th
 from stable_baselines3.common.save_util import load_from_zip_file
 from stable_baselines3.common.utils import obs_as_tensor
 
+from common.algorithms import LeaguePPO
 from common.justin.clean_derivative_free_spar import CleanDerivativeFreeSPAR
 from common.justin.clean_derivative_free_spar_ippo import CleanDerivativeFreeSPARIPPO
 from ippo import env_generator
+from utils import agent_win, state2matchup
 from copy import deepcopy
 
 from new_br_worker import (
@@ -174,6 +177,22 @@ def _write_frame(container, stream, frame_np: np.ndarray) -> None:
     frame = av.VideoFrame.from_ndarray(frame_np, format="rgb24")
     for packet in stream.encode(frame):
         container.mux(packet)
+
+
+def _open_video_writer(output_path: str, first_frame: np.ndarray, fps: int):
+    """Open a PyAV container + mpeg4 stream sized to *first_frame*.
+
+    Shared by both the single-model visualization loop and the duel loop.
+    Returns (container, stream); the caller is responsible for flushing
+    (stream.encode()) and closing the container.
+    """
+    h, w = int(first_frame.shape[0]), int(first_frame.shape[1])
+    container = av.open(output_path, mode="w")
+    stream = container.add_stream("mpeg4", rate=fps)
+    stream.width = w
+    stream.height = h
+    stream.pix_fmt = "yuv420p"
+    return container, stream
 
 
 def _filter_state_dict_keys(agent_dict: dict, prefix: str) -> dict:
@@ -391,13 +410,350 @@ def _step_action(model, obs, model_type: str, device) -> np.ndarray:
     return np.hstack([ego_action.cpu().numpy(), adv_action.cpu().numpy()])
 
 
+# ---------------------------------------------------------------------------
+# Duel mode (ported from duel.py).
+#
+# Loads two independently-specified models (possibly different families),
+# routes each forward pass to the matchup-specific head for (ego_char,
+# adv_char), plays N rounds of a single matchup, counts ego wins, AND records
+# the video. Ego is locked to the left side; adv to the right. Triggered from
+# main() when --ego_model_file / --adv_model_file are supplied.
+# ---------------------------------------------------------------------------
+
+MODEL_TYPES = ["league", "spar", "ippo", "2timescale"]
+
+# Canonical character names matching state-file naming (e.g. EHonda, ChunLi).
+CHARACTERS = [
+    "Ryu", "EHonda", "Blanka", "Guile", "Balrog", "Vega",
+    "Ken", "ChunLi", "Zangief", "Dhalsim", "Sagat", "MBison",
+]
+
+SPAR_FAMILY = {"spar", "ippo", "2timescale"}
+
+
+def resolve_device(spec):
+    if spec == "auto":
+        return "cuda" if th.cuda.is_available() else "cpu"
+    return spec
+
+
+def _duel_env_args():
+    """Fixed env config for duel mode (mirrors duel.py.env_args): single
+    matchup, no rendering flag, combos enabled, side='both'."""
+    return argparse.Namespace(
+        side="both",
+        reset="round",
+        render=False,
+        enable_combo=True,
+        null_combo=False,
+        transform_action=False,
+    )
+
+
+def spar_class_for(model_type):
+    if model_type == "spar":
+        return CleanDerivativeFreeSPAR
+    if model_type in ("ippo", "2timescale"):
+        return CleanDerivativeFreeSPARIPPO
+    raise ValueError(f"Not a SPAR-family type: {model_type}")
+
+
+def load_spar_family(model_type, path, device):
+    """Load a SPAR/IPPO/2timescale checkpoint and return (model, matchups)."""
+    cls = spar_class_for(model_type)
+    data, _, _ = load_from_zip_file(path, device="cpu")
+    state_list = data["state_list"]
+    env = env_generator(_duel_env_args(), STATE=state_list)
+    model = cls.load(path, env=env, num_perturbed=1, device=device)
+    matchups = list(getattr(model, "matchups", []) or [])
+    if not matchups:
+        # Defensive: fall back to deriving from state_list if attribute missing.
+        matchups = [state2matchup(s) for s in state_list]
+    return model, matchups
+
+
+class _LenientUnpickler(_pickle.Unpickler):
+    # League .task files were pickled with references to the training script's
+    # __main__ (e.g. train_ma.py's `constructor` closure, plus `agent`/`payoff`
+    # objects from the running league). We only need `agent_dict`, so missing
+    # names get resolved to inert stubs instead of raising AttributeError.
+    def find_class(self, module, name):
+        try:
+            return super().find_class(module, name)
+        except (AttributeError, ModuleNotFoundError):
+            stub = type("_Stub", (), {
+                "__init__": lambda self, *a, **kw: None,
+                "__reduce__": lambda self: (object, ()),
+            })
+            stub.__name__ = name
+            stub.__module__ = module
+            return stub
+
+
+class _LenientPickleModule:
+    Unpickler = _LenientUnpickler
+
+    @staticmethod
+    def load(file, **kwargs):
+        return _LenientUnpickler(file, **kwargs).load()
+
+
+def load_league_agent_dict(path):
+    """League checkpoints are torch-save style: {cls_name, kwargs:{agent_dict:{...}}}."""
+    obj = th.load(path, map_location="cpu", pickle_module=_LenientPickleModule)
+    if not isinstance(obj, dict) or "kwargs" not in obj or "agent_dict" not in obj["kwargs"]:
+        raise ValueError(
+            f"League checkpoint {path} is not in the expected "
+            f"torch-save format with kwargs/agent_dict."
+        )
+    return obj["kwargs"]["agent_dict"]
+
+
+def build_league_model(duel_state, device):
+    """Construct a fresh LeaguePPO with a single-env vec for inference."""
+    env = env_generator(_duel_env_args(), STATE=[duel_state])
+    return LeaguePPO(
+        side="left",
+        policy="CnnPolicy",
+        env=env,
+        device=device,
+        verbose=0,
+        n_steps=512,
+        batch_size=1024,
+        n_epochs=4,
+        gamma=0.94,
+        learning_rate=1e-4,
+        clip_range=0.1,
+        other_learning_rate=1e-4,
+    )
+
+
+def filter_left_keys(agent_dict):
+    return {k: v for k, v in agent_dict.items()
+            if k == "policy" or k.startswith("policy.")}
+
+
+def filter_right_keys(agent_dict):
+    return {k: v for k, v in agent_dict.items()
+            if k == "policy_other" or k.startswith("policy_other.")}
+
+
+def resolve_head_idx(matchups, matchup_key):
+    if matchup_key in matchups:
+        return matchups.index(matchup_key)
+    if len(matchups) == 1:
+        return 0
+    raise ValueError(
+        f"Model has no head trained for matchup '{matchup_key}'. "
+        f"Available matchups: {matchups}"
+    )
+
+
+def make_spar_ego_action_fn(model, deterministic):
+    """Ego head is shared across matchups; no buf_num needed."""
+    @th.no_grad()
+    def _act(obs_t):
+        actions, _ = model.policy.ego_forward(obs_t, deterministic=deterministic)
+        return actions.cpu().numpy()
+    return _act
+
+
+def make_spar_adv_action_fn(model, head_idx, deterministic):
+    @th.no_grad()
+    def _act(obs_t):
+        actions, _ = model.policy.adv_forward(
+            obs_t, buf_num=[head_idx], deterministic=deterministic
+        )
+        return actions.cpu().numpy()
+    return _act
+
+
+def make_league_action_fn(model, side, deterministic):
+    policy = model.policy if side == "left" else model.policy_other
+
+    @th.no_grad()
+    def _act(obs_t):
+        # LeaguePPO's underlying CnnPolicy.predict() takes numpy.
+        obs_np = obs_t.cpu().numpy() if isinstance(obs_t, th.Tensor) else obs_t
+        actions, _ = policy.predict(obs_np, deterministic=deterministic)
+        return actions
+    return _act
+
+
+def _validate_duel_args(parser, args) -> None:
+    required = {
+        "--ego_model_file": args.ego_model_file,
+        "--adv_model_file": args.adv_model_file,
+        "--ego_model_type": args.ego_model_type,
+        "--adv_model_type": args.adv_model_type,
+        "--ego_char": args.ego_char,
+        "--adv_char": args.adv_char,
+        "--num_rounds": args.num_rounds,
+    }
+    missing = [k for k, v in required.items() if v in (None, "")]
+    if missing:
+        parser.error("duel mode requires: " + " ".join(missing))
+
+
+def run_duel(args) -> None:
+    """Head-resolved N-round duel between two models, with win-rate + video.
+
+    Mirrors duel.py's loading/head-resolution/round logic, but also opens a
+    PyAV writer and records every step, and derives a default output path.
+    """
+    if args.ego_side != "left":
+        raise ValueError("Ego must be on the left side. --ego_side right is not allowed.")
+    for path, label in [(args.ego_model_file, "ego"), (args.adv_model_file, "adv")]:
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"{label} model file not found: {path}")
+
+    deterministic = args.deterministic == "True"
+    device = resolve_device(args.device)
+
+    matchup_key = f"{args.ego_char}Vs{args.adv_char}"
+    duel_state = (
+        f"two_player/{args.ego_char}_left/"
+        f"Champion.Level1.{args.ego_char}Vs{args.adv_char}.2Player.state"
+    )
+
+    same_file = args.ego_model_file == args.adv_model_file
+    if same_file and args.ego_model_type != args.adv_model_type:
+        raise ValueError(
+            "Same file passed for ego and adv but model types differ. "
+            "A single checkpoint cannot be two different model architectures."
+        )
+
+    # ---- Load ego model & adv model ----
+    if same_file:
+        if args.ego_model_type in SPAR_FAMILY:
+            ego_model, ego_matchups = load_spar_family(
+                args.ego_model_type, args.ego_model_file, device
+            )
+            adv_model = ego_model
+            adv_matchups = ego_matchups
+        else:  # league
+            ego_model = build_league_model(duel_state, device)
+            agent_dict = load_league_agent_dict(args.ego_model_file)
+            ego_model.set_parameters(agent_dict, exact_match=False, device=device)
+            adv_model = ego_model
+            ego_matchups = adv_matchups = []
+    else:
+        if args.ego_model_type in SPAR_FAMILY:
+            ego_model, ego_matchups = load_spar_family(
+                args.ego_model_type, args.ego_model_file, device
+            )
+        else:
+            ego_model = build_league_model(duel_state, device)
+            ego_dict = load_league_agent_dict(args.ego_model_file)
+            ego_model.set_parameters(filter_left_keys(ego_dict),
+                                     exact_match=False, device=device)
+            ego_matchups = []
+
+        if args.adv_model_type in SPAR_FAMILY:
+            adv_model, adv_matchups = load_spar_family(
+                args.adv_model_type, args.adv_model_file, device
+            )
+        else:
+            adv_dict = load_league_agent_dict(args.adv_model_file)
+            if args.ego_model_type == "league":
+                ego_model.set_parameters(filter_right_keys(adv_dict),
+                                         exact_match=False, device=device)
+                adv_model = ego_model
+            else:
+                adv_model = build_league_model(duel_state, device)
+                adv_model.set_parameters(filter_right_keys(adv_dict),
+                                         exact_match=False, device=device)
+            adv_matchups = []
+
+    # ---- Resolve heads (SPAR family only) ----
+    if args.ego_model_type in SPAR_FAMILY:
+        ego_head_idx = resolve_head_idx(ego_matchups, matchup_key)
+        ego_act = make_spar_ego_action_fn(ego_model, deterministic)
+    else:
+        ego_head_idx = None
+        ego_act = make_league_action_fn(ego_model, "left", deterministic)
+
+    if args.adv_model_type in SPAR_FAMILY:
+        adv_head_idx = resolve_head_idx(adv_matchups, matchup_key)
+        adv_head_idx = adv_head_idx // adv_model.envs_per_matchup
+        adv_act = make_spar_adv_action_fn(adv_model, adv_head_idx, deterministic)
+    else:
+        adv_head_idx = None
+        adv_act = make_league_action_fn(adv_model, "right", deterministic)
+
+    # ---- Build the duel env (single, non-vec) ----
+    duel_env = env_generator(_duel_env_args(), STATE=[duel_state])
+
+    # ---- Resolve output video path ----
+    if not args.output_video:
+        args.output_video = os.path.join(
+            "main", "videos",
+            f"duel_{args.ego_model_type}_{args.ego_char}_vs_"
+            f"{args.adv_model_type}_{args.adv_char}.mp4",
+        )
+    os.makedirs(os.path.dirname(os.path.abspath(args.output_video)), exist_ok=True)
+
+    ego_device = (ego_model.device if hasattr(ego_model, "device") else device)
+    adv_device = (adv_model.device if hasattr(adv_model, "device") else device)
+
+    print(
+        f"\nDuel: ego={args.ego_model_type}({args.ego_char}, head={ego_head_idx}) "
+        f"vs adv={args.adv_model_type}({args.adv_char}, head={adv_head_idx})  "
+        f"matchup={matchup_key}  rounds={args.num_rounds}  "
+        f"shared_instance={same_file}"
+    )
+    print(f"Recording duel video to: {args.output_video}")
+
+    # ---- Run rounds (record video + count wins) ----
+    obs = duel_env.reset()
+    first = _first_frame(duel_env.render(mode="rgb_array"))
+    container, stream = _open_video_writer(args.output_video, first, args.fps)
+    _write_frame(container, stream, first)
+
+    wins = 0
+    for r in range(1, args.num_rounds + 1):
+        obs = duel_env.reset()
+        done = False
+        info = {}
+        while not done:
+            obs_ego = obs_as_tensor(obs, ego_device)
+            obs_adv = obs_as_tensor(obs, adv_device) if adv_model is not ego_model else obs_ego
+            left_action = ego_act(obs_ego)
+            right_action = adv_act(obs_adv)
+            obs, _reward, _reward_other, done, info = duel_env.step(
+                np.hstack([left_action, right_action])
+            )
+            _write_frame(container, stream, _first_frame(duel_env.render(mode="rgb_array")))
+        info = info[0]
+        ego_won = bool(agent_win(info))
+        wins += int(ego_won)
+        print(
+            f"  round {r}/{args.num_rounds}: ego_won={ego_won}  "
+            f"ego_hp={info.get('agent_hp')}  adv_hp={info.get('enemy_hp')}"
+        )
+
+    for packet in stream.encode():
+        container.mux(packet)
+    container.close()
+    duel_env.close()
+
+    win_rate = wins / args.num_rounds
+    print(
+        f"\nfinal: ego_win_rate={win_rate:.4f}  ({wins}/{args.num_rounds})  "
+        f"matchup={matchup_key}  ego={args.ego_model_type}@{os.path.basename(args.ego_model_file)}  "
+        f"adv={args.adv_model_type}@{os.path.basename(args.adv_model_file)}"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--model_source",
         type=str,
-        required=True,
-        help="Path to a model file, or a directory to sample a random model from.",
+        required=False,
+        default="",
+        help="[visualize mode] Path to a model file, or a directory to sample "
+             "a random model from. Required unless duel-mode args are given.",
     )
     parser.add_argument(
         "--output_video",
@@ -427,10 +783,44 @@ def main() -> None:
     parser.add_argument("--null_combo", choices=["True", "False"], default="False")
     parser.add_argument("--transform_action", choices=["True", "False"], default="False")
 
+    # ---- Duel mode (ported from duel.py). When --ego_model_file /
+    #      --adv_model_file are supplied, the script runs a head-resolved
+    #      N-round duel between two (possibly cross-family) models, counting
+    #      ego wins AND recording the video, instead of the single-model
+    #      visualization above. ----
+    parser.add_argument("--ego_model_type", choices=MODEL_TYPES, default=None,
+                        help="[duel mode] Architecture family of the ego (left) model.")
+    parser.add_argument("--adv_model_type", choices=MODEL_TYPES, default=None,
+                        help="[duel mode] Architecture family of the adversary (right) model.")
+    parser.add_argument("--ego_model_file", type=str, default=None,
+                        help="[duel mode] Absolute path to the ego model checkpoint.")
+    parser.add_argument("--adv_model_file", type=str, default=None,
+                        help="[duel mode] Absolute path to the adversary model checkpoint.")
+    parser.add_argument("--ego_char", choices=CHARACTERS, default=None,
+                        help="[duel mode] Protagonist character (left side).")
+    parser.add_argument("--adv_char", choices=CHARACTERS, default=None,
+                        help="[duel mode] Antagonist character (right side).")
+    parser.add_argument("--num_rounds", type=int, default=None,
+                        help="[duel mode] Number of rounds (episodes) to play.")
+    parser.add_argument("--deterministic", choices=["True", "False"], default="False",
+                        help="[duel mode] Deterministic action selection.")
+    parser.add_argument("--ego_side", choices=["left", "right"], default="left",
+                        help="[duel mode] Ego side (must be 'left'; right is rejected).")
+
     args = parser.parse_args()
     np.random.seed(args.seed)
     random.seed(args.seed)
     th.manual_seed(args.seed)
+
+    # Dispatch: duel mode when either duel model file is provided.
+    if args.ego_model_file or args.adv_model_file:
+        _validate_duel_args(parser, args)
+        run_duel(args)
+        return
+
+    if not args.model_source:
+        parser.error("visualize mode requires --model_source (or pass duel-mode "
+                     "args: --ego_model_file/--adv_model_file/...).")
 
     model_path = _resolve_model_path(args.model_source, seed=args.seed)
     model_type = _detect_model_type(model_path, device=args.device)
@@ -470,12 +860,7 @@ def main() -> None:
 
     obs = env.reset()
     first = _first_frame(env.render(mode="rgb_array"))
-    h, w = int(first.shape[0]), int(first.shape[1])
-    container = av.open(args.output_video, mode="w")
-    stream = container.add_stream("mpeg4", rate=args.fps)
-    stream.width = w
-    stream.height = h
-    stream.pix_fmt = "yuv420p"
+    container, stream = _open_video_writer(args.output_video, first, args.fps)
 
     episodes_done = 0
     episode_steps = 0
