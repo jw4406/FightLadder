@@ -14,6 +14,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 DRY_RUN="True"
 PHASE="both"                             # train | br | both
+DISCOVER="False"                         # with PHASE=br: BR every existing lr_sweep/<tag> tree (ignores the grid)
 CLUSTER="neuronic"                       # neuronic | della
 WORKDIR="/scratch/gpfs/FISAC/jw4406/"    # scratch WORKDIR
 PLAYER=(Vega)
@@ -58,4 +59,5 @@ CMD=(
     --br_slurm_time "${BR_SLURM_TIME}"
     --dry_run "${DRY_RUN}"
 )
+if [ "${DISCOVER}" = "True" ]; then CMD+=(--discover); fi
 "${CMD[@]}"

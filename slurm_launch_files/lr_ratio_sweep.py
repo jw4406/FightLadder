@@ -29,6 +29,7 @@ SAFETY: ``--dry_run True`` (default) renders the .slurm files and prints the
 exact ``sbatch`` commands, but submits nothing. Inspect, then ``--dry_run False``.
 """
 import argparse
+import glob
 import os
 import re
 import subprocess
@@ -72,6 +73,25 @@ def compute_configs(c_lr, d_mults, v_mults, max_v_lr):
                 "m_d": m_d, "m_v": m_v, "tag": f"md{m_d:g}_mv{m_v:g}",
                 "c_lr": c_lr, "d_lr": d_lr, "v_lr": v_lr,
             })
+    return configs, skipped
+
+
+def discover_configs(workdir):
+    """Scan $WORKDIR/lr_sweep/<tag>/.../tasks for existing training trees and
+    return one {"tag": ...} per tree, ignoring the LR grid. Skips trees that
+    already have a slurm_processing dir (an orchestrator already ran there).
+    Must run where $WORKDIR is mounted (i.e. on the cluster)."""
+    root = os.path.join(workdir.rstrip("/"), "lr_sweep")
+    pattern = os.path.join(root, "*", "FightLadder", "main", "trained_models", "tasks")
+    configs, skipped = [], []
+    for tasks in sorted(glob.glob(pattern)):
+        if not os.path.isdir(tasks):
+            continue
+        tag = os.path.relpath(tasks, root).split(os.sep)[0]
+        if os.path.isdir(os.path.join(tasks, "slurm_processing")):
+            skipped.append((tag, "slurm_processing exists (already being BR'd)"))
+            continue
+        configs.append({"tag": tag})
     return configs, skipped
 
 
@@ -145,8 +165,10 @@ def parse_args():
     p.add_argument("--max_v_lr", type=float, default=1e-3,
                    help="Skip configs whose v_lr exceeds this (critic-stability guard).")
     # --- matchup / training ---
-    p.add_argument("--player", nargs="+", required=True, help="Protagonist(s).")
-    p.add_argument("--opponent_list", nargs="+", required=True, help="Opponent characters.")
+    p.add_argument("--player", nargs="+", default=None,
+                   help="Protagonist(s). Required for --phase train/both.")
+    p.add_argument("--opponent_list", nargs="+", default=None,
+                   help="Opponent characters. Required for --phase train/both.")
     p.add_argument("--main_training_steps", type=int, default=150_000_000)
     p.add_argument("--time", dest="sbatch_time", default="096:00:00",
                    help="#SBATCH --time for each training job (HH:MM:SS).")
@@ -169,6 +191,9 @@ def parse_args():
     p.add_argument("--slurm_log_dir", default=os.path.expanduser("~/"))
     # --- plumbing ---
     p.add_argument("--phase", choices=["train", "br", "both"], default="both")
+    p.add_argument("--discover", action="store_true",
+                   help="[--phase br] Ignore the grid; launch one orchestrator per existing "
+                        "$WORKDIR/lr_sweep/<tag> training tree. Run where $WORKDIR is mounted.")
     p.add_argument("--template", default=os.path.join(here, "cds_style_template.slurm"))
     p.add_argument("--br_job_template", default=os.path.join(here, "br_orchestrator_job_template.slurm"))
     p.add_argument("--out_dir", default=os.path.join(here, "generated_lr_sweep"),
@@ -181,26 +206,45 @@ def parse_args():
 def main():
     args = parse_args()
     dry_run = args.dry_run == "True"
+    if args.discover and args.phase != "br":
+        sys.exit("--discover is only valid with --phase br.")
+    if args.phase in ("train", "both") and not (args.player and args.opponent_list):
+        sys.exit("--player and --opponent_list are required for --phase train/both.")
 
-    configs, skipped = compute_configs(args.c_lr, args.d_mults, args.v_mults, args.max_v_lr)
-    if skipped:
-        print("Skipped configs:")
-        for m_d, m_v, why in skipped:
-            print(f"  md{m_d:g}_mv{m_v:g}: {why}")
-    if not configs:
-        sys.exit("No valid configs after applying c<d<v and max_v_lr guards.")
+    if args.discover:
+        configs, skipped = discover_configs(args.workdir)
+        if skipped:
+            print("Skipped (orchestrator already present):")
+            for tag, why in skipped:
+                print(f"  {tag}: {why}")
+        if not configs:
+            sys.exit(f"--discover found no training trees under "
+                     f"{args.workdir.rstrip('/')}/lr_sweep/ (is $WORKDIR mounted here? "
+                     "run this on the cluster).")
+    else:
+        configs, skipped = compute_configs(args.c_lr, args.d_mults, args.v_mults, args.max_v_lr)
+        if skipped:
+            print("Skipped configs:")
+            for m_d, m_v, why in skipped:
+                print(f"  md{m_d:g}_mv{m_v:g}: {why}")
+        if not configs:
+            sys.exit("No valid configs after applying c<d<v and max_v_lr guards.")
 
     train_tpl = open(args.template).read() if args.phase in ("train", "both") else None
     br_tpl = open(args.br_job_template).read() if args.phase in ("br", "both") else None
     os.makedirs(args.out_dir, exist_ok=True)
 
+    src = "discovered" if args.discover else f"c_lr={args.c_lr:g}"
     print(f"\n{'MODE: DRY-RUN (nothing submitted)' if dry_run else 'MODE: LIVE'} | "
-          f"phase={args.phase} | {len(configs)} configs | c_lr={args.c_lr:g}\n")
+          f"phase={args.phase} | {len(configs)} configs | {src}\n")
     for cfg in configs:
         tag = cfg["tag"]
         tree = f"{args.workdir.rstrip('/')}/lr_sweep/{tag}/FightLadder/main"
-        print(f"[{tag}] c={cfg['c_lr']:g} d={cfg['d_lr']:g} v={cfg['v_lr']:g}  "
-              f"(m_d={cfg['m_d']:g}, m_v={cfg['m_v']:g})")
+        if "c_lr" in cfg:
+            print(f"[{tag}] c={cfg['c_lr']:g} d={cfg['d_lr']:g} v={cfg['v_lr']:g}  "
+                  f"(m_d={cfg['m_d']:g}, m_v={cfg['m_v']:g})")
+        else:
+            print(f"[{tag}] (discovered training tree)")
 
         train_job_id = None
         if train_tpl is not None:
