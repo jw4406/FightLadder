@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=2timescale_Gu_RySa  # create a short name for your job
+#SBATCH --job-name=2timescale_GuVeBlChZaEH_RySaKeDhBaMB  # create a short name for your job
 #SBATCH --nodes=1                # node count
 #SBATCH --ntasks=1               # total number of tasks across all nodes
-#SBATCH --cpus-per-task=8      # cpu-cores per task (>1 if multi-threaded tasks)
-#SBATCH --mem-per-cpu=4G        # memory per cpu-core (4G is default)
+#SBATCH --cpus-per-task=72      # cpu-cores per task (>1 if multi-threaded tasks)
+#SBATCH --mem-per-cpu=2G        # memory per cpu-core (4G is default)
 #SBATCH --gres=gpu:1
-#SBATCH --time=000:45:00          # total run time limit (HH:MM:SS)
+#SBATCH --time=096:00:00          # total run time limit (HH:MM:SS)
 #SBATCH --mail-type=begin        # send email when job begins
 #SBATCH --mail-type=end          # send email when job ends
 #SBATCH --mail-user=jw4406@princeton.edu
@@ -55,16 +55,16 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 IPPO_PATH="$WORKDIR/$JOBID/FightLadder/main/ippo.py"
 
 # Arguments from launch.json (Python Debugger: ippo.py)
-PLAYER=("Guile")
-OPPONENTS=("Ryu" "Sagat")
+PLAYER=("Guile" "Vega" "Blanka" "ChunLi" "Zangief" "EHonda")
+OPPONENTS=("Ryu" "Sagat" "Ken" "Dhalsim" "Balrog" "MBison")
 NUM_ENV_TO_LOAD="1"
 ENV_BATCH_SIZE="24"
-C_LR="1e-5"
-D_LR="2e-5"
-V_LR="2e-5"
+C_LR="1e-6"
+D_LR="2e-6"
+V_LR="2e-6"
 # Ego value-head LR. Leave empty for spar (optional/ignored). The orchestrator
 # sets this for ippo/2timescale runs, where ippo.py requires it.
-EGO_VALUE_HEAD_LR="1e-5"
+EGO_VALUE_HEAD_LR="1e-6"
 NUM_PERTURBS="10"
 USE_MIRROR="False"
 EGO_SIDE="left"
@@ -76,8 +76,8 @@ EGO_SIDE="left"
 SAVE_DIR="$WORKDIR/$JOBID/FightLadder/main/trained_models/tasks/todo/"
 USE_LR_ANNEALING="False"
 LR_ANNEAL_COEFF=".995"
-CHECKPOINT_INTERVAL="10000"
-TOTAL_TIMESTEPS="99999"
+CHECKPOINT_INTERVAL="50000"
+TOTAL_TIMESTEPS="200000000"
 TRAINING_BATCH_SIZE="512"
 NUM_ENV_STEPS="1024"
 EGO_STYLE="learning"

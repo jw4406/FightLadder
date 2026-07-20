@@ -27,7 +27,7 @@ export MAIN_TRAINING_DIR
 cd "$REPO_DIR"
 
 module purge
-module load anaconda3/2024.02
+module load anaconda3/2024.2
 # >>> conda initialize >>>
 # !! Contents within this block are managed by 'conda init' !!
 __conda_setup="$('/usr/local/anaconda3/2024.02/bin/conda' 'shell.bash' 'hook' 2> /dev/null)"
