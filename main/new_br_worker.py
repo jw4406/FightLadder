@@ -63,12 +63,9 @@ if _workdir and _main_training_dir:
     _base_dir = os.path.join(_workdir, _main_training_dir, "FightLadder", "main")
 else:
     _base_dir = current_dir
-# SPAR_TASK_DIR lets a sweep isolate an entire task subtree per config
-# (todo/done/br_models) so concurrent runs never claim each other's tasks.
-# Defaults to the _base_dir location, so single-run behavior is unchanged.
-TASK_DIR = os.environ.get("SPAR_TASK_DIR", os.path.join(_base_dir, "trained_models/tasks"))
-DONE_DIR = os.path.join(TASK_DIR, "done")
-BR_MODEL_DIR = os.path.join(TASK_DIR, "br_models")
+TASK_DIR = os.path.join(_base_dir, "trained_models/tasks")
+DONE_DIR = os.path.join(_base_dir, "trained_models/tasks/done")
+BR_MODEL_DIR = os.path.join(_base_dir, "trained_models/tasks/br_models")
 #WR_STATS_DIR = os.path.join(current_dir, "main/trained_models/wr_stats")
 #MEAN_REW_STATS_DIR = os.path.join(current_dir, "main/trained_models/mean_rew_stats")
 os.makedirs(BR_MODEL_DIR, exist_ok=True)

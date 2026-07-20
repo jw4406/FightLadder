@@ -40,7 +40,7 @@ SAVE_FREQ = 10000  # Save a checkpoint every 10,000 steps
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 CHECKPOINT_DIR = os.path.join(current_dir, "main_checkpoints")
-TASK_DIR = os.environ.get("SPAR_TASK_DIR", os.path.join(current_dir, "trained_models/tasks"))
+TASK_DIR = os.path.join(current_dir, "trained_models/tasks")
 #print("#$%^&*()*&^%$#@$%^&*(&^%$#@"+ current_dir)
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 os.makedirs(TASK_DIR, exist_ok=True)
