@@ -60,6 +60,17 @@ TASK_BASE="$WORKDIR/$MAIN_TRAINING_DIR/FightLadder/main/trained_models/tasks"
 LOCAL_PLOT_DIR="$WORKDIR/$MAIN_TRAINING_DIR/FightLadder/logs/local_entropy_plots"
 mkdir -p "$LOCAL_PLOT_DIR"
 
+# Don't start polling until the training job has created the task dir. This
+# covers the brief window after training begins while it copies the repo /
+# writes its first checkpoint, complementing the sbatch --dependency=after:
+# gate (which the driver adds in --phase both). Bounded so a dead training run
+# doesn't idle to walltime.
+_WAIT=0
+until [ -d "$TASK_BASE/todo" ] || [ "$_WAIT" -ge 1800 ]; do
+    sleep 15
+    _WAIT=$((_WAIT + 15))
+done
+
 python -u "$REPO_DIR/main/br_slurm_orchestrator.py" \
     --br_dedicated_sh_template "$BR_DEDICATED_TEMPLATE" \
     --workdir "$WORKDIR" \

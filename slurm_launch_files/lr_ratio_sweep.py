@@ -202,6 +202,7 @@ def main():
         print(f"[{tag}] c={cfg['c_lr']:g} d={cfg['d_lr']:g} v={cfg['v_lr']:g}  "
               f"(m_d={cfg['m_d']:g}, m_v={cfg['m_v']:g})")
 
+        train_job_id = None
         if train_tpl is not None:
             text = render_training_slurm(train_tpl, cfg, args.player, args.opponent_list,
                                          args.workdir, args.sbatch_time, args.main_training_steps)
@@ -212,9 +213,14 @@ def main():
                 f"_vlr{_sanitize(_fmt_lr(cfg['v_lr']))}_{tag}.slurm")
             with open(path, "w") as f:
                 f.write(text)
-            print(f"  train : sbatch {path}")
-            if not dry_run:
-                subprocess.run(["sbatch", path], check=True)
+            if dry_run:
+                print(f"  train : sbatch {path}")
+            else:
+                out = subprocess.run(["sbatch", path], check=True,
+                                     capture_output=True, text=True)
+                m = re.search(r"Submitted batch job (\d+)", out.stdout)
+                train_job_id = m.group(1) if m else None
+                print(f"  train : sbatch {path}  -> job {train_job_id or '?'}")
 
         if br_tpl is not None:
             text = render_orchestrator_job(
@@ -225,9 +231,21 @@ def main():
             path = os.path.join(args.out_dir, f"br_orchestrator_{tag}.slurm")
             with open(path, "w") as f:
                 f.write(text)
-            print(f"  br    : sbatch {path}")
-            if not dry_run:
-                subprocess.run(["sbatch", path], check=True)
+            # In --phase both, gate the watchdog on the training job STARTING
+            # (after:) so it can't race ahead of / clobber training's repo copy.
+            # In --phase br the training job isn't submitted here, so no dep.
+            dep = []
+            if args.phase == "both" and train_job_id:
+                dep = [f"--dependency=after:{train_job_id}"]
+            if dry_run:
+                dep_show = "--dependency=after:<train_job_id> " if args.phase == "both" else ""
+                print(f"  br    : sbatch {dep_show}{path}")
+            else:
+                if args.phase == "both" and not train_job_id:
+                    print("  [warn] no training job id parsed; BR submitted WITHOUT "
+                          "dependency (ordering not guaranteed)", file=sys.stderr)
+                subprocess.run(["sbatch", *dep, path], check=True)
+                print(f"  br    : sbatch {' '.join([*dep, path])}")
 
         print(f"  tree  : {tree}   (tasks, checkpoints, br_rewards, br_models)")
         print()
