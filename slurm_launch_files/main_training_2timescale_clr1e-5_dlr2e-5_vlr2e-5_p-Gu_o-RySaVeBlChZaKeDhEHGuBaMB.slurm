@@ -5,13 +5,13 @@
 #SBATCH --cpus-per-task=8      # cpu-cores per task (>1 if multi-threaded tasks)
 #SBATCH --mem-per-cpu=4G        # memory per cpu-core (4G is default)
 #SBATCH --gres=gpu:1
-#SBATCH --time=72:00:00          # total run time limit (HH:MM:SS)
+#SBATCH --time=000:45:00          # total run time limit (HH:MM:SS)
 #SBATCH --mail-type=begin        # send email when job begins
 #SBATCH --mail-type=end          # send email when job ends
 #SBATCH --mail-user=jw4406@princeton.edu
 echo $CUDA_VISIBLE_DEVICES
 JOBID=$SLURM_JOB_ID
-WORKDIR=/n/fs/magics/
+WORKDIR=/scratch/gpfs/FISAC/jw4406/
 mkdir -p $WORKDIR/$JOBID
 #cd /n/fs/magics/2415498/FightLadder
 cd $WORKDIR/$JOBID
@@ -76,8 +76,8 @@ EGO_SIDE="left"
 SAVE_DIR="$WORKDIR/$JOBID/FightLadder/main/trained_models/tasks/todo/"
 USE_LR_ANNEALING="False"
 LR_ANNEAL_COEFF=".995"
-CHECKPOINT_INTERVAL="50000"
-TOTAL_TIMESTEPS="150000000"
+CHECKPOINT_INTERVAL="10000"
+TOTAL_TIMESTEPS="99999"
 TRAINING_BATCH_SIZE="512"
 NUM_ENV_STEPS="1024"
 EGO_STYLE="learning"

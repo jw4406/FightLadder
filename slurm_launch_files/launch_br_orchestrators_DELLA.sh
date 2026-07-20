@@ -10,12 +10,12 @@ LAUNCH_CONTINUE='False'
 LAUNCH_LOCAL_BR_EVAL='True'  # forwarded to both orchestrators via --launch_local_br_eval
 PERIODIC_EVAL_FREQ=500000   # env-steps between mid-training local_br_eval snapshots (PeriodicLocalBREvalCallback)
 STEP_STRIDE=0  # 0 = process all tasks; e.g. 40000 = only every 40k steps (matches ws)
-BR_TRAINING_STEPS=1000000000  # total .learn() timesteps per BR job
-SLURM_TIME=001:00:00  # #SBATCH --time for each BR sbatch (HH:MM:SS)
-EXPLOITER_SAVE_FREQ=50000  # env-steps between BR exploiter checkpoints
+BR_TRAINING_STEPS=150000000  # total .learn() timesteps per BR job
+SLURM_TIME=024:00:00  # #SBATCH --time for each BR sbatch (HH:MM:SS)
+EXPLOITER_SAVE_FREQ=1000000  # env-steps between BR exploiter checkpoints
 
-WORKDIR=/n/fs/magics
-MAIN_TRAINING_DIR=3454769
+WORKDIR=/scratch/gpfs/FISAC/jw4406
+MAIN_TRAINING_DIR=10937422
 # The repo is rsync'd into scratch alongside MAIN_TRAINING_DIR; orchestrators,
 # templates, and runners all live under it. Match ws_launch_files pattern.
 REPO_DIR="$HOME/FightLadder"
@@ -28,7 +28,7 @@ mkdir -p "${LOGS_DIR}"
 # ==========================================================================
 DEDICATED_CMD=(
     python -u "$REPO_DIR/main/br_slurm_orchestrator.py"
-    --br_dedicated_sh_template "$REPO_DIR/slurm_launch_files/br_dedicated_template.slurm"
+    --br_dedicated_sh_template "$REPO_DIR/slurm_launch_files/br_dedicated_template_DELLA.slurm"
     --main_training_dir "$MAIN_TRAINING_DIR"
     --workdir "$WORKDIR"
     --todo_dir "$TASK_BASE/todo"
@@ -36,7 +36,7 @@ DEDICATED_CMD=(
     --done_dir "$TASK_BASE/slurm_done"
     --stop_file "$TASK_BASE/STOP_SLURM"
     --local_plot_dir "$WORKDIR/$MAIN_TRAINING_DIR/FightLadder/logs/local_entropy_plots"
-    --slurm_log_dir /u/jw4406/
+    --slurm_log_dir /home/jw4406/
     --step_stride "$STEP_STRIDE"
     --br_training_steps "$BR_TRAINING_STEPS"
     --slurm_time "$SLURM_TIME"
@@ -59,7 +59,7 @@ fi
 # ==========================================================================
 CONTINUE_CMD=(
     python -u "$REPO_DIR/main/br_continue_slurm_orchestrator.py"
-    --br_continue_sh_template "$REPO_DIR/slurm_launch_files/br_continue_template.slurm"
+    --br_continue_sh_template "$REPO_DIR/slurm_launch_files/br_continue_template_DELLA.slurm"
     --main_training_dir "$MAIN_TRAINING_DIR"
     --workdir "$WORKDIR"
     --todo_dir "$TASK_BASE/todo_continue"
