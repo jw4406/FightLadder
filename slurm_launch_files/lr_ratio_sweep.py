@@ -103,6 +103,18 @@ def _apply(text, subs, what):
     return text
 
 
+def _della_env_transform(text):
+    """DELLA has conda pre-available on compute nodes and does NOT use the
+    neuronic module system. Strip the neuronic `module purge` ... conda-init
+    block (leaving `conda activate fightladder` intact) so a neuronic-flavored
+    template renders correctly on DELLA. No-op if the markers aren't present."""
+    return re.sub(
+        r"(?ms)^module purge\b.*?^# <<< conda initialize <<<[^\n]*\n",
+        "# DELLA: conda pre-available on compute nodes; module/conda-init skipped.\n",
+        text,
+    )
+
+
 def render_training_slurm(template_text, cfg, players, opponents, workdir,
                           sbatch_time, total_timesteps):
     """Substitute LRs / matchup / paths into the training template, and pin the
@@ -241,6 +253,13 @@ def main():
 
     train_tpl = open(args.template).read() if args.phase in ("train", "both") else None
     br_tpl = open(args.br_job_template).read() if args.phase in ("br", "both") else None
+    # DELLA uses a different env setup (conda pre-available, no module system).
+    # Transform the neuronic-flavored templates rather than maintain duplicates.
+    if args.cluster == "della":
+        if train_tpl:
+            train_tpl = _della_env_transform(train_tpl)
+        if br_tpl:
+            br_tpl = _della_env_transform(br_tpl)
     os.makedirs(args.out_dir, exist_ok=True)
 
     src = "discovered" if args.discover else f"c_lr={args.c_lr:g}"

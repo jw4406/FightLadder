@@ -21,6 +21,7 @@
 #SBATCH --mail-type=end
 #SBATCH --mail-user=jw4406@princeton.edu
 module purge
+module load anaconda3/2024.2
 # >>> conda initialize >>>
 __conda_setup="$('/usr/local/anaconda3/2024.02/bin/conda' 'shell.bash' 'hook' 2> /dev/null)"
 if [ $? -eq 0 ]; then
