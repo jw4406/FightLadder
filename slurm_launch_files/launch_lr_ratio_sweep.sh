@@ -38,6 +38,11 @@ BR_TRAINING_STEPS="99999"
 EXPLOITER_SAVE_FREQ="1000"
 BR_SLURM_TIME="000:12:00"
 
+# GPU packing: 1 = one exploiter per GPU (default, unchanged). Set 2 to co-locate
+# 2 exploiters/GPU, each capped at GPU_MEM_FRACTION of the card.
+EXPLOITERS_PER_JOB="1"
+GPU_MEM_FRACTION="0.45"
+
 CMD=(
     python "${SCRIPT_DIR}/lr_ratio_sweep.py"
     --phase "${PHASE}"
@@ -57,6 +62,8 @@ CMD=(
     --br_training_steps "${BR_TRAINING_STEPS}"
     --exploiter_save_freq "${EXPLOITER_SAVE_FREQ}"
     --br_slurm_time "${BR_SLURM_TIME}"
+    --exploiters_per_job "${EXPLOITERS_PER_JOB}"
+    --gpu_mem_fraction "${GPU_MEM_FRACTION}"
     --dry_run "${DRY_RUN}"
 )
 if [ "${DISCOVER}" = "True" ]; then CMD+=(--discover); fi

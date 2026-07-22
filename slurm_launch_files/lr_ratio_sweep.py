@@ -131,7 +131,8 @@ def render_training_slurm(template_text, cfg, players, opponents, workdir,
 
 def render_orchestrator_job(template_text, cfg, cluster, workdir, br_job_time,
                             slurm_log_dir, br_training_steps, exploiter_save_freq,
-                            step_stride, periodic_eval_freq, br_slurm_time, orch_dry_run):
+                            step_stride, periodic_eval_freq, br_slurm_time, orch_dry_run,
+                            exploiters_per_job, gpu_mem_fraction):
     """Substitute per-config values into the CPU-only BR-orchestrator job template.
     Paths derive from $WORKDIR/$MAIN_TRAINING_DIR inside the template."""
     subs = [
@@ -148,6 +149,8 @@ def render_orchestrator_job(template_text, cfg, cluster, workdir, br_job_time,
         (r'(?m)^PERIODIC_EVAL_FREQ=".*"$', f'PERIODIC_EVAL_FREQ="{periodic_eval_freq}"'),
         (r'(?m)^BR_SLURM_TIME=".*"$', f'BR_SLURM_TIME="{br_slurm_time}"'),
         (r'(?m)^ORCH_DRY_RUN=".*"$', f'ORCH_DRY_RUN="{orch_dry_run}"'),
+        (r'(?m)^EXPLOITERS_PER_JOB=".*"$', f'EXPLOITERS_PER_JOB="{exploiters_per_job}"'),
+        (r'(?m)^GPU_MEM_FRACTION=".*"$', f'GPU_MEM_FRACTION="{gpu_mem_fraction}"'),
     ]
     return _apply(template_text, subs, "BR orchestrator template")
 
@@ -189,6 +192,12 @@ def parse_args():
     p.add_argument("--br_orch_dry_run", choices=["True", "False"], default="False",
                    help="Passed to br_slurm_orchestrator inside the job (False = really submit exploiters).")
     p.add_argument("--slurm_log_dir", default=os.path.expanduser("~/"))
+    p.add_argument("--exploiters_per_job", type=int, default=1,
+                   help="GPU packing: exploiters per BR sbatch (1 = one/GPU, unchanged; "
+                        "2 = pack 2/GPU, each capped by --gpu_mem_fraction).")
+    p.add_argument("--gpu_mem_fraction", type=float, default=0.45,
+                   help="Per-process GPU memory cap for packed BR jobs "
+                        "(used only when --exploiters_per_job > 1).")
     # --- plumbing ---
     p.add_argument("--phase", choices=["train", "br", "both"], default="both")
     p.add_argument("--discover", action="store_true",
@@ -271,7 +280,7 @@ def main():
                 br_tpl, cfg, args.cluster, args.workdir, args.br_job_time,
                 args.slurm_log_dir, args.br_training_steps, args.exploiter_save_freq,
                 args.step_stride, args.periodic_eval_freq, args.br_slurm_time,
-                args.br_orch_dry_run)
+                args.br_orch_dry_run, args.exploiters_per_job, args.gpu_mem_fraction)
             path = os.path.join(args.out_dir, f"br_orchestrator_{tag}.slurm")
             with open(path, "w") as f:
                 f.write(text)

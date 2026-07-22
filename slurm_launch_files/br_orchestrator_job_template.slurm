@@ -53,6 +53,8 @@ EXPLOITER_SAVE_FREQ="1000"
 PERIODIC_EVAL_FREQ="500000"
 BR_SLURM_TIME="000:12:00"
 ORCH_DRY_RUN="False"
+EXPLOITERS_PER_JOB="1"
+GPU_MEM_FRACTION="0.45"
 
 # Derived — the per-config tree the training job populates.
 export WORKDIR MAIN_TRAINING_DIR
@@ -87,4 +89,6 @@ python -u "$REPO_DIR/main/br_slurm_orchestrator.py" \
     --exploiter_save_freq "$EXPLOITER_SAVE_FREQ" \
     --launch_local_br_eval True \
     --periodic_eval_freq "$PERIODIC_EVAL_FREQ" \
+    --exploiters_per_job "$EXPLOITERS_PER_JOB" \
+    --gpu_mem_fraction "$GPU_MEM_FRACTION" \
     --dry_run "$ORCH_DRY_RUN"
