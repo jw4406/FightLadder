@@ -51,7 +51,34 @@ def _bool(s: str) -> bool:
     return str(s).lower() in ("true", "1", "yes")
 
 
+def _apply_gpu_mem_fraction() -> None:
+    """Opt-in per-process GPU memory cap for co-located (packed) BR jobs.
+
+    Reads BR_GPU_MEM_FRACTION from the environment (set per-phase by the packed
+    sbatch: e.g. 0.45 while K jobs share one GPU, unset for a solo retry that
+    owns the whole card). No-op when the env var is absent -> the one-job-one-GPU
+    path is completely unchanged. Called before any CUDA allocation."""
+    frac = os.environ.get("BR_GPU_MEM_FRACTION")
+    if not frac:
+        return
+    try:
+        f = float(frac)
+    except ValueError:
+        print(f"[br] WARN: bad BR_GPU_MEM_FRACTION={frac!r}; ignoring")
+        return
+    if not (0.0 < f < 1.0):
+        return  # >=1.0 or <=0 => no cap (e.g. solo retry passes 1.0 / unsets it)
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.set_per_process_memory_fraction(f)
+            print(f"[br] GPU memory capped to fraction {f} (BR_GPU_MEM_FRACTION)")
+    except Exception as exc:
+        print(f"[br] WARN: could not apply BR_GPU_MEM_FRACTION={frac!r}: {exc}")
+
+
 def main() -> None:
+    _apply_gpu_mem_fraction()
     parser = argparse.ArgumentParser(
         description="Run a single dedicated BR matchup as one process. "
                     "Invoked by br_slurm_orchestrator.py via sbatch."

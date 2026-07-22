@@ -26,6 +26,8 @@ in lockstep automatically.
 """
 import argparse
 import os
+import re
+import shlex
 import socket
 import subprocess
 import time
@@ -65,6 +67,131 @@ from br_ws_concurrency import count_active_local_jobs
 
 
 # ----------------------------- per-task processing -----------------------------
+def _scale_resources(template_text: str, k: int) -> str:
+    """Scale a packed sbatch's HOST resources by K: multiply the template's
+    #SBATCH --cpus-per-task and --mem by the number of co-located exploiters.
+    The --gres (GPU) line is deliberately left as-is: the K processes SHARE
+    one GPU (that's the point of packing)."""
+    text = re.sub(r"(?m)^(#SBATCH --cpus-per-task=)(\d+)",
+                  lambda m: f"{m.group(1)}{int(m.group(2)) * k}", template_text)
+    text = re.sub(r"(?m)^(#SBATCH --mem=)(\d+)([A-Za-z]+)",
+                  lambda m: f"{m.group(1)}{int(m.group(2)) * k}{m.group(3)}", text)
+    return text
+
+
+def _scale_mem(mem_str: str, k: int) -> str:
+    m = re.match(r"^\s*(\d+)\s*([A-Za-z]+)\s*$", str(mem_str))
+    return f"{int(m.group(1)) * k}{m.group(2)}" if m else mem_str
+
+
+def _build_packed_block(python_cmds: List[str], gpu_mem_fraction: float,
+                        log_dir: str, group_tag: str) -> str:
+    """Assemble the bash that co-locates K exploiters on one GPU, each capped
+    via BR_GPU_MEM_FRACTION, then retries any FAILED process SOLO once with the
+    cap removed (the others have exited, so it owns the whole card). Each
+    build_python_cmd snippet defines its own CMD=() array, so we wrap each in a
+    subshell to isolate that variable and background it. `set +e` so we manage
+    child exit codes explicitly; the job always exits 0 (failures are handled
+    and logged here, so the orchestrator's normal squeue-clear sweep applies)."""
+    lines = [
+        "set +e",
+        f'export BR_GPU_MEM_FRACTION="{gpu_mem_fraction}"',
+        "_pids=()",
+    ]
+    for i, cmd in enumerate(python_cmds):
+        log = shlex.quote(os.path.join(log_dir, f"{group_tag}_proc{i}.out"))
+        lines += [f"# ---- packed process {i} ----", "(", cmd,
+                  f") > {log} 2>&1 &", "_pids+=($!)"]
+    lines += [
+        "_ecs=()",
+        'for _p in "${_pids[@]}"; do',
+        '  if wait "$_p"; then _ecs+=(0); else _ecs+=($?); fi',
+        "done",
+        "# ---- downgrade-to-solo retry: any failed process reruns alone, full GPU ----",
+        "unset BR_GPU_MEM_FRACTION",
+    ]
+    for i, cmd in enumerate(python_cmds):
+        log = shlex.quote(os.path.join(log_dir, f"{group_tag}_proc{i}.retry.out"))
+        lines += [
+            f'if [ "${{_ecs[{i}]}}" -ne 0 ]; then',
+            f'  echo "[pack] process {i} failed (ec=${{_ecs[{i}]}}); retrying SOLO (full GPU)"',
+            "  (", cmd,
+            f'  ) > {log} 2>&1 || echo "[pack] process {i} SOLO retry also FAILED (giving up)"',
+            "fi",
+        ]
+    lines.append("exit 0")
+    return "\n".join(lines)
+
+
+def _submit_packed_groups(*, specs, k, gpu_mem_fraction, args, slurm_log_dir,
+                          task_stem, output_subdir, training_style, is_league,
+                          league_states, shared_config_json, runner_script,
+                          repo_dir, template_text, extra_sbatch_lines,
+                          processing_path) -> List[str]:
+    """Chunk specs into groups of K and submit one sbatch per group; each group
+    co-locates K exploiters on one GPU (capped, solo-retry on failure). Returns
+    submitted job ids. Mirrors the per-spec path's render/submit exactly, but
+    with a packed CMD block and K-scaled host resources."""
+    submitted: List[str] = []
+    groups = [specs[i:i + k] for i in range(0, len(specs), k)]
+    print(f"[orch-dedicated] PACKING: {len(specs)} specs -> {len(groups)} jobs "
+          f"({k}/GPU, gpu_mem_fraction={gpu_mem_fraction})")
+    for g, group in enumerate(groups):
+        group_tag = f"pack{k}_grp{g}"
+        cmds = [
+            build_python_cmd(
+                python_bin=args.python_bin, runner_script=runner_script,
+                task_file=processing_path, local_plot_dir=args.local_plot_dir,
+                state=spec["state_subset"][0], eval_prot=spec["eval_prot"],
+                replicate_idx=spec["replicate_idx"], br_index=spec["job_index"],
+                dedicated_job_id=spec["job_index"],
+                matchup_label=spec.get("matchup_label"),
+                output_subdir=output_subdir, training_style=training_style,
+                is_league=is_league, league_matchup_states=league_states,
+                shared_config_json=shared_config_json,
+            )
+            for spec in group
+        ]
+        block = _build_packed_block(cmds, gpu_mem_fraction, slurm_log_dir, group_tag)
+        actual_k = len(group)
+        job_name = f"br_{output_subdir}_{group_tag}_{task_stem}"
+        out_log = os.path.join(slurm_log_dir, f"{job_name}.out")
+        err_log = os.path.join(slurm_log_dir, f"{job_name}.err")
+        sbatch_path = os.path.join(slurm_log_dir, f"{job_name}.sbatch")
+        if template_text:
+            render_template_sbatch(
+                template_text=_scale_resources(template_text, actual_k),
+                sbatch_path=sbatch_path, job_name=job_name, out_log=out_log,
+                err_log=err_log, python_cmd=block,
+                extra_sbatch_lines=extra_sbatch_lines,
+                extra_placeholders={
+                    "SBATCH_TIME": args.slurm_time,
+                    "WS_WORKDIR": args.workdir,
+                    "MAIN_TRAINING_DIR": args.main_training_dir,
+                    "WS_REPO_DIR": repo_dir,
+                },
+            )
+        else:
+            write_sbatch_script(
+                sbatch_path=sbatch_path, job_name=job_name,
+                time_limit=args.slurm_time, mem=_scale_mem(args.slurm_mem, actual_k),
+                gres=args.slurm_gres, cpus_per_task=args.slurm_cpus_per_task * actual_k,
+                out_log=out_log, err_log=err_log, repo_dir=repo_dir,
+                env_setup=args.env_setup, python_cmd=block,
+                extra_sbatch_lines=extra_sbatch_lines, workdir=args.workdir,
+                main_training_dir=args.main_training_dir,
+            )
+        try:
+            job_id = submit_sbatch(sbatch_path, dry_run=args.dry_run,
+                                   local_out_log=out_log, local_err_log=err_log)
+        except subprocess.CalledProcessError as exc:
+            print(f"[orch-dedicated] sbatch FAILED for {sbatch_path}: {exc}")
+            continue
+        if job_id:
+            submitted.append(job_id)
+    return submitted
+
+
 def _process_task(
     args: argparse.Namespace,
     task_filename: str,
@@ -153,6 +280,20 @@ def _process_task(
     extra_sbatch_lines = ""
     if args.slurm_account:
         extra_sbatch_lines = f"#SBATCH --account={args.slurm_account}\n"
+
+    # GPU packing (opt-in): >1 co-locates K exploiters per sbatch. Default 1
+    # falls through to the unchanged one-sbatch-per-spec path below.
+    if args.exploiters_per_job and int(args.exploiters_per_job) > 1:
+        return _submit_packed_groups(
+            specs=specs, k=int(args.exploiters_per_job),
+            gpu_mem_fraction=args.gpu_mem_fraction, args=args,
+            slurm_log_dir=slurm_log_dir, task_stem=task_stem,
+            output_subdir=output_subdir, training_style=training_style,
+            is_league=is_league, league_states=league_states,
+            shared_config_json=shared_config_json, runner_script=runner_script,
+            repo_dir=repo_dir, template_text=template_text,
+            extra_sbatch_lines=extra_sbatch_lines, processing_path=processing_path,
+        )
 
     submitted: List[str] = []
     for spec in specs:
@@ -257,6 +398,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num_full_exploiters", type=int, default=3,
                         help="Replicates per (matchup, side).")
     parser.add_argument("--local_plot_dir", type=str)
+    # GPU packing (opt-in). Default 1 == today's one-job-one-GPU behavior.
+    parser.add_argument("--exploiters_per_job", type=int, default=1,
+                        help="Run this many exploiters per sbatch (co-located on "
+                             "one GPU). Default 1 = one job per GPU (unchanged). "
+                             ">1 packs K/GPU, each capped via --gpu_mem_fraction; a "
+                             "failed packed process is retried SOLO once (full GPU).")
+    parser.add_argument("--gpu_mem_fraction", type=float, default=0.45,
+                        help="Per-process GPU memory cap for packed jobs "
+                             "(set_per_process_memory_fraction). Used only when "
+                             "--exploiters_per_job > 1.")
     return parser
 
 
