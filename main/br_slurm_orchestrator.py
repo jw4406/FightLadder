@@ -57,6 +57,7 @@ from br_slurm_common import (
     load_template_config,
     normalize_bool_args,
     peek_league_side_and_matchup,
+    read_registry,
     render_template_sbatch,
     submit_sbatch,
     sweep_completed_tasks,
@@ -379,6 +380,201 @@ def _process_task(
     return submitted
 
 
+# ------------------- Cross-checkpoint packing (opt-in) -------------------
+# NOTE: intentionally duplicates _process_task's "prepare" logic rather than
+# refactoring it, to keep the default (per-task) path byte-identical. DRY later.
+
+def _append_job_to_registry(processing_folder: str, job_id: str) -> None:
+    """Append a (possibly shared) job id to a task folder's registry. A packed
+    cross-checkpoint job carries specs from several tasks, so its id is appended
+    to every contributing folder; the sweep then moves each folder to done/ once
+    all of ITS ids clear squeue."""
+    reg = read_registry(processing_folder) or {}
+    ids = list(reg.get("job_ids", []))
+    ids.append(job_id)
+    reg["job_ids"] = ids
+    reg.setdefault("mode", "dedicated_xpack")
+    write_registry(processing_folder, reg)
+
+
+def _prepare_task_for_pack(args, task_filename, processing_path, processing_folder):
+    """Copy of _process_task's detect+build-specs+shared-config prep, returning
+    (specs, task_ctx) WITHOUT submitting. Kept separate so _process_task stays
+    byte-identical (see NOTE above)."""
+    model_type = detect_model_type(processing_path, device="cpu")
+    is_league = (model_type == "league")
+    output_subdir = derive_output_subdir(processing_path, model_type, args.todo_dir)
+    training_style = "league" if is_league else model_type
+    if is_league:
+        copy_aux_files(args.todo_dir, processing_folder)
+        league_states = _infer_league_matchup_states_from_dir(processing_path)
+        unique_states = list(league_states)
+        loaded_side, _mk = peek_league_side_and_matchup(processing_path)
+        if loaded_side not in ("left", "right"):
+            raise ValueError(f"League task {task_filename!r} invalid side={loaded_side!r}")
+        run_eval_prot = (loaded_side == "left")
+        run_eval_adv = not run_eval_prot
+    else:
+        league_states = None
+        unique_states = _extract_unique_states_from_task(processing_path, device="cpu")
+        run_eval_prot = args.eval_prot
+        run_eval_adv = args.eval_adv
+    specs = build_dedicated_job_specs(
+        unique_states=unique_states,
+        replicates_per_matchup=args.num_full_exploiters,
+        run_eval_prot=run_eval_prot, run_eval_adv=run_eval_adv,
+        launch_local_br_eval=args.launch_local_br_eval,
+        state_to_matchup=state2matchup,
+    )
+    task_stem = os.path.splitext(task_filename)[0]
+    stop_file_dir = os.path.join(TASK_DIR, "stop")
+    os.makedirs(stop_file_dir, exist_ok=True)
+    manual_stop_file = os.path.join(stop_file_dir, f"STOP_{_sanitize_for_filename(task_stem)}")
+    shared_config_json = __import__("json").dumps(
+        build_shared_config(args, manual_stop_file=manual_stop_file))
+    task_ctx = {
+        "task_file": processing_path,
+        "processing_folder": processing_folder,
+        "output_subdir": output_subdir,
+        "training_style": training_style,
+        "is_league": is_league,
+        "league_states": league_states,
+        "shared_config_json": shared_config_json,
+    }
+    return specs, task_ctx
+
+
+def _submit_cross_pack(group, args, template_text, group_idx, slurm_log_base,
+                       repo_dir, runner_script, extra_sbatch_lines) -> bool:
+    """Submit ONE packed sbatch for `group` = [(spec, task_ctx), ...] spanning
+    possibly-different checkpoints, and append the job id to each contributing
+    task's registry. Returns True on submit (or dry-run render), False on failure."""
+    k = len(group)
+    log_dir = os.path.join(slurm_log_base, "xpack")
+    os.makedirs(log_dir, exist_ok=True)
+    job_name = f"br_xpack{args.exploiters_per_job}_{group_idx:05d}"
+    cmds = [
+        build_python_cmd(
+            python_bin=args.python_bin, runner_script=runner_script,
+            task_file=ctx["task_file"], local_plot_dir=args.local_plot_dir,
+            state=spec["state_subset"][0], eval_prot=spec["eval_prot"],
+            replicate_idx=spec["replicate_idx"], br_index=spec["job_index"],
+            dedicated_job_id=spec["job_index"], matchup_label=spec.get("matchup_label"),
+            output_subdir=ctx["output_subdir"], training_style=ctx["training_style"],
+            is_league=ctx["is_league"], league_matchup_states=ctx["league_states"],
+            shared_config_json=ctx["shared_config_json"],
+        )
+        for spec, ctx in group
+    ]
+    block = _build_packed_block(cmds, args.gpu_mem_fraction, log_dir, job_name)
+    out_log = os.path.join(log_dir, f"{job_name}.out")
+    err_log = os.path.join(log_dir, f"{job_name}.err")
+    sbatch_path = os.path.join(log_dir, f"{job_name}.sbatch")
+    if template_text:
+        render_template_sbatch(
+            template_text=_scale_resources(template_text, k),
+            sbatch_path=sbatch_path, job_name=job_name, out_log=out_log,
+            err_log=err_log, python_cmd=block, extra_sbatch_lines=extra_sbatch_lines,
+            extra_placeholders={"SBATCH_TIME": args.slurm_time, "WS_WORKDIR": args.workdir,
+                                "MAIN_TRAINING_DIR": args.main_training_dir, "WS_REPO_DIR": repo_dir},
+        )
+    else:
+        write_sbatch_script(
+            sbatch_path=sbatch_path, job_name=job_name, time_limit=args.slurm_time,
+            mem=_scale_mem(args.slurm_mem, k), gres=args.slurm_gres,
+            cpus_per_task=args.slurm_cpus_per_task * k, out_log=out_log, err_log=err_log,
+            repo_dir=repo_dir, env_setup=args.env_setup, python_cmd=block,
+            extra_sbatch_lines=extra_sbatch_lines, workdir=args.workdir,
+            main_training_dir=args.main_training_dir,
+        )
+    try:
+        job_id = submit_sbatch(sbatch_path, dry_run=args.dry_run,
+                               local_out_log=out_log, local_err_log=err_log)
+    except subprocess.CalledProcessError as exc:
+        print(f"[orch-xpack] sbatch FAILED for {sbatch_path}: {exc}; "
+              "specs dropped (their tasks may hang until re-queued)")
+        return False
+    if job_id:
+        for folder in {ctx["processing_folder"] for _s, ctx in group}:
+            _append_job_to_registry(folder, job_id)
+    print(f"[orch-xpack] submitted {job_name} (k={k}, job_id={job_id or 'dry-run'})")
+    return True
+
+
+def _run_crosspack_loop(args, template_text: str) -> None:
+    """Streaming watchdog that packs exploiters ACROSS checkpoints: buffer each
+    claimed task's specs, flush --exploiters_per_job at a time (or a partial pack
+    once the oldest buffered spec exceeds --pack_flush_timeout). The sweep is
+    unchanged; a packed job's id is appended to every contributing task."""
+    k = int(args.exploiters_per_job)
+    flush_timeout = float(args.pack_flush_timeout)
+    repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    runner_script = os.path.abspath(os.path.join(os.path.dirname(__file__), "br_single_matchup.py"))
+    extra_sbatch_lines = f"#SBATCH --account={args.slurm_account}\n" if args.slurm_account else ""
+    slurm_log_base = os.path.abspath(args.slurm_log_dir)
+    buffer = []          # entries: (spec, task_ctx, added_at)
+    group_counter = 0
+    print(f"[orch-xpack] cross-checkpoint packing: K={k} flush_timeout={flush_timeout}s "
+          f"gpu_mem_fraction={args.gpu_mem_fraction}")
+
+    def _flush(entries):
+        nonlocal group_counter
+        _submit_cross_pack([(s, c) for (s, c, _t) in entries], args, template_text,
+                           group_counter, slurm_log_base, repo_dir, runner_script,
+                           extra_sbatch_lines)
+        group_counter += 1
+
+    while not os.path.exists(args.stop_file):
+        try:
+            sweep_completed_tasks(args.processing_dir, args.done_dir)
+        except Exception as exc:
+            print(f"[orch-xpack] sweeper error (non-fatal): {exc}")
+        if not have_sbatch() and count_active_local_jobs(args.processing_dir) >= args.max_local_concurrent:
+            time.sleep(POLL_INTERVAL)
+            continue
+
+        did_work = False
+        claim = claim_task(args.todo_dir, args.processing_dir, step_stride=args.step_stride)
+        if claim is not None:
+            task_filename, processing_path, processing_folder = claim
+            try:
+                specs, ctx = _prepare_task_for_pack(args, task_filename, processing_path, processing_folder)
+                # Empty registry -> sweep leaves the folder alone until a packed
+                # job appends this task's job ids.
+                write_registry(processing_folder, {
+                    "task_filename": task_filename, "submitted_at": time.time(),
+                    "job_ids": [], "dry_run": args.dry_run, "mode": "dedicated_xpack",
+                })
+                now = time.time()
+                buffer.extend((s, ctx, now) for s in specs)
+                did_work = True
+                print(f"[orch-xpack] buffered {len(specs)} specs from {task_filename} "
+                      f"(buffer={len(buffer)})")
+            except Exception as exc:
+                err_path = os.path.join(processing_folder, "_dispatch_error.txt")
+                with open(err_path, "w") as f:
+                    f.write(f"{type(exc).__name__}: {exc}\n")
+                print(f"[orch-xpack] prepare error for {task_filename}: {exc}")
+
+        while len(buffer) >= k:                          # full packs
+            grp = buffer[:k]; del buffer[:k]
+            _flush(grp); did_work = True
+        if buffer and (time.time() - buffer[0][2]) >= flush_timeout:   # partial pack
+            print(f"[orch-xpack] flush timeout -> partial pack of {len(buffer)}")
+            grp = buffer[:]; buffer.clear()
+            _flush(grp); did_work = True
+
+        if not did_work:
+            time.sleep(POLL_INTERVAL)
+
+    if buffer:                                           # drain on stop
+        print(f"[orch-xpack] STOP detected; draining {len(buffer)} buffered specs")
+        while buffer:
+            grp = buffer[:k]; del buffer[:k]
+            _flush(grp)
+    print(f"[orch-xpack] Stop file {args.stop_file} detected; exiting.")
+
+
 # ----------------------------- CLI -----------------------------
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -408,6 +604,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Per-process GPU memory cap for packed jobs "
                              "(set_per_process_memory_fraction). Used only when "
                              "--exploiters_per_job > 1.")
+    # Cross-checkpoint packing (opt-in). Default False = within-checkpoint only.
+    parser.add_argument("--pack_across_checkpoints", choices=["True", "False"], default="False",
+                        help="Pack exploiters from DIFFERENT checkpoints onto one GPU: "
+                             "buffer specs across tasks and flush --exploiters_per_job at a "
+                             "time. Default False = one job per checkpoint (within-checkpoint "
+                             "packing only).")
+    parser.add_argument("--pack_flush_timeout", type=float, default=300.0,
+                        help="Max seconds the oldest buffered spec waits before a partial "
+                             "pack is submitted (cross-checkpoint mode only).")
     return parser
 
 
@@ -446,6 +651,13 @@ def main() -> None:
     print(f"[orch-dedicated] SLURM: "
           f"time={args.slurm_time} mem={args.slurm_mem} "
           f"gres={args.slurm_gres} cpus={args.slurm_cpus_per_task}")
+
+    # Cross-checkpoint packing mode (opt-in). Otherwise fall through to the
+    # unchanged one-task-at-a-time loop below.
+    _xpack = getattr(args, "pack_across_checkpoints", "False")
+    if (_xpack is True or str(_xpack) == "True") and int(args.exploiters_per_job) > 1:
+        _run_crosspack_loop(args, template_text)
+        return
 
     while not os.path.exists(args.stop_file):
         try:
