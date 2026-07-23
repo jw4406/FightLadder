@@ -42,6 +42,10 @@ BR_SLURM_TIME="000:12:00"
 # 2 exploiters/GPU, each capped at GPU_MEM_FRACTION of the card.
 EXPLOITERS_PER_JOB="1"
 GPU_MEM_FRACTION="0.45"
+# Cross-checkpoint packing: co-locate exploiters from DIFFERENT checkpoints on one
+# GPU (needed to fill the card when a config has only 1 replicate = 2 specs/ckpt).
+PACK_ACROSS_CHECKPOINTS="False"
+PACK_FLUSH_TIMEOUT="300"
 
 CMD=(
     python "${SCRIPT_DIR}/lr_ratio_sweep.py"
@@ -64,6 +68,8 @@ CMD=(
     --br_slurm_time "${BR_SLURM_TIME}"
     --exploiters_per_job "${EXPLOITERS_PER_JOB}"
     --gpu_mem_fraction "${GPU_MEM_FRACTION}"
+    --pack_across_checkpoints "${PACK_ACROSS_CHECKPOINTS}"
+    --pack_flush_timeout "${PACK_FLUSH_TIMEOUT}"
     --dry_run "${DRY_RUN}"
 )
 if [ "${DISCOVER}" = "True" ]; then CMD+=(--discover); fi

@@ -56,6 +56,8 @@ BR_SLURM_TIME="000:12:00"
 ORCH_DRY_RUN="False"
 EXPLOITERS_PER_JOB="1"
 GPU_MEM_FRACTION="0.45"
+PACK_ACROSS_CHECKPOINTS="False"
+PACK_FLUSH_TIMEOUT="300"
 
 # Derived — the per-config tree the training job populates.
 export WORKDIR MAIN_TRAINING_DIR
@@ -92,4 +94,6 @@ python -u "$REPO_DIR/main/br_slurm_orchestrator.py" \
     --periodic_eval_freq "$PERIODIC_EVAL_FREQ" \
     --exploiters_per_job "$EXPLOITERS_PER_JOB" \
     --gpu_mem_fraction "$GPU_MEM_FRACTION" \
+    --pack_across_checkpoints "$PACK_ACROSS_CHECKPOINTS" \
+    --pack_flush_timeout "$PACK_FLUSH_TIMEOUT" \
     --dry_run "$ORCH_DRY_RUN"
