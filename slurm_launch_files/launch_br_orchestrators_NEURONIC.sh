@@ -14,6 +14,13 @@ BR_TRAINING_STEPS=99999  # total .learn() timesteps per BR job
 SLURM_TIME=000:12:00  # #SBATCH --time for each BR sbatch (HH:MM:SS)
 EXPLOITER_SAVE_FREQ=1000  # env-steps between BR exploiter checkpoints
 
+# ---- GPU packing (opt-in; dedicated orchestrator only). ----
+# EXPLOITERS_PER_JOB=1 => current behavior (one exploiter per GPU, no cap).
+EXPLOITERS_PER_JOB=1              # >1 co-locates N exploiters on one GPU
+GPU_MEM_FRACTION=0.45             # per-process VRAM cap (used only when >1); keep N*fraction <= ~0.85
+PACK_ACROSS_CHECKPOINTS='False'   # 'True' packs exploiters from DIFFERENT checkpoints (fills GPU when <N specs/ckpt)
+PACK_FLUSH_TIMEOUT=300            # partial-pack timeout in seconds (cross-checkpoint mode only)
+
 WORKDIR=/n/fs/magics
 MAIN_TRAINING_DIR=10852202
 # The repo is rsync'd into scratch alongside MAIN_TRAINING_DIR; orchestrators,
@@ -29,6 +36,10 @@ mkdir -p "${LOGS_DIR}"
 DEDICATED_CMD=(
     python -u "$REPO_DIR/main/br_slurm_orchestrator.py"
     --br_dedicated_sh_template "$REPO_DIR/slurm_launch_files/br_dedicated_template_NEURONIC.slurm"
+    --exploiters_per_job "$EXPLOITERS_PER_JOB"
+    --gpu_mem_fraction "$GPU_MEM_FRACTION"
+    --pack_across_checkpoints "$PACK_ACROSS_CHECKPOINTS"
+    --pack_flush_timeout "$PACK_FLUSH_TIMEOUT"
     --main_training_dir "$MAIN_TRAINING_DIR"
     --workdir "$WORKDIR"
     --todo_dir "$TASK_BASE/todo"
