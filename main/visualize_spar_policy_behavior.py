@@ -539,10 +539,12 @@ def filter_right_keys(agent_dict):
 
 
 def resolve_head_idx(matchups, matchup_key):
+    # Exact match only. A 1-element list whose sole matchup IS matchup_key is
+    # already handled by the check below (returns index 0); we deliberately do
+    # NOT fall back to head 0 for a single mismatched matchup -- that silently
+    # used the wrong adversary/ego head. Raise loudly instead.
     if matchup_key in matchups:
         return matchups.index(matchup_key)
-    if len(matchups) == 1:
-        return 0
     raise ValueError(
         f"Model has no head trained for matchup '{matchup_key}'. "
         f"Available matchups: {matchups}"
