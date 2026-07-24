@@ -27,6 +27,10 @@ V_MULTS=(2 4 8)
 MAX_V_LR="1e-3"
 
 MAIN_TRAINING_STEPS="150000000"
+# V-trace worker sequence length T (spar arch only). Empty => keep template
+# default (64). Lower it (e.g. 16 or 32) for cheaper V-trace forwards => more
+# critic updates/sec, to help the critic track a fast adversary.
+VTRACE_SEQ_LEN=""
 TRAIN_TIME="096:00:00"
 BR_JOB_TIME="096:00:00"                   # orchestrator-job walltime (>= training)
 
@@ -73,4 +77,5 @@ CMD=(
     --dry_run "${DRY_RUN}"
 )
 if [ "${DISCOVER}" = "True" ]; then CMD+=(--discover); fi
+if [ -n "${VTRACE_SEQ_LEN}" ]; then CMD+=(--vtrace_seq_len "${VTRACE_SEQ_LEN}"); fi
 "${CMD[@]}"

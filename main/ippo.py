@@ -715,7 +715,8 @@ def main(args):
                 stagnation_lr_factor=args.stagnation_lr_factor,
                 stagnation_lr_patience=args.stagnation_lr_patience,
                 vtrace_enabled=True,
-                vtrace_replay_capacity=15000
+                vtrace_replay_capacity=15000,
+                vtrace_seq_len=args.vtrace_seq_len,
             )
         elif model_arch_type == "ippo":
             finetune_model = CleanDerivativeFreeSPARIPPO(
@@ -1072,6 +1073,13 @@ if __name__ == "__main__":
     parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=32)
     parser.add_argument("--num_perturbs", type=int, help="Number of perturbed policies to be created.", default=1)
     parser.add_argument("--num_env_steps", type=int, help="Number of env steps to run", default=192, required=True)
+    # V-trace value-worker sequence length (T). Optional; only used by the spar
+    # arch (the only one with vtrace_enabled=True). None => the class default
+    # min(max(1, n_steps//4), 64). Lower T => cheaper B*(T+1) forwards => more
+    # critic updates/sec (the far end of the trace washes out at c_bar=1 anyway).
+    parser.add_argument("--vtrace_seq_len", type=int, default=None, required=False,
+                        help="V-trace worker sequence length T (spar arch only). "
+                             "None => class default min(n_steps//4, 64).")
     parser.add_argument("--ego_style", type=str, help="Ego style", default="learning", required=True, choices=["learning", "zero_action", "random_action"])
     parser.add_argument("--adv_style", type=str, help="Adv style", default="learning", required=True, choices=["learning", "zero_action", "random_action"])
     parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-4, required=True)

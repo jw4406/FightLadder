@@ -116,7 +116,7 @@ def _della_env_transform(text):
 
 
 def render_training_slurm(template_text, cfg, players, opponents, workdir,
-                          sbatch_time, total_timesteps):
+                          sbatch_time, total_timesteps, vtrace_seq_len=None):
     """Substitute LRs / matchup / paths into the training template, and pin the
     run dir to a deterministic per-config tree (JOBID -> lr_sweep/<tag>) so
     training, tasks, checkpoints and BR outputs all share one location."""
@@ -138,6 +138,10 @@ def render_training_slurm(template_text, cfg, players, opponents, workdir,
         (r'(?m)^V_LR=".*"$', f'V_LR="{_fmt_lr(cfg["v_lr"])}"'),
         (r'(?m)^TOTAL_TIMESTEPS=".*"$', f'TOTAL_TIMESTEPS="{total_timesteps}"'),
     ]
+    # Only override the template's VTRACE_SEQ_LEN when the sweep was given one;
+    # otherwise leave the template default (64) so behavior is unchanged.
+    if vtrace_seq_len is not None:
+        subs.append((r'(?m)^VTRACE_SEQ_LEN=".*"$', f'VTRACE_SEQ_LEN="{int(vtrace_seq_len)}"'))
     return _apply(template_text, subs, "training template")
 
 
@@ -188,6 +192,10 @@ def parse_args():
     p.add_argument("--opponent_list", nargs="+", default=None,
                    help="Opponent characters. Required for --phase train/both.")
     p.add_argument("--main_training_steps", type=int, default=150_000_000)
+    p.add_argument("--vtrace_seq_len", type=int, default=None,
+                   help="Override the training template's VTRACE_SEQ_LEN (T) for all "
+                        "configs (spar arch only). Lower T => more critic updates/sec. "
+                        "Omit to keep the template default (64).")
     p.add_argument("--time", dest="sbatch_time", default="096:00:00",
                    help="#SBATCH --time for each training job (HH:MM:SS).")
     p.add_argument("--workdir", required=True,
@@ -286,7 +294,8 @@ def main():
         train_job_id = None
         if train_tpl is not None:
             text = render_training_slurm(train_tpl, cfg, args.player, args.opponent_list,
-                                         args.workdir, args.sbatch_time, args.main_training_steps)
+                                         args.workdir, args.sbatch_time, args.main_training_steps,
+                                         vtrace_seq_len=args.vtrace_seq_len)
             path = os.path.join(
                 args.out_dir,
                 f"main_training_spar_clr{_sanitize(_fmt_lr(cfg['c_lr']))}"
