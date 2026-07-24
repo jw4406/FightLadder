@@ -597,11 +597,77 @@ def _validate_duel_args(parser, args) -> None:
         parser.error("duel mode requires: " + " ".join(missing))
 
 
-def run_duel(args) -> None:
-    """Head-resolved N-round duel between two models, with win-rate + video.
+def _duel_state(ego_char, adv_char):
+    return (f"two_player/{ego_char}_left/"
+            f"Champion.Level1.{ego_char}Vs{adv_char}.2Player.state")
 
-    Mirrors duel.py's loading/head-resolution/round logic, but also opens a
-    PyAV writer and records every step, and derives a default output path.
+
+def _run_one_matchup(ego_char, adv_char, out_video, args, deterministic,
+                     ego_model, adv_model, ego_matchups, adv_matchups,
+                     ego_device, adv_device):
+    """Resolve heads for one (ego_char, adv_char), run N rounds, record a video,
+    return (win_rate, wins). Raises ValueError (from resolve_head_idx) if a SPAR
+    model has no head for this matchup -> caller skips the pair."""
+    matchup_key = f"{ego_char}Vs{adv_char}"
+    duel_state = _duel_state(ego_char, adv_char)
+
+    if args.ego_model_type in SPAR_FAMILY:
+        ego_head_idx = resolve_head_idx(ego_matchups, matchup_key)
+        ego_act = make_spar_ego_action_fn(ego_model, deterministic)
+    else:
+        ego_head_idx = None
+        ego_act = make_league_action_fn(ego_model, "left", deterministic)
+    if args.adv_model_type in SPAR_FAMILY:
+        adv_head_idx = resolve_head_idx(adv_matchups, matchup_key) // adv_model.envs_per_matchup
+        adv_act = make_spar_adv_action_fn(adv_model, adv_head_idx, deterministic)
+    else:
+        adv_head_idx = None
+        adv_act = make_league_action_fn(adv_model, "right", deterministic)
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_video)), exist_ok=True)
+    print(f"\nDuel: ego={args.ego_model_type}({ego_char}, head={ego_head_idx}) "
+          f"vs adv={args.adv_model_type}({adv_char}, head={adv_head_idx})  "
+          f"matchup={matchup_key}  rounds={args.num_rounds}")
+    print(f"Recording duel video to: {out_video}")
+
+    duel_env = env_generator(_duel_env_args(), STATE=[duel_state])
+    obs = duel_env.reset()
+    first = _first_frame(duel_env.render(mode="rgb_array"))
+    container, stream = _open_video_writer(out_video, first, args.fps)
+    _write_frame(container, stream, first)
+    wins = 0
+    for r in range(1, args.num_rounds + 1):
+        obs = duel_env.reset()
+        done = False
+        info = {}
+        while not done:
+            obs_ego = obs_as_tensor(obs, ego_device)
+            obs_adv = obs_as_tensor(obs, adv_device) if adv_model is not ego_model else obs_ego
+            obs, _reward, _reward_other, done, info = duel_env.step(
+                np.hstack([ego_act(obs_ego), adv_act(obs_adv)])
+            )
+            _write_frame(container, stream, _first_frame(duel_env.render(mode="rgb_array")))
+        info = info[0]
+        ego_won = bool(agent_win(info))
+        wins += int(ego_won)
+        print(f"  round {r}/{args.num_rounds}: ego_won={ego_won}  "
+              f"ego_hp={info.get('agent_hp')}  adv_hp={info.get('enemy_hp')}")
+    for packet in stream.encode():
+        container.mux(packet)
+    container.close()
+    duel_env.close()
+    win_rate = wins / args.num_rounds
+    print(f"final: ego_win_rate={win_rate:.4f}  ({wins}/{args.num_rounds})  matchup={matchup_key}")
+    return win_rate, wins
+
+
+def run_duel(args) -> None:
+    """Head-resolved N-round duel(s) between two models, with win-rate + video.
+
+    --ego_char/--adv_char accept multiple values: every ego char is dueled
+    against every adv char (cartesian product), one video + win-rate per
+    matchup, plus a summary table. Models are loaded once and reused.
+    A matchup the model lacks a head for is skipped with a warning.
     """
     if args.ego_side != "left":
         raise ValueError("Ego must be on the left side. --ego_side right is not allowed.")
@@ -611,12 +677,7 @@ def run_duel(args) -> None:
 
     deterministic = args.deterministic == "True"
     device = resolve_device(args.device)
-
-    matchup_key = f"{args.ego_char}Vs{args.adv_char}"
-    duel_state = (
-        f"two_player/{args.ego_char}_left/"
-        f"Champion.Level1.{args.ego_char}Vs{args.adv_char}.2Player.state"
-    )
+    ego_chars, adv_chars = args.ego_char, args.adv_char
 
     same_file = args.ego_model_file == args.adv_model_file
     if same_file and args.ego_model_type != args.adv_model_type:
@@ -625,126 +686,68 @@ def run_duel(args) -> None:
             "A single checkpoint cannot be two different model architectures."
         )
 
-    # ---- Load ego model & adv model ----
+    # ---- Load ego & adv models ONCE (league construction env uses first matchup) ----
+    first_state = _duel_state(ego_chars[0], adv_chars[0])
     if same_file:
         if args.ego_model_type in SPAR_FAMILY:
-            ego_model, ego_matchups = load_spar_family(
-                args.ego_model_type, args.ego_model_file, device
-            )
-            adv_model = ego_model
-            adv_matchups = ego_matchups
+            ego_model, ego_matchups = load_spar_family(args.ego_model_type, args.ego_model_file, device)
+            adv_model, adv_matchups = ego_model, ego_matchups
         else:  # league
-            ego_model = build_league_model(duel_state, device)
-            agent_dict = load_league_agent_dict(args.ego_model_file)
-            ego_model.set_parameters(agent_dict, exact_match=False, device=device)
-            adv_model = ego_model
-            ego_matchups = adv_matchups = []
+            ego_model = build_league_model(first_state, device)
+            ego_model.set_parameters(load_league_agent_dict(args.ego_model_file),
+                                     exact_match=False, device=device)
+            adv_model, ego_matchups, adv_matchups = ego_model, [], []
     else:
         if args.ego_model_type in SPAR_FAMILY:
-            ego_model, ego_matchups = load_spar_family(
-                args.ego_model_type, args.ego_model_file, device
-            )
+            ego_model, ego_matchups = load_spar_family(args.ego_model_type, args.ego_model_file, device)
         else:
-            ego_model = build_league_model(duel_state, device)
-            ego_dict = load_league_agent_dict(args.ego_model_file)
-            ego_model.set_parameters(filter_left_keys(ego_dict),
+            ego_model = build_league_model(first_state, device)
+            ego_model.set_parameters(filter_left_keys(load_league_agent_dict(args.ego_model_file)),
                                      exact_match=False, device=device)
             ego_matchups = []
-
         if args.adv_model_type in SPAR_FAMILY:
-            adv_model, adv_matchups = load_spar_family(
-                args.adv_model_type, args.adv_model_file, device
-            )
+            adv_model, adv_matchups = load_spar_family(args.adv_model_type, args.adv_model_file, device)
         else:
             adv_dict = load_league_agent_dict(args.adv_model_file)
             if args.ego_model_type == "league":
-                ego_model.set_parameters(filter_right_keys(adv_dict),
-                                         exact_match=False, device=device)
+                ego_model.set_parameters(filter_right_keys(adv_dict), exact_match=False, device=device)
                 adv_model = ego_model
             else:
-                adv_model = build_league_model(duel_state, device)
-                adv_model.set_parameters(filter_right_keys(adv_dict),
-                                         exact_match=False, device=device)
+                adv_model = build_league_model(first_state, device)
+                adv_model.set_parameters(filter_right_keys(adv_dict), exact_match=False, device=device)
             adv_matchups = []
-
-    # ---- Resolve heads (SPAR family only) ----
-    if args.ego_model_type in SPAR_FAMILY:
-        ego_head_idx = resolve_head_idx(ego_matchups, matchup_key)
-        ego_act = make_spar_ego_action_fn(ego_model, deterministic)
-    else:
-        ego_head_idx = None
-        ego_act = make_league_action_fn(ego_model, "left", deterministic)
-
-    if args.adv_model_type in SPAR_FAMILY:
-        adv_head_idx = resolve_head_idx(adv_matchups, matchup_key)
-        adv_head_idx = adv_head_idx // adv_model.envs_per_matchup
-        adv_act = make_spar_adv_action_fn(adv_model, adv_head_idx, deterministic)
-    else:
-        adv_head_idx = None
-        adv_act = make_league_action_fn(adv_model, "right", deterministic)
-
-    # ---- Build the duel env (single, non-vec) ----
-    duel_env = env_generator(_duel_env_args(), STATE=[duel_state])
-
-    # ---- Resolve output video path ----
-    if not args.output_video:
-        args.output_video = os.path.join(
-            "main", "videos",
-            f"duel_{args.ego_model_type}_{args.ego_char}_vs_"
-            f"{args.adv_model_type}_{args.adv_char}.mp4",
-        )
-    os.makedirs(os.path.dirname(os.path.abspath(args.output_video)), exist_ok=True)
 
     ego_device = (ego_model.device if hasattr(ego_model, "device") else device)
     adv_device = (adv_model.device if hasattr(adv_model, "device") else device)
 
-    print(
-        f"\nDuel: ego={args.ego_model_type}({args.ego_char}, head={ego_head_idx}) "
-        f"vs adv={args.adv_model_type}({args.adv_char}, head={adv_head_idx})  "
-        f"matchup={matchup_key}  rounds={args.num_rounds}  "
-        f"shared_instance={same_file}"
-    )
-    print(f"Recording duel video to: {args.output_video}")
+    # ---- Duel every (ego_char, adv_char) pair ----
+    total = len(ego_chars) * len(adv_chars)
+    if total > 1 and args.output_video:
+        print("[duel] multiple matchups -> --output_video ignored; using per-matchup paths.")
+    results, skipped = [], []
+    for ego_char in ego_chars:
+        for adv_char in adv_chars:
+            out_video = (args.output_video if (total == 1 and args.output_video)
+                         else os.path.join("main", "videos",
+                              f"duel_{args.ego_model_type}_{ego_char}_vs_"
+                              f"{args.adv_model_type}_{adv_char}.mp4"))
+            try:
+                win_rate, wins = _run_one_matchup(
+                    ego_char, adv_char, out_video, args, deterministic,
+                    ego_model, adv_model, ego_matchups, adv_matchups,
+                    ego_device, adv_device)
+            except ValueError as exc:
+                print(f"[duel] SKIP {ego_char}Vs{adv_char}: {exc}")
+                skipped.append((ego_char, adv_char))
+                continue
+            results.append((ego_char, adv_char, win_rate, wins))
 
-    # ---- Run rounds (record video + count wins) ----
-    obs = duel_env.reset()
-    first = _first_frame(duel_env.render(mode="rgb_array"))
-    container, stream = _open_video_writer(args.output_video, first, args.fps)
-    _write_frame(container, stream, first)
-
-    wins = 0
-    for r in range(1, args.num_rounds + 1):
-        obs = duel_env.reset()
-        done = False
-        info = {}
-        while not done:
-            obs_ego = obs_as_tensor(obs, ego_device)
-            obs_adv = obs_as_tensor(obs, adv_device) if adv_model is not ego_model else obs_ego
-            left_action = ego_act(obs_ego)
-            right_action = adv_act(obs_adv)
-            obs, _reward, _reward_other, done, info = duel_env.step(
-                np.hstack([left_action, right_action])
-            )
-            _write_frame(container, stream, _first_frame(duel_env.render(mode="rgb_array")))
-        info = info[0]
-        ego_won = bool(agent_win(info))
-        wins += int(ego_won)
-        print(
-            f"  round {r}/{args.num_rounds}: ego_won={ego_won}  "
-            f"ego_hp={info.get('agent_hp')}  adv_hp={info.get('enemy_hp')}"
-        )
-
-    for packet in stream.encode():
-        container.mux(packet)
-    container.close()
-    duel_env.close()
-
-    win_rate = wins / args.num_rounds
-    print(
-        f"\nfinal: ego_win_rate={win_rate:.4f}  ({wins}/{args.num_rounds})  "
-        f"matchup={matchup_key}  ego={args.ego_model_type}@{os.path.basename(args.ego_model_file)}  "
-        f"adv={args.adv_model_type}@{os.path.basename(args.adv_model_file)}"
-    )
+    # ---- Summary ----
+    print(f"\n==== duel summary (ego_win_rate over {args.num_rounds} rounds) ====")
+    for ego_char, adv_char, win_rate, wins in results:
+        print(f"  {ego_char:>8} vs {adv_char:<8}  {win_rate:.4f}  ({wins}/{args.num_rounds})")
+    for ego_char, adv_char in skipped:
+        print(f"  {ego_char:>8} vs {adv_char:<8}  SKIPPED (no head for matchup)")
 
 
 def main() -> None:
@@ -798,10 +801,11 @@ def main() -> None:
                         help="[duel mode] Absolute path to the ego model checkpoint.")
     parser.add_argument("--adv_model_file", type=str, default=None,
                         help="[duel mode] Absolute path to the adversary model checkpoint.")
-    parser.add_argument("--ego_char", choices=CHARACTERS, default=None,
-                        help="[duel mode] Protagonist character (left side).")
-    parser.add_argument("--adv_char", choices=CHARACTERS, default=None,
-                        help="[duel mode] Antagonist character (right side).")
+    parser.add_argument("--ego_char", choices=CHARACTERS, nargs="+", default=None,
+                        help="[duel mode] Protagonist character(s), left side. "
+                             "Multiple => every ego char is dueled vs every adv char.")
+    parser.add_argument("--adv_char", choices=CHARACTERS, nargs="+", default=None,
+                        help="[duel mode] Antagonist character(s), right side.")
     parser.add_argument("--num_rounds", type=int, default=None,
                         help="[duel mode] Number of rounds (episodes) to play.")
     parser.add_argument("--deterministic", choices=["True", "False"], default="False",
