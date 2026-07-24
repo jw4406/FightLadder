@@ -446,7 +446,7 @@ def _duel_env_args():
         render=False,
         enable_combo=True,
         null_combo=False,
-        transform_action=False,
+        transform_action=True,
     )
 
 
@@ -781,7 +781,7 @@ def main() -> None:
     parser.add_argument("--render", choices=["True", "False"], default="False")
     parser.add_argument("--enable_combo", choices=["True", "False"], default="True")
     parser.add_argument("--null_combo", choices=["True", "False"], default="False")
-    parser.add_argument("--transform_action", choices=["True", "False"], default="False")
+    parser.add_argument("--transform_action", choices=["True", "False"], default="True")
 
     # ---- Duel mode (ported from duel.py). When --ego_model_file /
     #      --adv_model_file are supplied, the script runs a head-resolved
@@ -863,24 +863,27 @@ def main() -> None:
     container, stream = _open_video_writer(args.output_video, first, args.fps)
 
     episodes_done = 0
-    episode_steps = 0
+    total_steps = 0
+    # Safety cap so a matchup that never terminates can't run forever
+    # (budget ~max_steps_per_episode per requested episode).
+    max_total_steps = args.episodes * args.max_steps_per_episode
     _write_frame(container, stream, first)
 
-    while episodes_done < args.episodes:
+    # Each sub-env is a different matchup and the VecEnv auto-resets them
+    # INDEPENDENTLY on done (SubprocVecEnv2P stores terminal_observation and
+    # resets that env only). So we DON'T manually reset the whole vec env when
+    # one matchup finishes -- that would cut the others off mid-episode. We just
+    # keep stepping, record the tiled frames, and count finished episodes across
+    # all envs until we hit --episodes (or the safety cap).
+    while episodes_done < args.episodes and total_steps < max_total_steps:
         clipped_action = _step_action(model, obs, model_type, model.device)
         obs, done = _extract_step_outputs(env.step(clipped_action))
-        frame = _first_frame(env.render(mode="rgb_array"))
-        _write_frame(container, stream, frame)
-
-        episode_steps += 1
-        if np.any(done) or episode_steps >= args.max_steps_per_episode:
-            episodes_done += 1
-            episode_steps = 0
-            print(f"Completed episode {episodes_done}/{args.episodes}")
-            if episodes_done < args.episodes:
-                obs = env.reset()
-                frame = _first_frame(env.render(mode="rgb_array"))
-                _write_frame(container, stream, frame)
+        _write_frame(container, stream, _first_frame(env.render(mode="rgb_array")))
+        total_steps += 1
+        n_finished = int(np.sum(done))
+        if n_finished:
+            episodes_done += n_finished
+            print(f"Completed {episodes_done}/{args.episodes} episodes (step {total_steps})")
 
     for packet in stream.encode():
         container.mux(packet)
