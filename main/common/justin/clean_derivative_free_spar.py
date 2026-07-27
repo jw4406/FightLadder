@@ -170,6 +170,7 @@ class CleanDerivativeFreeSPAR(PPO):
             vtrace_rho_bar: float = 1.0,
             vtrace_c_bar: float = 1.0,
             vtrace_keep_onpolicy_value: bool = True,
+            blend_adversary_heads: bool = False,
     ):
 
         self.matchups = [state2matchup(state) for state in state_list] if state_list is not None else None #This needs to happen before the super().__init__
@@ -255,6 +256,11 @@ class CleanDerivativeFreeSPAR(PPO):
         # the drift accumulated from stale replay. Safe because the async worker is
         # parked for the whole train() window (it is the sole value writer otherwise).
         self.vtrace_keep_onpolicy_value = bool(vtrace_keep_onpolicy_value)
+        # Opt-in: blend the multi-head adversary update so the shared dstb_net
+        # trunk gets one mean-over-heads step per batch instead of N sequential
+        # per-head steps (removes the ordering bias where later heads inherit
+        # earlier heads' trunk drift). Default False -> unchanged sequential path.
+        self.blend_adversary_heads = bool(blend_adversary_heads)
         self.vtrace_ego_replay = None
         self.vtrace_adv_replays = None
         self.vtrace_trainer = None
@@ -1475,6 +1481,152 @@ class CleanDerivativeFreeSPAR(PPO):
             adversary_buffers[i].returns = adversary_buffers[i].swap_and_flatten(adversary_buffers[i].returns)
         pass
 
+    def _train_adversary_blended(self, clip_range) -> None:
+        """Blended multi-head adversary update (opt-in via blend_adversary_heads).
+
+        The sequential path trains heads one-by-one, and each head's step moves
+        the SHARED dstb_net trunk, so later heads inherit earlier heads' drift.
+        Here we interleave all heads into every optimizer step: forward each head
+        on aligned minibatches, accumulate their gradients, then average ONLY the
+        shared trunk gradient over the N heads before a single dstb_optimizer
+        step. Per-head action nets keep full-rate grads (a head's forward touches
+        only its own action net -> no cross-head conflict). The KL early-stop uses
+        the mean approx-KL across heads, still measured vs the rollout baseline so
+        the trust region is preserved.
+
+        Loss math mirrors the sequential update_adversary path exactly; only the
+        step structure differs.
+
+        NOTE: the shared CNN features_extractor is owned by the value optimizer,
+        not dstb. Under V-trace it is off-loaded (do_onpolicy_value False) and
+        does not drift during train(). Under on-policy value it is stepped with
+        summed (not /N) grads here -- extend the /N to the value path if you run
+        non-V-trace and want the CNN blended too.
+        """
+        clip_range_vf = None
+        if self.clip_range_vf is not None:
+            clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
+
+        n_adv = int(self.num_adversaries)
+        entropy_losses, pg_losses, value_losses, clip_fractions = [], [], [], []
+        approx_kl_divs = []
+        do_onpolicy_value = (not self.vtrace_enabled) or self.vtrace_keep_onpolicy_value
+
+        # Shared adversary trunk = dstb_optimizer params minus the per-head
+        # action nets (dstb_action_net). Those trunk params get the mean grad
+        # over heads; the per-head action nets keep full-rate grads.
+        try:
+            _action_ids = {id(p) for p in self.policy.dstb_action_net.parameters()}
+        except AttributeError:
+            _action_ids = set()
+        trunk_params = [
+            p
+            for group in self.policy.dstb_optimizer.param_groups
+            for p in group["params"]
+            if id(p) not in _action_ids
+        ]
+
+        stop = False
+        for epoch in range(self.n_epochs):
+            # One minibatch generator per head; zip -> an aligned tuple per step.
+            gens = [self.adversary_buffers[i].get(self.batch_size) for i in range(n_adv)]
+            for batch_tuple in zip(*gens):
+                self.policy.ctrl_optimizer.zero_grad()
+                self.policy.dstb_optimizer.zero_grad()
+                if do_onpolicy_value:
+                    self.policy.value_optimizer.zero_grad()
+                    if hasattr(self.policy, "ego_value_optimizer"):
+                        self.policy.ego_value_optimizer.zero_grad()
+
+                head_kls = []
+                for i, rollout_data in enumerate(batch_tuple):
+                    actions = rollout_data.adv_actions
+                    if isinstance(self.action_space, _DiscreteTypes):
+                        actions = rollout_data.actions.long().flatten()
+                    side_flag = rollout_data.side_flags if self.use_mirror else None
+
+                    log_prob, entropy = self.policy.evaluate_adv_actions(
+                        rollout_data.observations, actions, buf_num=[i], side_flag=side_flag)
+                    values = self.policy.evaluate_states(
+                        rollout_data.observations, env_indices=rollout_data.env_indices,
+                        buf_num=[i], side_flag=side_flag)
+                    values = (-values).flatten()
+
+                    advantages = rollout_data.advantages
+                    if len(advantages) > 1:
+                        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+                    ratio = th.exp(log_prob - rollout_data.old_log_prob)
+                    policy_loss_1 = advantages * ratio
+                    policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
+                    policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
+                    pg_losses.append(policy_loss.item())
+                    clip_fractions.append(th.mean((th.abs(ratio - 1) > clip_range).float()).item())
+
+                    if clip_range_vf is None:
+                        values_pred = values
+                    else:
+                        values_pred = rollout_data.old_values + th.clamp(
+                            values - rollout_data.old_values, -clip_range_vf, clip_range_vf)
+                    value_loss = F.mse_loss(rollout_data.returns, values_pred)
+                    value_losses.append(value_loss.item())
+
+                    if entropy is None:
+                        entropy_loss = -th.mean(-log_prob)
+                    else:
+                        entropy_loss = -th.mean(entropy)
+                    entropy_losses.append(entropy_loss.item())
+
+                    if do_onpolicy_value:
+                        loss = policy_loss + self.dstb_ent_coef * entropy_loss + self.vf_coef * value_loss
+                    else:
+                        loss = policy_loss + self.dstb_ent_coef * entropy_loss
+
+                    with th.no_grad():
+                        log_ratio = log_prob - rollout_data.old_log_prob
+                        approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
+                    approx_kl_divs.append(approx_kl_div)
+                    head_kls.append(approx_kl_div)
+
+                    loss.backward()  # accumulate grads across heads
+
+                # Average ONLY the shared trunk gradient over the heads.
+                for p in trunk_params:
+                    if p.grad is not None:
+                        p.grad /= n_adv
+
+                _clip_params = [
+                    p
+                    for opt in (self.policy.ctrl_optimizer, self.policy.dstb_optimizer)
+                    for group in opt.param_groups
+                    for p in group["params"]
+                ]
+                th.nn.utils.clip_grad_norm_(_clip_params, self.max_grad_norm)
+
+                mean_kl = float(np.mean(head_kls)) if head_kls else 0.0
+                if self.target_kl is not None and mean_kl > 1.5 * self.target_kl:
+                    if self.verbose >= 1:
+                        print(f"blended adversary training stopped (mean kl {mean_kl:.3f})")
+                    stop = True
+                    break
+
+                self.policy.dstb_optimizer.step()
+                if do_onpolicy_value:
+                    self.policy.value_optimizer.step()
+            if stop:
+                break
+
+        self._n_updates += self.n_epochs
+        buf = self.adversary_buffers[0]
+        if th.is_tensor(buf.values):
+            explained_var = explained_variance(
+                buf.values.flatten().cpu().numpy(), buf.returns.flatten().cpu().numpy())
+        else:
+            explained_var = explained_variance(buf.values, buf.returns)
+        self.policy.num_adversaries = self.num_adversaries
+        self.logger.record("train/value_loss", np.mean(value_losses) if value_losses else 0.0)
+        self._log_leader_metrics(False, entropy_losses, pg_losses, approx_kl_divs, explained_var, clip_range)
+
     def train_standard(self, update_ego: bool = True, update_adversary: bool = True) -> None:
         self.ego_grads_autograd_order = []
         self.adv_grads_autograd_order = []
@@ -1509,6 +1661,13 @@ class CleanDerivativeFreeSPAR(PPO):
         # train for n_epochs epochs
         num_runs_count = 1 if update_ego else self.num_adversaries
         approx_kl_divs = []
+        # Opt-in blended multi-head adversary update (default off -> the
+        # sequential per-head path below is unchanged). Only meaningful with
+        # more than one adversary head.
+        if (update_adversary and getattr(self, "blend_adversary_heads", False)
+                and int(self.num_adversaries) > 1):
+            self._train_adversary_blended(clip_range)
+            return
         for i in range(num_runs_count):
             first = True
             if i == 1:

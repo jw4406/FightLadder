@@ -31,6 +31,10 @@ MAIN_TRAINING_STEPS="150000000"
 # default (64). Lower it (e.g. 16 or 32) for cheaper V-trace forwards => more
 # critic updates/sec, to help the critic track a fast adversary.
 VTRACE_SEQ_LEN=""
+# Blend the multi-head adversary trunk update (spar arch only). Empty => keep
+# template default ("False" = sequential). Set "True" for one mean-over-heads
+# trunk step per batch (removes the later-matchup ordering bias).
+BLEND_ADVERSARY_HEADS=""
 TRAIN_TIME="096:00:00"
 BR_JOB_TIME="096:00:00"                   # orchestrator-job walltime (>= training)
 
@@ -78,4 +82,5 @@ CMD=(
 )
 if [ "${DISCOVER}" = "True" ]; then CMD+=(--discover); fi
 if [ -n "${VTRACE_SEQ_LEN}" ]; then CMD+=(--vtrace_seq_len "${VTRACE_SEQ_LEN}"); fi
+if [ -n "${BLEND_ADVERSARY_HEADS}" ]; then CMD+=(--blend_adversary_heads "${BLEND_ADVERSARY_HEADS}"); fi
 "${CMD[@]}"

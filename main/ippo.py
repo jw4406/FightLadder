@@ -717,6 +717,7 @@ def main(args):
                 vtrace_enabled=True,
                 vtrace_replay_capacity=15000,
                 vtrace_seq_len=args.vtrace_seq_len,
+                blend_adversary_heads=(args.blend_adversary_heads == 'True'),
             )
         elif model_arch_type == "ippo":
             finetune_model = CleanDerivativeFreeSPARIPPO(
@@ -1080,6 +1081,13 @@ if __name__ == "__main__":
     parser.add_argument("--vtrace_seq_len", type=int, default=None, required=False,
                         help="V-trace worker sequence length T (spar arch only). "
                              "None => class default min(n_steps//4, 64).")
+    # Blend the multi-head adversary update so the shared dstb_net trunk gets one
+    # mean-over-heads step per batch instead of N sequential per-head steps
+    # (removes the ordering bias where later matchups inherit earlier ones' trunk
+    # drift). spar arch only; 'False' => unchanged sequential behavior.
+    parser.add_argument("--blend_adversary_heads", choices=['True', 'False'], default='False', required=False,
+                        help="Blend multi-head adversary trunk update (spar arch only). "
+                             "'False' => unchanged sequential per-head update.")
     parser.add_argument("--ego_style", type=str, help="Ego style", default="learning", required=True, choices=["learning", "zero_action", "random_action"])
     parser.add_argument("--adv_style", type=str, help="Adv style", default="learning", required=True, choices=["learning", "zero_action", "random_action"])
     parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-4, required=True)

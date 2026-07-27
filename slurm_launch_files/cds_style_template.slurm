@@ -83,6 +83,9 @@ NUM_ENV_STEPS="1024"
 # V-trace worker sequence length T (spar arch only). "64" reproduces the prior
 # default at NUM_ENV_STEPS>=256; lower it (e.g. 16/32) for more critic updates/sec.
 VTRACE_SEQ_LEN="64"
+# Blend the multi-head adversary trunk update (spar arch only). "False" keeps the
+# unchanged sequential per-head update; "True" gives one mean-over-heads trunk step.
+BLEND_ADVERSARY_HEADS="False"
 EGO_STYLE="learning"
 ADV_STYLE="learning"
 ENVS_PER_MATCHUP="2"
@@ -135,6 +138,7 @@ for i in $(seq 1 ${NUM_WORKERS}); do
 	--total_timesteps "${TOTAL_TIMESTEPS}"
         --num_env_steps "${NUM_ENV_STEPS}"
         --vtrace_seq_len "${VTRACE_SEQ_LEN}"
+        --blend_adversary_heads "${BLEND_ADVERSARY_HEADS}"
         --ego_style "${EGO_STYLE}"
         --adv_style "${ADV_STYLE}"
         --envs_per_matchup "${ENVS_PER_MATCHUP}"

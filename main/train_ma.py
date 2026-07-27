@@ -387,7 +387,7 @@ def main():
         if args.fsp_league:
             league = FSPLeague(args=args, initial_agents=initial_agents, constructor=constructor, payoff=shared_payoff, main_agents=1)
         elif args.psro_league:
-            league = PSROLeague(args=args, initial_agents=initial_agents, constructor=constructor, payoff=shared_payoff, main_agents=1)
+            league = PSROLeague(args=args, initial_agents=initial_agents, constructor=constructor, payoff=shared_payoff, main_agents=1, state_names=state_names)
         else:
             league = League(args=args, initial_agents=initial_agents, constructor=constructor, payoff=shared_payoff, main_agents=1, main_exploiters=1, league_exploiters=2, state_names=state_names)
         #TODO: DEBUGGING ONLY!!! This is serial method for debugging instead of multipcroessing.

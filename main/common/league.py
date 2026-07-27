@@ -1014,17 +1014,63 @@ class PSROLeague(League):
                 initial_agents,
                 constructor,
                 payoff=None,
-                main_agents=1):
+                main_agents=1,
+                state_names=None):
         if payoff is None:
             self._payoff = Payoff()
         else:
             self._payoff = payoff
         self._learning_agents = []
-        for side in initial_agents:
+        if state_names is None:
+            state_names = {}
+
+        left_state = next(iter(state_names.values()), None)
+
+        # Left side: single global PSRO best-responder (mirrors League's single
+        # main agent). PSRO has no exploiter roles -- its opponent distribution
+        # is the meta-Nash mixture over historicals, not PFSP + exploiters.
+        left_key = _matchup_key(0, "left", "all")
+        for idx in range(main_agents):
+            main_agent = PSROPlayer(
+                _agent_name("PSRO", idx, "left", left_key),
+                "left",
+                constructor,
+                args,
+                initial_agents["left"],
+                self._payoff,
+                matchup_key=left_key,
+                matchup_left="left",
+                matchup_right="all",
+                matchup_index=0,
+                state_name=left_state,
+            )
+            self._learning_agents.append(main_agent)
+            self.add_player_with_evaluation(main_agent.checkpoint())
+
+        # Right side: one PSRO best-responder per matchup character (mirrors
+        # League), instead of handing the whole right dict to a single player.
+        for match_idx, (raw_key, model) in enumerate(initial_agents["right"].items()):
+            left_char, right_char = _parse_matchup_from_raw_key(raw_key)
+            matchup_key = _matchup_key(match_idx, left_char, right_char)
+            right_state = state_names.get(raw_key)
+
             for idx in range(main_agents):
-                main_agent = PSROPlayer(f"PSRO{idx}_{side}", side, constructor, args, initial_agents[side], self._payoff)
+                main_agent = PSROPlayer(
+                    _agent_name("PSRO", idx, "right", matchup_key),
+                    "right",
+                    constructor,
+                    args,
+                    model,
+                    self._payoff,
+                    matchup_key=matchup_key,
+                    matchup_left=left_char,
+                    matchup_right=right_char,
+                    matchup_index=match_idx,
+                    state_name=right_state,
+                )
                 self._learning_agents.append(main_agent)
                 self.add_player_with_evaluation(main_agent.checkpoint())
+
         for player in self._learning_agents:
             self.add_player(player)
     
