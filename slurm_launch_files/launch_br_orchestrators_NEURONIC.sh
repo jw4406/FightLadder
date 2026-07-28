@@ -20,6 +20,7 @@ EXPLOITERS_PER_JOB=1              # >1 co-locates N exploiters on one GPU
 GPU_MEM_FRACTION=0.45             # per-process VRAM cap (used only when >1); keep N*fraction <= ~0.85
 PACK_ACROSS_CHECKPOINTS='False'   # 'True' packs exploiters from DIFFERENT checkpoints (fills GPU when <N specs/ckpt)
 PACK_FLUSH_TIMEOUT=300            # partial-pack timeout in seconds (cross-checkpoint mode only)
+RESOURCE_SCALE=1                  # absolute cpu multiplier for PACKED jobs (cpu only; mem still scales by N); 1 = template base
 
 WORKDIR=/n/fs/magics
 MAIN_TRAINING_DIR=10852202
@@ -40,6 +41,7 @@ DEDICATED_CMD=(
     --gpu_mem_fraction "$GPU_MEM_FRACTION"
     --pack_across_checkpoints "$PACK_ACROSS_CHECKPOINTS"
     --pack_flush_timeout "$PACK_FLUSH_TIMEOUT"
+    --resource_scale "$RESOURCE_SCALE"
     --main_training_dir "$MAIN_TRAINING_DIR"
     --workdir "$WORKDIR"
     --todo_dir "$TASK_BASE/todo"

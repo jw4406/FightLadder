@@ -68,15 +68,17 @@ from br_ws_concurrency import count_active_local_jobs
 
 
 # ----------------------------- per-task processing -----------------------------
-def _scale_resources(template_text: str, k: int) -> str:
-    """Scale a packed sbatch's HOST resources by K: multiply the template's
-    #SBATCH --cpus-per-task and --mem by the number of co-located exploiters.
-    The --gres (GPU) line is deliberately left as-is: the K processes SHARE
-    one GPU (that's the point of packing)."""
+def _scale_resources(template_text: str, cpu_k: int, mem_k: int) -> str:
+    """Scale a packed sbatch's HOST resources: multiply the template's
+    #SBATCH --cpus-per-task by cpu_k and --mem by mem_k. The --gres (GPU) line
+    is deliberately left as-is: the K processes SHARE one GPU (that's the point
+    of packing). cpu_k is the absolute --resource_scale (default 1, so cpus stay
+    at the template base); mem_k is the co-located exploiter count, so per-process
+    memory still scales with the pack."""
     text = re.sub(r"(?m)^(#SBATCH --cpus-per-task=)(\d+)",
-                  lambda m: f"{m.group(1)}{int(m.group(2)) * k}", template_text)
+                  lambda m: f"{m.group(1)}{int(m.group(2)) * cpu_k}", template_text)
     text = re.sub(r"(?m)^(#SBATCH --mem=)(\d+)([A-Za-z]+)",
-                  lambda m: f"{m.group(1)}{int(m.group(2)) * k}{m.group(3)}", text)
+                  lambda m: f"{m.group(1)}{int(m.group(2)) * mem_k}{m.group(3)}", text)
     return text
 
 
@@ -161,7 +163,7 @@ def _submit_packed_groups(*, specs, k, gpu_mem_fraction, args, slurm_log_dir,
         sbatch_path = os.path.join(slurm_log_dir, f"{job_name}.sbatch")
         if template_text:
             render_template_sbatch(
-                template_text=_scale_resources(template_text, actual_k),
+                template_text=_scale_resources(template_text, int(args.resource_scale), actual_k),
                 sbatch_path=sbatch_path, job_name=job_name, out_log=out_log,
                 err_log=err_log, python_cmd=block,
                 extra_sbatch_lines=extra_sbatch_lines,
@@ -176,7 +178,7 @@ def _submit_packed_groups(*, specs, k, gpu_mem_fraction, args, slurm_log_dir,
             write_sbatch_script(
                 sbatch_path=sbatch_path, job_name=job_name,
                 time_limit=args.slurm_time, mem=_scale_mem(args.slurm_mem, actual_k),
-                gres=args.slurm_gres, cpus_per_task=args.slurm_cpus_per_task * actual_k,
+                gres=args.slurm_gres, cpus_per_task=args.slurm_cpus_per_task * int(args.resource_scale),
                 out_log=out_log, err_log=err_log, repo_dir=repo_dir,
                 env_setup=args.env_setup, python_cmd=block,
                 extra_sbatch_lines=extra_sbatch_lines, workdir=args.workdir,
@@ -472,7 +474,7 @@ def _submit_cross_pack(group, args, template_text, group_idx, slurm_log_base,
     sbatch_path = os.path.join(log_dir, f"{job_name}.sbatch")
     if template_text:
         render_template_sbatch(
-            template_text=_scale_resources(template_text, k),
+            template_text=_scale_resources(template_text, int(args.resource_scale), k),
             sbatch_path=sbatch_path, job_name=job_name, out_log=out_log,
             err_log=err_log, python_cmd=block, extra_sbatch_lines=extra_sbatch_lines,
             extra_placeholders={"SBATCH_TIME": args.slurm_time, "WS_WORKDIR": args.workdir,
@@ -482,7 +484,7 @@ def _submit_cross_pack(group, args, template_text, group_idx, slurm_log_base,
         write_sbatch_script(
             sbatch_path=sbatch_path, job_name=job_name, time_limit=args.slurm_time,
             mem=_scale_mem(args.slurm_mem, k), gres=args.slurm_gres,
-            cpus_per_task=args.slurm_cpus_per_task * k, out_log=out_log, err_log=err_log,
+            cpus_per_task=args.slurm_cpus_per_task * int(args.resource_scale), out_log=out_log, err_log=err_log,
             repo_dir=repo_dir, env_setup=args.env_setup, python_cmd=block,
             extra_sbatch_lines=extra_sbatch_lines, workdir=args.workdir,
             main_training_dir=args.main_training_dir,
@@ -613,6 +615,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pack_flush_timeout", type=float, default=300.0,
                         help="Max seconds the oldest buffered spec waits before a partial "
                              "pack is submitted (cross-checkpoint mode only).")
+    parser.add_argument("--resource_scale", type=int, default=1,
+                        help="Absolute multiplier for a PACKED job's #SBATCH --cpus-per-task "
+                             "(cpu only; --mem still scales by the co-located exploiter count). "
+                             "Default 1 = template base cpus. Set independently of "
+                             "--exploiters_per_job, e.g. --resource_scale 6.")
     return parser
 
 

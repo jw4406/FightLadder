@@ -54,6 +54,10 @@ GPU_MEM_FRACTION="0.45"
 # GPU (needed to fill the card when a config has only 1 replicate = 2 specs/ckpt).
 PACK_ACROSS_CHECKPOINTS="False"
 PACK_FLUSH_TIMEOUT="300"
+# Absolute cpu multiplier for PACKED BR jobs (cpu only; mem still scales by the
+# co-located exploiter count). 1 = template base cpus. Set independently of
+# EXPLOITERS_PER_JOB, e.g. RESOURCE_SCALE="6".
+RESOURCE_SCALE="1"
 
 CMD=(
     python "${SCRIPT_DIR}/lr_ratio_sweep.py"
@@ -78,6 +82,7 @@ CMD=(
     --gpu_mem_fraction "${GPU_MEM_FRACTION}"
     --pack_across_checkpoints "${PACK_ACROSS_CHECKPOINTS}"
     --pack_flush_timeout "${PACK_FLUSH_TIMEOUT}"
+    --resource_scale "${RESOURCE_SCALE}"
     --dry_run "${DRY_RUN}"
 )
 if [ "${DISCOVER}" = "True" ]; then CMD+=(--discover); fi

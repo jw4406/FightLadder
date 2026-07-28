@@ -155,7 +155,8 @@ def render_orchestrator_job(template_text, cfg, cluster, workdir, br_job_time,
                             slurm_log_dir, br_training_steps, exploiter_save_freq,
                             step_stride, periodic_eval_freq, br_slurm_time, orch_dry_run,
                             exploiters_per_job, gpu_mem_fraction,
-                            pack_across_checkpoints, pack_flush_timeout):
+                            pack_across_checkpoints, pack_flush_timeout,
+                            resource_scale=1):
     """Substitute per-config values into the CPU-only BR-orchestrator job template.
     Paths derive from $WORKDIR/$MAIN_TRAINING_DIR inside the template."""
     subs = [
@@ -176,6 +177,7 @@ def render_orchestrator_job(template_text, cfg, cluster, workdir, br_job_time,
         (r'(?m)^GPU_MEM_FRACTION=".*"$', f'GPU_MEM_FRACTION="{gpu_mem_fraction}"'),
         (r'(?m)^PACK_ACROSS_CHECKPOINTS=".*"$', f'PACK_ACROSS_CHECKPOINTS="{pack_across_checkpoints}"'),
         (r'(?m)^PACK_FLUSH_TIMEOUT=".*"$', f'PACK_FLUSH_TIMEOUT="{pack_flush_timeout}"'),
+        (r'(?m)^RESOURCE_SCALE=".*"$', f'RESOURCE_SCALE="{resource_scale}"'),
     ]
     return _apply(template_text, subs, "BR orchestrator template")
 
@@ -236,6 +238,9 @@ def parse_args():
     p.add_argument("--pack_flush_timeout", type=float, default=300.0,
                    help="Max seconds the oldest buffered spec waits before a partial "
                         "pack (cross-checkpoint mode only).")
+    p.add_argument("--resource_scale", type=int, default=1,
+                   help="Absolute cpu multiplier for PACKED BR jobs (cpu only; mem still "
+                        "scales by the co-located count). Default 1 = template base cpus.")
     # --- plumbing ---
     p.add_argument("--phase", choices=["train", "br", "both"], default="both")
     p.add_argument("--discover", action="store_true",
@@ -328,7 +333,8 @@ def main():
                 args.slurm_log_dir, args.br_training_steps, args.exploiter_save_freq,
                 args.step_stride, args.periodic_eval_freq, args.br_slurm_time,
                 args.br_orch_dry_run, args.exploiters_per_job, args.gpu_mem_fraction,
-                args.pack_across_checkpoints, args.pack_flush_timeout)
+                args.pack_across_checkpoints, args.pack_flush_timeout,
+                resource_scale=args.resource_scale)
             path = os.path.join(args.out_dir, f"br_orchestrator_{tag}.slurm")
             with open(path, "w") as f:
                 f.write(text)
