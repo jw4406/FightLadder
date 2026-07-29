@@ -170,7 +170,7 @@ class CleanDerivativeFreeSPAR(PPO):
             vtrace_rho_bar: float = 1.0,
             vtrace_c_bar: float = 1.0,
             vtrace_keep_onpolicy_value: bool = True,
-            blend_adversary_heads: bool = False,
+            blend_adversary_heads: bool = True,
     ):
 
         self.matchups = [state2matchup(state) for state in state_list] if state_list is not None else None #This needs to happen before the super().__init__
@@ -1497,11 +1497,16 @@ class CleanDerivativeFreeSPAR(PPO):
         Loss math mirrors the sequential update_adversary path exactly; only the
         step structure differs.
 
-        NOTE: the shared CNN features_extractor is owned by the value optimizer,
-        not dstb. Under V-trace it is off-loaded (do_onpolicy_value False) and
-        does not drift during train(). Under on-policy value it is stepped with
-        summed (not /N) grads here -- extend the /N to the value path if you run
-        non-V-trace and want the CNN blended too.
+        NOTE: the adversary's OWN feature extractor (pi_dstb_features_extractor)
+        lives in dstb_optimizer alongside dstb_net, so trunk_params already
+        includes it -- the /N averages the adversary's full shared stack (CNN +
+        MLP trunk), not just the MLP. The value function's separate CNN
+        (vf_features_extractor) is not an adversary-shared layer and is not
+        blended here. When do_onpolicy_value is True the value optimizer is
+        stepped in this same update (its grads summed over heads, not /N); those
+        params are clipped via the do_onpolicy_value branch below, matching the
+        sequential path (the async V-trace worker is parked during train(), so
+        this thread owns the value grads and may clip them).
         """
         clip_range_vf = None
         if self.clip_range_vf is not None:
@@ -1595,13 +1600,22 @@ class CleanDerivativeFreeSPAR(PPO):
                     if p.grad is not None:
                         p.grad /= n_adv
 
-                _clip_params = [
-                    p
-                    for opt in (self.policy.ctrl_optimizer, self.policy.dstb_optimizer)
-                    for group in opt.param_groups
-                    for p in group["params"]
-                ]
-                th.nn.utils.clip_grad_norm_(_clip_params, self.max_grad_norm)
+                # Clip parity with the sequential path. When the on-policy value
+                # update runs here the async V-trace worker is parked, so this
+                # thread owns the value grads -> clip ALL params (incl value_net +
+                # its CNN), which are stepped below. In pure-offload
+                # (do_onpolicy_value False) the worker writes value grads on
+                # another thread, so clip only ctrl+dstb to avoid racing them.
+                if do_onpolicy_value:
+                    th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                else:
+                    _clip_params = [
+                        p
+                        for opt in (self.policy.ctrl_optimizer, self.policy.dstb_optimizer)
+                        for group in opt.param_groups
+                        for p in group["params"]
+                    ]
+                    th.nn.utils.clip_grad_norm_(_clip_params, self.max_grad_norm)
 
                 mean_kl = float(np.mean(head_kls)) if head_kls else 0.0
                 if self.target_kl is not None and mean_kl > 1.5 * self.target_kl:
@@ -1797,6 +1811,7 @@ class CleanDerivativeFreeSPAR(PPO):
                         stop_policy_training = True
                         if self.verbose >= 1:
                             print(f"training stopped at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
+                            print("training: %s" % "ego" if update_ego else "adv")
                         break
 
                     # Optimization step
@@ -1845,8 +1860,15 @@ class CleanDerivativeFreeSPAR(PPO):
                             self.policy.value_optimizer.step()
                     #self.policy.value_optimizer.step()
 
-                #if not continue_training:
-                #    break
+                # Trust-region hard stop (parity with the blended path + standard
+                # PPO): if the KL early-stop fired on the last batch, break the
+                # epoch loop too -- not just the current epoch's remaining batches
+                # -- so target_kl bounds the whole per-update policy change, and the
+                # ego (sequential path) stops at the same point the blended
+                # adversary does. Without this the ego drifts modestly past
+                # target_kl and outpaces the adversary near the clamp.
+                if stop_policy_training:
+                    break
         #self._update_schedulers(step_ego=update_ego, step_adv=(not update_ego), step_val=True, skip=not self.use_lr_annealing)
         # check location in train derivative free
         self._n_updates += self.n_epochs
@@ -1863,7 +1885,10 @@ class CleanDerivativeFreeSPAR(PPO):
         if hasattr(self.policy, "ego_value_optimizer") and update_ego:
             self.logger.record("train/ego_value_loss", np.mean(value_losses))
         #self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
-        #self.logger.record("train/clip_fraction", np.mean(clip_fractions))
+        if update_adversary:
+            self.logger.record("train/adv_clip_fraction", np.mean(clip_fractions))
+        else:
+            self.logger.record("train/ego_clip_fraction", np.mean(clip_fractions))
         #self.logger.record("train/loss", loss.item())
         #self.logger.record("train/explained_variance", explained_var)
         #if hasattr(self.policy, "log_std"):

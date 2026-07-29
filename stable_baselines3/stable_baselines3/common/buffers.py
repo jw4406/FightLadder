@@ -765,7 +765,11 @@ class Q_RolloutBuffer(RolloutBuffer):
             self.full = True
     def get(self, batch_size: Optional[int] = None) -> Generator[RolloutBufferSamples, None, None]:
         assert self.full, "Buffer is not full"
-        np.random.seed(67)
+        # NOTE: intentionally no np.random.seed() here. A fixed seed made every
+        # get() call (and thus every PPO epoch) reuse the *identical* minibatch
+        # partition -- defeating the per-epoch reshuffle PPO relies on -- and
+        # clobbered the process-global NumPy RNG mid-training. Draw from the
+        # current global RNG so each pass reshuffles independently.
         indices = np.random.permutation(self.buffer_size * self.n_envs)
         #indices = [12, 14, 28, 38, 91, 92, 93, 94, 95, 96, 97, 98, 99, 17]
         #indices = list(range(self.buffer_size * self.n_envs))

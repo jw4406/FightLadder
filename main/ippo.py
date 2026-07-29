@@ -689,7 +689,7 @@ def main(args):
                 verbose=2,
                 n_steps=args.num_env_steps,
                 batch_size=args.training_batch_size,
-                n_epochs=10,
+                n_epochs=4,
                 state_list=state_list,
                 envs_per_matchup=args.envs_per_matchup,
                 env_generator_func=env_generator,
@@ -1085,7 +1085,7 @@ if __name__ == "__main__":
     # mean-over-heads step per batch instead of N sequential per-head steps
     # (removes the ordering bias where later matchups inherit earlier ones' trunk
     # drift). spar arch only; 'False' => unchanged sequential behavior.
-    parser.add_argument("--blend_adversary_heads", choices=['True', 'False'], default='False', required=False,
+    parser.add_argument("--blend_adversary_heads", choices=['True', 'False'], default='True', required=False,
                         help="Blend multi-head adversary trunk update (spar arch only). "
                              "'False' => unchanged sequential per-head update.")
     parser.add_argument("--ego_style", type=str, help="Ego style", default="learning", required=True, choices=["learning", "zero_action", "random_action"])
