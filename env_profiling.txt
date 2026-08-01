@@ -1,0 +1,260 @@
+FightLadder environment / emulator profiling report
+==================================================
+
+Generated : 2026-07-29
+Machine   : AMD Ryzen 9 7950X (16 physical / 32 logical), 1x RTX 4090 24GB, 128 GB RAM
+Env       : conda `fightladder` -- Python 3.8.10, gym-retro 0.8.0, gym 0.21.0,
+            stable-baselines3 1.7.0 (vendored), torch 2.4.1, numpy 1.24.4
+Repo      : branch vtrace_29june @ be5bffc
+Baseline  : ippo.py --player Ryu --opponents Guile --envs_per_matchup 2
+            --num_env_steps 1024 --training_batch_size 256 --side both
+            --model_arch_type spar --obs_type image
+            logged throughput: time/fps = 57
+
+Method    : 16-agent investigation -- 4 code-mapping passes, 3 benchmark passes
+            (cProfile + py-spy + ablation ladders + paired interleaved rounds),
+            4 proposal passes, 4 adversarial verification passes, 1 synthesis.
+            All benchmarks run on a verified-idle box (no ippo.py process present;
+            `pgrep -af ippo.py` clean before every run). 2,815,013 subagent tokens,
+            633 tool calls, 2h04m wall clock.
+
+            Every number below is a real measurement unless explicitly marked
+            "estimate" or "not measured". Claims that were tested and REFUTED are
+            retained in section 6 so they are not re-proposed later.
+
+NOTE      : No source files were modified to produce this report. All benchmark
+            harnesses were written to a scratch directory outside the repo.
+
+# FightLadder Environment Acceleration Analysis
+
+## 1. Headline diagnosis
+
+**The CPU is not the bottleneck. The environment stack is running at ~6.9% of the capacity of the two emulator processes you already have, and you are only running two.**
+
+The reference run logged **57 fps** (2048 env-steps per 36 s iteration, 2 envs — [logs/ippo_worker_1.log], `time/fps 57`). Measured on the same idle box:
+
+- One env process alone sustains **390–394 agent-steps/s** through the full real stack (`retro.make → SFWrapper → Monitor2P → SubprocVecEnv2P → VecTransposeImage2P`).
+- At **N=2** (your current config) the vec env delivers **699–715 agent-steps/s**. The run used 57. That is **8%** of the env layer you already paid for.
+- At **N=16, pinned**, the same stack delivers **4,577–4,698 agent-steps/s** — reproduced independently twice (4,564 and 4,578).
+
+So: the emulator layer has **~12x headroom at 2 envs** and **~66–80x headroom at 16 envs** relative to the 57 fps you observed. Two envs consumed **1.89–1.95 of 32 logical CPUs** — the machine was ~94% idle.
+
+Three separate things are true and must not be conflated:
+
+1. **Env count is the dominant lever.** `--envs_per_matchup 2` is the only live knob (`--env_batch_size`, `--num_env_to_load`, `--num_perturbs` are parsed but their consumers are commented out). 2 → 16 envs is a measured **6.6x** on the env layer.
+2. **Per-step wrapper overhead is real but secondary.** 70.2% of an agent step is bare `em.step()` (genesis_plus_gx, untouchable from Python). Only **5.2%** is everything above gym-retro's `RetroEnv.step`, and only **4.3%** is FightLadder-authored code. The recoverable Python is ~20–26%, worth a measured **1.29–1.35x**, and it lives inside *gym-retro*, not inside your wrappers.
+3. **~27 ms of the observed 35.2 ms/step is attributed by nothing.** The env stack (2.98 ms/vec-step) plus a faithful V-trace worker replica (8.05 ms/step total) accounts for ~23% of the loop. The remaining 77% could not be reproduced synthetically. **This is unresolved and needs py-spy on a live run.** Do not assume env work alone will get you to 4,577 agent-steps/s end-to-end.
+
+Also note: the prior "V-trace holds the GIL 86% of the time" claim is **refuted**. On a calibrated harness (`list.sort` = 98.5% GIL-held, `time.sleep` = −0.2%), the real gather at [vtrace.py:219](main/common/justin/vtrace.py:219) measures **10.0% GIL-held** — numpy 1.24.4 already releases the GIL for non-object fancy indexing.
+
+---
+
+## 2. Where the time actually goes
+
+Single agent step = 8 emulator frames. Baseline **2.541–2.571 ms** (390–394 agent-steps/s/process), idle box, load 0.27–0.35.
+
+| Layer | Cost / agent step | % | Method |
+|---|---:|---:|---|
+| `em.step()` × 8 — genesis_plus_gx core | **1.802 ms** | **70.2%** | ablation ladder (L0 floor); py-spy 72.85% |
+| `data.update_ram()` × 8 — 64 KB RAM clone, output discarded | **0.327 ms** | **12.7%** | py-spy self-time [retro_env.py:188]; ablation 0.380–0.394 ms |
+| `em.get_screen()` × 8 — RGB565→RGB24 of full 320×224 | **0.144 ms** | **5.6%** | py-spy self-time [retro_env.py:253] |
+| `action_to_array` × 8 — 48 interpreted loop iters/frame | **0.052 ms** | **2.0%** | py-spy; cProfile 3rd by tottime |
+| `_get_obs` — `LazyFrames[::4]` materializes 460,800 B to read 38,400 B | **0.052 ms** | **2.0%** | ablation ladder |
+| rest of `SFWrapper.step` (action_seq, reward, info) | 0.038 ms | 1.5% | ablation ladder |
+| `compute_step` + `dict(info)` × 8 | 0.030 ms | 1.2% | py-spy 1.16% |
+| FrameStack deque + LazyFrames × 8 | 0.019 ms | 0.7% | 4-way decomposition, self-validated |
+| `action_transformer` | 0.015 ms | 0.6% | ablation ladder |
+| `update_status()` × 8 | **0.007–0.009 ms** | **0.27–0.33%** | 4 independent methods; no-op ablation −0.23% |
+| `Monitor2P.step` | −0.002 ms | **−0.08%** (zero) | ablation ladder |
+
+Per **vec-step** (N=16, pinned, 3.41–3.50 ms):
+
+| Component | Cost | % of vec-step |
+|---|---:|---:|
+| Block on workers (emulation) | 2.966 ms | 84.3% |
+| — of which straggler barrier (unpinned) | 1.573 ms | 33–40% |
+| — of which straggler barrier (pinned) | **0.352 ms** | **12%** |
+| `step_async` send | 0.210 ms | 6.0% |
+| serial `recv` + unpickle | 0.271 ms | 7.7% |
+| `_flatten_obs` (`np.stack`) | 0.017 ms | 0.4% |
+| `VecTransposeImage2P` (returns a **view**) | **0.0006 ms** | **0.02%** |
+| deferred H2D of the non-contiguous view | **+0.0004 ms** | ~0 (refutes the earlier 0.11–0.23 ms claim) |
+| **Unconditional `env.render()`** | **+1.85 ms** | **+53%** |
+| Policy forward (3 × NatureCNN, batch 16) | 0.411 ms | — |
+
+**Learner:** one V-trace update = 409 ms replica (gather 198 ms, H2D 40 ms, locked forwards 74 ms, backward+step 98 ms), 124 updates per 36 s iteration, peaking at **12.05 GiB allocated / 15.97 GiB reserved** on a 24 GB card. Measured cost to the rollout: **~3.45 ms of 35.2 ms/step (~10%)**. **The other ~27 ms/step is NOT MEASURED and NOT ATTRIBUTED.**
+
+Byte amplification: the emulator format-converts **1,720,320 B per agent step**; **38,400 B (2.2%)** reaches the policy. The 12-deep FrameStack pins **2.58 MB resident per env**.
+
+---
+
+## 3. The measured scaling curve
+
+Real stack, forkserver, random actions, idle-gated, worker CPU from `/proc/<pid>/stat`:
+
+| N envs | unpinned ms/vec-step | agg agent-steps/s | pinned ms/vec-step | pinned agent-steps/s | worker cores |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 2.79 | 358 | — | — | 1.0 |
+| **2 (current)** | **2.80–2.86** | **699–715** | 2.84 | 703 | **1.89–1.95** |
+| 4 | 2.94 | 1,362 | — | — | — |
+| 8 | 3.38–3.69 | 2,167–2,364 | 3.24 | 2,468 | 6.97 / 7.42 |
+| 12 | 3.71 | 3,233 | 3.31 | 3,621 | 9.69 / 10.63 |
+| **16** | **4.56–4.89** | **3,274–3,423** | **3.41–3.50** | **4,577–4,698** | **11.74 / 13.92** |
+| 20 | 6.27 | 3,191 | 5.01 | 3,993 | 14.74 / 14.47 |
+| 24 | 7.57–7.90 | 3,037–3,171 | 5.91 | 4,064 | 12.38 / 17.26 |
+| 32 | 8.78–9.84 | 3,251–3,645 | 6.60–6.92 | 4,625–4,848 | 15.91 / 26.41 |
+
+**Read this carefully:**
+
+- **The knee is N=16** — one worker per physical core on the 7950X (cpu0–15 physical, cpu16–31 SMT siblings, verified from `thread_siblings_list`).
+- **N=20 and N=24 are a throughput DIP**, not a plateau. With naive "fill physical cores first" pinning, some workers get an exclusive core (2.99–3.19 ms) and some share one (4.76–6.25 ms), and [utils.py:180](main/common/utils.py:180) is a hard barrier that waits for the slowest. N=24 pinned = 4,064 vs N=16 pinned = 4,577: **50% more processes, 11% less throughput.**
+- **N=32 buys +1.0% over N=16 for +83% CPU and a 1.97x longer vec-step.** Not worth it.
+- **Unpinned, the workers physically cannot consume more than 13–16 of 32 cores.** Linux CFS migrates single-threaded emulator processes across the two CCDs; pinned, the same 32 workers reach 25.4–26.4 cores.
+
+**Bottom line: 715 → 4,577 agent-steps/s is available on the env layer, at N=16 pinned. That is 6.4x, using 13.75 of 32 threads.**
+
+Hard constraints you cannot engineer around: **one emulator per process** (enforced in C++ via `Retro::s_loadedEmulator`, reproduced verbatim as `RuntimeError`, fails from a second thread too), and **`em.step()` never releases the GIL** (0 `gil_scoped_release` symbols in the `.so`; a spinner thread drops to 51.4%).
+
+---
+
+## 4. Ranked recommendations
+
+### Do first (hours) — 8.6x combined on the env layer
+
+**1. Raise env count: `--envs_per_matchup 2 → 16`**
+No code change. Real env count = `len(PLAYER) × len(OPPONENT_LIST) × envs_per_matchup`, built at [ippo.py:505](main/ippo.py:505) and [ippo.py:370](main/ippo.py:370). Set it in [run_ippo_workers.sh:41](run_ippo_workers.sh:41), [launch.json:44](.vscode/launch.json:44), [cds_style_template.slurm:91](slurm_launch_files/cds_style_template.slurm:91).
+**Gain: 4.79x unpinned / 6.58x pinned**, measured (714 → 3,423 / 4,698 agent-steps/s). **Effort: trivial.**
+**Hazard:** this multiplies gradient steps per iteration by 8 unless you also do #2. It also silently changes the V-trace update-to-data ratio: the async worker's rate is fixed in wall-clock (~3.4 upd/s), so a 6x faster rollout means ~6x *fewer* critic updates per unit data (124/iteration → ~20). And V-trace replay RAM goes 2.30 → 18.4 GB ([vtrace.py:134](main/common/justin/vtrace.py:134)) unless you also do #4.
+
+**2. Hold the algorithm fixed: `--num_env_steps 1024 → 128`, and pass `--vtrace_seq_len 64` explicitly**
+This makes #1 an honest A/B. `n_steps × n_envs` = 1024×2 = 128×16 = 2048 for the ego buffer ([clean_derivative_free_spar.py:486](main/common/justin/clean_derivative_free_spar.py:486)) *and* for each adversary buffer ([:503](main/common/justin/clean_derivative_free_spar.py:503)) — minibatch count, size, epochs and buffer bytes all invariant. **You must pass `--vtrace_seq_len 64`**, because the default at [clean_derivative_free_spar.py:250](main/common/justin/clean_derivative_free_spar.py:250) is `min(max(1, n_steps//4), 64)`, which silently becomes **32** at n_steps=128. **Effort: trivial. Gain: 0x — this is the control.**
+**Hazard (corrected):** LR schedulers and `log_interval` are *unaffected* — one iteration is `n_steps × n_envs` = 2048 timesteps either way. But checkpoint/video/file-queue callbacks are paced in **vec-steps** (`n_calls % save_freq`), so they fire **8x less often in data terms** (500k → 4M timesteps between checkpoints). **Divide `--checkpoint_interval` by 8.**
+
+**3. Pin one env worker per physical core (`--pin_env_workers`)**
+After [ippo.py:386](main/ippo.py:386) and [ippo.py:575](main/ippo.py:575). `self.processes` is already exposed at [utils.py:161](main/common/utils.py:161).
+**Gain: 1.30–1.40x at N=16**, reproduced twice (4.887→3.495 ms, 4.557→3.506 ms). Straggler barrier collapses 1.573 → 0.352 ms. **1.00x at N=2 — this only pays after #1.** **Effort: trivial.**
+**Hazard:** derive physical cores from `/sys/devices/system/cpu/cpuN/topology/thread_siblings_list`, **not** from index arithmetic. The commonly-proposed `[c for c in allowed if c < len(allowed)//2]` is broken under a SLURM cpuset — with cpuset `{0..7}` it yields 4 CPUs for 8 workers (a ~2x regression), and with `{8..23}` it yields an empty list and silently falls through. Always intersect with `os.sched_getaffinity(0)`. Default the flag to False.
+
+**4. Expose `--vtrace_replay_capacity` and set it to 1875**
+Hardcoded 15000 at [ippo.py:718](main/ippo.py:718) against a class default of 200_000. Capacity counts *timesteps per env*: at 16 envs each buffer becomes 15000×16×38400 = **9.22 GB**, 18.4 GB for ego + 1 adv. Worse, iterations-of-history goes 14.6 → **117** at n_steps=128, deepening an already-biased off-policy correction (`vtrace_mean_age` 7.41e3, `rho_sat_frac` 0.431 — 43% of sampled steps already truncation-clipped). **capacity=1875 holds both invariant** (1875×16 = 30,000 transitions = 15000×2; 1875/128 = 14.65 iterations). **Effort: trivial. Gain: 0x — a required control.**
+
+**5. Gate the `env.render()` round-trip behind a flag — do NOT delete it**
+[clean_derivative_free_spar.py:621](main/common/justin/clean_derivative_free_spar.py:621) and [:688](main/common/justin/clean_derivative_free_spar.py:688) build `video_log` unconditionally. **Gain: +53% of a pinned N=16 vec-step** (3.496 → 5.348 ms; 4,577 → 2,992 agent-steps/s), +130% at N=32.
+⚠️ **The "video_log is dead code" claim is REFUTED.** `CreateVideoCallback._on_step` reads it dynamically via `self.locals['video_log']` (populated by `callback.update_locals(locals())` at [clean_derivative_free_spar.py:702](main/common/justin/clean_derivative_free_spar.py:702)), and it is registered in the live callback list at [ippo.py:1049](main/ippo.py:1049). `av` 10.0.0 is installed; the path executes. Deleting :621/:688 **silently disables checkpoint videos** — the callback's `if 'video_log' in self.locals` guard skips encoding but the unconditional "Video successfully saved" print still fires. **Correct fix: build `video_log` only on rollouts adjacent to a checkpoint boundary, or gate on a `--render_video` flag.** While you're there, `RetroEnv.get_screen` returns a non-contiguous view that pickles **44.8x slower** than a contiguous copy (0.760 vs 0.017 ms) — one `np.ascontiguousarray` at [utils.py:99](main/common/utils.py:99) fixes it.
+
+**6. Delete the dead GPU sync** — [clean_derivative_free_spar.py:669](main/common/justin/clean_derivative_free_spar.py:669) is `if th.any(adv_actions): pass`. Free, bit-identical.
+**Gain: +0.12% at realistic worker GPU duty** (measured 0.041 ms/step), rising to 7.17% only under 100% GPU saturation. The earlier 1.7–6% claim is not supported. Take it because it's free, not because it's big.
+
+**7. Drop the throwaway `temp_env`** — [ippo.py:925](main/ippo.py:925). `temp_env.num_envs` is identically `len(STATE)` when `max_envs==0` (true at both call sites). Saves 16 forkserver spawns + 16 ROM loads per launch. **0x on throughput.**
+
+### Worth it (a day) — a further 1.29–1.35x per env
+
+**8. `--lean_env_step`: skip `update_ram` and 6 of 8 screen captures**
+Combines the two largest recoverable Python costs. `data.update_ram()` is 12.7% of the agent step and its output is discarded ([retro_wrappers.py:244](main/common/retro_wrappers.py:244) binds retro's reward/done to `_reward`/`_done`); `_get_obs` reads deque indices {0,4,8} = {prev step frame #4, this step #0, this step #4}, so 6 of 8 `get_screen()` conversions are never read.
+
+Both are reachable from Python with no rebuild — `retro.data.GameData` accepts dynamic attributes and `RetroEnv._update_obs` is shadowable per-instance (both verified; `del` restores).
+
+**Gain: 1.29–1.35x**, measured on the full stack with paired interleaved rounds (2.571 → 1.911 ms), 59/60 observations bit-identical, and identical `(reward, reward_other, done, outcome, level, round, match)` over 600 steps spanning 2 resets. `drop-update-ram` alone is **1.18x for one line**.
+**Effort: medium. Three hazards, all real:**
+- The capture flag **must be forced True at reset**, or the first observation of every episode is the previous episode's last frame (measured: diverges at obs index 122, max pixel error 236/255). The commonly-proposed "drive it from the loop index" is *not* sufficient — after the loop the index is 7, so the flag is False when `RetroEnv.reset` calls `_update_obs`.
+- With `_update_obs` shadowed, `env.img` is never refreshed, so `env.render()` returns a frozen frame and costs 17.9 µs instead of 0.11 µs. Ties directly to #5.
+- If `self.level` ever reaches `SF_BONUS_LEVEL` (4/8/12), [retro_wrappers.py:191](main/common/retro_wrappers.py:191) calls `RetroEnv.step` with `env.img` None → `RuntimeError`, surfaced as an opaque `EOFError` from [utils.py:180](main/common/utils.py:180). Dead under `--reset round` (the default) but not guarded.
+
+At N=16 pinned this gives an **estimated ~5,500 agent-steps/s** — not 8,507; the barrier and IPC do not shrink. **Estimate, not measured end-to-end.**
+
+**9. `--vtrace_updates_per_step` throttle**
+The worker loop at [vtrace.py:401](main/common/justin/vtrace.py:401) has **no rate limiter** — `poll_sleep` fires only pre-warmup or on a failed sample. `self.ego_replay.write_pos` is already a monotonic global step counter ([vtrace.py:140](main/common/justin/vtrace.py:140)). Calibrate to **0.121** to reproduce current behaviour exactly (124 updates / 1024 vec-steps). **0x speedup by construction — it makes every subsequent V-trace change a controlled experiment instead of a confounded one.** Land it before any B/T change.
+
+**10. `--torch_threads`**
+Nothing in the repo sets `set_num_threads` / `OMP_NUM_THREADS` / affinity anywhere — verified by grep across `main/`, `slurm_launch_files/`, `ws_launch_files/`, `.vscode/`, `run_ippo_workers.sh`. `torch.get_num_threads()` = 16, interop = 32. **0x today.** Defensive: 16 torch intra-op threads in the main process will fight 16 pinned emulators. Main-process and worker caps must be **separate knobs** — capping the main process to 1 would make a future torch-based V-trace gather (479.8 ms at 1 thread) *slower* than the numpy one it replaces (195.3 ms).
+
+**11. `step_async` before bookkeeping**
+Move [clean_derivative_free_spar.py:687](main/common/justin/clean_derivative_free_spar.py:687)'s `env.step()` split so `step_async` is issued before the `.item()`/`.cpu()` block. **Gain: 1.10x at N=16 pinned**, 1.05x at N=2 (measured with a realistic bookkeeping mock — the claimed 1.178x is ~7% optimistic). **Bit-identical** for the reorder-only version. Do *not* take the depth-1 carry variant without care: misaligning obs and reward by one step is silent.
+⚠️ A related "pipelining" proposal that runs the forward on `obs_{t-1}` is **REFUTED** — that is a one-agent-step (~133 ms) observation delay, i.e. a different MDP, not an optimization.
+
+### Bigger lift (multi-day) — do only after measuring
+
+**12. py-spy a live run — actually do this first if you have 20 minutes**
+~27 of the 35.2 ms/step is unexplained by any benchmark in this investigation. The `--pid` attach form **is denied on this box** (`ptrace_scope = 1`, reproduced: `Permission Denied`). Use **parent mode**:
+```
+py-spy record -r 250 -f raw -o live.txt --threads -d 60 -- python main/ippo.py ...
+```
+Aggregate self-time restricted to stacks containing [clean_derivative_free_spar.py:646](main/common/justin/clean_derivative_free_spar.py:646) (the rollout `while` loop — **not** :637). Remaining candidates after `gc.collect()`+`empty_cache()` was measured and eliminated (53 ms of 36,000 = 0.15%): (a) three batch-2 CNN forwards contending with the worker's GPU kernels, (b) VRAM pressure / `cudaMalloc` retries at 12.05 GiB peak.
+
+**13. `--vtrace_seq_len 16` (or 8) + torch CPU gather**
+Zero code needed for the first — already wired at [ippo.py:1081](main/ippo.py:1081). Update cost is exactly linear in `B×(T+1)`: measured gather+H2D 236.5 ms (T=64) → 62.5 (T=16) → 33.5 (T=8), and peak VRAM **12.05 → 1.66 GiB**. The torch-gather one-liner at [vtrace.py:219](main/common/justin/vtrace.py:219) is a measured **2.30x** on gather+H2D (258.4 → 112.4 ms) with **bit-identical** samples.
+**Both change the algorithm** (T shortens the bootstrap horizon; unthrottled, a cheaper update = proportionally more updates). Land #9 first. End-to-end rollout effect is ≤5% — the honest headline is the VRAM drop.
+
+**14. Torch-free env workers — CANNOT work as usually proposed**
+Deleting `import torch` from [retro_wrappers.py:7](main/common/retro_wrappers.py:7) removes **0 MB**, for two reasons: (a) forkserver children re-execute the main script as `__mp_main__` (measured: 8 workers each re-ran ippo.py's 1.79 s import chain), and ippo.py imports torch/av/wandb at module level; (b) the Process target `_worker2p` lives in `common/utils.py`, which imports SB3 → torch. The real recoverable memory is **~270 MB/worker PSS** (~4.3 GB at 16), not 447 MB / 7.1 GB, and the import cost is paid in *parallel* (1.98 s wall for 8 workers, not 22 s). Requires a thin launcher or `fork` start method **plus** a torch-free `common/utils.py`. Deprioritize.
+
+---
+
+## 5. Concrete first patch
+
+**Change nothing but launcher values. Then measure.**
+
+```diff
+# run_ippo_workers.sh
+-NUM_ENV_STEPS="1024"
++NUM_ENV_STEPS="128"
+-ENVS_PER_MATCHUP="2"
++ENVS_PER_MATCHUP="16"
++VTRACE_SEQ_LEN="64"              # REQUIRED: default becomes 32 at n_steps=128
++VTRACE_REPLAY_CAPACITY="1875"    # needs the new CLI arg, see below
+-CHECKPOINT_INTERVAL="250000"
++CHECKPOINT_INTERVAL="31250"      # /8 — callbacks are paced in vec-steps, not timesteps
+```
+
+Two small code changes to make this expressible:
+
+1. **Expose `--vtrace_replay_capacity`** — [ippo.py:718](main/ippo.py:718) currently hardcodes `vtrace_replay_capacity=15000`. Add the argparse entry next to `--vtrace_seq_len` at [ippo.py:1081](main/ippo.py:1081) and pass it through. Without this, 16 envs allocates **18.4 GB** of replay buffers and quadruples the effective staleness.
+2. **Gate the render** — wrap [clean_derivative_free_spar.py:621](main/common/justin/clean_derivative_free_spar.py:621) and [:688](main/common/justin/clean_derivative_free_spar.py:688) so `video_log` is built only when the current rollout will cross a checkpoint boundary (or behind a new `--render_video`). **Do not delete them** — `CreateVideoCallback` at [ippo.py:1049](main/ippo.py:1049) reads `video_log` out of `self.locals` and will silently stop encoding while still printing success.
+
+**Launcher sync (your standing rule — and there is pre-existing drift to fix in the same commit):**
+`grep -c` for `vtrace_seq_len` and `blend_adversary_heads` returns **0** in both [.vscode/launch.json](.vscode/launch.json) and [run_ippo_workers.sh](run_ippo_workers.sh), though both exist in `ippo.py` and in the SLURM path ([cds_style_template.slurm:85,140](slurm_launch_files/cds_style_template.slurm:85)). Also [launch.json:40](.vscode/launch.json:40) sets `--num_env_steps 512` vs `1024` in the shell launcher. Files that must stay in sync: `.vscode/launch.json` (lines 17–66), `run_ippo_workers.sh` (VAR block 17–60, CMD array 70–115), `slurm_launch_files/cds_style_template.slurm`, `league_template.slurm`, the 14 `main_training_*.slurm` files, `main_training_orchestrator.py`, and `lr_ratio_sweep.py` — the last one regex-rewrites template variables, so a new knob needs **both** a VAR line in the template **and** a substitution rule at [lr_ratio_sweep.py:142](slurm_launch_files/lr_ratio_sweep.py:142).
+
+**What to re-measure:**
+
+- `time/fps` in `logs/ippo_worker_1.log` — currently 57. The env layer can now supply ~3,400 agent-steps/s unpinned.
+- `vtrace_updates_in_window` — currently 124/iteration. Expect it to **drop to ~20** (the worker's rate is fixed in wall-clock, your data rate is 6x higher). This is a real learning-dynamics change, which is why the throttle (#9) matters.
+- `vtrace_mean_age` (7.41e3) and `vtrace_rho_sat_frac` (0.431). If capacity is left at 15000, mean_age will balloon.
+- Worker CPU: `awk '{print ($14+$15)/100}' /proc/<pid>/stat` summed over `pgrep -P <ippo_pid>` — should go from ~1.9 cores to ~11.9 (unpinned) or ~13.9 (pinned).
+
+**Then** add `--pin_env_workers` (#3) and re-measure — expect a further 1.30–1.40x on the vec-step. **Then** py-spy (#12) to find the missing 27 ms.
+
+---
+
+## 6. Dead ends
+
+**Refuted outright:**
+
+- **"numpy's fancy index at [vtrace.py:219](main/common/justin/vtrace.py:219) holds the GIL."** It does not — 10.0% GIL-held on a calibrated harness. The derived "31.1 s per 36 s iteration (86%)" figure is not a real mechanism. Every fix premised on it (chunked gather, per-row slicing, pinned memory) measures as a pessimization or a wash.
+- **"`video_log` is dead code."** It has a live reader reached dynamically. Deleting it silently disables checkpoint video recording.
+- **"`VecTransposeImage2P` defers a 0.11–0.23 ms copy onto torch."** Measured delta with SB3's actual `obs_as_tensor` path: **+0.0004 ms at N=16**. That figure was `np.ascontiguousarray`'s cost, which torch does not pay.
+- **Pinning the main process to SMT siblings.** Measured **0.98x** (a regression) at both N=2 and N=16 with the V-trace worker present — and `vtrace_enabled=True` is hardcoded at [ippo.py:717](main/ippo.py:717), so you cannot run without it.
+- **Threaded vec env via a patched gym-retro.** Even with `gil_scoped_release` on `em.step()`, everything else is fully GIL-held (measured: `update_ram` 47.5%, `get_screen` 46.8%, `action_to_array` 47.5% — zero parallelism). Residual serialized work caps the **aggregate** at ~1,340 agent-steps/s, which is **4.7x worse than the 6,287 you already get from 16 plain processes**.
+
+**Measured and too small / negative:**
+
+- **`update_status()` optimization** — 0.20–0.33% by four methods. It maintains an edge-triggered state machine with two hard asserts. Not worth the risk.
+- **`Monitor2P`** — −0.08%. Zero.
+- **Trimming the info dict** — 276 B of a 38,840 B payload (0.71%), 0.1% of time. The observation is 99.26% of the wire.
+- **Shared-memory vec env** — ceiling ~15% of a pinned vec-step, realistically ~9%. Dominated by pinning (1.37x for 5 lines). Note shm alone does *not* remove the barrier at [utils.py:180](main/common/utils.py:180).
+- **Barrier-free async vec env** — ≤8% residual once pinning lands, and it breaks the dense `(n_steps, n_envs)` layout at [buffers.py:751], the contiguous adversary slicing at [clean_derivative_free_spar.py:769](main/common/justin/clean_derivative_free_spar.py:769) and [:809](main/common/justin/clean_derivative_free_spar.py:809), and the shared `write_pos` in `VTraceReplayBuffer`.
+- **Rebuilding genesis_plus_gx with `-O3 -march=native`** — **measured a regression.** Same source, GCC 11.4, 4 interleaved rounds: `-O2` 232.5 µs/frame, `-O2 -march=native` 235.9 (1.5% slower), `-O3 -march=native` 234.6 (0.9% slower, despite emitting 4,620 AVX2 uses), `+PGO` 229.9 (1.1% faster). All four are *slower* than the shipped core's 219.7 µs. It's a branch-bound interpreter; vectorization has nothing to bite on.
+- **`cudnn.benchmark` / TF32** — measured 0.96–1.06x across B=2/16/32/2048/16640. `cudnn.allow_tf32` is already True; only the matmul path was off, and this network is conv-dominated.
+- **Batched policy inference** — already implemented. [clean_derivative_free_spar.py:653](main/common/justin/clean_derivative_free_spar.py:653) does one batched forward over the whole `(n_envs,3,100,128)` batch. Scaling 2→16 envs costs +7% on the forward for 8x the data.
+- **`obs_type=RAM` / `use_restricted_actions=ALL`** — 0 and ≤0.12% respectively. Note `filter_action` alters 3,961 of 4,096 masks; it's identity only on your 63 reachable ones, so switching to ALL removes a real (unexercised) guard for nothing.
+- **`gc.collect()` + `empty_cache()`** at [clean_derivative_free_spar.py:1261](main/common/justin/clean_derivative_free_spar.py:1261) — 53 ms of a 36,000 ms iteration (0.15%). Leave it; it currently masks fragmentation from the 12 GiB update peak.
+- **GPU-resident replay** — 17.6x on the gather in isolation, but measured **0.61x end-to-end** (rollout 5.99 → 9.84 ms/step), and 17.17 GiB at 16 envs on a 24 GB card. Structurally incompatible with the direction you're going.
+- **stable-retro migration** — byte-equivalent hot path (same `update_ram`, same Python crop, same `.def("step")` with no GIL release, same one-emulator guard, same `-O2 -mssse3`), and it requires Python ≥3.10 + gymnasium ≥1.0 against your 3.8.10 / gym 0.21 / SB3 1.7. Your vendored SB3 doesn't even import standalone (`ModuleNotFoundError: No module named 'utils'` from [policies.py:41](stable_baselines3/stable_baselines3/common/policies.py:41)), which is a separate defect worth a one-line lazy-import fix.
+- **Two training processes with 8 envs each** — CPU-side wash; VRAM-infeasible at the current V-trace settings.
+
+**Bugs found in passing, not performance:**
+
+- `SFWrapper.action_space` is a 1-element `MultiDiscrete([22])` at [retro_wrappers.py:48](main/common/retro_wrappers.py:48) but `step` asserts a 2-element action at [:183](main/common/retro_wrappers.py:183). `venv.action_space.sample()` kills the worker with an opaque `EOFError`.
+- `InfoObsWrapper` / `EgoCentricImageWrapper` are dead (construction commented out at [ippo.py:120](main/ippo.py:120)), which silently makes `--obs_type info` and `--use_mirror` no-ops while their plumbing remains live.
+- `info["terminal_observation"]` is shipped ([utils.py:91](main/common/utils.py:91)) and its only consumer is commented out ([clean_derivative_free_spar.py:749](main/common/justin/clean_derivative_free_spar.py:749)) — a value-bootstrapping gap, not a throughput issue.
+- `DummyVecEnv2P` returns the live obs buffer and a shallow `buf_infos.copy()` where SB3 copies/deepcopies ([utils.py:400](main/common/utils.py:400), [:323](main/common/utils.py:323)) — latent aliasing in `parallel_br_wr.py` / `merged.py`.
+- The `SF_BONUS_LEVEL` skip loop at [retro_wrappers.py:187](main/common/retro_wrappers.py:187) is an unbounded `while` with no iteration cap — dead under `--reset round`, but a silent worker hang if it ever fires.

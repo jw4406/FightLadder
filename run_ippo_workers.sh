@@ -31,17 +31,18 @@ EGO_SIDE="left"
 SAVE_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/"
 USE_LR_ANNEALING="False"
 LR_ANNEAL_COEFF=".995"
-CHECKPOINT_INTERVAL="250000"
+CHECKPOINT_INTERVAL="6250"
 TOTAL_TIMESTEPS="150000000"
-TRAINING_BATCH_SIZE="256"
+TRAINING_BATCH_SIZE="1024"
 TRANSFORM_ACTION="True"
-NUM_ENV_STEPS="1024"
+NUM_ENV_STEPS="64"
 EGO_STYLE="learning"
 ADV_STYLE="learning"
-ENVS_PER_MATCHUP="2"
+ENVS_PER_MATCHUP="16"
 SIDE="both"
 RENDER="False"
 MODEL_FILE=""
+VTRACE_SEQ_LEN="64"
 
 MASTER_USE_STAG="False"
 
@@ -109,6 +110,7 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --stagnation_lr_factor "${STAGNATION_LR_FACTOR}"
         --stagnation_lr_patience "${STAGNATION_LR_PATIENCE}"
         --obs_type "${OBS_TYPE}"
+	--vtrace_seq_len "${VTRACE_SEQ_LEN}"
     )
 
     if [ "${RUN_LIVE}" = "False" ]; then

@@ -13,11 +13,16 @@ import matplotlib.pyplot as plt
 # <exp_type>_br<idx> suffix are captured but allowed to be absent so legacy
 # reward files still match. exp_type ∈ {continue, dedicated} distinguishes
 # continue-vs-from-scratch BR runs; br_idx is the per-job replicate index.
+# exp_type ∈ {lbr, lbrgreedy, lbrshuffle} are written by local_best_response.py:
+# a Local Best Response lower bound and its two controls. These are NOT trained
+# best responses -- they cost ~100x less and are expected to be looser.
 FILENAME_RE = re.compile(
     r"^(?:(?P<style>[A-Za-z0-9]+)_)?"
     r"(?P<timestep>\d+)_main_(?P<main_side>left|right)_(?P<main_char>[A-Za-z0-9]+)"
     r"_exploiter_(?P<exploiter_side>left|right)_(?P<exploiter_char>[A-Za-z0-9]+)"
-    r"(?:_(?P<exp_type>continue|dedicated)_br(?P<br_idx>\d+))?"
+    # Longest-first: `lbr` prefixes `lbrgreedy`/`lbrshuffle`, and while backtracking
+    # happens to resolve that correctly, ordering it explicitly keeps it obvious.
+    r"(?:_(?P<exp_type>continue|dedicated|lbrgreedy|lbrshuffle|lbr)_br(?P<br_idx>\d+))?"
     # Optional periodic-snapshot suffix written by
     # PeriodicLocalBREvalCallback in new_br_worker.py while a BR run is
     # still in flight. Format: "_brstep<N>_<YYYYMMDDTHHMMSS>". When
@@ -589,7 +594,10 @@ def _plot_per_matchup(records, out_dir):
     name_prefix = f"{style}_" if style else ""
 
     for matchup_key, m_records in sorted(records_by_matchup.items()):
-        for exp_type in ("continue", "dedicated"):
+        # Derive the exp_type set from the data rather than hardcoding it, so new
+        # variants (lbr, lbrgreedy, lbrshuffle, ...) need no further edits here.
+        exp_types = sorted({(r["exp_type"] or "continue") for r in m_records})
+        for exp_type in exp_types:
             has_records = any(
                 (r["exp_type"] or "continue") == exp_type for r in m_records
             )

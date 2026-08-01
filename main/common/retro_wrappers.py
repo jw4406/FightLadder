@@ -1,10 +1,12 @@
 """ Adapter for Retro: https://github.com/Farama-Foundation/stable-retro. Game dynamics implementation is inspired from https://github.com/linyiLYi/street-fighter-ai. """
 import os
+import copy
 import math
 import time
 import gzip
 import gym
 import torch
+import hashlib
 import numpy as np
 from collections import deque
 from typing import Dict, List, Optional, Tuple, Union
@@ -17,6 +19,22 @@ from stable_baselines3.common.type_aliases import GymObs, GymStepReturn
 
 from .const import *
 from common.utils import linear_schedule
+
+
+# Local Best Response (LBR) support. Cap the per-worker snapshot registry: each
+# entry is ~1 MB of emulator state plus the frame stack, and a leaked key would
+# grow without bound across a long evaluation.
+LBR_MAX_SNAPSHOTS = 4
+
+# SFWrapper attributes that em.set_state() does NOT restore but that determine
+# reward and termination. prev_agent_hp/prev_enemy_hp drive the dense reward in
+# step(); the remainder are the edge-triggered match/round state machine that
+# update_status() advances and asserts on.
+LBR_SF_ATTRS = (
+    "prev_agent_hp", "prev_enemy_hp", "level", "save_state",
+    "match_status", "round_status", "during_transation", "round_num",
+    "extra_round", "total_timesteps", "aggresive_coeff", "dense_coeff",
+)
 
 
 class SFWrapper(gym.Wrapper):
@@ -86,6 +104,108 @@ class SFWrapper(gym.Wrapper):
         print(f"Save state to {os.path.join(self.state_dir, name)}")
         with gzip.open(os.path.join(self.state_dir, name), 'wb') as f:
             f.write(content)
+
+    # --- Local Best Response (LBR) snapshot/restore ---------------------------
+    # Save and rewind a live env mid-episode so a one-step lookahead can try
+    # every action from the same state. em.set_state() restores the emulator and
+    # none of the Python state above it, so we capture both here.
+    #
+    # These stay public on purpose: SubprocVecEnv2P.env_method reaches them via
+    # gym.Wrapper.__getattr__, which raises on underscore-prefixed names. Every
+    # return value crosses a multiprocessing pipe, so none of them may return the
+    # snapshot itself (~3 MB pickled) -- it stays in the worker.
+
+    def _lbr_store(self):
+        # Reach into __dict__ directly: gym.Wrapper.__getattr__ forwards unknown
+        # attributes down the wrapper chain, so a plain read of a not-yet-created
+        # attribute resolves against FrameStack/RetroEnv and raises instead of
+        # creating the registry.
+        return self.__dict__.setdefault("lbr_snapshots", {})
+
+    def lbr_snapshot(self, key="lbr_root"):
+        store = self._lbr_store()
+        if key not in store and len(store) >= LBR_MAX_SNAPSHOTS:
+            # Deliberately fatal. _worker2p does not guard the env_method call, so
+            # this kills the worker and the parent sees an opaque EOFError. That is
+            # the right trade for a leak guard: silently evicting an entry could
+            # drop the root snapshot mid-branch-loop and corrupt results with no
+            # signal. Callers must lbr_drop() in a finally block, never catch this.
+            raise RuntimeError(
+                f"LBR snapshot registry full ({LBR_MAX_SNAPSHOTS} keys: {sorted(store)}). "
+                f"Call lbr_drop() before taking another snapshot."
+            )
+        retro_env = self.env.env
+        # Read the SFWrapper attributes out of __dict__ rather than with getattr:
+        # getattr would silently forward down the chain if one were unset, and we
+        # want a missing field to fail loudly here rather than corrupt a reward later.
+        store[key] = {
+            "em": retro_env.em.get_state(),
+            "img": None if retro_env.img is None else retro_env.img.copy(),
+            "sf": {k: self.__dict__[k] for k in LBR_SF_ATTRS},
+            "frames": copy.deepcopy(self.env.frames),
+        }
+        return None
+
+    def lbr_restore(self, key="lbr_root"):
+        snap = self._lbr_store()[key]
+        retro_env = self.env.env
+        # Order matters. update_ram() must follow set_state(), or info is read off
+        # the pre-restore RAM. Do NOT call data.reset() here: that clears the
+        # scenario delta trackers, which is reset semantics, not continuation.
+        # Those trackers going stale is harmless only because SFWrapper.step
+        # discards retro's own _reward/_done -- do not "fix" that discard.
+        retro_env.em.set_state(snap["em"])
+        retro_env.data.update_ram()
+        retro_env.img = None if snap["img"] is None else snap["img"].copy()
+        self.__dict__.update(snap["sf"])
+        self.env.frames = copy.deepcopy(snap["frames"])
+        return None
+
+    def lbr_drop(self, key=None):
+        store = self._lbr_store()
+        if key is None:
+            dropped = len(store)
+            store.clear()
+            return dropped
+        return int(store.pop(key, None) is not None)
+
+    def lbr_has(self, key="lbr_root"):
+        return key in self._lbr_store()
+
+    def lbr_fingerprint(self):
+        """Digest of the restored machine state. A pipe-cheap equality check for
+        the restore-fidelity test.
+
+        Hashes RAM rather than em.get_state(): the savestate blob is NOT
+        idempotent through set_state(). Measured on this core, get_state() ->
+        set_state() -> get_state() differs in 76% of bytes past offset 144228
+        with no stepping in between, while RAM, the frame stack, and every
+        wrapper attribute stay byte-equal and replay stays bit-identical. That
+        trailing region is emulator scratch, so hashing the blob would report
+        spurious mismatches.
+        """
+        retro_env = self.env.env
+        h = hashlib.md5()
+        h.update(np.ascontiguousarray(retro_env.get_ram()).tobytes())
+        for frame in self.env.frames:
+            h.update(np.ascontiguousarray(frame).tobytes())
+        h.update(repr([self.__dict__[k] for k in LBR_SF_ATTRS]).encode())
+        return h.hexdigest()
+
+    def lbr_config(self):
+        """Scalar facts the LBR driver preflights on before stepping anything."""
+        space = self.action_space
+        return {
+            "transform_action": self.action_transformer is not None,
+            "action_space": type(space).__name__,
+            "n_actions": int(space.nvec[0]) if hasattr(space, "nvec") else None,
+            "reset_type": self.reset_type,
+            "side": self.side,
+            "init_level": self.init_level,
+            "num_stack": self.num_stack,
+            "num_step_frames": self.num_step_frames,
+            "enable_combo": self.enable_combo,
+        }
 
     def _get_obs(self, obs):
         # return np.concatenate([o[::2, ::2, :] for o in obs], axis=-1)

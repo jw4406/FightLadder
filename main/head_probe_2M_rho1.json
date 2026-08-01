@@ -1,0 +1,17 @@
+{
+  "checkpoint": "spar_Ry_Gu_2000000_steps.task",
+  "num_timesteps": 2000000,
+  "matchups": {
+    "RyuVsGuile": {
+      "trained_value_head": 0.14472343531039522,
+      "ridge_vf_features": 0.021592446367770912,
+      "ridge_pi_features": 0.17882843828813733,
+      "hp_diff_linear": 0.016068887491548556,
+      "state_linear": 0.236148285293596,
+      "n": 3970,
+      "G_std": 0.03652315622792979,
+      "V_std": 0.02874271757900715,
+      "wall_clock_s": 13.2
+    }
+  }
+}

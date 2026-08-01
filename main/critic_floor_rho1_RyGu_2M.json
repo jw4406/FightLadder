@@ -1,0 +1,58 @@
+{
+  "checkpoint": "spar_Ry_Gu_2000000_steps.task",
+  "num_timesteps": 2000000,
+  "matchups": {
+    "RyuVsGuile": {
+      "on_distribution": {
+        "n": 320,
+        "ev": 0.0710820261451095,
+        "rmse": 0.03168542923322387,
+        "bias": -0.003049024575134476,
+        "v_mean": -0.10680723190307617,
+        "v_std": 0.025576137006282806,
+        "g_mean": -0.103758207071828,
+        "g_std": 0.03272282571836854
+      },
+      "off_distribution": {
+        "n": 320,
+        "ev": 0.1496306885063955,
+        "rmse": 0.03324717191643122,
+        "bias": -0.0001697730618472238,
+        "v_mean": -0.10684679448604584,
+        "v_std": 0.025501802563667297,
+        "g_mean": -0.10667702365937282,
+        "g_std": 0.036053319517785065
+      },
+      "baselines": {
+        "modal": {
+          "hp_diff_linear": 0.21540555443640175,
+          "all_feats_linear": 0.34395481502788483,
+          "hp_diff_binned": 0.3243317621724605,
+          "ceiling_hp_diff_insample": 0.28939991528395687,
+          "critic": 0.0710820261451095,
+          "late_critic": 0.2073342947489314,
+          "late_hp_binned": 0.3515644200542113,
+          "late_ceiling": 0.36248856490237763,
+          "early_critic": -0.005831638208190881,
+          "early_hp_binned": 0.29504988920009023,
+          "early_ceiling": 0.39054523078035747
+        },
+        "offdist": {
+          "hp_diff_linear": 0.17463358695400844,
+          "all_feats_linear": 0.23110753964144404,
+          "hp_diff_binned": 0.2716129518107362,
+          "ceiling_hp_diff_insample": 0.2801957478225327,
+          "critic": 0.1496306885063955,
+          "late_critic": 0.1596574639928171,
+          "late_hp_binned": 0.16626305774157535,
+          "late_ceiling": 0.33088793990316334,
+          "early_critic": 0.1328898392834874,
+          "early_hp_binned": 0.2816186115148478,
+          "early_ceiling": 0.3555987182865129
+        }
+      },
+      "gamma": 0.99,
+      "wall_clock_s": 150.3
+    }
+  }
+}

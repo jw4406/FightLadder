@@ -107,7 +107,7 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         self.pi_dstb_features_extractor = self.make_features_extractor()
         self.pi_ctrl_features_extractor = self.features_extractor
         #self.vf_features
-        net_arch = dict(pi=[256,256], vf=[256,256])
+        net_arch = dict(pi=[256,256], vf=[512,512])
         self.net_arch = net_arch
         self._build_network(lr_schedule)
         print("hello")
@@ -140,7 +140,15 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         self._build_mlp_extractor()
 
         latent_dim_pi = self.mlp_extractor.latent_dim_pi
+        # Actor-head width. Kept at 256 so widening the critic does not silently
+        # change the policy as well -- otherwise an improvement can't be attributed.
         lstm_hidden_size = 256
+        # Critic-head width, split out from lstm_hidden_size so the value path can
+        # be widened independently. Measured motivation: the 512->256 critic trunk
+        # (mlp_extractor.value_net) discards ~0.2 EV of return-predictive signal,
+        # while a RANDOM 512->256 projection of the same shape discards none --
+        # i.e. training makes that module worse than an untrained one.
+        value_hidden_size = 512
         if isinstance(self.action_dist, DiagGaussianDistribution):
             self.action_net, self.log_std = self.action_dist.proba_distribution_net(
                 latent_dim=latent_dim_pi, log_std_init=self.log_std_init
@@ -199,21 +207,21 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         for i in range(self.num_adversaries):
             matchup_key = select_matchup_env(self.matchups, i, self.envs_per_matchup)
             self.q_value_net[matchup_key] = nn.Sequential(
-                nn.LSTM(input_size=self.mlp_extractor.latent_dim_vf, hidden_size=lstm_hidden_size, num_layers=1, batch_first=True),
+                nn.LSTM(input_size=self.mlp_extractor.latent_dim_vf, hidden_size=value_hidden_size, num_layers=1, batch_first=True),
                 SelectLastLSTMOutput(),
-                nn.Linear(lstm_hidden_size, lstm_hidden_size),
+                nn.Linear(value_hidden_size, value_hidden_size),
                 self.activation_fn(),
-                nn.Linear(lstm_hidden_size, lstm_hidden_size),
+                nn.Linear(value_hidden_size, value_hidden_size),
                 self.activation_fn(),
-                nn.Linear(lstm_hidden_size, 1))
+                nn.Linear(value_hidden_size, 1))
             self.value_net[matchup_key] = nn.Sequential(
-                nn.Linear(self.mlp_extractor.latent_dim_vf, lstm_hidden_size),
+                nn.Linear(self.mlp_extractor.latent_dim_vf, value_hidden_size),
                 self.activation_fn(),
-                nn.Linear(lstm_hidden_size, lstm_hidden_size),
+                nn.Linear(value_hidden_size, value_hidden_size),
                 self.activation_fn(),
-                nn.Linear(lstm_hidden_size, lstm_hidden_size),
+                nn.Linear(value_hidden_size, value_hidden_size),
                 self.activation_fn(),
-                nn.Linear(lstm_hidden_size, 1))
+                nn.Linear(value_hidden_size, 1))
             #self.value_net.append(nn.Linear(self.mlp_extractor.latent_dim_vf, 1))
         # Init weights: use orthogonal initialization
         # with small initial weight for the output

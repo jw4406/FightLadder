@@ -1,0 +1,22 @@
+{
+  "checkpoint": "spar_Ry_Gu_700000_steps.task",
+  "num_timesteps": 700000,
+  "matchups": {
+    "RyuVsGuile": {
+      "s1_cnn_512": 0.32906788401162135,
+      "s2_mlp_trunk_256": 0.1095564666404526,
+      "s3_full_trained_V": 0.02122682192632719,
+      "trained_value_head": 0.02122682192632719,
+      "ridge_vf_features": 0.32906788401162135,
+      "ridge_pi_features": 0.17636311361675538,
+      "hp_diff_linear": 0.0229026879431663,
+      "state_linear": 0.2400208959628094,
+      "s1_cnn_mlp": 0.5401233623669812,
+      "s2_trunk_mlp": 0.2527238518364098,
+      "n": 5066,
+      "G_std": 0.03455396802503007,
+      "V_std": 0.0309266597032547,
+      "wall_clock_s": 22.5
+    }
+  }
+}

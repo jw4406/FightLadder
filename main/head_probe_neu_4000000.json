@@ -1,0 +1,17 @@
+{
+  "checkpoint": "spar_Ry_Sa_4000000_steps.task",
+  "num_timesteps": 4000000,
+  "matchups": {
+    "RyuVsSagat": {
+      "trained_value_head": 0.013844331457461223,
+      "ridge_vf_features": 0.04430042564037373,
+      "ridge_pi_features": 0.15888198166586098,
+      "hp_diff_linear": 0.04179856476663191,
+      "state_linear": 0.04654674429454131,
+      "n": 3122,
+      "G_std": 0.05762701424519983,
+      "V_std": 0.03249342367053032,
+      "wall_clock_s": 12.1
+    }
+  }
+}

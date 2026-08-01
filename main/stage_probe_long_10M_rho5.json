@@ -1,0 +1,22 @@
+{
+  "checkpoint": "spar_Ry_Sa_10000000_steps.task",
+  "num_timesteps": 10000000,
+  "matchups": {
+    "RyuVsSagat": {
+      "s1_cnn_512": 0.3479321404754633,
+      "s2_mlp_trunk_256": 0.2516073535862354,
+      "s3_full_trained_V": -0.06766286741867455,
+      "trained_value_head": -0.06766286741867455,
+      "ridge_vf_features": 0.3479321404754633,
+      "ridge_pi_features": 0.34270480845789475,
+      "hp_diff_linear": 0.027779502592357286,
+      "state_linear": 0.14461226873084243,
+      "s1_cnn_mlp": 0.5097864184632119,
+      "s2_trunk_mlp": 0.23136921536592792,
+      "n": 5649,
+      "G_std": 0.045521689427750894,
+      "V_std": 0.03079320304095745,
+      "wall_clock_s": 22.7
+    }
+  }
+}
