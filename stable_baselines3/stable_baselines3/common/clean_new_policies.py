@@ -465,9 +465,19 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             else:
                 ego_actions, ego_log_prob = self.ego_forward(obs, deterministic)
         if zero_ego_action:
-            ego_actions = th.ones(self.num_adversaries * self.envs_per_matchup, self.action_space.shape[0]).to(self.device)
-            ego_log_prob = th.zeros(self.num_adversaries * self.envs_per_matchup).to(self.device)
-            #ego_entropy = th.zeros()
+            # Mirror the zero_adv_action branch below: clone the real action tensor
+            # so dtype and batch shape are inherited. Constructing a fresh
+            # th.ones(...) here gave float32 actions (real ones are int64 from the
+            # MultiCategorical), which propagated through np.hstack and made
+            # SFWrapper.action_transformer index DIRECTIONS_BUTTONS with a
+            # numpy.float64. It also hardcoded the batch to
+            # num_adversaries*envs_per_matchup (wrong under mirror, where the batch
+            # is doubled) and used ones -- i.e. action 1 = ['UP'], a permanent jump
+            # rather than the intended no-op.
+            if ego_forward is False:
+                raise ValueError("Cannot zero ego actions if ego forward is False")
+            ego_actions = th.zeros_like(ego_actions)
+            ego_log_prob = th.zeros_like(ego_log_prob)
         if random_ego_action:
             if ego_forward is False:
                 raise ValueError("Cannot random ego actions if ego forward is False")

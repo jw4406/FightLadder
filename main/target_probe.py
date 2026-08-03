@@ -32,6 +32,10 @@ def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--ckpt", required=True)
     ap.add_argument("--steps", type=int, default=1200); ap.add_argument("--n_envs", type=int, default=8)
     ap.add_argument("--T", type=int, default=None)
+    ap.add_argument("--ego_zero", action="store_true",
+                    help="Force the ego to action 0, matching --ego_style zero_action. "
+                         "Without this the probe rolls a SAMPLED ego, i.e. a state "
+                         "distribution the critic never trained on.")
     a = ap.parse_args()
     d = load_from_zip_file(a.ckpt, device="cpu")[0]
     T = a.T if a.T else int(d.get("vtrace_seq_len") or 64)
@@ -45,7 +49,9 @@ def main():
         obs = venv.reset()
         for _ in range(a.steps):
             V.append(ops.values_ego(obs) * ops.sgn)
-            ae, ad = ops.sample_ego(obs, rng), ops.sample_adv(obs, rng)
+            ae = (np.zeros(obs.shape[0], dtype=np.int64) if a.ego_zero
+                  else ops.sample_ego(obs, rng))
+            ad = ops.sample_adv(obs, rng)
             obs, rl, rr, dn, _ = venv.step(ops.joint(ad, ae))
             R.append(ops.lbr_reward(rl, rr)); D.append(np.asarray(dn, bool))
     finally:
@@ -88,7 +94,7 @@ def main():
     print(f"\n  EV(V, v_target) on FRESH states = {ev(Vf, tgt):.3f}   <- vs in-batch from log")
     print(f"  EV(V, G)        on FRESH states = {ev(Vf, Gf):.3f}")
     print(f"  bootstrap share of target variance: {bf.var()/max(tgt.var(),1e-30):.2f}")
-    print(f"MACHINE {d.get('num_timesteps')} {ev(Vf,tgt):.4f} {ev(Vf,Gf):.4f} {ev(tgt,Gf):.4f} {int(msk.sum())}")
+    print(f"MACHINE {'egozero' if a.ego_zero else 'egosample'} {d.get('num_timesteps')} {ev(Vf,tgt):.4f} {ev(Vf,Gf):.4f} {ev(tgt,Gf):.4f} {int(msk.sum())}")
 
 
 if __name__ == "__main__":

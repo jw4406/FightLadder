@@ -20,7 +20,8 @@ from stable_baselines3.common.buffers import AdvRolloutBuffer
 from stable_baselines3.common.utils import get_schedule_fn
 from torch.backends.cudnn import deterministic
 from common.const import *
-from common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P
+import itertools
+from common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P, reset_child_params
 from common.game import get_next_level
 from common.algorithms import IPPO, MAGICS_PPO, RARL_PPO, TSS_PPO, Specialized_Agent, Specialized_Agent_IPPO, eepy
 from common.justin.spar import Single_SPAR
@@ -580,7 +581,7 @@ def main(args):
 
     checkpoint_interval = args.checkpoint_interval # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
-    def finetune_model_generator(model_file=None, lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
+    def finetune_model_generator(model_file=None, reinit_adversary=False, lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
                                  other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
                                  clip_range_schedule=linear_schedule(0.075, 0.025), STATE=None, model_arch_type=None):
         REMOVAL
@@ -906,6 +907,30 @@ def main(args):
             if model_file.endswith(".pt"):
                 model_file = torch.load(model_file, map_location=torch.device('cpu'))["kwargs"]["agent_dict"]
             finetune_model.set_parameters(model_file)
+            if reinit_adversary:
+                # set_parameters() loads the WHOLE policy, so a checkpoint whose
+                # adversary has collapsed (advH ~ 0.02) resumes collapsed. For
+                # "can the adversary learn against a frozen strong ego?" that
+                # confounds the answer: a negative result could mean the frozen
+                # opponent didn't help, or just that a degenerate policy has too
+                # little exploration left to recover. Re-init gives a fresh
+                # adversary at maximum entropy (ln 22 = 3.09).
+                pol = finetune_model.policy
+                reset_child_params(pol.pi_dstb_features_extractor)
+                reset_child_params(pol.dstb_action_net)
+                # Rebuild dstb_optimizer so Adam moment estimates from the
+                # collapsed policy don't carry over into the fresh one.
+                lr_now = pol.dstb_optimizer.param_groups[0]['lr']
+                pol.dstb_optimizer = pol.optimizer_class(
+                    itertools.chain(pol.pi_dstb_features_extractor.parameters(),
+                                    pol.dstb_action_net.parameters()),
+                    lr_now, maximize=False)
+                n = sum(p.numel() for p in pol.pi_dstb_features_extractor.parameters()) \
+                  + sum(p.numel() for p in pol.dstb_action_net.parameters())
+                print(f"[reinit_adversary] re-initialized {n:,} adversary params "
+                      f"(pi_dstb_features_extractor + dstb_action_net) and rebuilt "
+                      f"dstb_optimizer at lr={lr_now}; ego and critic kept from the "
+                      f"checkpoint", flush=True)
         print("model generated")
         finetune_model.model_arch_type = model_arch_type
         # Ego value-head LR: only ippo/2timescale build a dedicated ego_value_optimizer.
@@ -932,7 +957,7 @@ def main(args):
         else:
             assert isinstance(REMOVAL, list)
             args.num_env = (12 - len(REMOVAL)) * 4
-    model = finetune_model_generator(args.model_file, lr_schedule=lr_schedule, other_lr_schedule=other_lr_schedule,
+    model = finetune_model_generator(args.model_file, reinit_adversary=(args.reinit_adversary == 'True'), lr_schedule=lr_schedule, other_lr_schedule=other_lr_schedule,
                                      clip_range_schedule=clip_range_schedule, STATE=STATE, model_arch_type=args.model_arch_type)
     if REMOVAL is not None:
         model.REMOVAL = REMOVAL
@@ -956,7 +981,7 @@ def main(args):
     video_callback = CreateVideoCallback(save_path=args.save_dir, save_freq=checkpoint_interval)
 
     if (FINETUNE is True) or (EVAL is True):
-        finetune_model = finetune_model_generator(args.model_file, lr_schedule=lr_schedule,
+        finetune_model = finetune_model_generator(args.model_file, reinit_adversary=(args.reinit_adversary == 'True'), lr_schedule=lr_schedule,
                                                   other_lr_schedule=other_lr_schedule,
                                                   clip_range_schedule=clip_range_schedule)
 
@@ -1026,6 +1051,36 @@ def main(args):
                 update_ego=False
                 zero_ego_action=False
                 random_ego_action=True
+            elif args.ego_style == 'frozen':
+                # Play the ego policy as-is and never update it. Separates
+                # "the opponent is MOVING" (non-stationarity) from "the opponent
+                # is STRONG": zero_action already covers a frozen-weak opponent,
+                # learning covers a moving one, this covers frozen-strong.
+                #
+                # Supply the weights with --model_file; without it the ego stays
+                # at random init, which is a weaker opponent than zero_action.
+                update_ego=False
+                zero_ego_action=False
+                random_ego_action=False
+                if not args.model_file:
+                    print("[WARN] --ego_style frozen without --model_file: the ego "
+                          "is frozen at RANDOM INIT, not at a trained policy.",
+                          flush=True)
+                # train() already gates the ego update on update_ego (and
+                # USE_PERTURBED is False), so ctrl_optimizer is never stepped.
+                # Detaching as well is belt-and-braces against any future path
+                # that steps it unconditionally.
+                _ego_frozen = [model.policy.pi_ctrl_features_extractor,
+                               model.policy.mlp_extractor.policy_net,
+                               model.policy.action_net]
+                _n_frozen = 0
+                for _m in _ego_frozen:
+                    for _p in _m.parameters():
+                        _p.requires_grad_(False)
+                        _n_frozen += _p.numel()
+                print(f"[ego_style=frozen] froze {_n_frozen:,} ego actor params "
+                      f"(pi_ctrl_features_extractor + mlp_extractor.policy_net + action_net); "
+                      f"critic and adversary remain trainable", flush=True)
             else:
                 raise ValueError(f"Invalid ego style: {args.ego_style}")
             if args.adv_style == 'learning':
@@ -1088,7 +1143,7 @@ if __name__ == "__main__":
     parser.add_argument("--blend_adversary_heads", choices=['True', 'False'], default='True', required=False,
                         help="Blend multi-head adversary trunk update (spar arch only). "
                              "'False' => unchanged sequential per-head update.")
-    parser.add_argument("--ego_style", type=str, help="Ego style", default="learning", required=True, choices=["learning", "zero_action", "random_action"])
+    parser.add_argument("--ego_style", type=str, help="Ego style", default="learning", required=True, choices=["learning", "zero_action", "random_action", "frozen"])
     parser.add_argument("--adv_style", type=str, help="Adv style", default="learning", required=True, choices=["learning", "zero_action", "random_action"])
     parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-4, required=True)
     parser.add_argument("--d_lr", type=float, help="adversary learning rate", default=7e-4, required=True)
@@ -1132,6 +1187,12 @@ if __name__ == "__main__":
     parser.add_argument('--transform_action', choices=['True', 'False'], help='Transform action space to MultiDiscrete', default='False')
     parser.add_argument('--seed', type=int, help='Seed', default=0)
     parser.add_argument('--model_file', type=str, help='Model file', default=None)
+    parser.add_argument('--reinit_adversary', type=str, default='False',
+                        help="After --model_file loads the whole policy, re-initialize the "
+                             "adversary head (pi_dstb_features_extractor + dstb_action_net) "
+                             "and rebuild dstb_optimizer. Use with --ego_style frozen to ask "
+                             "'can a FRESH adversary learn against a strong stationary ego?' "
+                             "without inheriting a collapsed adversary from the checkpoint.")
     parser.add_argument('--use_mirror', choices=['True', 'False'], help='Use mirror', required=True, default='False')
     parser.add_argument('--ego_side', type=str, choices=['left', 'right'], help='Which side the ego controls in cds-style training', required=True, default='left')
     parser.add_argument('--async_update', choices=['True', 'False'], help='Async update', required=True, default='False')
