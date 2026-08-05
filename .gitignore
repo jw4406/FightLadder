@@ -46,3 +46,10 @@ main/br_rewards
 main/main/videos/*
 main/main/videos
 main/elo_data/elo_history.jsonl
+main/timescale_arm_A/
+main/critic_diagnostics_armA/
+main/critic_diagnostics/
+main/critic_diag_RyGu_tier0/
+main/critic_diagnostics_armA_powered/
+main/critic*
+main/*json

@@ -572,7 +572,16 @@ def build_parser():
     p.add_argument("--lbr_episodes", type=int, default=50)
     p.add_argument("--lbr_n_envs", type=int, default=16)
     p.add_argument("--lbr_seed", type=int, default=0)
-    p.add_argument("--lbr_controls", type=str, default="True")
+    p.add_argument("--lbr_controls", type=str, default="True",
+                   help="legacy all-or-nothing switch: True adds greedy+shuffle "
+                        "to lbr. Ignored when --lbr_modes is given.")
+    p.add_argument("--lbr_modes", type=str, default="",
+                   help="comma-separated subset of {lbr,greedy,shuffle}; overrides "
+                        "--lbr_controls. e.g. 'greedy' runs ONLY the greedy-damage "
+                        "player, which is 3x cheaper and is the only variant "
+                        "producing a non-vacuous bound on the runs measured so far. "
+                        "The highest-priority mode present owns the sidecar JSON "
+                        "and the selfplay_rewards/ file.")
     p.add_argument("--lbr_infer_chunk", type=int, default=512,
                    help="Max rows per batched critic forward.")
     p.add_argument("--lbr_gamma", type=float, default=-1.0,
@@ -591,6 +600,39 @@ def _b(x):
 
 TAG = {"lbr": "lbr", "greedy": "lbrgreedy", "shuffle": "lbrshuffle"}
 
+# Which mode owns the sidecar JSON and the selfplay_rewards/ file. Exactly one
+# mode per (checkpoint, direction) writes them, because they describe the RUN,
+# not the variant -- selfplay is computed once per direction regardless of how
+# many modes are evaluated.
+#
+# This used to be hardcoded to "lbr". With --lbr_modes greedy that produced bare
+# .txt files with no selfplay reference and no sidecar, so eps was uncomputable
+# and tier 3 of critic_diagnostics had nothing to read. Now it is the
+# highest-priority mode actually present, which keeps the old behaviour whenever
+# lbr is in the set.
+HEADLINE_PRIORITY = ("lbr", "greedy", "shuffle")
+
+
+def resolve_modes(args):
+    """Mode list for this run, honouring --lbr_modes over legacy --lbr_controls."""
+    raw = (getattr(args, "lbr_modes", "") or "").strip()
+    if raw:
+        modes = [m.strip() for m in raw.split(",") if m.strip()]
+        bad = [m for m in modes if m not in TAG]
+        if bad:
+            raise SystemExit(f"--lbr_modes: unknown {bad}; valid are {sorted(TAG)}")
+        if not modes:
+            raise SystemExit("--lbr_modes resolved to an empty set")
+        return modes
+    return ["lbr"] + (["greedy", "shuffle"] if _b(args.lbr_controls) else [])
+
+
+def headline_mode(modes):
+    for m in HEADLINE_PRIORITY:
+        if m in modes:
+            return m
+    return modes[0]
+
 
 def run_matchup(ckpt, state, head_idx, label, directions, args):
     """Evaluate one matchup in one or both directions.
@@ -605,7 +647,8 @@ def run_matchup(ckpt, state, head_idx, label, directions, args):
     try:
         model, detection = load_checkpoint(ckpt, venv, args.device)
         cfg = preflight(venv, model)
-        modes = ["lbr"] + (["greedy", "shuffle"] if _b(args.lbr_controls) else [])
+        modes = resolve_modes(args)
+        headline = headline_mode(modes)
         for lbr_is_adv in directions:
             ops = PolicyOps(model, head_idx=head_idx, lbr_is_adv=lbr_is_adv,
                             gamma_override=(None if args.lbr_gamma < 0
@@ -625,6 +668,7 @@ def run_matchup(ckpt, state, head_idx, label, directions, args):
                               max_steps=args.lbr_max_steps)
             print(f"[LBR]    selfplay return={sp:+.5f}")
             out[seat] = {"modes": res, "selfplay": sp, "cfg": cfg,
+                         "headline": headline,
                          "detection": detection, "ego_side": ops.ego_side,
                          "sgn": ops.sgn, "gamma": ops.gamma}
     finally:
@@ -650,7 +694,7 @@ def write_matchup_results(ckpt, data, state, label, per_seat, args, subdir):
                                 args.filename_suffix)
             written.append(write_result("br_rewards", subdir, fn,
                                         res["lbr_return_mean"]))
-            if mode == "lbr":
+            if mode == blob["headline"]:
                 write_result("selfplay_rewards", subdir, fn, blob["selfplay"])
                 sidecar = dict(res)
                 sidecar.update({
@@ -709,7 +753,8 @@ def main(argv=None):
     print("=" * 78)
     print("DUALITY GAP (NashConv) per matchup -- LOWER BOUNDS")
     print("=" * 78)
-    modes = ["lbr"] + (["greedy"] if _b(args.lbr_controls) else [])
+    # Report eps for every mode actually run, not a hardcoded pair.
+    modes = [m for m in HEADLINE_PRIORITY if m in resolve_modes(args)]
     for label, per_seat in summary.items():
         print(f"\n  {label}")
         for mode in modes:

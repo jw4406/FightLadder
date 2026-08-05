@@ -1,0 +1,179 @@
+#!/bin/bash
+#SBATCH --job-name=spar_g094_l095_RySa
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=64G
+#SBATCH --gres=gpu:1
+#SBATCH --time=24:00:00
+#SBATCH --output=slurm_logs/spar_g094_l095_%j.out
+#SBATCH --error=slurm_logs/spar_g094_l095_%j.err
+#SBATCH --mail-type=begin
+#SBATCH --mail-type=end
+#SBATCH --mail-user=jw4406@princeton.edu
+#
+# ARM C1 -- gamma 0.94, lambda 0.95 (the plain gamma change).
+#
+# Single variable against ARM A, which is the config that avoids the self-play
+# collapse (c_lr 3e-5). Everything below except --gamma is arm A's value.
+#
+# WHY gamma:
+#   ippo.py's SPAR constructor passed no gamma and silently inherited the class
+#   default 0.99, while the IPPO/2timescale constructors in the same file
+#   hardcoded 0.94. So spar has trained on a ~13 s horizon and the other paths on
+#   ~2.2 s, against rounds of ~27 s. Nobody chose that.
+#
+#   Measured on arm A's OWN checkpoints (critic_ceiling D1, episode splits, ~390
+#   episodes): the return-prediction ceiling is
+#       gamma   0.75   0.9    0.95   0.99   1.0
+#       6.24M  0.180  0.210  0.192  0.152  0.118
+#       8.16M  0.192  0.189  0.172  0.102  0.063
+#      10.08M  0.202  0.178  0.135  0.055  0.023
+#   Arm A's trained critic sits at EV 0.042 against a 0.055 ceiling at its own
+#   gamma -- i.e. AT the ceiling, not failing to reach it. Moving the ceiling is
+#   the only thing left that can help the critic.
+#
+# WHAT THIS DOES NOT TEST:
+#   gamma also changes what the POLICY optimises. Here lambda stays 0.95, so the
+#   advantage horizon drops 16.8 -> 9.4 steps alongside the critic's 100 -> 16.7.
+#   Both change together. The companion script (lam100) holds the advantage
+#   horizon fixed to isolate the critic.
+#
+# READ IT ON: eps_greedy / NashConv from local_best_response.py, NOT rating_gap.
+#   Arm A's rating_gap improved -81 <- -154 over exactly the window where its
+#   NashConv WIDENED (0.44 pre-6M -> 0.52 post-6M). rating_gap is self-play
+#   relative and was actively misleading on this run.
+#   Read at >= 8M: arm A's crossover vs the baseline was ~6M.
+
+set -u
+
+module purge
+module load anaconda3/2024.02
+conda activate fightladder
+
+WORKDIR="${WORKDIR:-/home/jw4406/codebase/FightLadder}"
+cd "${WORKDIR}"
+mkdir -p slurm_logs
+
+# CRITICAL -- checkpoint isolation.
+# .task checkpoints are written by FileQueueTriggerCallback to ippo.py's
+# TASK_DIR, which is derived from the SCRIPT's path. It ignores --save_dir AND
+# cwd. Every spar Ryu-vs-Sagat run produces the SAME filenames
+# (model_name_prefix = "spar_Ry_Sa"), so two jobs writing to one TASK_DIR
+# silently overwrite each other's checkpoints. That already destroyed a baseline
+# checkpoint locally. FIGHTLADDER_TASK_DIR (ippo.py:42) is the only override.
+export FIGHTLADDER_TASK_DIR="${WORKDIR}/main/slurm_runs/${SLURM_JOB_ID}/trained_models/tasks"
+mkdir -p "${FIGHTLADDER_TASK_DIR}/todo" "${FIGHTLADDER_TASK_DIR}/todo_continue"
+SAVE_DIR="${FIGHTLADDER_TASK_DIR}/todo"
+
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+IPPO_PATH="${WORKDIR}/main/ippo.py"
+
+# --- the experiment ---------------------------------------------------------
+GAMMA="0.94"
+GAE_LAMBDA="0.95"
+
+# --- everything below is ARM A, unchanged -----------------------------------
+PLAYER=("Ryu")
+OPPONENTS=("Sagat")
+C_LR="3e-5"                 # arm A's value; 1e-5 collapses by ~6M
+D_LR="1e-4"
+V_LR="4e-4"
+ENVS_PER_MATCHUP="24"
+NUM_ENV_STEPS="512"
+VTRACE_SEQ_LEN="64"
+VTRACE_C_BAR="1.0"
+VTRACE_RHO_BAR="5.0"
+VTRACE_REPLAY_CAPACITY="15000"
+TRAINING_BATCH_SIZE="1024"
+CHECKPOINT_INTERVAL="20000" # x24 envs = a checkpoint every 480k steps
+TOTAL_TIMESTEPS="150000000"
+EGO_SIDE="left"
+SIDE="both"
+USE_MIRROR="False"
+TRANSFORM_ACTION="True"
+MODEL_ARCH_TYPE="spar"
+EGO_STYLE="learning"
+ADV_STYLE="learning"
+NUM_ENV_TO_LOAD="1"
+ENV_BATCH_SIZE="24"
+NUM_PERTURBS="10"
+RENDER="False"
+ASYNC_UPDATE="False"
+MASTER_USE_STAG="False"
+USE_LR_ANNEALING="False"
+LR_ANNEAL_COEFF=".995"
+OBS_TYPE="image"
+USE_STAGNATION_EARLY_STOP="False"
+USE_STAGNATION_VELOCITY_SIGNAL="False"
+USE_STAGNATION_ENTROPY_SIGNAL="False"
+STAGNATION_PATIENCE="20000"
+STAGNATION_TOLERANCE="1e-4"
+STAGNATION_REL_TOLERANCE="0.05"
+STAGNATION_EMA_BETA="0.99"
+STAGNATION_EPS="1e-8"
+STAGNATION_EVAL_GAMES="0"
+ENTROPY_STAGNATION_WEIGHT="1.0"
+STAGNATION_LR_FACTOR="0.999"
+STAGNATION_LR_PATIENCE="150"
+
+CMD=(
+    python -u "${IPPO_PATH}"
+    --player "${PLAYER[@]}"
+    --opponents "${OPPONENTS[@]}"
+    --c_lr "${C_LR}" --d_lr "${D_LR}" --v_lr "${V_LR}"
+    --ego_style "${EGO_STYLE}"
+    --adv_style "${ADV_STYLE}"
+    --save_dir "${SAVE_DIR}"
+    --num_env_to_load "${NUM_ENV_TO_LOAD}"
+    --env_batch_size "${ENV_BATCH_SIZE}"
+    --num_perturbs "${NUM_PERTURBS}"
+    --use_mirror "${USE_MIRROR}"
+    --ego_side "${EGO_SIDE}"
+    --side "${SIDE}"
+    --envs_per_matchup "${ENVS_PER_MATCHUP}"
+    --num_env_steps "${NUM_ENV_STEPS}"
+    --vtrace_seq_len "${VTRACE_SEQ_LEN}"
+    --vtrace_c_bar "${VTRACE_C_BAR}"
+    --vtrace_rho_bar "${VTRACE_RHO_BAR}"
+    --vtrace_replay_capacity "${VTRACE_REPLAY_CAPACITY}"
+    --checkpoint_interval "${CHECKPOINT_INTERVAL}"
+    --training_batch_size "${TRAINING_BATCH_SIZE}"
+    --total_timesteps "${TOTAL_TIMESTEPS}"
+    --transform_action "${TRANSFORM_ACTION}"
+    --model_arch_type "${MODEL_ARCH_TYPE}"
+    --use_lr_annealing "${USE_LR_ANNEALING}"
+    --lr_anneal_coeff "${LR_ANNEAL_COEFF}"
+    --render "${RENDER}"
+    --async_update "${ASYNC_UPDATE}"
+    --master_use_stag "${MASTER_USE_STAG}"
+    --obs_type "${OBS_TYPE}"
+    --use_stagnation_early_stop "${USE_STAGNATION_EARLY_STOP}"
+    --use_stagnation_velocity_signal "${USE_STAGNATION_VELOCITY_SIGNAL}"
+    --use_stagnation_entropy_signal "${USE_STAGNATION_ENTROPY_SIGNAL}"
+    --stagnation_patience "${STAGNATION_PATIENCE}"
+    --stagnation_tolerance "${STAGNATION_TOLERANCE}"
+    --stagnation_rel_tolerance "${STAGNATION_REL_TOLERANCE}"
+    --stagnation_ema_beta "${STAGNATION_EMA_BETA}"
+    --stagnation_eps "${STAGNATION_EPS}"
+    --stagnation_eval_games "${STAGNATION_EVAL_GAMES}"
+    --entropy_stagnation_weight "${ENTROPY_STAGNATION_WEIGHT}"
+    --stagnation_lr_factor "${STAGNATION_LR_FACTOR}"
+    --stagnation_lr_patience "${STAGNATION_LR_PATIENCE}"
+)
+# Omitted when empty so ippo.py's own defaults apply (gamma: spar 0.99,
+# gae_lambda 0.95). This is what lets gen_lever_sweep.py blank them.
+[ -n "${GAMMA}" ]      && CMD+=( --gamma "${GAMMA}" )
+[ -n "${GAE_LAMBDA}" ] && CMD+=( --gae_lambda "${GAE_LAMBDA}" )
+
+echo "=== ARM C1: gamma ${GAMMA} / lambda ${GAE_LAMBDA} ==="
+echo "  job        : ${SLURM_JOB_ID}"
+echo "  task_dir   : ${FIGHTLADDER_TASK_DIR}"
+# Guarded: a generated variant blanks GAMMA/GAE_LAMBDA, and 1/(1-) is a syntax
+# error. Fall back to ippo.py's spar defaults so the banner is always truthful.
+_g="${GAMMA:-0.99}"; _l="${GAE_LAMBDA:-0.95}"
+echo "  gamma/lambda   : ${_g} / ${_l}$([ -z "${GAMMA}" ] && echo '  (ippo.py defaults)')"
+echo "  critic horizon ~$(python -c "print(round(1/(1-${_g}),1))") steps"
+echo "  GAE horizon    ~$(python -c "print(round(1/(1-${_g}*${_l}),1))") steps"
+exec "${CMD[@]}"

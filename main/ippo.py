@@ -41,7 +41,16 @@ SAVE_FREQ = 10000  # Save a checkpoint every 10,000 steps
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 CHECKPOINT_DIR = os.path.join(current_dir, "main_checkpoints")
-TASK_DIR = os.path.join(current_dir, "trained_models/tasks")
+# .task checkpoints are written here by FileQueueTriggerCallback -- NOT to
+# --save_dir, which only governs .mp4 output. Because this is derived from the
+# SCRIPT's path it also ignores cwd, so two concurrent runs of the same
+# (arch, player, opponent) silently overwrite each other's checkpoints: they
+# share model_name_prefix, hence identical filenames. That destroyed a baseline
+# checkpoint during the timescale experiment. Overridable per-run via the
+# environment; default is unchanged. It must be an env var rather than a CLI
+# flag because this constant is evaluated at import, before argparse runs.
+TASK_DIR = os.environ.get("FIGHTLADDER_TASK_DIR") or os.path.join(
+    current_dir, "trained_models/tasks")
 #print("#$%^&*()*&^%$#@$%^&*(&^%$#@"+ current_dir)
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 os.makedirs(TASK_DIR, exist_ok=True)
@@ -406,6 +415,10 @@ def main(args):
         OPPONENT_LIST = ["Guile", "Sagat"]#,"ChunLi", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega", "EHonda"]
     player_short = ''.join(player[:2] for player in PLAYER)
     opponent_short = ''.join(opponent[:2] for opponent in OPPONENT_LIST)
+    # Preserve each path's existing default when --gamma is unset.
+    _gamma_spar = 0.99 if args.gamma is None else args.gamma
+    _gae_lambda = 0.95 if args.gae_lambda is None else args.gae_lambda
+    _gamma_ippo = 0.94 if args.gamma is None else args.gamma
     model_name_prefix = "%s_%s_%s" % (args.model_arch_type, player_short, opponent_short)
     # parser = argparse.ArgumentParser(description='Reset game stats')
     # parser.add_argument('--reset', choices=['round', 'match', 'game'],
@@ -604,7 +617,8 @@ def main(args):
             n_steps=192,
             batch_size=384,  # 512,
             n_epochs=5,
-            gamma=0.94,
+            gamma=_gamma_ippo,
+            gae_lambda=_gae_lambda,
             learning_rate=lr_schedule,
             clip_range=clip_range_schedule,
             #tensorboard_log=args.log_dir,
@@ -684,6 +698,8 @@ def main(args):
                 "AACCnnPolicy",
                 finetune_env,
                 device="cuda",
+                gamma=_gamma_spar,
+                gae_lambda=_gae_lambda,
                 c_learning_rate=args.c_lr,
                 d_learning_rate=args.d_lr,
                 v_learning_rate=args.v_lr,
@@ -716,8 +732,10 @@ def main(args):
                 stagnation_lr_factor=args.stagnation_lr_factor,
                 stagnation_lr_patience=args.stagnation_lr_patience,
                 vtrace_enabled=True,
-                vtrace_replay_capacity=15000,
+                vtrace_replay_capacity=args.vtrace_replay_capacity,
                 vtrace_seq_len=args.vtrace_seq_len,
+                vtrace_c_bar=args.vtrace_c_bar,
+                vtrace_rho_bar=args.vtrace_rho_bar,
                 blend_adversary_heads=(args.blend_adversary_heads == 'True'),
             )
         elif model_arch_type == "ippo":
@@ -876,7 +894,8 @@ def main(args):
             n_steps=96,
             batch_size=192,  # 512,
             n_epochs=20,
-            gamma=0.94,
+            gamma=_gamma_ippo,
+            gae_lambda=_gae_lambda,
             v_learning_rate=7.5e-2, c_learning_rate=5e-3,
             d_learning_rate=2.5e-2, v_learning_rate_decay=critic_decay_schedule(1e-3),
             c_learning_rate_decay=critic_decay_schedule(1e-4),
@@ -1136,6 +1155,70 @@ if __name__ == "__main__":
     parser.add_argument("--vtrace_seq_len", type=int, default=None, required=False,
                         help="V-trace worker sequence length T (spar arch only). "
                              "None => class default min(n_steps//4, 64).")
+    # The two V-trace truncation bars. They do DIFFERENT jobs (vtrace.py:56-57):
+    #   rho_bar truncates the TD-error ratio and SETS THE FIXED POINT -- changing
+    #           it changes which policy's value function you converge to.
+    #   c_bar   truncates the trace ratio and SETS THE VARIANCE -- changing it
+    #           changes how far credit propagates, NOT what you converge to.
+    # So c_bar is the safe knob: raising it cannot bias the solution.
+    #
+    # Measured on the spar_Ry_Sa baseline: rho_sat_frac ~0.003 (rho_bar=5 barely
+    # binds) but c_sat_frac ~0.47 -- roughly half the traces clip at c_bar=1, and
+    # since the trace coefficient at lag k is prod(c_i) with every c_i <= 1, the
+    # effective horizon is far shorter than seq_len=64 or gamma=0.99 imply. See
+    # also the note at clean_derivative_free_spar.py:249.
+    # Raising c_bar trades bias for variance; vtrace_ratio_max reached 119 as the
+    # policies diverged, so sweep (1.0 -> 2.0 -> 5.0) rather than removing it.
+    # gamma was never exposed. The three model constructors in this file
+    # disagree: IPPO and CleanDerivativeFreeSPARIPPO pass gamma=0.94 explicitly,
+    # while CleanDerivativeFreeSPAR passes nothing and silently inherits the
+    # class default of 0.99 (clean_derivative_free_spar.py:117). So `spar` runs
+    # have trained at a ~13 s horizon while the other two paths use ~2.2 s.
+    #
+    # Measured on arm A's own checkpoints (critic_ceiling D1, episode splits):
+    # the return-prediction ceiling is 0.18-0.20 at gamma 0.75-0.9 versus 0.055
+    # at 0.99 -- roughly 4x. NOTE that measures how PREDICTABLE the return is,
+    # not how good a policy trained on it will be; a shorter horizon also makes
+    # the agent myopic.
+    #
+    # Default None = "leave each path at whatever it uses today", so adding this
+    # flag changes nothing until someone passes it.
+    # GAE lambda. Never referenced in this file before now: all three model
+    # constructors inherited the class default 0.95
+    # (clean_derivative_free_spar.py:118).
+    #
+    # It matters when sweeping gamma, because the ADVANTAGE horizon is
+    # ~1/(1-gamma*lambda) while the CRITIC target horizon is ~1/(1-gamma):
+    #   gamma 0.99 lambda 0.95 -> critic 100 steps (13.3 s), GAE 16.8 (2.2 s)
+    #   gamma 0.94 lambda 0.95 -> critic  16.7      (2.2 s), GAE  9.4 (1.2 s)
+    #   gamma 0.94 lambda 1.00 -> critic  16.7      (2.2 s), GAE 16.7 (2.2 s)
+    # So lambda=1.0 HOLDS THE ADVANTAGE HORIZON FIXED while shortening only the
+    # critic's target -- which isolates the critic change from the policy one.
+    # Cost: lambda=1.0 is pure Monte Carlo advantage, higher variance.
+    # V-trace replay capacity. Was hardcoded 15000 at the SPAR construction.
+    # Measured: ~88,500 updates against a 15,000-capacity buffer with mean_age
+    # ~7,400, and an in-batch/held-out EV gap that reached 0.45 on the baseline.
+    # That reuse is the mechanism behind the memorization signature.
+    parser.add_argument("--vtrace_replay_capacity", type=int, default=15000,
+                        required=False,
+                        help="V-trace replay buffer capacity (spar only). "
+                             "Default 15000 reproduces every run to date.")
+    parser.add_argument("--gae_lambda", type=float, default=None, required=False,
+                        help="GAE lambda. Unset => class default 0.95. Set to 1.0 "
+                             "alongside --gamma 0.94 to hold the advantage horizon "
+                             "at ~17 steps while the critic target drops 100 -> 17.")
+    parser.add_argument("--gamma", type=float, default=None, required=False,
+                        help="Discount factor. Unset => spar keeps 0.99, the "
+                             "IPPO paths keep 0.94. Setting it overrides ALL of "
+                             "them. Effective horizon ~1/(1-gamma) agent steps; "
+                             "at ~0.13 s/step, 0.99 ~ 13 s and 0.94 ~ 2.2 s "
+                             "against rounds of ~27 s.")
+    parser.add_argument("--vtrace_c_bar", type=float, default=1.0, required=False,
+                        help="V-trace trace-ratio truncation (variance / effective "
+                             "credit horizon). Does NOT move the fixed point.")
+    parser.add_argument("--vtrace_rho_bar", type=float, default=5.0, required=False,
+                        help="V-trace TD-error-ratio truncation. SETS THE FIXED "
+                             "POINT -- changing this changes what is learned.")
     # Blend the multi-head adversary update so the shared dstb_net trunk gets one
     # mean-over-heads step per batch instead of N sequential per-head steps
     # (removes the ordering bias where later matchups inherit earlier ones' trunk

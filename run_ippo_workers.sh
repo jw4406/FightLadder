@@ -14,7 +14,7 @@ IPPO_PATH="${SCRIPT_DIR}/main/ippo.py"
 
 # Arguments from launch.json (Python Debugger: ippo.py)
 PLAYER=("Ryu")
-OPPONENTS=("Guile")
+OPPONENTS=("Sagat")
 NUM_ENV_TO_LOAD="1"
 ENV_BATCH_SIZE="24"
 C_LR="1e-5"
@@ -31,18 +31,26 @@ EGO_SIDE="left"
 SAVE_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/"
 USE_LR_ANNEALING="False"
 LR_ANNEAL_COEFF=".995"
-CHECKPOINT_INTERVAL="6250"
+CHECKPOINT_INTERVAL="20000"
 TOTAL_TIMESTEPS="150000000"
 TRAINING_BATCH_SIZE="1024"
 TRANSFORM_ACTION="True"
-NUM_ENV_STEPS="64"
+NUM_ENV_STEPS="512"
 EGO_STYLE="learning"
 ADV_STYLE="learning"
-ENVS_PER_MATCHUP="16"
+ENVS_PER_MATCHUP="24"
 SIDE="both"
 RENDER="False"
 MODEL_FILE=""
 VTRACE_SEQ_LEN="64"
+# c_bar truncates the TRACE ratio: sets variance / effective credit
+# horizon, does NOT move the fixed point. Measured c_sat_frac ~0.47 at 1.0,
+# so ~half the traces clip. rho_bar truncates the TD-error ratio and DOES
+# set the fixed point -- changing it changes what is learned.
+VTRACE_C_BAR="1.0"
+VTRACE_RHO_BAR="5.0"
+# Discount. EMPTY = ippo.py per-path defaults (spar 0.99, ippo paths 0.94).
+GAMMA=""
 
 MASTER_USE_STAG="False"
 
@@ -111,6 +119,9 @@ for i in $(seq 1 ${NUM_WORKERS}); do
         --stagnation_lr_patience "${STAGNATION_LR_PATIENCE}"
         --obs_type "${OBS_TYPE}"
 	--vtrace_seq_len "${VTRACE_SEQ_LEN}"
+	--vtrace_c_bar "${VTRACE_C_BAR}"
+	--vtrace_rho_bar "${VTRACE_RHO_BAR}"
+	${GAMMA:+--gamma "${GAMMA}"}
     )
 
     if [ "${RUN_LIVE}" = "False" ]; then

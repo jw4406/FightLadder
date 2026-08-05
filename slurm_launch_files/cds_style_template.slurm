@@ -83,6 +83,24 @@ NUM_ENV_STEPS="1024"
 # V-trace worker sequence length T (spar arch only). "64" reproduces the prior
 # default at NUM_ENV_STEPS>=256; lower it (e.g. 16/32) for more critic updates/sec.
 VTRACE_SEQ_LEN="64"
+# Three ippo.py knobs that were not reachable from SLURM. All EMPTY by default,
+# which leaves ippo.py's own defaults in force -- so generated jobs behave
+# exactly as before unless one of these is set.
+#
+#   GAMMA           unset => spar 0.99, ippo/2timescale 0.94. ippo.py's SPAR
+#                   constructor passed nothing and silently inherited the class
+#                   default 0.99 while the other two paths hardcoded 0.94 -- a
+#                   ~13 s vs ~2.2 s horizon on ~27 s rounds. Measured ceiling on
+#                   return prediction is 0.18-0.20 at gamma 0.75-0.9 vs 0.055 at
+#                   0.99. NOTE that is PREDICTABILITY, not policy quality.
+#   VTRACE_C_BAR    unset => 1.0. Truncates the TRACE ratio: sets variance and
+#                   effective credit horizon, does NOT move the fixed point.
+#                   Measured c_sat_frac ~0.5, i.e. half the traces clip.
+#   VTRACE_RHO_BAR  unset => 5.0. Truncates the TD-error ratio and DOES set the
+#                   fixed point -- changing it changes what is learned.
+GAMMA=""
+VTRACE_C_BAR=""
+VTRACE_RHO_BAR=""
 # Blend the multi-head adversary trunk update (spar arch only). "False" keeps the
 # unchanged sequential per-head update; "True" gives one mean-over-heads trunk step.
 BLEND_ADVERSARY_HEADS="False"
@@ -167,6 +185,16 @@ for i in $(seq 1 ${NUM_WORKERS}); do
     # where ippo.py treats it as optional.
     if [ -n "${EGO_VALUE_HEAD_LR}" ]; then
         CMD+=( --ego_value_head_lr "${EGO_VALUE_HEAD_LR}" )
+    fi
+    # Optional overrides -- omitted entirely when empty so ippo.py's defaults apply.
+    if [ -n "${GAMMA}" ]; then
+        CMD+=( --gamma "${GAMMA}" )
+    fi
+    if [ -n "${VTRACE_C_BAR}" ]; then
+        CMD+=( --vtrace_c_bar "${VTRACE_C_BAR}" )
+    fi
+    if [ -n "${VTRACE_RHO_BAR}" ]; then
+        CMD+=( --vtrace_rho_bar "${VTRACE_RHO_BAR}" )
     fi
 
     if [ "${RUN_LIVE}" = "False" ]; then

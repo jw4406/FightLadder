@@ -53,8 +53,14 @@ def collect(venv, ops, n_steps, seed):
     rng = np.random.RandomState(seed)
     n = venv.num_envs
     VF, LV, PI, V, R, D, S = [], [], [], [], [], [], []
+    # Episode id per env slot, so the train/test split can be made BY EPISODE.
+    # Without this the probe splits by timestep and leaks -- see episode_split().
+    EP = []
+    ep_id = np.arange(n)
+    next_ep = n
     obs = venv.reset()
     for t in range(n_steps):
+        EP.append(ep_id.copy())
         with th.no_grad():
             x = preprocess_obs(th.as_tensor(obs).to(ops.device),
                                ops.p.observation_space,
@@ -74,7 +80,11 @@ def collect(venv, ops, n_steps, seed):
         obs, r_l, r_r, d, infos = venv.step(ops.joint(lbr_a, pol_a))
 
         R.append(ops.lbr_reward(r_l, r_r))
-        D.append(np.asarray(d, dtype=bool))
+        d = np.asarray(d, dtype=bool)
+        D.append(d)
+        for j in np.nonzero(d)[0]:
+            ep_id[j] = next_ep
+            next_ep += 1
         ahp = np.array([i.get("agent_hp", 0) for i in infos], float)
         ehp = np.array([i.get("enemy_hp", 0) for i in infos], float)
         ax = np.array([i.get("agent_x", 0) for i in infos], float)
@@ -100,11 +110,37 @@ def collect(venv, ops, n_steps, seed):
     flat = lambda A: np.concatenate(A, axis=0)
     m = valid.reshape(-1)
     return (flat(VF)[m], flat(LV)[m], flat(PI)[m], np.array(V).reshape(-1)[m],
-            G.reshape(-1)[m], flat(S)[m])
+            G.reshape(-1)[m], flat(S)[m], np.array(EP).reshape(-1)[m])
 
 
 def _ev(pred, y):
     return float(1.0 - (pred - y).var() / y.var()) if y.var() > 1e-12 else float("nan")
+
+
+def episode_split(ep, seed=0, fracs=(0.5, 0.25, 0.25)):
+    """Split sample indices by EPISODE id. Returns (train, val, test).
+
+    Canonical implementation -- critic_diagnostics.py and critic_ceiling.py both
+    use this one, so the three scripts cannot drift on a detail this subtle.
+
+    A random TIMESTEP split leaks badly against return targets. Every timestep
+    inside one episode shares nearly the same discounted return, so a timestep
+    split puts near-duplicate targets on both sides and any probe can recover G
+    just by recognising which episode a state came from. Measured here on
+    spar_Ry_Sa_2880000 with a frozen actor-CNN ridge: +0.166 under a timestep
+    split versus +0.005 under an episode split -- ~95% of the apparent signal
+    was leakage, and it produced two wrong architectural conclusions before it
+    was caught.
+
+    val exists so a ridge alpha can be picked without touching test.
+    """
+    uniq = np.unique(ep)
+    rng = np.random.RandomState(seed)
+    rng.shuffle(uniq)
+    n1 = int(len(uniq) * fracs[0])
+    n2 = n1 + int(len(uniq) * fracs[1])
+    groups = (set(uniq[:n1]), set(uniq[n1:n2]), set(uniq[n2:]))
+    return tuple(np.nonzero(np.isin(ep, list(g)))[0] for g in groups)
 
 
 def ridge_ev(X, y, tr, te, ridge):
@@ -178,13 +214,18 @@ def main(argv=None):
             preflight(venv, model)
             ops = PolicyOps(model, head_idx=head_idx, lbr_is_adv=_b(args.eval_prot))
             t0 = time.time()
-            VF, LV, PI, V, G, S = collect(venv, ops, args.steps, args.seed)
+            VF, LV, PI, V, G, S, EP = collect(venv, ops, args.steps, args.seed)
         finally:
             venv.close()
 
         n = G.size
-        rng = np.random.RandomState(args.seed)
-        idx = rng.permutation(n); tr, te = idx[: n // 2], idx[n // 2:]
+        # Split BY EPISODE, not by timestep. fracs=(0.5, 0.0, 0.5) keeps this
+        # script's original 50/50 train/test proportions; the leak, not the
+        # proportion, was the bug. (val is unused here because alpha is a fixed
+        # --ridge argument rather than cross-validated.)
+        tr, _unused_val, te = episode_split(EP, seed=args.seed, fracs=(0.5, 0.0, 0.5))
+        n_ep_tr = int(np.unique(EP[tr]).size) if tr.size else 0
+        n_ep_te = int(np.unique(EP[te]).size) if te.size else 0
         res = {
             "s1_cnn_512": ridge_ev(VF, G, tr, te, args.ridge),
             "s2_mlp_trunk_256": ridge_ev(LV, G, tr, te, args.ridge),
@@ -197,10 +238,13 @@ def main(argv=None):
             "s1_cnn_mlp": mlp_ev(VF, G, tr, te, args.seed, device=args.device),
             "s2_trunk_mlp": mlp_ev(LV, G, tr, te, args.seed, device=args.device),
             "n": int(n), "G_std": float(G.std()), "V_std": float(V.std()),
+            "split": "by-episode",
+            "n_episodes_train": n_ep_tr, "n_episodes_test": n_ep_te,
             "wall_clock_s": round(time.time() - t0, 1),
         }
         out["matchups"][label] = res
         print(f"\n   n={n} samples with complete returns,  G std={G.std():.4f},  V std={V.std():.4f}")
+        print(f"   split BY EPISODE: {n_ep_tr} train / {n_ep_te} test episodes")
         print(f"   {'stage (linear readout of its output)':38s} {'EV':>9s}   {'delta':>8s}")
         chain = [("[1] vf_features_extractor CNN 512", res["s1_cnn_512"]),
                  ("[2] + mlp_extractor trunk    256", res["s2_mlp_trunk_256"]),

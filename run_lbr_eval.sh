@@ -13,12 +13,19 @@ LBR_PATH="${SCRIPT_DIR}/main/local_best_response.py"
 
 # One or more checkpoints. Every entry gets its own LBR run.
 CHECKPOINTS=(
-    "${SCRIPT_DIR}/main/trained_models/tasks/todo/spar_Ry_Gu_1000000_steps.task"
+    "${SCRIPT_DIR}/main/trained_models/tasks/todo/spar_Ry_Sa_480000_steps.task"
+    "${SCRIPT_DIR}/main/trained_models/tasks/todo/spar_Ry_Sa_1920000_steps.task"
+    "${SCRIPT_DIR}/main/trained_models/tasks/todo/spar_Ry_Sa_3840000_steps.task"
+    "${SCRIPT_DIR}/main/trained_models/tasks/todo/spar_Ry_Sa_5760000_steps.task"
+    "${SCRIPT_DIR}/main/trained_models/tasks/todo/spar_Ry_Sa_7680000_steps.task"
+    "${SCRIPT_DIR}/main/trained_models/tasks/todo/spar_Ry_Sa_10080000_steps.task"
 )
 
-# True: LBR replaces the adversary (measures the ego policy's exploitability).
+# True:  LBR replaces the adversary (measures the ego policy's exploitability).
 # False: LBR replaces the ego.
-EVAL_PROT="True"
+# both:  run BOTH directions -- needed for the full gap, since the two directions
+#        are the two eps terms and either alone is half the picture.
+EVAL_PROT="both"
 
 # Ego actions to marginalize the one-step branch over, weighted by pi_ego.
 # 1 would be clairvoyance in a simultaneous-move game and is NOT a lower bound.
@@ -26,10 +33,15 @@ LBR_EGO_TOPK="4"
 
 LBR_STRIDE="1"
 LBR_EPISODES="50"
-LBR_N_ENVS="16"          # measured knee of the env scaling curve on a 16-core box
+# 16 is the measured knee of the env scaling curve, but that assumes the box is
+# otherwise idle. Lowered to 12 so an LBR sweep can run alongside a live training
+# job (which holds envs_per_matchup of its own) without oversubscribing the cores.
+LBR_N_ENVS="12"
 LBR_SEED="0"
-LBR_HEAD_IDX="0"
-LBR_CONTROLS="True"      # also run greedy-damage and critic-shuffled baselines
+# NOTE: there is no --lbr_head_idx. The matchup head is derived from the
+# checkpoint by resolve_matchups() and selected with --lbr_matchups.
+LBR_CONTROLS="True"      # legacy all-or-nothing; ignored when LBR_MODES is set
+LBR_MODES=""             # subset of {lbr,greedy,shuffle}; empty = legacy
 LBR_MAX_STEPS="100000"
 TRAINING_STYLE="spar"
 BR_INDEX="0"
@@ -55,8 +67,8 @@ for i in "${!CHECKPOINTS[@]}"; do
         --lbr_episodes "${LBR_EPISODES}"
         --lbr_n_envs "${LBR_N_ENVS}"
         --lbr_seed "${LBR_SEED}"
-        --lbr_head_idx "${LBR_HEAD_IDX}"
         --lbr_controls "${LBR_CONTROLS}"
+        --lbr_modes "${LBR_MODES}"
         --lbr_max_steps "${LBR_MAX_STEPS}"
         --training_style "${TRAINING_STYLE}"
         --br_index "${BR_INDEX}"
