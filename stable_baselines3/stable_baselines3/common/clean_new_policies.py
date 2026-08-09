@@ -135,6 +135,65 @@ class PopArtHead(nn.Module):
         return float(self.mu.item()), float(self.sigma.item())
 
 
+class MinimaxHead(nn.Module):
+    """Joint-action critic: emits the whole (n_ego x n_adv) payoff matrix per state.
+
+    Q(s, a_ego, a_adv), ego payoff, zero-sum -- so the adversary's value is just
+    -Q and the six ego/adv sign-negation sites collapse to one object.
+
+    WHY A MATRIX AND NOT AN ACTION-CONDITIONED SCALAR: the inner minimax solve
+    needs ALL n*m entries at s' to compute V(s'). An action-conditioned head
+    (q_ppo's shape: latent + actions -> scalar) would need n*m = 484 forwards
+    per state, ~500k per 1024-batch update. One forward emitting 484 outputs is
+    the same trunk and 248k extra params.
+
+    WHY THIS OBJECT AT ALL: every critic intervention tried through 2026-08-08
+    (gamma, V-trace, replay capacity, PopArt) changed how well V predicts
+    returns across the state distribution, and none created sensitivity to
+    single-action differences. `lbr ~= shuffle` over 42 measurements
+    (-0.1419 vs -0.1407) says permuting V across the 88 LBR branches changes
+    nothing: V(s') is constant across branches until the states diverge.
+    Q(s,a,o) varies across `a` by construction. That is the entire bet, and it
+    is a bet -- see the gate in the plan before wiring this into training.
+
+    ONLY ONE ENTRY PER TRANSITION GETS A GRADIENT (the joint action actually
+    played); the other 483 are trained by other visits to the same state. So Q
+    is far hungrier than V, and V is already at its supervised ceiling. Watch
+    `coverage()` -- if most cells never receive a gradient, this cannot work.
+    """
+
+    def __init__(self, trunk: nn.Module, latent_dim: int, n_ego: int, n_adv: int):
+        super().__init__()
+        self.n_ego = int(n_ego)
+        self.n_adv = int(n_adv)
+        self.trunk = trunk
+        self.out = nn.Linear(latent_dim, self.n_ego * self.n_adv)
+        # Cell-visit counts, for the coverage diagnostic above. A buffer so it
+        # rides along in state_dict and survives checkpointing.
+        self.register_buffer("cell_visits", th.zeros(self.n_ego, self.n_adv))
+
+    def forward(self, latent_vf: th.Tensor) -> th.Tensor:
+        """(B, latent) -> (B, n_ego, n_adv) payoff matrices."""
+        h = self.trunk(latent_vf)
+        return self.out(h).view(-1, self.n_ego, self.n_adv)
+
+    def played(self, latent_vf: th.Tensor, a_ego: th.Tensor, a_adv: th.Tensor) -> th.Tensor:
+        """Q at the joint action actually taken. (B,) -- this is what the loss regresses."""
+        M = self(latent_vf)
+        b = th.arange(M.shape[0], device=M.device)
+        return M[b, a_ego.long().reshape(-1), a_adv.long().reshape(-1)]
+
+    @th.no_grad()
+    def note_visits(self, a_ego: th.Tensor, a_adv: th.Tensor) -> None:
+        idx = (a_ego.long().reshape(-1) * self.n_adv + a_adv.long().reshape(-1))
+        flat = self.cell_visits.view(-1)
+        flat.scatter_add_(0, idx, th.ones_like(idx, dtype=flat.dtype))
+
+    def coverage(self) -> float:
+        """Fraction of the n_ego*n_adv cells that have ever received a gradient."""
+        return float((self.cell_visits > 0).float().mean())
+
+
 class CleanActorActorCriticPolicy(ActorCriticPolicy):
     def __init__(self,
         observation_space: spaces.Space,
@@ -167,6 +226,12 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         # would break loading every checkpoint that predates it.
         popart: bool = False,
         popart_beta: float = 3e-4,
+        # Minimax-Q joint-action critic. OFF by default: turning it on changes
+        # q_value_net's output from a scalar to an (n_ego x n_adv) matrix and
+        # renames state_dict keys, so no earlier checkpoint loads into it.
+        minimax_q: bool = False,
+        minimax_n_ego: int = 22,
+        minimax_n_adv: int = 22,
     ):
         # self.matchups = matchups
         # self.envs_per_matchup = envs_per_matchup
@@ -184,6 +249,9 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         self.side_dim = side_dim
         self.popart = bool(popart)
         self.popart_beta = float(popart_beta)
+        self.minimax_q = bool(minimax_q)
+        self.minimax_n_ego = int(minimax_n_ego)
+        self.minimax_n_adv = int(minimax_n_adv)
         super().__init__(observation_space = observation_space,
         action_space = action_space,
         lr_schedule = lr_schedule[0],
@@ -322,14 +390,24 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             # wants a per-state payoff MATRIX, not a sequence summary. Now
             # feed-forward and shaped like value_net so the two are comparable
             # tap-for-tap in the diagnostics.
-            self.q_value_net[matchup_key] = nn.Sequential(
+            _qtrunk = nn.Sequential(
                 nn.Linear(self.mlp_extractor.latent_dim_vf, value_hidden_size),
                 self.activation_fn(),
                 nn.Linear(value_hidden_size, value_hidden_size),
                 self.activation_fn(),
                 nn.Linear(value_hidden_size, value_hidden_size),
-                self.activation_fn(),
-                nn.Linear(value_hidden_size, 1))
+                self.activation_fn())
+            if getattr(self, "minimax_q", False):
+                # Matrix head: same trunk, 484 outputs instead of 1. Only built
+                # when the flag is on -- like PopArt, wrapping renames
+                # state_dict keys, and no checkpoint predating the flag loads
+                # into it. Start minimax runs from scratch.
+                self.q_value_net[matchup_key] = MinimaxHead(
+                    _qtrunk, value_hidden_size,
+                    n_ego=self.minimax_n_ego, n_adv=self.minimax_n_adv)
+            else:
+                self.q_value_net[matchup_key] = nn.Sequential(
+                    _qtrunk, nn.Linear(value_hidden_size, 1))
             _vhead = nn.Sequential(
                 nn.Linear(self.mlp_extractor.latent_dim_vf, value_hidden_size),
                 self.activation_fn(),
