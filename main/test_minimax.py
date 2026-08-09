@@ -179,6 +179,40 @@ def test_throughput():
     assert gap_def < 1e-2, f"default median gap {gap_def:.2e} too loose to certify"
 
 
+def test_lambda_returns():
+    """The return recursion, checked against closed forms rather than itself."""
+    from common.minimax import minimax_lambda_returns
+    T, E, g = 5, 3, 0.9
+
+    # lambda=0 -> the one-step TD target r + gamma*V(s'), which is what
+    # textbook minimax-Q uses. This is the case the theory is stated for.
+    r = th.randn(T, E)
+    V = th.randn(T, E)
+    lastV = th.randn(E)
+    d = th.zeros(T, E)
+    got = minimax_lambda_returns(r, d, V, lastV, gamma=g, gae_lambda=0.0)
+    want = r.clone()
+    for t in range(T):
+        want[t] += g * (lastV if t == T - 1 else V[t + 1])
+    assert th.allclose(got, want, atol=1e-6), (got - want).abs().max()
+
+    # lambda=1, no bootstrapping mid-episode -> plain discounted Monte Carlo.
+    got = minimax_lambda_returns(r, d, V, lastV, gamma=g, gae_lambda=1.0)
+    mc = th.zeros(T, E)
+    acc = lastV.clone()
+    for t in reversed(range(T)):
+        acc = r[t] + g * acc
+        mc[t] = acc
+    assert th.allclose(got, mc, atol=1e-5), (got - mc).abs().max()
+
+    # A terminal at t must cut the bootstrap: the return there is exactly r_t.
+    d2 = th.zeros(T, E); d2[2] = 1.0
+    got = minimax_lambda_returns(r, d2, V, lastV, gamma=g, gae_lambda=0.95)
+    assert th.allclose(got[2], r[2], atol=1e-6), (got[2] - r[2]).abs().max()
+    print("   [9] lambda-returns: lambda=0 == one-step TD, lambda=1 == discounted MC, "
+          "done cuts the bootstrap")
+
+
 if __name__ == "__main__":
     th.manual_seed(0)
     print("minimax solver tests")
@@ -190,4 +224,5 @@ if __name__ == "__main__":
     test_batched_matches_singleton()
     test_zero_sum_antisymmetry()
     test_throughput()
+    test_lambda_returns()
     print("\nALL PASSED")

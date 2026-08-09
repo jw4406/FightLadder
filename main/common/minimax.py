@@ -171,3 +171,42 @@ def solve_matrix_game(
 def minimax_values(M: th.Tensor, **kw) -> th.Tensor:
     """V only, no grad. The common case: computing GAE bootstraps for a rollout."""
     return solve_matrix_game(M, **kw).V
+
+
+@th.no_grad()
+def minimax_lambda_returns(
+    rewards: th.Tensor,
+    dones: th.Tensor,
+    V: th.Tensor,
+    last_V: th.Tensor,
+    gamma: float,
+    gae_lambda: float,
+) -> th.Tensor:
+    """TD(lambda) returns bootstrapped on the MINIMAX value.
+
+    Identical recursion to GAE -- deliberately, so this is comparable to what
+    the V head already regresses on and the only thing that differs is which
+    value function supplies the bootstrap:
+
+        delta_t = r_t + gamma * V(s_{t+1}) * (1-done) - V(s_t)
+        A_t     = delta_t + gamma * lambda * (1-done) * A_{t+1}
+        return  = A_t + V(s_t)
+
+    Why lambda-returns rather than the one-step target Littman's theory is
+    stated for: lambda=0 makes them coincide, so this is a dial rather than a
+    fork, and lambda>0 reuses the variance-reduction the rest of the pipeline
+    already relies on. Set gae_lambda=0.0 for textbook minimax-Q.
+
+    Shapes are (T, n_envs) for rewards/dones/V, (n_envs,) for last_V --
+    matching the rollout buffer's layout so no transposition is needed.
+    """
+    T = rewards.shape[0]
+    adv = th.zeros_like(rewards)
+    running = th.zeros_like(last_V)
+    for t in reversed(range(T)):
+        next_V = last_V if t == T - 1 else V[t + 1]
+        not_done = 1.0 - dones[t]
+        delta = rewards[t] + gamma * next_V * not_done - V[t]
+        running = delta + gamma * gae_lambda * not_done * running
+        adv[t] = running
+    return adv + V

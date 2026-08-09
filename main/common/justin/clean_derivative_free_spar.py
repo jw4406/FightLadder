@@ -173,6 +173,10 @@ class CleanDerivativeFreeSPAR(PPO):
             blend_adversary_heads: bool = True,
             popart: bool = False,
             popart_beta: float = 3e-4,
+            minimax_q: bool = False,
+            minimax_iters: int = 1024,
+            minimax_eta: float = 0.5,
+            minimax_stop_grad: bool = True,
     ):
 
         self.matchups = [state2matchup(state) for state in state_list] if state_list is not None else None #This needs to happen before the super().__init__
@@ -268,6 +272,15 @@ class CleanDerivativeFreeSPAR(PPO):
         # value_net state_dict keys and no existing .task can be loaded into it.
         self.popart = bool(popart)
         self.popart_beta = float(popart_beta)
+        # Minimax-Q joint-action critic. PHASE 0 defaults: the head trains but
+        # feeds NOTHING (stop_grad keeps its gradients off the shared vf trunk,
+        # so the existing V head and the advantages are bit-identical to a run
+        # with the flag off). Only flip stop_grad once the gate has been passed:
+        # Q must beat SHUFFLED Q at branch selection, where V does not.
+        self.minimax_q = bool(minimax_q)
+        self.minimax_iters = int(minimax_iters)
+        self.minimax_eta = float(minimax_eta)
+        self.minimax_stop_grad = bool(minimax_stop_grad)
         self.vtrace_ego_replay = None
         self.vtrace_adv_replays = None
         self.vtrace_trainer = None
@@ -556,6 +569,7 @@ class CleanDerivativeFreeSPAR(PPO):
         self.policy_kwargs['envs_per_matchup'] = self.envs_per_matchup
         self.policy_kwargs['popart'] = getattr(self, "popart", False)
         self.policy_kwargs['popart_beta'] = getattr(self, "popart_beta", 3e-4)
+        self.policy_kwargs['minimax_q'] = getattr(self, "minimax_q", False)
         
         # Set features_extractor_class based on whether observation space is an image
         if is_image_space(self.observation_space):

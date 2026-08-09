@@ -751,6 +751,10 @@ def main(args):
                 blend_adversary_heads=(args.blend_adversary_heads == 'True'),
                 popart=(args.popart == 'True'),
                 popart_beta=args.popart_beta,
+                minimax_q=(args.minimax_q == 'True'),
+                minimax_iters=args.minimax_iters,
+                minimax_eta=args.minimax_eta,
+                minimax_stop_grad=(args.minimax_stop_grad == 'True'),
             )
         elif model_arch_type == "ippo":
             finetune_model = CleanDerivativeFreeSPARIPPO(
@@ -1269,6 +1273,29 @@ if __name__ == "__main__":
                              "instead of making the head chase it by gradient descent. "
                              "Does NOT fix the affine-slope miscalibration -- that is a "
                              "regularization problem, not a scale problem.")
+    # Minimax-Q joint-action critic (spar arch only). Enabling it changes
+    # q_value_net's output from a scalar to a 22x22 payoff matrix and renames
+    # state_dict keys -- no earlier checkpoint loads into it, start from scratch.
+    parser.add_argument("--minimax_q", choices=['True', 'False'], default='False',
+                        required=False,
+                        help="Joint-action critic Q(s,a_ego,a_adv) with a minimax "
+                             "inner solve. Motivation: V is constant across "
+                             "one-action LBR branches (lbr ~= shuffle over 42 "
+                             "measurements), while Q varies across them by "
+                             "construction.")
+    parser.add_argument("--minimax_iters", type=int, default=1024, required=False,
+                        help="Optimistic-MWU iterations for the inner solve. "
+                             "1024 = 70ms per 12,288-state rollout (2.6%% of env "
+                             "time), median duality gap 5e-3; 256 = 17ms, 2e-2.")
+    parser.add_argument("--minimax_eta", type=float, default=0.5, required=False,
+                        help="MWU step size, applied to the per-state NORMALIZED "
+                             "matrix so it is scale-free.")
+    parser.add_argument("--minimax_stop_grad", choices=['True', 'False'],
+                        default='True', required=False,
+                        help="PHASE 0 (default True): Q trains but its gradients "
+                             "never reach the shared vf trunk, so training is "
+                             "bit-identical to --minimax_q False. Set False only "
+                             "after Q has beaten SHUFFLED Q at branch selection.")
     parser.add_argument("--popart_beta", type=float, default=3e-4, required=False,
                         help="EMA rate for the PopArt (mu, sigma) statistics. "
                              "3e-4 is the value from van Hasselt et al. 2016.")
