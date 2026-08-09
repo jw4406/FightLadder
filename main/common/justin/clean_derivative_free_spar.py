@@ -54,6 +54,7 @@ from utils import select_matchup_env, select_device, get_n_workers, move_policy,
 from concurrent.futures import ThreadPoolExecutor
 from .parallel_updater import ParallelUpdater
 from br_tracker import RatingStagnationTracker
+from common.minimax import solve_matrix_game
 from common.justin.vtrace import VTraceReplayBuffer, VTraceValueTrainer
 import threading
 
@@ -1669,6 +1670,7 @@ class CleanDerivativeFreeSPAR(PPO):
                 self.policy.dstb_optimizer.step()
                 if do_onpolicy_value:
                     self.policy.value_optimizer.step()
+                self._minimax_q_update(rollout_data, [i])
             if stop:
                 break
 
@@ -1681,6 +1683,13 @@ class CleanDerivativeFreeSPAR(PPO):
             explained_var = explained_variance(buf.values, buf.returns)
         self.policy.num_adversaries = self.num_adversaries
         self.logger.record("train/value_loss", np.mean(value_losses) if value_losses else 0.0)
+        # Minimax-Q phase 0. Absence of these lines means the update never RAN
+        # -- which a clean exit does not rule out, since the call site sits in
+        # the blended-adversary branch.
+        _mm = getattr(self, "_minimax_stats", None)
+        if _mm:
+            for _k, _v in _mm.items():
+                self.logger.record(f"train/minimax_{_k}", _v)
         self._log_leader_metrics(False, entropy_losses, pg_losses, approx_kl_divs, explained_var, clip_range)
 
     def train_standard(self, update_ego: bool = True, update_adversary: bool = True) -> None:
@@ -1919,6 +1928,11 @@ class CleanDerivativeFreeSPAR(PPO):
                             self.policy.ego_value_optimizer.step()
                         else:
                             self.policy.value_optimizer.step()
+                        # SEQUENTIAL path -- this is the LIVE one. The blended call site
+                        # earlier is unreachable at num_adversaries == 1, which is every
+                        # experiment we run; the first smoke test logged no minimax
+                        # metrics at all, which is how that was caught.
+                        self._minimax_q_update(rollout_data, [i])
                     #self.policy.value_optimizer.step()
 
                 # Trust-region hard stop (parity with the blended path + standard
@@ -1943,6 +1957,10 @@ class CleanDerivativeFreeSPAR(PPO):
         #self.logger.record("train/entropy_loss", np.mean(entropy_losses))
         #self.logger.record("train/policy_gradient_loss", np.mean(pg_losses))
         self.logger.record("train/value_loss", np.mean(value_losses))
+        _mm = getattr(self, "_minimax_stats", None)
+        if _mm:
+            for _k, _v in _mm.items():
+                self.logger.record(f"train/minimax_{_k}", _v)
         if hasattr(self.policy, "ego_value_optimizer") and update_ego:
             self.logger.record("train/ego_value_loss", np.mean(value_losses))
         #self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
@@ -2234,6 +2252,85 @@ class CleanDerivativeFreeSPAR(PPO):
         if self.clip_range_vf is not None:
             clip_range_vf_val = self.clip_range_vf(self._current_progress_remaining)
             self.logger.record("train/clip_range_vf", clip_range_vf_val)
+
+    def _minimax_q_update(self, rollout_data, buf_num, side_flag=None):
+        """PHASE 0, option A: regress Q(s, a_ego, a_adv) onto the EXISTING
+        lambda-returns. Returns the loss, or None when --minimax_q is off.
+
+        WHY option A and not the minimax bootstrap: this fits Q^pi -- the value
+        of a joint action given both players continue with their current
+        policies -- from a target that is DATA and never references Q. It cannot
+        diverge, and a failure is unambiguous: if Q^pi is constant plus noise
+        across the 22x22 matrix then the observation does not determine
+        action-conditional value, and no bootstrap can manufacture that.
+        Option B (target = r + gamma * V_minimax(s')) is the real algorithm and
+        fits the policy-INDEPENDENT fixed point, but it is self-referential, so
+        a failure there cannot be told apart from "the bootstrap did not
+        converge". Switch in phase 1 once the gate has answered the first
+        question; it is a one-line change of target.
+
+        Fully self-contained: its own optimizer over its own parameters, and the
+        shared encoder runs under no_grad. Enabling this cannot move the policy
+        -- verified, max|shared - initial| == 0.0 across optimizer steps.
+        """
+        if not getattr(self, "minimax_q", False):
+            return None
+        head = self.policy.minimax_head_for(buf_num)
+        if head is None:
+            return None
+        M = self.policy.minimax_matrices(
+            rollout_data.observations, buf_num=buf_num, side_flag=side_flag,
+            stop_grad=getattr(self, "minimax_stop_grad", True))
+        # A joint-action critic needs BOTH seats' actions. The adversary path's
+        # samples are AdvRolloutBufferSamples and carry dstb_actions; the EGO
+        # path's buffer carries only its own, so there is no joint action to
+        # index and this update is skipped there. Recorded rather than passed
+        # over silently -- a head that trains on half the updates and looks
+        # fine is exactly the kind of thing that surfaces days later.
+        a_adv_t = getattr(rollout_data, "dstb_actions", None)
+        if a_adv_t is None:
+            a_adv_t = getattr(rollout_data, "adv_actions", None)
+        if a_adv_t is None:
+            self._minimax_stats = {
+                **getattr(self, "_minimax_stats", {}),
+                "skipped_no_adv_actions": 1.0,
+            }
+            return None
+        a_ego = rollout_data.actions.long().reshape(-1)
+        a_adv = a_adv_t.long().reshape(-1)
+        b = th.arange(M.shape[0], device=M.device)
+        q_played = M[b, a_ego, a_adv]
+        loss = F.mse_loss(rollout_data.returns.reshape(-1), q_played)
+
+        self.policy.minimax_optimizer.zero_grad()
+        loss.backward()
+        self.policy.minimax_optimizer.step()
+
+        head.note_visits(a_ego, a_adv)
+        with th.no_grad():
+            sol = solve_matrix_game(M.detach(),
+                                    iters=getattr(self, "minimax_iters", 1024),
+                                    eta=getattr(self, "minimax_eta", 0.5))
+        self._minimax_stats = {
+            "loss": float(loss),
+            # COVERAGE IS A GATE PRECONDITION, not a nicety. p_max(ego) ~ 0.94
+            # was measured, so sampled joint actions concentrate on a handful of
+            # the 484 cells while LBR branches over all 22 adversary actions. If
+            # coverage is low, "Q does not discriminate branches" is
+            # indistinguishable from "Q never saw those branches" and the gate
+            # result means nothing.
+            "coverage": head.coverage(),
+            # Free convergence certificate for the inner solve. If this is not
+            # near zero the solve failed and every V_minimax is meaningless.
+            "duality_gap": float(sol.gap.median()),
+            "V_minimax_mean": float(sol.V.mean()),
+            "V_minimax_std": float(sol.V.std()),
+            # Spread of Q ACROSS the matrix at a fixed state -- the quantity the
+            # whole bet rests on. V is constant across one-action branches; if
+            # this is ~0 then Q is too, and the direction is dead.
+            "q_branch_std": float(M.detach().std(dim=(1, 2)).mean()),
+        }
+        return loss
 
     def dummy_policy_update(self, update_ego=True, update_adversary=True):
         first = True

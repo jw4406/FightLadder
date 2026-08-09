@@ -671,16 +671,24 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         """
         if not getattr(self, "minimax_q", False):
             raise RuntimeError("minimax_matrices called but --minimax_q is off")
-        new_obs = preprocess_obs(obs, self.observation_space,
-                                 normalize_images=self.normalize_images)
-        vf_features = self.vf_features_extractor(new_obs)
-        if self.use_mirror and side_flag is not None:
-            latent_vf = self.mlp_extractor.forward_critic(
-                vf_features, side_flag=th.ones(vf_features.shape[0], 1).to(self.device) * side_flag)
-        else:
-            latent_vf = self.mlp_extractor.forward_critic(vf_features)
+        def _shared():
+            new_obs = preprocess_obs(obs, self.observation_space,
+                                     normalize_images=self.normalize_images)
+            vf_features = self.vf_features_extractor(new_obs)
+            if self.use_mirror and side_flag is not None:
+                return self.mlp_extractor.forward_critic(
+                    vf_features,
+                    side_flag=th.ones(vf_features.shape[0], 1).to(self.device) * side_flag)
+            return self.mlp_extractor.forward_critic(vf_features)
+
         if stop_grad:
-            latent_vf = latent_vf.detach()
+            # no_grad, not just .detach(): detaching afterwards still records the
+            # CNN forward on the tape, so we would pay to build a graph that is
+            # then thrown away. The encoder is the expensive part of this pass.
+            with th.no_grad():
+                latent_vf = _shared()
+        else:
+            latent_vf = _shared()
         # Single-matchup fast path; the loop below is the general case.
         if buf_num is not None and len(buf_num) == 1:
             key = select_matchup_env(self.matchups, buf_num[0], self.envs_per_matchup)
@@ -699,7 +707,8 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         if buf_num is None or len(buf_num) != 1:
             return None
         key = select_matchup_env(self.matchups, buf_num[0], self.envs_per_matchup)
-        return self.minimax_net.get(key)
+        # nn.ModuleDict is not a dict -- no .get(). It supports `in` and [].
+        return self.minimax_net[key] if key in self.minimax_net else None
 
     def popart_for(self, buf_num):
         """The PopArtHead for this update, or None when PopArt is off.
