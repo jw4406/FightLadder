@@ -52,4 +52,8 @@ main/critic_diagnostics/
 main/critic_diag_RyGu_tier0/
 main/critic_diagnostics_armA_powered/
 main/critic*
+# ...but NOT the diagnostic SOURCE. `main/critic*` is meant for the result
+# dirs and JSON above; it was also swallowing critic_diagnostics.py and
+# critic_ceiling.py, so the whole diagnostic suite sat outside version control.
+!main/critic*.py
 main/*json

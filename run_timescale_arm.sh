@@ -41,6 +41,10 @@ esac
 
 VTRACE_C_BAR="${2:-1.0}"
 VTRACE_RHO_BAR="5.0"        # sets the FIXED POINT -- do not sweep casually
+# V-trace master switch. Was a hardcoded literal in ippo.py (uncommitted edit),
+# so nothing revealed which behaviour a run got. EMPTY = ippo.py default (True).
+# When False, every VTRACE_* value above is INERT.
+VTRACE_ENABLED=""
 # Tag the run when c_bar is non-default so its checkpoints, task dir and log are
 # distinct. Two runs sharing model_name_prefix ("spar_Ry_Sa") would otherwise
 # write identical .task filenames.
@@ -89,6 +93,14 @@ VTRACE_SEQ_LEN="64"
 # what the IPPO paths in the same file already use (~2.2 s vs ~13 s at 0.99,
 # against rounds of ~27 s).
 GAMMA=""
+# PopArt value-target normalization. EMPTY = ippo.py's default (False).
+# Absorbs the non-stationary return scale into (mu, sigma) rather than making the
+# head chase it by gradient descent. It does NOT fix the affine-slope
+# miscalibration (0.645-0.768) -- that is a regularization problem.
+# WARNING: "True" wraps each value head and renames value_net state_dict keys, so
+# such a run CANNOT resume from any earlier checkpoint. Start it from scratch.
+POPART=""
+POPART_BETA=""
 CHECKPOINT_INTERVAL="20000"
 TRAINING_BATCH_SIZE="1024"
 TOTAL_TIMESTEPS="150000000"
@@ -165,7 +177,10 @@ CMD=(
     --stagnation_lr_factor "${STAGNATION_LR_FACTOR}"
     --stagnation_lr_patience "${STAGNATION_LR_PATIENCE}"
 )
-[ -n "${GAMMA}" ] && CMD+=( --gamma "${GAMMA}" )
+[ -n "${GAMMA}" ]          && CMD+=( --gamma "${GAMMA}" )
+[ -n "${VTRACE_ENABLED}" ] && CMD+=( --vtrace_enabled "${VTRACE_ENABLED}" )
+[ -n "${POPART}" ]      && CMD+=( --popart "${POPART}" )
+[ -n "${POPART_BETA}" ] && CMD+=( --popart_beta "${POPART_BETA}" )
 
 echo "=== timescale arm ${TAG} ==="
 echo "  c_lr (ego) : ${C_LR}      d_lr (adv) : ${D_LR}   v_lr : ${V_LR}"

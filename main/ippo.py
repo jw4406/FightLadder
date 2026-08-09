@@ -420,6 +420,18 @@ def main(args):
     _gae_lambda = 0.95 if args.gae_lambda is None else args.gae_lambda
     _gamma_ippo = 0.94 if args.gamma is None else args.gamma
     model_name_prefix = "%s_%s_%s" % (args.model_arch_type, player_short, opponent_short)
+    # Self-report the settings that used to be hardcoded literals. A job that does
+    # not print what it actually got cannot be told apart from one that got the
+    # opposite -- which is exactly how vtrace_enabled stayed ambiguous. Note the
+    # vtrace_* knobs are INERT when vtrace_enabled is False.
+    if args.model_arch_type == "spar":
+        _vt = args.vtrace_enabled == 'True'
+        print(f"[config] spar  gamma={_gamma_spar}  gae_lambda={_gae_lambda}  "
+              f"vtrace_enabled={_vt}  popart={args.popart == 'True'}", flush=True)
+        print(f"[config] vtrace knobs {'ACTIVE' if _vt else 'INERT (vtrace off)'}: "
+              f"seq_len={args.vtrace_seq_len} c_bar={args.vtrace_c_bar} "
+              f"rho_bar={args.vtrace_rho_bar} replay={args.vtrace_replay_capacity}",
+              flush=True)
     # parser = argparse.ArgumentParser(description='Reset game stats')
     # parser.add_argument('--reset', choices=['round', 'match', 'game'],
     #                     help='Reset stats for a round, a match, or the whole game', default='round')
@@ -731,12 +743,14 @@ def main(args):
                 entropy_stagnation_weight=args.entropy_stagnation_weight,
                 stagnation_lr_factor=args.stagnation_lr_factor,
                 stagnation_lr_patience=args.stagnation_lr_patience,
-                vtrace_enabled=True,
+                vtrace_enabled=(args.vtrace_enabled == 'True'),
                 vtrace_replay_capacity=args.vtrace_replay_capacity,
                 vtrace_seq_len=args.vtrace_seq_len,
                 vtrace_c_bar=args.vtrace_c_bar,
                 vtrace_rho_bar=args.vtrace_rho_bar,
                 blend_adversary_heads=(args.blend_adversary_heads == 'True'),
+                popart=(args.popart == 'True'),
+                popart_beta=args.popart_beta,
             )
         elif model_arch_type == "ippo":
             finetune_model = CleanDerivativeFreeSPARIPPO(
@@ -1226,6 +1240,38 @@ if __name__ == "__main__":
     parser.add_argument("--blend_adversary_heads", choices=['True', 'False'], default='True', required=False,
                         help="Blend multi-head adversary trunk update (spar arch only). "
                              "'False' => unchanged sequential per-head update.")
+    # V-trace off-policy correction + replay (spar arch only).
+    #
+    # This WAS a hardcoded literal at the SPAR construction site, which made it a
+    # silent, uncommitted working-tree edit: HEAD said True, the local tree said
+    # False, and NOTHING in any launcher or log revealed which one a job got. All
+    # four --vtrace_* flags are inert when this is False, so cbar2/cbar5/replay5k
+    # would have run as exact copies of their base config and read as "c_bar does
+    # not matter" when c_bar was never active.
+    #
+    # Default 'True' == the committed behaviour, so every pre-existing launcher
+    # keeps doing what it always did. Turn it off EXPLICITLY.
+    parser.add_argument("--vtrace_enabled", choices=['True', 'False'], default='True',
+                        required=False,
+                        help="V-trace off-policy correction with replay (spar arch "
+                             "only). 'False' => plain on-policy targets and the "
+                             "--vtrace_c_bar/rho_bar/seq_len/replay_capacity flags "
+                             "have NO effect.")
+    # PopArt target normalization on the value heads (spar arch only).
+    # MUST default to 'False': enabling it wraps each value_net head in a
+    # PopArtHead, which renames state_dict keys (value_net.<k>.* ->
+    # value_net.<k>.net.*). No checkpoint written before this flag existed can be
+    # loaded into a popart policy, and the diagnostics/LBR tooling taps the head
+    # by index. Start popart runs from scratch.
+    parser.add_argument("--popart", choices=['True', 'False'], default='False', required=False,
+                        help="PopArt adaptive value-target normalization (spar arch only). "
+                             "Absorbs the non-stationary return scale into (mu, sigma) "
+                             "instead of making the head chase it by gradient descent. "
+                             "Does NOT fix the affine-slope miscalibration -- that is a "
+                             "regularization problem, not a scale problem.")
+    parser.add_argument("--popart_beta", type=float, default=3e-4, required=False,
+                        help="EMA rate for the PopArt (mu, sigma) statistics. "
+                             "3e-4 is the value from van Hasselt et al. 2016.")
     parser.add_argument("--ego_style", type=str, help="Ego style", default="learning", required=True, choices=["learning", "zero_action", "random_action", "frozen"])
     parser.add_argument("--adv_style", type=str, help="Adv style", default="learning", required=True, choices=["learning", "zero_action", "random_action"])
     parser.add_argument("--c_lr", type=float, help="ego learning rate", default=1e-4, required=True)

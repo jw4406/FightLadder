@@ -98,9 +98,20 @@ VTRACE_SEQ_LEN="64"
 #                   Measured c_sat_frac ~0.5, i.e. half the traces clip.
 #   VTRACE_RHO_BAR  unset => 5.0. Truncates the TD-error ratio and DOES set the
 #                   fixed point -- changing it changes what is learned.
+#   VTRACE_ENABLED  unset => True (ippo.py default, == the committed behaviour).
+#                   When False the four VTRACE_* knobs below are INERT, so the
+#                   cbar/replay levers become exact copies of their base config.
+VTRACE_ENABLED=""
 GAMMA=""
 VTRACE_C_BAR=""
 VTRACE_RHO_BAR=""
+#   POPART          unset => False. PopArt value-target normalization. Enabling it
+#                   renames value_net state_dict keys, so a POPART="True" job
+#                   CANNOT resume from or be compared parameter-wise against any
+#                   earlier checkpoint -- start it from scratch.
+#   POPART_BETA     unset => 3e-4 (van Hasselt et al. 2016).
+POPART=""
+POPART_BETA=""
 # Blend the multi-head adversary trunk update (spar arch only). "False" keeps the
 # unchanged sequential per-head update; "True" gives one mean-over-heads trunk step.
 BLEND_ADVERSARY_HEADS="False"
@@ -195,6 +206,15 @@ for i in $(seq 1 ${NUM_WORKERS}); do
     fi
     if [ -n "${VTRACE_RHO_BAR}" ]; then
         CMD+=( --vtrace_rho_bar "${VTRACE_RHO_BAR}" )
+    fi
+    if [ -n "${VTRACE_ENABLED}" ]; then
+        CMD+=( --vtrace_enabled "${VTRACE_ENABLED}" )
+    fi
+    if [ -n "${POPART}" ]; then
+        CMD+=( --popart "${POPART}" )
+    fi
+    if [ -n "${POPART_BETA}" ]; then
+        CMD+=( --popart_beta "${POPART_BETA}" )
     fi
 
     if [ "${RUN_LIVE}" = "False" ]; then

@@ -10,15 +10,15 @@ LAUNCH_CONTINUE='False'
 LAUNCH_LOCAL_BR_EVAL='True'  # forwarded to both orchestrators via --launch_local_br_eval
 PERIODIC_EVAL_FREQ=500000   # env-steps between mid-training local_br_eval snapshots (PeriodicLocalBREvalCallback)
 STEP_STRIDE=0  # 0 = process all tasks; e.g. 40000 = only every 40k steps (matches ws)
-BR_TRAINING_STEPS=99999  # total .learn() timesteps per BR job
-SLURM_TIME=000:12:00  # #SBATCH --time for each BR sbatch (HH:MM:SS)
-EXPLOITER_SAVE_FREQ=1000  # env-steps between BR exploiter checkpoints
+BR_TRAINING_STEPS=10000000  # total .learn() timesteps per BR job
+SLURM_TIME=096:00:00  # #SBATCH --time for each BR sbatch (HH:MM:SS)
+EXPLOITER_SAVE_FREQ=250000  # env-steps between BR exploiter checkpoints
 
 # ---- GPU packing (opt-in; dedicated orchestrator only). ----
 # EXPLOITERS_PER_JOB=1 => current behavior (one exploiter per GPU, no cap).
-EXPLOITERS_PER_JOB=1              # >1 co-locates N exploiters on one GPU
+EXPLOITERS_PER_JOB=2             # >1 co-locates N exploiters on one GPU
 GPU_MEM_FRACTION=0.45             # per-process VRAM cap (used only when >1); keep N*fraction <= ~0.85
-PACK_ACROSS_CHECKPOINTS='False'   # 'True' packs exploiters from DIFFERENT checkpoints (fills GPU when <N specs/ckpt)
+PACK_ACROSS_CHECKPOINTS='True'   # 'True' packs exploiters from DIFFERENT checkpoints (fills GPU when <N specs/ckpt)
 PACK_FLUSH_TIMEOUT=300            # partial-pack timeout in seconds (cross-checkpoint mode only)
 RESOURCE_SCALE=1                  # absolute cpu multiplier for PACKED jobs (cpu only; mem still scales by N); 1 = template base
 

@@ -64,29 +64,7 @@ from stable_baselines3.common.save_util import load_from_zip_file
 from local_best_response import (build_lbr_venv, load_checkpoint, preflight,
                                  PolicyOps, resolve_matchups, REPO_ROOT, _b)
 from lbr_head_probe import episode_split
-from critic_ceiling import collect_raw, encode
-
-
-def auc(scores, labels):
-    """Rank-based AUC for binary labels in {0,1}. No sklearn dependency."""
-    pos, neg = labels == 1, labels == 0
-    if pos.sum() == 0 or neg.sum() == 0:
-        return float("nan")
-    order = np.argsort(scores, kind="mergesort")
-    ranks = np.empty(scores.size, float)
-    ranks[order] = np.arange(1, scores.size + 1)
-    # average ranks over ties so a constant predictor scores exactly 0.5
-    s_sorted = scores[order]
-    i = 0
-    while i < s_sorted.size:
-        j = i
-        while j + 1 < s_sorted.size and s_sorted[j + 1] == s_sorted[i]:
-            j += 1
-        if j > i:
-            ranks[order[i:j + 1]] = (i + j + 2) / 2.0
-        i = j + 1
-    n_p, n_n = pos.sum(), neg.sum()
-    return float((ranks[pos].sum() - n_p * (n_p + 1) / 2.0) / (n_p * n_n))
+from critic_ceiling import collect_raw, encode, auc, episode_labels  # noqa: F401
 
 
 def ridge_scores(X, y, tr, te, grid=(1e-1, 1, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6),
@@ -146,35 +124,11 @@ def main(argv=None):
     Sf = S.reshape(-1, S.shape[-1])
     Df = D.reshape(-1)
 
-    # Per-episode label. Two independent constructions, cross-checked: the sign
-    # of the final HP difference, and the sign of the reward on the terminal
-    # step (the +-1 outcome bonus dwarfs the ~0.176-scale dense term there).
-    # If they disagree the label is untrustworthy and everything below is void.
-    uniq = np.unique(EPf)
-    lab_hp, lab_rew, keep = {}, {}, []
-    for e in uniq:
-        idx = np.nonzero(EPf == e)[0]
-        if not Df[idx].any():          # episode never finished in the window
-            continue
-        last = idx[-1]
-        lab_hp[e] = np.sign(Sf[last, 0])
-        lab_rew[e] = np.sign(Rf[last])
-        keep.append(e)
-    keep = np.array(keep)
-    agree = np.mean([lab_hp[e] == lab_rew[e] for e in keep]) if keep.size else 0.0
-    print(f"   label cross-check: hp-sign vs terminal-reward-sign agree "
-          f"{agree:.1%} over {keep.size} finished episodes", flush=True)
-
-    lab = lab_rew                       # terminal reward is the more direct signal
-    dist = {int(v): int(sum(1 for e in keep if lab[e] == v)) for v in (-1, 0, 1)}
-    print(f"   outcome distribution (loss/draw/win): {dist}", flush=True)
-
-    # Binary win-vs-loss; draws excluded from AUC and reported separately.
-    m = np.isin(EPf, keep[[lab[e] != 0 for e in keep]]) if keep.size else np.zeros_like(Df)
-    y = np.array([lab[e] for e in EPf[m]], float)
-    ep_m = EPf[m]
-    print(f"   {m.sum():,} samples from {np.unique(ep_m).size} decisive episodes",
-          flush=True)
+    # Per-episode label, with an independent cross-check. Canonical implementation
+    # lives in critic_ceiling (this module already imports from there, so the
+    # reverse direction would be circular).
+    m, y, ep_m, _meta = episode_labels(EPf, Rf, Sf, Df)
+    agree, dist = _meta["label_agreement"], _meta["outcome_dist"]
 
     # phase within episode, for the by-phase breakdown
     phase = np.zeros(m.sum(), float)

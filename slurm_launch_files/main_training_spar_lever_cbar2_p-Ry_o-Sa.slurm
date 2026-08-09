@@ -27,15 +27,9 @@ set -u
 module purge
 module load anaconda3/2024.02
 conda activate fightladder
-WORKDIR=/n/fs/magics/
-mkdir -p $WORKDIR/$JOBID
-#cd /n/fs/magics/2415498/FightLadder
-cd $WORKDIR/$JOBID
-echo "starting copy op"
-cp -r $HOME/FightLadder/ ./
-echo "copy op successful"
-cd FightLadder/
-module purge
+
+WORKDIR="${WORKDIR:-/home/jw4406/codebase/FightLadder}"
+cd "${WORKDIR}"
 mkdir -p slurm_logs
 
 # CRITICAL -- checkpoint isolation.
@@ -45,13 +39,13 @@ mkdir -p slurm_logs
 # (model_name_prefix = "spar_Ry_Sa"), so two jobs writing to one TASK_DIR
 # silently overwrite each other's checkpoints. That already destroyed a baseline
 # checkpoint locally. FIGHTLADDER_TASK_DIR (ippo.py:42) is the only override.
-export FIGHTLADDER_TASK_DIR="${WORKDIR}/${SLURM_JOB_ID}/FightLadder/main/trained_models/tasks"
+export FIGHTLADDER_TASK_DIR="${WORKDIR}/main/slurm_runs/${SLURM_JOB_ID}/trained_models/tasks"
 mkdir -p "${FIGHTLADDER_TASK_DIR}/todo" "${FIGHTLADDER_TASK_DIR}/todo_continue"
 SAVE_DIR="${FIGHTLADDER_TASK_DIR}/todo"
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-IPPO_PATH="${WORKDIR}/${SLURM_JOBID}/FightLadder/main/ippo.py"
+IPPO_PATH="${WORKDIR}/main/ippo.py"
 
 # --- the experiment ---------------------------------------------------------
 GAMMA=""
@@ -65,6 +59,11 @@ D_LR="1e-4"
 V_LR="4e-4"
 ENVS_PER_MATCHUP="24"
 NUM_ENV_STEPS="512"
+# V-trace master switch. Declared EXPLICITLY: it used to be a hardcoded
+# literal in ippo.py that differed between HEAD (True) and the working tree
+# (False), so no launcher or log revealed which a job got. The cbar/replay
+# levers generated from this file are NO-OPS when this is False.
+VTRACE_ENABLED="True"
 VTRACE_SEQ_LEN="64"
 VTRACE_C_BAR="2.0"
 VTRACE_RHO_BAR="5.0"
@@ -117,6 +116,7 @@ CMD=(
     --side "${SIDE}"
     --envs_per_matchup "${ENVS_PER_MATCHUP}"
     --num_env_steps "${NUM_ENV_STEPS}"
+    --vtrace_enabled "${VTRACE_ENABLED}"
     --vtrace_seq_len "${VTRACE_SEQ_LEN}"
     --vtrace_c_bar "${VTRACE_C_BAR}"
     --vtrace_rho_bar "${VTRACE_RHO_BAR}"

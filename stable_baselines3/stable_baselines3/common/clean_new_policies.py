@@ -34,6 +34,107 @@ from typing import Union, Type, Optional, Dict, Any, List, Tuple
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor, FlattenExtractor, MlpExtractorAdv, NatureCNN
 from utils import select_matchup_env, move_optimizer_to_device
 
+class PopArtHead(nn.Module):
+    """Value head with output-preserving adaptive target normalization (PopArt).
+
+    van Hasselt et al. 2016, "Learning values across many orders of magnitude".
+
+    WHY HERE: the value targets on this task are tiny (logged value_loss is
+    1.8e-5 - 2.2e-5, so RMS error ~0.004) AND non-stationary -- the return
+    distribution's scale moves as the self-play policies move. Without
+    normalization the head has to re-learn that scale by gradient descent,
+    chasing a target that shifts underneath it. PopArt absorbs the scale
+    analytically into (mu, sigma) instead.
+
+    NOT what this fixes: the measured over-dispersion (affine slope 0.645-0.768,
+    std V / std G ~0.65-0.70 against corr ~0.4-0.5). That is a bias/variance
+    problem; normalizing targets does not change the V-vs-G correlation, so the
+    slope will NOT move. Weight decay is the lever for that one.
+
+    Also note Adam is (up to eps) invariant to a global rescale of the loss, so
+    the usual "tiny targets -> tiny gradients" argument does NOT apply here. The
+    benefit is the non-stationarity, not the magnitude.
+
+    CONTRACT: `forward` returns DENORMALIZED values, i.e. real return units, the
+    same as the bare Sequential it replaces. Every read site (evaluate_states,
+    value_forward, LBR, the diagnostics) is therefore unchanged. Only the loss
+    normalizes, and because
+        (values_pred - mu) / sigma == net(x)      exactly
+    it can do so from the denormalized prediction without needing a separate
+    forward pass.
+    """
+
+    def __init__(self, net: nn.Module, beta: float = 3e-4,
+                 sigma_min: float = 1e-4, sigma_max: float = 1e6):
+        super().__init__()
+        # Named `net` deliberately: state_dict keys become value_net.<key>.net.*
+        # instead of value_net.<key>.*, which is why the caller must only build
+        # this when --popart is on. Every existing .task predates it.
+        self.net = net
+        self.beta = float(beta)
+        self.sigma_min = float(sigma_min)
+        self.sigma_max = float(sigma_max)
+        # Buffers, not plain attributes, so they ride along in state_dict and
+        # survive checkpoint save/load without any bespoke serialization.
+        self.register_buffer("mu", th.zeros(1))
+        # nu MUST start at zero. The debias below is the standard Adam-style
+        # correction nu/(1-(1-beta)^n), which assumes a ZERO-initialized EMA.
+        # Initializing it to one instead leaves (1-beta)^n * 1.0 sitting in the
+        # accumulator, and at beta=3e-4 that residual dominates for ~30k updates
+        # (~3M env steps here) -- sigma read 0.694 against a true target scale of
+        # 0.017, a 41x over-estimate, so the normalization did almost nothing.
+        self.register_buffer("nu", th.zeros(1))         # running E[y^2]
+        self.register_buffer("sigma", th.ones(1))       # pre-first-update value
+        self.register_buffer("debias", th.zeros(1))     # 1-(1-beta)^n
+
+    def forward(self, x):
+        return self.net(x) * self.sigma + self.mu
+
+    def normalize(self, y):
+        """Real units -> normalized units. mu/sigma are detached by construction
+        (buffers carry no grad), so this never backprops into the statistics."""
+        return (y - self.mu) / self.sigma
+
+    @th.no_grad()
+    def update_stats(self, targets):
+        """EMA-update (mu, sigma) on `targets`, then algebraically correct the
+        final Linear so the module's OUTPUTS are unchanged by the rescale.
+
+        Without the correction every statistics update would step-change every
+        prediction the network makes -- which the policy is bootstrapping off.
+        With it:
+            sigma'(w'h + b') + mu' = sigma(wh + b) + mu      for all h
+        """
+        t = targets.detach().reshape(-1).float()
+        if t.numel() == 0 or not th.isfinite(t).all():
+            return
+        mu_old, sigma_old = self.mu.clone(), self.sigma.clone()
+
+        self.debias.mul_(1 - self.beta).add_(self.beta)
+        self.mu.mul_(1 - self.beta).add_(self.beta * t.mean())
+        self.nu.mul_(1 - self.beta).add_(self.beta * (t * t).mean())
+        d = self.debias.clamp_min(1e-8)
+        var = (self.nu / d) - (self.mu / d) ** 2
+        self.sigma.copy_(var.clamp_min(self.sigma_min ** 2).sqrt()
+                         .clamp(self.sigma_min, self.sigma_max))
+
+        last = self.net[-1]
+        if isinstance(last, nn.Linear):
+            ratio = (sigma_old / self.sigma)
+            last.weight.mul_(ratio)
+            last.bias.mul_(ratio).add_((mu_old - self.mu) / self.sigma)
+        # NOTE: we deliberately do NOT rescale the Adam moment estimates for
+        # last.{weight,bias} here. They were accumulated under the pre-correction
+        # parameterization and are now stale; empirically they re-adapt within a
+        # few hundred steps, and rescaling them is not part of the original
+        # PopArt formulation. May revisit -- if the value loss shows a
+        # transient spike right after each stats update, this is the first
+        # suspect.
+
+    def effective_stats(self):
+        return float(self.mu.item()), float(self.sigma.item())
+
+
 class CleanActorActorCriticPolicy(ActorCriticPolicy):
     def __init__(self,
         observation_space: spaces.Space,
@@ -60,6 +161,12 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         dstb_action_space=None,
         use_mirror: bool = False,
         side_dim: int = 1,
+        # PopArt target normalization on the value heads. OFF by default and it
+        # must stay that way: turning it on wraps each value_net head, which
+        # renames state_dict keys (value_net.<k>.* -> value_net.<k>.net.*) and
+        # would break loading every checkpoint that predates it.
+        popart: bool = False,
+        popart_beta: float = 3e-4,
     ):
         # self.matchups = matchups
         # self.envs_per_matchup = envs_per_matchup
@@ -75,6 +182,8 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         # self.pi_dstb_features_extractor = self.make_features_extractor()
         self.use_mirror = use_mirror
         self.side_dim = side_dim
+        self.popart = bool(popart)
+        self.popart_beta = float(popart_beta)
         super().__init__(observation_space = observation_space,
         action_space = action_space,
         lr_schedule = lr_schedule[0],
@@ -214,7 +323,7 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
                 nn.Linear(value_hidden_size, value_hidden_size),
                 self.activation_fn(),
                 nn.Linear(value_hidden_size, 1))
-            self.value_net[matchup_key] = nn.Sequential(
+            _vhead = nn.Sequential(
                 nn.Linear(self.mlp_extractor.latent_dim_vf, value_hidden_size),
                 self.activation_fn(),
                 nn.Linear(value_hidden_size, value_hidden_size),
@@ -222,6 +331,11 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
                 nn.Linear(value_hidden_size, value_hidden_size),
                 self.activation_fn(),
                 nn.Linear(value_hidden_size, 1))
+            # Only wrap when enabled -- an unwrapped head keeps the historical
+            # state_dict layout, so every existing .task still loads.
+            self.value_net[matchup_key] = (
+                PopArtHead(_vhead, beta=getattr(self, "popart_beta", 3e-4))
+                if getattr(self, "popart", False) else _vhead)
             #self.value_net.append(nn.Linear(self.mlp_extractor.latent_dim_vf, 1))
         # Init weights: use orthogonal initialization
         # with small initial weight for the output
@@ -419,6 +533,22 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         dstb_log_prob = th.hstack(dstb_log_prob)
         #dstb_log_prob = test
         return dstb_actions, dstb_log_prob
+
+    def popart_for(self, buf_num):
+        """The PopArtHead for this update, or None when PopArt is off.
+
+        Returns None (i.e. fall back to the plain loss) when the minibatch spans
+        more than one matchup head, because a single (mu, sigma) cannot describe
+        several heads at once. Guessing there would silently normalize one head's
+        targets by another head's scale.
+        """
+        if not getattr(self, "popart", False):
+            return None
+        if buf_num is None or len(buf_num) != 1:
+            return None
+        key = select_matchup_env(self.matchups, buf_num[0], self.envs_per_matchup)
+        head = self.value_net[key]
+        return head if isinstance(head, PopArtHead) else None
 
     def value_forward(self, obs, side_flag=None) -> Tuple[th.Tensor, th.Tensor]:
         new_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)

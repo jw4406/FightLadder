@@ -171,6 +171,8 @@ class CleanDerivativeFreeSPAR(PPO):
             vtrace_c_bar: float = 1.0,
             vtrace_keep_onpolicy_value: bool = True,
             blend_adversary_heads: bool = True,
+            popart: bool = False,
+            popart_beta: float = 3e-4,
     ):
 
         self.matchups = [state2matchup(state) for state in state_list] if state_list is not None else None #This needs to happen before the super().__init__
@@ -261,6 +263,11 @@ class CleanDerivativeFreeSPAR(PPO):
         # per-head steps (removes the ordering bias where later heads inherit
         # earlier heads' trunk drift). Default False -> unchanged sequential path.
         self.blend_adversary_heads = bool(blend_adversary_heads)
+        # Forwarded into policy_kwargs in _setup_model so the policy builds
+        # PopArtHead-wrapped value heads. OFF by default -- turning it on changes
+        # value_net state_dict keys and no existing .task can be loaded into it.
+        self.popart = bool(popart)
+        self.popart_beta = float(popart_beta)
         self.vtrace_ego_replay = None
         self.vtrace_adv_replays = None
         self.vtrace_trainer = None
@@ -547,6 +554,8 @@ class CleanDerivativeFreeSPAR(PPO):
 
         self.policy_kwargs['matchups'] = self.matchups
         self.policy_kwargs['envs_per_matchup'] = self.envs_per_matchup
+        self.policy_kwargs['popart'] = getattr(self, "popart", False)
+        self.policy_kwargs['popart_beta'] = getattr(self, "popart_beta", 3e-4)
         
         # Set features_extractor_class based on whether observation space is an image
         if is_image_space(self.observation_space):
@@ -1552,6 +1561,16 @@ class CleanDerivativeFreeSPAR(PPO):
 
                     log_prob, entropy = self.policy.evaluate_adv_actions(
                         rollout_data.observations, actions, buf_num=[i], side_flag=side_flag)
+                    # PopArt stats MUST be updated BEFORE this forward. update_stats
+                    # mutates sigma and the final Linear's weights IN PLACE, and both
+                    # are saved by autograd for the backward of `values` -- doing it
+                    # after the forward raises "variable needed for gradient
+                    # computation has been modified by an inplace operation".
+                    # This block is the ADVERSARY frame (values negated just below),
+                    # while the head's mu lives in the EGO frame, hence -returns.
+                    _pa = self.policy.popart_for([i])
+                    if _pa is not None:
+                        _pa.update_stats(-rollout_data.returns)
                     values = self.policy.evaluate_states(
                         rollout_data.observations, env_indices=rollout_data.env_indices,
                         buf_num=[i], side_flag=side_flag)
@@ -1573,7 +1592,16 @@ class CleanDerivativeFreeSPAR(PPO):
                     else:
                         values_pred = rollout_data.old_values + th.clamp(
                             values - rollout_data.old_values, -clip_range_vf, clip_range_vf)
-                    value_loss = F.mse_loss(rollout_data.returns, values_pred)
+                    # PopArt: `values` was negated above, so this block is in the
+                    # ADVERSARY frame; the head's mu lives in the EGO frame, hence
+                    # the -returns when updating statistics. Only sigma enters the
+                    # loss -- mu cancels in a difference of normalized quantities:
+                    #   normalize(a) - normalize(b) == (a - b) / sigma
+                    if _pa is not None:
+                        _s = _pa.sigma.detach()
+                        value_loss = F.mse_loss(rollout_data.returns / _s, values_pred / _s)
+                    else:
+                        value_loss = F.mse_loss(rollout_data.returns, values_pred)
                     value_losses.append(value_loss.item())
 
                     if entropy is None:
@@ -1720,6 +1748,16 @@ class CleanDerivativeFreeSPAR(PPO):
                     if update_adversary:
                         log_prob, entropy = self.policy.evaluate_adv_actions(rollout_data.observations, actions, buf_num=[i], side_flag=side_flag)
                         #entropy = adv_entropy
+                    # PopArt stats MUST be updated BEFORE the forward -- update_stats
+                    # mutates sigma and the final Linear in place, and autograd saves
+                    # both for the backward of `values`. `values` is negated below
+                    # only when update_adversary, so the EGO-frame target (which is
+                    # what mu tracks) is -returns in that case and +returns otherwise.
+                    _pa_buf = [i] if update_adversary else [_j for _j in range(self.num_adversaries)]
+                    _pa = self.policy.popart_for(_pa_buf)
+                    if _pa is not None:
+                        _pa.update_stats(-rollout_data.returns if update_adversary
+                                         else rollout_data.returns)
                     if update_ego:
                         values = self.policy.evaluate_states(rollout_data.observations, env_indices=rollout_data.env_indices, buf_num=[i for i in range(self.num_adversaries)], side_flag= side_flag)
                     else:
@@ -1769,7 +1807,16 @@ class CleanDerivativeFreeSPAR(PPO):
                             values - rollout_data.old_values, -clip_range_vf, clip_range_vf
                         )
                     # Value loss using the TD(gae_lambda) target
-                    value_loss = F.mse_loss(rollout_data.returns, values_pred)
+                    # PopArt: `values` is negated above ONLY when update_adversary,
+                    # so the ego-frame target is -returns in that case and +returns
+                    # otherwise. mu is frame-sensitive and must be fed the ego frame;
+                    # sigma is not, and sigma is all that reaches the loss (mu cancels
+                    # in a difference of normalized quantities).
+                    if _pa is not None:
+                        _s = _pa.sigma.detach()
+                        value_loss = F.mse_loss(rollout_data.returns / _s, values_pred / _s)
+                    else:
+                        value_loss = F.mse_loss(rollout_data.returns, values_pred)
                     value_losses.append(value_loss.item())
 
                     # Entropy loss favor exploration

@@ -50,7 +50,7 @@ VTRACE_SEQ_LEN="64"
 VTRACE_C_BAR="1.0"
 VTRACE_RHO_BAR="5.0"
 # Discount. EMPTY = ippo.py per-path defaults (spar 0.99, ippo paths 0.94).
-GAMMA=""
+GAMMA="0.94"
 
 MASTER_USE_STAG="False"
 
