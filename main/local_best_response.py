@@ -56,6 +56,7 @@ import torch as th
 import retro
 from stable_baselines3.common.save_util import load_from_zip_file
 
+from common.minimax import solve_matrix_game
 from common.const import sf_game
 from common.retro_wrappers import SFWrapper
 from common.utils import SubprocVecEnv2P, VecTransposeImage2P
@@ -200,12 +201,14 @@ class PolicyOps:
     says whether the LBR player is driving the adversary head or the ego head.
     """
 
-    def __init__(self, model, head_idx=0, lbr_is_adv=True, gamma_override=None):
+    def __init__(self, model, head_idx=0, lbr_is_adv=True, gamma_override=None,
+                 minimax_iters=1024):
         self.model = model
         self.p = model.policy
         self.head = head_idx
         self.lbr_is_adv = lbr_is_adv
         self.device = model.device
+        self.minimax_iters = int(minimax_iters)
         # gamma weights the critic against the immediate reward in Q = r + gamma*V.
         # Overriding it sweeps between greedy (gamma=0, critic ignored) and the
         # trained value (gamma=model.gamma), which is the direct test of whether
@@ -225,6 +228,30 @@ class PolicyOps:
         return th.as_tensor(obs).to(self.device)
 
     @th.no_grad()
+    def minimax_values(self, obs):
+        """V_ego from the MINIMAX value of the joint-action matrix Q(s,.,.).
+
+        The gate's leaf evaluator. Where values_ego returns V^pi(s) -- which is
+        constant across LBR branches until the successor states diverge, and
+        measured indistinguishable from a permuted copy (lbr vs shuffle:
+        -0.1419 vs -0.1407 over 42 runs) -- this returns the value of the
+        22x22 matrix game at s, which is a function of the whole action space.
+
+        Raises if the checkpoint has no matrix head, rather than silently
+        falling back to V: a mode called `minimax` that quietly evaluated V
+        would produce a number that looks like a result and is not one.
+        """
+        if not getattr(self.p, "minimax_q", False) or not len(getattr(self.p, "minimax_net", {})):
+            raise RuntimeError(
+                "minimax mode requires a checkpoint trained with --minimax_q True; "
+                "this policy has no minimax_net")
+        t = self._t(obs)
+        M = self.p.minimax_matrices(t, buf_num=[self.head], stop_grad=True)
+        V = solve_matrix_game(M, iters=self.minimax_iters).V
+        # evaluate_states returns EGO-perspective values and callers apply
+        # ops.sgn afterwards; Q is ego-payoff too, so the same convention holds.
+        return V.reshape(-1).cpu().numpy()
+
     def values_ego(self, obs):
         """V_ego over a batch of arbitrary size.
 
@@ -353,6 +380,8 @@ def lbr_decide(venv, ops, obs, topk, mode="lbr", rng=None, shuffle_rng=None,
     w = w / np.clip(w.sum(axis=1, keepdims=True), 1e-12, None)   # renormalize
 
     need_v = (mode != "greedy")
+    use_minimax = mode.startswith("minimax")
+    do_shuffle = mode.endswith("shuffle")
     rewards = np.zeros((na, k, n), dtype=np.float64)
     dones = np.zeros((na, k, n), dtype=bool)
     succ = [] if need_v else None
@@ -397,10 +426,11 @@ def lbr_decide(venv, ops, obs, topk, mode="lbr", rng=None, shuffle_rng=None,
     if need_v:
         with _prof("branch/critic_forward"):
             allobs = np.concatenate(succ, axis=0)           # (na*k*n, C, H, W)
-            v = np.concatenate([ops.values_ego(allobs[i:i + infer_chunk])
+            _vfn = ops.minimax_values if use_minimax else ops.values_ego
+            v = np.concatenate([_vfn(allobs[i:i + infer_chunk])
                                 for i in range(0, allobs.shape[0], infer_chunk)])
         v = (ops.sgn * v).reshape(na, k, n)
-        if mode == "shuffle":
+        if do_shuffle:
             v = v[:, :, shuffle_rng.permutation(n)]
         q = rewards + ops.gamma * v * (~dones)
     else:
@@ -598,7 +628,8 @@ def _b(x):
     return str(x).lower() in ("1", "true", "yes", "y")
 
 
-TAG = {"lbr": "lbr", "greedy": "lbrgreedy", "shuffle": "lbrshuffle"}
+TAG = {"lbr": "lbr", "greedy": "lbrgreedy", "shuffle": "lbrshuffle",
+       "minimax": "lbrminimax", "minimaxshuffle": "lbrminimaxshuffle"}
 
 # Which mode owns the sidecar JSON and the selfplay_rewards/ file. Exactly one
 # mode per (checkpoint, direction) writes them, because they describe the RUN,
@@ -610,7 +641,7 @@ TAG = {"lbr": "lbr", "greedy": "lbrgreedy", "shuffle": "lbrshuffle"}
 # and tier 3 of critic_diagnostics had nothing to read. Now it is the
 # highest-priority mode actually present, which keeps the old behaviour whenever
 # lbr is in the set.
-HEADLINE_PRIORITY = ("lbr", "greedy", "shuffle")
+HEADLINE_PRIORITY = ("minimax", "lbr", "greedy", "shuffle", "minimaxshuffle")
 
 
 def resolve_modes(args):

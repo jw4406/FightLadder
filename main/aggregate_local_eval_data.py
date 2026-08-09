@@ -22,7 +22,7 @@ FILENAME_RE = re.compile(
     r"_exploiter_(?P<exploiter_side>left|right)_(?P<exploiter_char>[A-Za-z0-9]+)"
     # Longest-first: `lbr` prefixes `lbrgreedy`/`lbrshuffle`, and while backtracking
     # happens to resolve that correctly, ordering it explicitly keeps it obvious.
-    r"(?:_(?P<exp_type>continue|dedicated|lbrgreedy|lbrshuffle|lbr)_br(?P<br_idx>\d+))?"
+    r"(?:_(?P<exp_type>continue|dedicated|lbrminimaxshuffle|lbrminimax|lbrgreedy|lbrshuffle|lbr)_br(?P<br_idx>\d+))?"
     # Optional periodic-snapshot suffix written by
     # PeriodicLocalBREvalCallback in new_br_worker.py while a BR run is
     # still in flight. Format: "_brstep<N>_<YYYYMMDDTHHMMSS>". When
@@ -44,7 +44,8 @@ FILENAME_RE = re.compile(
 # as "the BR got much worse", so the two families are kept on separate master
 # axes and labelled distinctly.
 TRAINED_BR_EXP_TYPES = frozenset({"", "continue", "dedicated"})
-LBR_EXP_TYPES = frozenset({"lbr", "lbrgreedy", "lbrshuffle"})
+LBR_EXP_TYPES = frozenset({"lbr", "lbrgreedy", "lbrshuffle",
+                           "lbrminimax", "lbrminimaxshuffle"})
 
 # Headline vs control, within the LBR family. `lbr` is the measurement;
 # `lbrgreedy` (gamma=0, critic unused) and `lbrshuffle` (critic shuffled across
