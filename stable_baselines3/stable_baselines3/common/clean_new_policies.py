@@ -315,9 +315,16 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         self.q_value_net = nn.ModuleDict()
         for i in range(self.num_adversaries):
             matchup_key = select_matchup_env(self.matchups, i, self.envs_per_matchup)
+            # LSTM removed. It was never trained (q_value_net was bit-identical
+            # across 9.1M steps), it makes checkpoints unloadable by
+            # critic_diagnostics.py -- which is why the whole q head has been
+            # undiagnosable -- and recurrence is the wrong tool here: minimax-Q
+            # wants a per-state payoff MATRIX, not a sequence summary. Now
+            # feed-forward and shaped like value_net so the two are comparable
+            # tap-for-tap in the diagnostics.
             self.q_value_net[matchup_key] = nn.Sequential(
-                nn.LSTM(input_size=self.mlp_extractor.latent_dim_vf, hidden_size=value_hidden_size, num_layers=1, batch_first=True),
-                SelectLastLSTMOutput(),
+                nn.Linear(self.mlp_extractor.latent_dim_vf, value_hidden_size),
+                self.activation_fn(),
                 nn.Linear(value_hidden_size, value_hidden_size),
                 self.activation_fn(),
                 nn.Linear(value_hidden_size, value_hidden_size),
