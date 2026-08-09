@@ -381,6 +381,7 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         
         self.value_net = nn.ModuleDict()
         self.q_value_net = nn.ModuleDict()
+        self.minimax_net = nn.ModuleDict()   # populated only when minimax_q
         for i in range(self.num_adversaries):
             matchup_key = select_matchup_env(self.matchups, i, self.envs_per_matchup)
             # LSTM removed. It was never trained (q_value_net was bit-identical
@@ -390,24 +391,23 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             # wants a per-state payoff MATRIX, not a sequence summary. Now
             # feed-forward and shaped like value_net so the two are comparable
             # tap-for-tap in the diagnostics.
-            _qtrunk = nn.Sequential(
+            # NOTE: the minimax matrix head does NOT live here. This trunk is fed
+            # [vf_features || ego_action_emb || adv_action_emb] by
+            # mlp_extractor.forward_q_value, so its input dim assumes actions are
+            # concatenated -- a state-only matrix forward cannot reuse it. And
+            # q_value_optimizer includes vf_features_extractor, which is shared
+            # with value_optimizer, so stepping it would apply AdamW's decoupled
+            # weight decay to the shared CNN a SECOND time per update even under
+            # stop-grad. The matrix head lives in self.minimax_net below, off
+            # forward_critic, with an optimizer scoped to itself.
+            self.q_value_net[matchup_key] = nn.Sequential(
                 nn.Linear(self.mlp_extractor.latent_dim_vf, value_hidden_size),
                 self.activation_fn(),
                 nn.Linear(value_hidden_size, value_hidden_size),
                 self.activation_fn(),
                 nn.Linear(value_hidden_size, value_hidden_size),
-                self.activation_fn())
-            if getattr(self, "minimax_q", False):
-                # Matrix head: same trunk, 484 outputs instead of 1. Only built
-                # when the flag is on -- like PopArt, wrapping renames
-                # state_dict keys, and no checkpoint predating the flag loads
-                # into it. Start minimax runs from scratch.
-                self.q_value_net[matchup_key] = MinimaxHead(
-                    _qtrunk, value_hidden_size,
-                    n_ego=self.minimax_n_ego, n_adv=self.minimax_n_adv)
-            else:
-                self.q_value_net[matchup_key] = nn.Sequential(
-                    _qtrunk, nn.Linear(value_hidden_size, 1))
+                self.activation_fn(),
+                nn.Linear(value_hidden_size, 1))
             _vhead = nn.Sequential(
                 nn.Linear(self.mlp_extractor.latent_dim_vf, value_hidden_size),
                 self.activation_fn(),
@@ -422,6 +422,22 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
                 PopArtHead(_vhead, beta=getattr(self, "popart_beta", 3e-4))
                 if getattr(self, "popart", False) else _vhead)
             #self.value_net.append(nn.Linear(self.mlp_extractor.latent_dim_vf, 1))
+
+            # Minimax-Q joint-action critic. Its own ModuleDict off
+            # forward_critic (the same latent value_net consumes), NOT hung on
+            # q_value_net -- see the note there. Built only when enabled, so
+            # with the flag off the module tree and state_dict are unchanged.
+            if getattr(self, "minimax_q", False):
+                self.minimax_net[matchup_key] = MinimaxHead(
+                    nn.Sequential(
+                        nn.Linear(self.mlp_extractor.latent_dim_vf, value_hidden_size),
+                        self.activation_fn(),
+                        nn.Linear(value_hidden_size, value_hidden_size),
+                        self.activation_fn(),
+                        nn.Linear(value_hidden_size, value_hidden_size),
+                        self.activation_fn()),
+                    value_hidden_size,
+                    n_ego=self.minimax_n_ego, n_adv=self.minimax_n_adv)
         # Init weights: use orthogonal initialization
         # with small initial weight for the output
         if self.ortho_init:
@@ -488,6 +504,30 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             self.q_value_optimizer = self.optimizer_class(
                 itertools.chain(self.mlp_extractor.q_value_net.parameters(), self.vf_features_extractor.parameters(), self.q_value_net.parameters(), self.mlp_extractor.ego_action_extractor.parameters(), self.mlp_extractor.adv_action_extractor.parameters(), _film('q_value_film')),
                 joint_schedule[2](1), **self.optimizer_kwargs)
+
+            # Minimax optimizer: ONLY the matrix heads' own parameters.
+            #
+            # Deliberately excludes vf_features_extractor even though the head
+            # consumes its output, because two AdamW instances sharing a
+            # parameter is a live hazard. Measured, with one param in both:
+            #     grad = None    -> both inert (AdamW skips None grads)
+            #     grad = zeros   -> BOTH apply weight decay      (1.4e-06 each)
+            #     grad = real    -> BOTH apply a full Adam step  (4.0e-04 each)
+            # So it is safe only while the grad is None at the moment the second
+            # optimizer steps -- i.e. it depends on zero_grad(set_to_none=) and
+            # on step ordering, both easy to change without noticing. Scoping
+            # this optimizer to its own parameters removes the dependence
+            # entirely, so --minimax_q True stays identical to False for
+            # everything except the new head regardless of call order.
+            #
+            # NOTE the same shared-parameter pattern already exists between
+            # value_optimizer and q_value_optimizer (both hold
+            # vf_features_extractor). Latent today because the q path is unused;
+            # it would bite if that head is ever trained in the same loop.
+            if getattr(self, "minimax_q", False):
+                self.minimax_optimizer = self.optimizer_class(
+                    self.minimax_net.parameters(),
+                    joint_schedule[2](1), **self.optimizer_kwargs)
 
     def _get_ego_action_dist_from_latent(self, latent_pi) -> Tuple[Distribution, Distribution]:
         mean_actions = self.action_net(latent_pi)
@@ -618,6 +658,48 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         dstb_log_prob = th.hstack(dstb_log_prob)
         #dstb_log_prob = test
         return dstb_actions, dstb_log_prob
+
+    def minimax_matrices(self, obs, buf_num=None, side_flag=None, stop_grad=True):
+        """Q(s, ., .) payoff matrices for a batch of observations. (B, n_ego, n_adv)
+
+        stop_grad=True (PHASE 0) detaches the shared latent, so the matrix head
+        trains without its gradients ever reaching vf_features_extractor or
+        mlp_extractor.value_net. Together with minimax_optimizer being scoped to
+        the head's own parameters, that makes enabling this head a no-op for the
+        policy -- which is what lets the Phase 0 gate be a clean measurement
+        rather than a confounded one.
+        """
+        if not getattr(self, "minimax_q", False):
+            raise RuntimeError("minimax_matrices called but --minimax_q is off")
+        new_obs = preprocess_obs(obs, self.observation_space,
+                                 normalize_images=self.normalize_images)
+        vf_features = self.vf_features_extractor(new_obs)
+        if self.use_mirror and side_flag is not None:
+            latent_vf = self.mlp_extractor.forward_critic(
+                vf_features, side_flag=th.ones(vf_features.shape[0], 1).to(self.device) * side_flag)
+        else:
+            latent_vf = self.mlp_extractor.forward_critic(vf_features)
+        if stop_grad:
+            latent_vf = latent_vf.detach()
+        # Single-matchup fast path; the loop below is the general case.
+        if buf_num is not None and len(buf_num) == 1:
+            key = select_matchup_env(self.matchups, buf_num[0], self.envs_per_matchup)
+            return self.minimax_net[key](latent_vf)
+        per = latent_vf.shape[0] // self.num_adversaries
+        out = []
+        for i in range(self.num_adversaries):
+            key = select_matchup_env(self.matchups, i, self.envs_per_matchup)
+            out.append(self.minimax_net[key](latent_vf[i * per:(i + 1) * per]))
+        return th.cat(out, dim=0)
+
+    def minimax_head_for(self, buf_num):
+        """The MinimaxHead for this update, or None when minimax_q is off."""
+        if not getattr(self, "minimax_q", False):
+            return None
+        if buf_num is None or len(buf_num) != 1:
+            return None
+        key = select_matchup_env(self.matchups, buf_num[0], self.envs_per_matchup)
+        return self.minimax_net.get(key)
 
     def popart_for(self, buf_num):
         """The PopArtHead for this update, or None when PopArt is off.
