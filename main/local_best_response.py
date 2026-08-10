@@ -252,6 +252,7 @@ class PolicyOps:
         # ops.sgn afterwards; Q is ego-payoff too, so the same convention holds.
         return V.reshape(-1).cpu().numpy()
 
+    @th.no_grad()
     def values_ego(self, obs):
         """V_ego over a batch of arbitrary size.
 

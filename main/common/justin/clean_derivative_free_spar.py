@@ -2300,7 +2300,25 @@ class CleanDerivativeFreeSPAR(PPO):
         a_adv = a_adv_t.long().reshape(-1)
         b = th.arange(M.shape[0], device=M.device)
         q_played = M[b, a_ego, a_adv]
-        loss = F.mse_loss(rollout_data.returns.reshape(-1), q_played)
+
+        # FRAME. MinimaxHead is EGO-payoff by construction (that convention is
+        # what lets the adversary's value be -Q and collapses the six negation
+        # sites). This update only ever runs on the ADVERSARY pass -- the ego
+        # pass has no dstb_actions and returns early above -- and that buffer's
+        # stored returns are in the ADVERSARY frame. So the target must be
+        # negated to reach ego frame.
+        #
+        # Getting this wrong is silent and total: measured on the 6.72M
+        # checkpoint before the fix, best-fit was G = -0.990*Q + 0.0009,
+        # corr(Q,G) = -0.929, EV(Q,G) = -2.74 while EV(-Q,G) = +0.86. The head
+        # had learned the target essentially perfectly, inverted, and every
+        # downstream probe read it as a broken head.
+        #
+        # I reasoned about this frame for PopArt and concluded mu cancels in a
+        # difference of normalized quantities. True there; NOT true here, where
+        # the loss is a direct regression onto returns. Nothing cancels.
+        target = -rollout_data.returns.reshape(-1)
+        loss = F.mse_loss(target, q_played)
 
         self.policy.minimax_optimizer.zero_grad()
         loss.backward()
@@ -2320,6 +2338,15 @@ class CleanDerivativeFreeSPAR(PPO):
             # indistinguishable from "Q never saw those branches" and the gate
             # result means nothing.
             "coverage": head.coverage(),
+            # SIGN GUARD. corr(prediction, target) must be POSITIVE. A negative
+            # value means the frames have diverged again, and that failure is
+            # otherwise invisible -- the loss goes down either way, because a
+            # head fitting -G has exactly the same MSE as one fitting +G against
+            # the flipped target. This number is the only thing that catches it
+            # from the log alone.
+            "target_corr": float(th.corrcoef(
+                th.stack([q_played.detach().reshape(-1), target.reshape(-1)]))[0, 1])
+                if q_played.numel() > 1 else float("nan"),
             # Free convergence certificate for the inner solve. If this is not
             # near zero the solve failed and every V_minimax is meaningless.
             "duality_gap": float(sol.gap.median()),
