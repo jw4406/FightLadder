@@ -432,7 +432,26 @@ def lbr_decide(venv, ops, obs, topk, mode="lbr", rng=None, shuffle_rng=None,
                                 for i in range(0, allobs.shape[0], infer_chunk)])
         v = (ops.sgn * v).reshape(na, k, n)
         if do_shuffle:
-            v = v[:, :, shuffle_rng.permutation(n)]
+            # Permute the BRANCH axis (0), independently per env, the same
+            # permutation across the k marginalized opponent actions.
+            #
+            # THIS USED TO BE `v[:, :, shuffle_rng.permutation(n)]` -- axis 2,
+            # the ENV axis. The decision is `Q.argmax(axis=0)`, so permuting
+            # envs left the branch ordering that LBR actually selects over
+            # completely intact within each env; it only swapped whole
+            # 22-branch bundles between envs. Since all envs sit in
+            # near-identical states just after a reset, that is a much weaker
+            # ablation than intended and is BIASED TOWARD A NULL. Every
+            # lbr-vs-shuffle and minimax-vs-minimaxshuffle number produced
+            # before this fix is contaminated, including the 42-run
+            # -0.1419 vs -0.1407 baseline.
+            #
+            # Same permutation across k, not independent per k: what is being
+            # destroyed is the identity of the BRANCH, and a branch's k
+            # successors belong to it jointly.
+            perm = np.stack([shuffle_rng.permutation(na) for _ in range(n)],
+                            axis=1)                      # (na, n)
+            v = np.take_along_axis(v, perm[:, None, :], axis=0)
         q = rewards + ops.gamma * v * (~dones)
     else:
         q = rewards

@@ -192,6 +192,82 @@ class SFWrapper(gym.Wrapper):
         h.update(repr([self.__dict__[k] for k in LBR_SF_ATTRS]).encode())
         return h.hexdigest()
 
+    def lbr_obs_variants(self):
+        """Digests of the CURRENT frame stack under alternative subsamplings.
+
+        Measured: RAM distinguishes 441 = 21^2 successors at a median decision
+        point (every genuinely distinct joint action; 0 and 9 are byte-identical
+        no-ops), while the agent's observation distinguishes ONE. This attributes
+        that 441 -> 1 collapse to the three independent downsamplings in
+        `_get_obs`:
+
+            temporal  frames[::4] -> stack indices 0, 4, 8 of 12. The NEWEST
+                      THREE (9,10,11) are never shown, so the freshest content
+                      is already 3 emulator frames stale -- and an action's
+                      effect appears LAST, not first.
+            spatial   o[::2, ::2] -> 100x128 from 200x256
+            channel   `i % 3`: frame 0 contributes only RED, frame 4 only GREEN,
+                      frame 8 only BLUE. Time and colour are entangled.
+
+        `recent` is the interesting one: frames[3::4] -> indices 3, 7, 11. The
+        SAME tensor shape and the same compute as today, only sampled to include
+        the newest frame. If that alone recovers the distinctions, the fix costs
+        nothing.
+
+        Digests are computed HERE, in the worker, and only hex strings cross the
+        pipe -- a full stack is ~1.8 MB and blobs must never be piped.
+        """
+        frames = [np.ascontiguousarray(f) for f in self.env.frames]
+        step = max(1, self.num_step_frames // 2)
+        sub = list(range(0, len(frames), step))            # 0, 4, 8
+        rec = list(range(step - 1, len(frames), step))     # 3, 7, 11
+        allf = list(range(len(frames)))
+
+        def dig(idx, half=True, one_channel=True):
+            h = hashlib.md5()
+            for n, i in enumerate(idx):
+                o = frames[i]
+                o = o[::2, ::2] if half else o
+                o = o[:, :, n % 3] if one_channel else o
+                h.update(np.ascontiguousarray(o).tobytes())
+            return h.hexdigest()
+
+        return {
+            "current":      dig(sub),                       # exactly _get_obs
+            "recent":       dig(rec),                       # free: same shape
+            "all_frames":   dig(allf),                      # temporal fixed
+            "full_spatial": dig(sub, half=False),           # spatial fixed
+            "all_channels": dig(sub, one_channel=False),    # channel fixed
+            "everything":   dig(allf, half=False, one_channel=False),
+        }
+
+    def lbr_state_variants(self):
+        """Digest of PURE RAM plus the raw info variables, for choosing an
+        observation type.
+
+        Pixels resolve 1 of 21 action-distinct successors at a median decision
+        point, at ANY resolution or frame coverage, so the discriminating state
+        is not rendered. This exposes the two candidate replacements so their
+        discriminating power can be measured before either is built:
+
+            ram    md5 of get_ram() ALONE. `lbr_fingerprint` mixes RAM with the
+                   frame stack and wrapper attrs, so it cannot attribute the 21
+                   distinct successors to RAM by itself. This can.
+            vals   the raw retro info variables, per key, so per-variable
+                   discriminating power is visible -- if only agent_status moves,
+                   a 14-dim vector suffices and 64KB of RAM is unnecessary.
+
+        Cheap over the pipe: one hex string and ~14 scalars.
+        """
+        retro_env = self.env.env
+        ram = np.ascontiguousarray(retro_env.get_ram())
+        info = retro_env.data.lookup_all()
+        keys = sorted(info.keys())
+        return {"ram": hashlib.md5(ram.tobytes()).hexdigest(),
+                "ram_bytes": int(ram.size),
+                "keys": keys,
+                "vals": [float(info[k]) for k in keys]}
+
     def lbr_config(self):
         """Scalar facts the LBR driver preflights on before stepping anything."""
         space = self.action_space

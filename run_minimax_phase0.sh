@@ -87,8 +87,16 @@ ARM="${1:-vton}"
 case "${ARM}" in
     vton)  VTRACE_ENABLED="True"  ;;
     vtoff) VTRACE_ENABLED="False" ;;
-    *) echo "usage: $0 [vton|vtoff]" >&2; exit 1 ;;
+    *) echo "usage: $0 [vton|vtoff]   (env: POPART=True|False)" >&2; exit 1 ;;
 esac
+# PopArt is a SECOND variable. It addresses target SCALE, not branch structure,
+# so it is off by default -- but it matters more for the minimax head than it did
+# for V: solve_matrix_game's eta is not scale-free, and at the measured
+# G_std ~0.0166 an un-normalized matrix collapses the solver to uniform play.
+# Normalizing Q makes eta meaningful instead of hand-tuned to the reward scale.
+POPART="${POPART:-False}"
+case "${POPART}" in True|False) ;; *) echo "POPART must be True|False" >&2; exit 1 ;; esac
+TAG="${ARM}"; [ "${POPART}" = "True" ] && TAG="${ARM}_popart"
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 IPPO_PATH="${SCRIPT_DIR}/main/ippo.py"
@@ -101,7 +109,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # SCRIPT path and ignores both --save_dir and cwd. Every spar Ryu-vs-Sagat run
 # writes the same filenames, so without this override concurrent runs silently
 # overwrite each other. That already destroyed one baseline checkpoint.
-RUN_ROOT="${SCRIPT_DIR}/main/minimax_phase0_${ARM}"
+RUN_ROOT="${SCRIPT_DIR}/main/minimax_phase0_${TAG}"
 export FIGHTLADDER_TASK_DIR="${RUN_ROOT}/trained_models/tasks"
 mkdir -p "${FIGHTLADDER_TASK_DIR}/todo" "${FIGHTLADDER_TASK_DIR}/todo_continue"
 
@@ -123,7 +131,7 @@ CMD=(
     --gamma 0.94
     --vtrace_enabled "${VTRACE_ENABLED}" --vtrace_seq_len 64
     --vtrace_c_bar 1.0 --vtrace_rho_bar 5.0 --vtrace_replay_capacity 15000
-    --popart False
+    --popart "${POPART}"
     --minimax_q True --minimax_stop_grad True
     --minimax_iters 1024 --minimax_eta 0.5
     --use_stagnation_early_stop False --use_stagnation_velocity_signal False
@@ -134,11 +142,11 @@ CMD=(
     --stagnation_lr_patience 150
 )
 
-LOG="${SCRIPT_DIR}/logs/minimax_phase0_${ARM}.log"
+LOG="${SCRIPT_DIR}/logs/minimax_phase0_${TAG}.log"
 mkdir -p "${SCRIPT_DIR}/logs"
 echo "=== minimax-Q PHASE 0 (head trains, feeds nothing) ==="
 echo "  arm        : ${ARM}   (vtrace_enabled=${VTRACE_ENABLED})"
-echo "  base       : arm A c_lr 3e-5, gamma 0.94, popart off"
+echo "  base       : arm A c_lr 3e-5, gamma 0.94, popart=${POPART}"
 echo "  task_dir   : ${FIGHTLADDER_TASK_DIR}"
 echo "  log        : ${LOG}"
 echo "  watch      : train/minimax_coverage, train/minimax_q_branch_std"
