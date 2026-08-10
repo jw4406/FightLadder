@@ -177,6 +177,7 @@ class CleanDerivativeFreeSPAR(PPO):
             minimax_q: bool = False,
             minimax_iters: int = 1024,
             minimax_eta: float = 0.5,
+            minimax_stat_every: int = 10,
             minimax_stop_grad: bool = True,
     ):
 
@@ -281,6 +282,7 @@ class CleanDerivativeFreeSPAR(PPO):
         self.minimax_q = bool(minimax_q)
         self.minimax_iters = int(minimax_iters)
         self.minimax_eta = float(minimax_eta)
+        self.minimax_stat_every = int(minimax_stat_every)
         self.minimax_stop_grad = bool(minimax_stop_grad)
         self.vtrace_ego_replay = None
         self.vtrace_adv_replays = None
@@ -2325,12 +2327,34 @@ class CleanDerivativeFreeSPAR(PPO):
         self.policy.minimax_optimizer.step()
 
         head.note_visits(a_ego, a_adv)
+
+        # The inner solve is DIAGNOSTIC here -- option A's target never uses it.
+        # Running it every minibatch at 1024 iters cost ~3x throughput (490
+        # steps/s against ~1460 for the same config without minimax). Sample it
+        # instead; the gap and V stats move slowly.
+        self._mm_calls = getattr(self, "_mm_calls", 0) + 1
+        every = max(1, int(getattr(self, "minimax_stat_every", 10)))
+        if self._mm_calls % every != 1 and getattr(self, "_minimax_stats", None):
+            self._minimax_stats["loss"] = float(loss)
+            return loss
         with th.no_grad():
             sol = solve_matrix_game(M.detach(),
                                     iters=getattr(self, "minimax_iters", 1024),
                                     eta=getattr(self, "minimax_eta", 0.5))
+        with th.no_grad():
+            _t = target.reshape(-1)
+            _q = q_played.detach().reshape(-1)
+            _tv = float(_t.var())
+            _v = head.cell_visits.reshape(-1)
+            _vp = th.quantile(_v.float(), th.tensor([0.10, 0.50], device=_v.device))
         self._minimax_stats = {
             "loss": float(loss),
+            # loss alone is UNINTERPRETABLE: MSE ~ target variance is exactly
+            # what a head that learned only the mean produces, and that is what
+            # 2e-04 against G_std ~0.017 meant for the whole first Phase 0 run.
+            # ev makes it a ratio instead of a bare number.
+            "target_std": float(_t.std()),
+            "ev": float(1.0 - float(((_t - _q) ** 2).mean()) / _tv) if _tv > 0 else float("nan"),
             # COVERAGE IS A GATE PRECONDITION, not a nicety. p_max(ego) ~ 0.94
             # was measured, so sampled joint actions concentrate on a handful of
             # the 484 cells while LBR branches over all 22 adversary actions. If
@@ -2338,6 +2362,13 @@ class CleanDerivativeFreeSPAR(PPO):
             # indistinguishable from "Q never saw those branches" and the gate
             # result means nothing.
             "coverage": head.coverage(),
+            # coverage (fraction of cells EVER touched) read 1.000 for the whole
+            # first run while hiding a 1,400x imbalance underneath. The
+            # distribution is what actually matters.
+            "visits_min": float(_v.min()),
+            "visits_p10": float(_vp[0]),
+            "visits_median": float(_vp[1]),
+            "visits_max": float(_v.max()),
             # SIGN GUARD. corr(prediction, target) must be POSITIVE. A negative
             # value means the frames have diverged again, and that failure is
             # otherwise invisible -- the loss goes down either way, because a
@@ -2350,6 +2381,9 @@ class CleanDerivativeFreeSPAR(PPO):
             # Free convergence certificate for the inner solve. If this is not
             # near zero the solve failed and every V_minimax is meaningless.
             "duality_gap": float(sol.gap.median()),
+            # median hides a single unconverged state; one bad solve silently
+            # corrupts one GAE bootstrap.
+            "duality_gap_max": float(sol.gap.max()),
             "V_minimax_mean": float(sol.V.mean()),
             "V_minimax_std": float(sol.V.std()),
             # Spread of Q ACROSS the matrix at a fixed state -- the quantity the

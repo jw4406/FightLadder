@@ -754,6 +754,7 @@ def main(args):
                 minimax_q=(args.minimax_q == 'True'),
                 minimax_iters=args.minimax_iters,
                 minimax_eta=args.minimax_eta,
+                minimax_stat_every=args.minimax_stat_every,
                 minimax_stop_grad=(args.minimax_stop_grad == 'True'),
             )
         elif model_arch_type == "ippo":
@@ -1287,6 +1288,10 @@ if __name__ == "__main__":
                         help="Optimistic-MWU iterations for the inner solve. "
                              "1024 = 70ms per 12,288-state rollout (2.6%% of env "
                              "time), median duality gap 5e-3; 256 = 17ms, 2e-2.")
+    parser.add_argument("--minimax_stat_every", type=int, default=10, required=False,
+                        help="Run the diagnostic inner solve every Nth minimax "
+                             "update. It is not used by the option-A target, and "
+                             "every-minibatch at 1024 iters cost ~3x throughput.")
     parser.add_argument("--minimax_eta", type=float, default=0.5, required=False,
                         help="MWU step size, applied to the per-state NORMALIZED "
                              "matrix so it is scale-free.")
