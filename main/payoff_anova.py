@@ -41,14 +41,28 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--raw", required=True, help="*_raw.npz from payoff_structure.py")
+    ap.add_argument("--out", type=str, default="",
+                    help="optional JSON path so a sweep can track gamma across "
+                         "checkpoints machine-readably")
     a = ap.parse_args(argv)
 
     import numpy as np
     z = np.load(a.raw)
     R, Q, H = z["R"], z["Q"], z["H"]
     S, na, _ = Q.shape
-    distinct = np.array([len(np.unique(H[s])) for s in range(S)])
+    # Prefer the RAM digest for "non-forced". The observation resolves 1 of 21
+    # action-distinct successors at a median decision point, so an
+    # observation-based filter keeps an arbitrary ~25% of states instead of the
+    # ~99% where the player genuinely has a choice -- which is what invalidated
+    # the first run of this analysis.
+    if "RH" in z:
+        distinct = np.array([len(np.unique(z["RH"][s])) for s in range(S)])
+        src = "RAM"
+    else:
+        distinct = np.array([len(np.unique(H[s])) for s in range(S)])
+        src = "OBSERVATION (legacy npz -- has no RH; results are the compromised kind)"
     free = distinct > 1
+    print(f"  non-forced filter source: {src}")
 
     def anova(M, name):
         if M.shape[0] < 20:
@@ -92,6 +106,15 @@ def main(argv=None):
     anova(R[liveR], "one-step reward r  (live states)")
     anova(R[free & liveR], "one-step reward r  NON-FORCED & live")
 
+    if a.out:
+        import json
+        _o = a.out if os.path.isabs(a.out) else os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), a.out)
+        with open(_o, "w") as _f:
+            json.dump({"raw": os.path.basename(a.raw), "n_states": int(S),
+                       "n_non_forced": int(free.sum()), "filter": src,
+                       "q_nonforced": g}, _f, indent=2)
+        print(f"\n  wrote {_o}")
     if g:
         print("\n" + "=" * 72)
         if g["gamma"] < 0.02:

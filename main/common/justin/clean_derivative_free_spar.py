@@ -692,6 +692,35 @@ class CleanDerivativeFreeSPAR(PPO):
                 ego_entropy_sum += float((-ego_log_probs.detach()).mean().item())
                 adv_entropy_sum += float((-adv_log_probs.detach()).mean().item())
                 entropy_count += 1
+                # SPAR_DEBUG_LP=1 -- is the adversary's stored log-prob already
+                # inconsistent AT WRITE TIME?
+                #
+                # The adversary's first-minibatch KL (before ANY gradient step,
+                # where it is mathematically required to be 0) drifts 0.00000 ->
+                # 0.137 and then aborts every update. This recomputes the same
+                # quantity the trainer will recompute -- evaluate_adv_actions on
+                # the SAME obs and the SAME actions -- microseconds after the
+                # collection forward, with nothing modified in between.
+                #   discrepancy HERE  -> policy() and evaluate_adv_actions
+                #                        disagree; a forward-path bug
+                #   discrepancy LATER -> something mutates between collection and
+                #                        train(); the distribution objects are the
+                #                        suspect (they are mutated in place by
+                #                        proba_distribution(), which is why the
+                #                        training path guards them with a lock)
+                if os.environ.get("SPAR_DEBUG_LP") and self.num_timesteps % 12288 < 512:
+                    with th.no_grad():
+                        _re_lp, _ = self.policy.evaluate_adv_actions(
+                            obs_tensor, adv_actions, buf_num=[0], side_flag=None)
+                        _d = (_re_lp - adv_log_probs).abs()
+                        _re_e, _ = self.policy.evaluate_ego_actions(
+                            obs_tensor, ego_actions, side_flag=None)
+                        _de = (_re_e - ego_log_probs).abs()
+                        print(f"[LPDBG] t={self.num_timesteps} "
+                              f"adv |re-lp - stored| mean={_d.mean().item():.6f} "
+                              f"max={_d.max().item():.6f} "
+                              f"| ego mean={_de.mean().item():.6f} "
+                              f"max={_de.max().item():.6f}", flush=True)
                 if th.any(adv_actions):
                     #print("Adv actions are not all zeros")
                     pass
@@ -851,6 +880,15 @@ class CleanDerivativeFreeSPAR(PPO):
 
         callback.on_rollout_end()
 
+        # Fingerprint the adversary policy at the END of collection, every
+        # rollout. Sampling it inside the LPDBG window instead made
+        # 'moved' report ordinary cross-iteration drift rather than the
+        # collection-to-training gap that is actually in question.
+        if os.environ.get("SPAR_DEBUG_LP"):
+            self._dbg_adv_sig = float(sum(
+                pp.detach().double().sum().item()
+                for pp in list(self.policy.mlp_extractor.dstb_net.parameters())
+                + list(self.policy.dstb_action_net.parameters())))
         rollout_buffer.prepare_data_for_training()
         for i in range(len(adversary_buffers)):
             adversary_buffers[i].prepare_data_for_training()
@@ -1804,6 +1842,48 @@ class CleanDerivativeFreeSPAR(PPO):
                         print(f"[DEBUG @ train]: ratio: {ratio.mean().item():.4f}")
                         #assert th.allclose(log_prob, rollout_data.old_log_prob), "Log probabilities do not match between collection and training."
                         first = False
+                    # SPAR_DEBUG_KL=1 -- diagnose epoch-0 KL. At epoch 0 the policy
+                    # has not been updated, so log_prob MUST equal old_log_prob and
+                    # approx_kl MUST be 0. The masked-RAM arm reports 0.12-0.15 and
+                    # aborts every ego and adv pass before taking a single gradient
+                    # step. `ratio.mean()` cannot see this: approx_kl reduces to
+                    # -mean(log_ratio) whenever mean(ratio)==1, so a symmetric
+                    # spread of ratios looks perfect and is not.
+                    if epoch == 0 and os.environ.get("SPAR_DEBUG_LP") and not update_ego:
+                        with th.no_grad():
+                            _sig = float(sum(
+                                pp.detach().double().sum().item()
+                                for pp in list(self.policy.mlp_extractor.dstb_net.parameters())
+                                + list(self.policy.dstb_action_net.parameters())))
+                            _prev = getattr(self, "_dbg_adv_sig", None)
+                            # Same obs/actions as the trainer, but with the
+                            # COLLECTION-time arguments, to separate "parameters
+                            # moved" from "arguments differ".
+                            _alt, _ = self.policy.evaluate_adv_actions(
+                                rollout_data.observations, actions,
+                                buf_num=[0], side_flag=None)
+                            _dalt = (_alt - rollout_data.old_log_prob).abs().mean().item()
+                            _dcur = (log_prob - rollout_data.old_log_prob).abs().mean().item()
+                            print(f"[PARAMDBG] adv param_sig now={_sig:.6f} "
+                                  f"at_collect={_prev if _prev is None else f'{_prev:.6f}'} "
+                                  f"moved={'YES' if (_prev is not None and abs(_sig-_prev)>1e-9) else 'no'} "
+                                  f"| |trainer_lp - stored|={_dcur:.6f} "
+                                  f"| |collectargs_lp - stored|={_dalt:.6f}", flush=True)
+                    if epoch == 0 and os.environ.get("SPAR_DEBUG_KL"):
+                        with th.no_grad():
+                            _lr = (log_prob - rollout_data.old_log_prob).reshape(-1)
+                            _exact = (_lr == 0).float().mean().item()
+                            _kl = th.mean((th.exp(_lr) - 1) - _lr).item()
+                            _o = rollout_data.observations
+                            print(f"[KLDBG] {'ego' if update_ego else 'adv'} ep0 "
+                                  f"n={_lr.numel()} kl={_kl:.5f} "
+                                  f"lr mean={_lr.mean().item():+.5f} "
+                                  f"std={_lr.std().item():.5f} "
+                                  f"min={_lr.min().item():+.4f} max={_lr.max().item():+.4f} "
+                                  f"exact0={_exact:.3f} | obs {tuple(_o.shape)} "
+                                  f"sum={_o.float().sum().item():.4f} "
+                                  f"old_lp mean={rollout_data.old_log_prob.mean().item():+.4f} "
+                                  f"new_lp mean={log_prob.mean().item():+.4f}", flush=True)
                     #if update_adversary:
                     #    ratio_adv = th.exp(adv_log_prob - rollout_data.old_dstb_log_prob)
 

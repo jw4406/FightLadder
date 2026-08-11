@@ -52,17 +52,21 @@ def main(argv=None):
     ap.add_argument("--n_envs", type=int, default=6)
     ap.add_argument("--device", type=str, default="cuda")
     ap.add_argument("--out", type=str, default="minimax_noop_decomp.json")
+    ap.add_argument("--ram_mask", type=str, default="",
+                    help="RAM byte-index .npy, required when the checkpoint was "
+                         "trained with a MASKED ram observation: the checkpoint "
+                         "records the WIDTH, not which bytes.")
     a = ap.parse_args(argv)
 
     import numpy as np
     import torch as th
     from stable_baselines3.common.save_util import load_from_zip_file
     from local_best_response import (build_lbr_venv, load_checkpoint, preflight,
-                                     PolicyOps, resolve_matchups, REPO_ROOT)
+                                     PolicyOps, resolve_matchups, infer_obs_kwargs, REPO_ROOT)
 
     data = load_from_zip_file(a.ckpt, device="cpu")[0]
     head_idx, label, state = resolve_matchups(data, "all")[0]
-    venv = build_lbr_venv(state, a.n_envs)
+    venv = build_lbr_venv(state, a.n_envs, **infer_obs_kwargs(data, (getattr(a, 'ram_mask', '') or None)))
     try:
         model, _ = load_checkpoint(a.ckpt, venv, a.device)
         preflight(venv, model)

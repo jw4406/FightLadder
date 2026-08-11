@@ -58,17 +58,21 @@ def main(argv=None):
                          "nonzero cross-arm distance looks like a finding.")
     ap.add_argument("--device", type=str, default="cuda")
     ap.add_argument("--out", required=True, help="path to the output .npz")
+    ap.add_argument("--ram_mask", type=str, default="",
+                    help="RAM byte-index .npy, required when the checkpoint was "
+                         "trained with a MASKED ram observation: the checkpoint "
+                         "records the WIDTH, not which bytes.")
     a = ap.parse_args(argv)
 
     import numpy as np
     from stable_baselines3.common.save_util import load_from_zip_file
     from local_best_response import (build_lbr_venv, load_checkpoint, preflight,
-                                     PolicyOps, resolve_matchups)
+                                     PolicyOps, resolve_matchups, infer_obs_kwargs)
 
     data = load_from_zip_file(a.ckpt, device="cpu")[0]
     head_idx, label, state = resolve_matchups(data, "all")[0]
 
-    venv = build_lbr_venv(state, a.n_envs)
+    venv = build_lbr_venv(state, a.n_envs, **infer_obs_kwargs(data, (getattr(a, 'ram_mask', '') or None)))
     try:
         model, _ = load_checkpoint(a.ckpt, venv, a.device)
         preflight(venv, model)

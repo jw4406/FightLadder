@@ -59,9 +59,15 @@ def _extract(pol, x, site, head_idx=0):
     costs it the signal.
     """
     import torch as th
-    if site == "conv_vf":
+    # NOTE ON NAMES: `conv_*` predates --obs_type ram. These are the FEATURES
+    # EXTRACTOR outputs, whatever the extractor is -- NatureCNN under image
+    # observations, RamMlpExtractor under ram/info. Both emit 512 dims, so the
+    # site means the same thing either way ("the encoder's output, before the
+    # head MLP") and the numbers stay comparable across observation types.
+    # feat_* are the honest aliases; conv_* are kept so old scripts still run.
+    if site in ("conv_vf", "feat_vf"):
         return pol.vf_features_extractor(x)
-    if site == "conv_pi":
+    if site in ("conv_pi", "feat_pi"):
         return pol.pi_features_extractor(x)
     if site == "latent_pi":
         return pol.mlp_extractor.ego_forward(pol.pi_features_extractor(x))
@@ -110,6 +116,7 @@ def main(argv=None):
                          "cost.")
     ap.add_argument("--probe_site",
                     choices=("latent_vf", "conv_vf", "conv_pi", "latent_pi",
+                             "feat_vf", "feat_pi",
                              "minimax_trunk", "value_trunk"),
                     default="latent_vf",
                     help="WHERE to read the representation. The null result so "
@@ -133,20 +140,24 @@ def main(argv=None):
                          "problem, not a capacity problem.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=str, default="minimax_probe_ceiling.json")
+    ap.add_argument("--ram_mask", type=str, default="",
+                    help="RAM byte-index .npy, required when the checkpoint was "
+                         "trained with a MASKED ram observation: the checkpoint "
+                         "records the WIDTH, not which bytes.")
     a = ap.parse_args(argv)
 
     import numpy as np
     import torch as th
     from stable_baselines3.common.save_util import load_from_zip_file
     from local_best_response import (build_lbr_venv, load_checkpoint, preflight,
-                                     PolicyOps, resolve_matchups, REPO_ROOT)
+                                     PolicyOps, resolve_matchups, infer_obs_kwargs, REPO_ROOT)
     from critic_ceiling import ridge_fit, episode_split
     from stable_baselines3.common.preprocessing import preprocess_obs
 
     data = load_from_zip_file(a.ckpt, device="cpu")[0]
     head_idx, label, state = resolve_matchups(data, "all")[0]
 
-    venv = build_lbr_venv(state, a.n_envs)
+    venv = build_lbr_venv(state, a.n_envs, **infer_obs_kwargs(data, (getattr(a, 'ram_mask', '') or None)))
     try:
         model, _ = load_checkpoint(a.ckpt, venv, a.device)
         preflight(venv, model)
@@ -241,7 +252,9 @@ def main(argv=None):
     out = os.path.join(REPO_ROOT, a.out)
     print("\n" + "=" * 72)
     print(f"PROBE CEILING  {res['checkpoint']}   target={a.target}   "
-          f"site={a.probe_site} (dim {LAT.shape[1]})"
+          f"site={a.probe_site} (dim {LAT.shape[1]}, "
+          f"{type(pol.vf_features_extractor).__name__}, "
+          f"obs {tuple(pol.observation_space.shape)})"
           f"{'  UNIFORM-ACTIONS' if a.uniform_actions else '  policy-actions'}   "
           f"{n_ep} episodes, {res['steps_per_episode']:.0f} steps/ep")
     print("=" * 72)

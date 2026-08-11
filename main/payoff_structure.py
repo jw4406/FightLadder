@@ -63,17 +63,21 @@ def main(argv=None):
     ap.add_argument("--tol", type=float, default=1e-9)
     ap.add_argument("--out", type=str, default="payoff_structure.json")
     ap.add_argument("--plot", type=str, default=None)
+    ap.add_argument("--ram_mask", type=str, default="",
+                    help="RAM byte-index .npy, required when the checkpoint was "
+                         "trained with a MASKED ram observation: the checkpoint "
+                         "records the WIDTH, not which bytes.")
     a = ap.parse_args(argv)
 
     import numpy as np
     from stable_baselines3.common.save_util import load_from_zip_file
     from local_best_response import (build_lbr_venv, load_checkpoint, preflight,
-                                     PolicyOps, resolve_matchups, splice_terminal,
+                                     PolicyOps, resolve_matchups, infer_obs_kwargs, splice_terminal,
                                      REPO_ROOT)
 
     data = load_from_zip_file(a.ckpt, device="cpu")[0]
     head_idx, label, state = resolve_matchups(data, "all")[0]
-    venv = build_lbr_venv(state, a.n_envs)
+    venv = build_lbr_venv(state, a.n_envs, **infer_obs_kwargs(data, (getattr(a, 'ram_mask', '') or None)))
     try:
         model, _ = load_checkpoint(a.ckpt, venv, a.device)
         preflight(venv, model)
@@ -83,7 +87,7 @@ def main(argv=None):
         na = ops.n_actions
         rng = np.random.RandomState(0)
 
-        R_all, Q_all, H_all = [], [], []
+        R_all, Q_all, H_all, RH_all = [], [], [], []
         obs = venv.reset()
         n_exp = int(np.ceil(a.n_states / n))
         for e in range(n_exp):
@@ -95,6 +99,13 @@ def main(argv=None):
             R = np.zeros((na, na, n)); V1 = np.zeros((na, na, n))
             DN = np.zeros((na, na, n), bool)
             HS = np.zeros((na, na, n), dtype=np.int64)
+            # RAM digest per branch. The observation resolves 1 of 21
+            # action-distinct successors at a median decision point while RAM
+            # resolves all 21, so an observation-based "non-forced" filter keeps
+            # an arbitrary 25% of states rather than the ~99% where the player
+            # genuinely has a choice. That filter is what invalidated the first
+            # ANOVA; this is the fix.
+            RS = np.zeros((na, na, n), dtype=np.int64)
             for i in range(na):
                 succ_row = []
                 for j in range(na):
@@ -106,8 +117,10 @@ def main(argv=None):
                     DN[i, j] = d
                     o1 = splice_terminal(o1, d, infos)
                     succ_row.append(o1)
+                    _rv = venv.env_method("lbr_state_variants")
                     for k in range(n):
                         HS[i, j, k] = hash(o1[k].tobytes())
+                        RS[i, j, k] = hash(_rv[k]["ram"])
                 # One batched forward per row: 22*n rows instead of holding
                 # 484*n successor frames in memory.
                 V1[i] = ops.values_ego(np.concatenate(succ_row, axis=0)).reshape(na, n)
@@ -117,6 +130,7 @@ def main(argv=None):
             R_all.append(R.transpose(2, 0, 1))
             Q_all.append((R + gamma * V1 * (~DN)).transpose(2, 0, 1))
             H_all.append(HS.transpose(2, 0, 1))
+            RH_all.append(RS.transpose(2, 0, 1))
             print(f"   expansion {e+1}/{n_exp}  ({(e+1)*n} states)", flush=True)
     finally:
         venv.close()
@@ -124,6 +138,7 @@ def main(argv=None):
     R = np.concatenate(R_all)
     Q = np.concatenate(Q_all)
     H = np.concatenate(H_all)
+    RH = np.concatenate(RH_all)
     S = R.shape[0]
     out = {"checkpoint": os.path.basename(a.ckpt), "n_states": S,
            "n_actions": na, "gamma": float(gamma)}
@@ -132,7 +147,7 @@ def main(argv=None):
     # previously killed the run after 8 minutes of branching and took the whole
     # collection with it.
     raw = os.path.join(REPO_ROOT, a.out.replace(".json", "_raw.npz"))
-    np.savez_compressed(raw, R=R, Q=Q, H=H)
+    np.savez_compressed(raw, R=R, Q=Q, H=H, RH=RH)
     print(f"\n   {S} states x {na}x{na};  raw -> {raw}")
 
     # ---- A5 VALIDITY --------------------------------------------------------
@@ -156,8 +171,10 @@ def main(argv=None):
 
     # ---- A4 DEGENERACY, before the spectra: it conditions them ---------------
     distinct = np.array([len(np.unique(H[s])) for s in range(S)])
-    free = distinct > 1
-    out["a4"] = {"median": float(np.median(distinct)), "min": int(distinct.min()),
+    distinct_ram = np.array([len(np.unique(RH[s])) for s in range(S)])
+    free = distinct_ram > 1          # RAM, not observation
+    out["a4"] = {"median_ram": float(np.median(distinct_ram)),
+                 "median": float(np.median(distinct)), "min": int(distinct.min()),
                  "max": int(distinct.max()), "of": na * na,
                  "frac_non_forced": float(free.mean())}
     print("\n" + "=" * 74)
@@ -165,7 +182,11 @@ def main(argv=None):
     print("=" * 74)
     print(f"   median {np.median(distinct):.0f} / {na*na}   "
           f"min {distinct.min()}   max {distinct.max()}")
-    print(f"   NON-FORCED (>1 distinct): {free.sum()}/{S} ({free.mean():.1%})")
+    print(f"   RAM distinct: median {np.median(distinct_ram):.0f} / {na*na}   "
+          f"min {distinct_ram.min()}   max {distinct_ram.max()}")
+    print(f"   NON-FORCED by RAM (>1 distinct): {free.sum()}/{S} ({free.mean():.1%})")
+    print(f"   (by OBSERVATION it would be {int((distinct>1).sum())}/{S} "
+          f"({(distinct>1).mean():.1%}) -- the filter that broke the first ANOVA)")
     if np.median(distinct) <= 3:
         print("   => branches are FORCED at most decision points. Q cannot")
         print("      distinguish what the emulator does not distinguish.")

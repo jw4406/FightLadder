@@ -34,6 +34,13 @@ def main(argv=None):
     ap.add_argument("--steps", type=int, default=200)
     ap.add_argument("--n_envs", type=int, default=6)
     ap.add_argument("--device", type=str, default="cuda")
+    ap.add_argument("--out", type=str, default="",
+                    help="optional JSON path, so a sweep can compare checkpoints "
+                         "machine-readably instead of regexing stdout")
+    ap.add_argument("--ram_mask", type=str, default="",
+                    help="RAM byte-index .npy, required when the checkpoint was "
+                         "trained with a MASKED ram observation: the checkpoint "
+                         "records the WIDTH, not which bytes.")
     a = ap.parse_args(argv)
 
     import numpy as np
@@ -41,11 +48,11 @@ def main(argv=None):
     from stable_baselines3.common.save_util import load_from_zip_file
     from stable_baselines3.common.preprocessing import preprocess_obs
     from local_best_response import (build_lbr_venv, load_checkpoint, preflight,
-                                     PolicyOps, resolve_matchups)
+                                     PolicyOps, resolve_matchups, infer_obs_kwargs)
 
     data = load_from_zip_file(a.ckpt, device="cpu")[0]
     head_idx, label, state = resolve_matchups(data, "all")[0]
-    venv = build_lbr_venv(state, a.n_envs)
+    venv = build_lbr_venv(state, a.n_envs, **infer_obs_kwargs(data, (getattr(a, 'ram_mask', '') or None)))
     try:
         model, _ = load_checkpoint(a.ckpt, venv, a.device)
         preflight(venv, model)
@@ -125,6 +132,14 @@ def main(argv=None):
              ("{:>18d}" if (k == "dim" or k.startswith("n_units")) else "{:>18.5f}"))
         print(f"  {lbl:30s} " + f.format(sm[k]) + " " + f.format(sv[k]))
 
+    if a.out:
+        import json
+        from local_best_response import REPO_ROOT
+        _o = os.path.join(REPO_ROOT, a.out) if not os.path.isabs(a.out) else a.out
+        with open(_o, "w") as _f:
+            json.dump({"checkpoint": os.path.basename(a.ckpt),
+                       "minimax": sm, "value": sv}, _f, indent=2)
+        print(f"  wrote {_o}")
     print()
     dead_mm = sm["dc_ratio"] > 2.5
     dead_v = sv["dc_ratio"] > 2.5
