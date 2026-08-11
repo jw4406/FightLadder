@@ -58,7 +58,7 @@ from stable_baselines3.common.save_util import load_from_zip_file
 
 from common.minimax import solve_matrix_game
 from common.const import sf_game
-from common.retro_wrappers import SFWrapper
+from common.retro_wrappers import SFWrapper, RamObsWrapper, InfoObsWrapper
 from common.utils import SubprocVecEnv2P, VecTransposeImage2P
 from utils import select_matchup_env
 from local_br_eval import _resolve_cds_family_class, _extract_left_right_names_from_state
@@ -71,6 +71,11 @@ from new_br_worker import _sanitize_for_filename, _derive_spar_run_subdir
 _CRITIC_KEY_PREFIXES = ("value_net", "vf_features_extractor", "mlp_extractor.value_net")
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+def _obs_is_image(data):
+    """3-D observation space => image => a real (parameterised) features extractor."""
+    return len(tuple(getattr(data.get("observation_space"), "shape", ()) or ())) == 3
 
 
 # Phase-level wall-clock accounting. Cheap enough to leave always on (one
@@ -115,7 +120,8 @@ def prof_report(total_s, label=""):
 
 
 def make_lbr_env(state, side="both", reset_type="round", enable_combo=True,
-                 null_combo=False, transform_action=True, seed=0):
+                 null_combo=False, transform_action=True, seed=0,
+                 obs_type="image", ram_mask=None):
     """Env factory for LBR. Deliberately omits Monitor2P.
 
     Monitor2P is stateful and fails loudly under branching: it raises
@@ -135,6 +141,14 @@ def make_lbr_env(state, side="both", reset_type="round", enable_combo=True,
                         init_level=1, state_dir=None, verbose=False,
                         enable_combo=enable_combo, null_combo=null_combo,
                         transform_action=transform_action)
+        # Must match the CHECKPOINT's observation space. Building an image env
+        # for a --obs_type ram policy fails deep inside the first forward with an
+        # unreadable 65,536-element space dump; infer_obs_kwargs() reads the
+        # right setting off the checkpoint so callers cannot get this wrong.
+        if obs_type == "ram":
+            env = RamObsWrapper(env, mask=ram_mask)
+        elif obs_type == "info":
+            env = InfoObsWrapper(env)
         env.seed(seed)
         return env
     return _init
@@ -142,7 +156,43 @@ def make_lbr_env(state, side="both", reset_type="round", enable_combo=True,
 
 def build_lbr_venv(state, n_envs, **kw):
     fns = [make_lbr_env(state, seed=i, **kw) for i in range(n_envs)]
-    return VecTransposeImage2P(SubprocVecEnv2P(fns))
+    venv = SubprocVecEnv2P(fns)
+    # VecTransposeImage2P is for images only; a 1-D Box must not go through it.
+    if kw.get("obs_type", "image") == "image":
+        return VecTransposeImage2P(venv)
+    return venv
+
+
+def infer_obs_kwargs(data, ram_mask=None):
+    """obs_type/ram_mask implied by a checkpoint's observation_space.
+
+    A checkpoint records the space it was trained with, so the eval env can be
+    built to match without the caller having to remember. A 1-D Box means
+    --obs_type ram (or info); anything 3-D is an image.
+
+    `ram_mask` is required when the space is 1-D and SMALLER than full RAM: the
+    checkpoint stores the WIDTH but not WHICH bytes, so the mask file has to be
+    supplied and is validated against the width here rather than failing later.
+    """
+    space = data.get("observation_space")
+    shape = tuple(getattr(space, "shape", ()) or ())
+    if len(shape) != 1:
+        return {"obs_type": "image", "ram_mask": None}
+    n = int(shape[0])
+    if n == 65536:
+        return {"obs_type": "ram", "ram_mask": None}
+    if n <= 64:
+        return {"obs_type": "info", "ram_mask": None}
+    if ram_mask is None:
+        raise SystemExit(
+            f"checkpoint observation is {n} wide, i.e. a MASKED ram obs, but no "
+            f"--ram_mask was given. The checkpoint records the width, not which "
+            f"bytes; pass the .npy used for training.")
+    m = np.load(ram_mask) if isinstance(ram_mask, str) else np.asarray(ram_mask)
+    if m.size != n:
+        raise SystemExit(f"--ram_mask has {m.size} indices but the checkpoint "
+                         f"observation is {n} wide; wrong mask file.")
+    return {"obs_type": "ram", "ram_mask": m}
 
 
 def preflight(venv, model):
@@ -183,8 +233,16 @@ def load_checkpoint(path, venv, device):
     # Critic smoke test: a dead or random-init value head makes LBR silently
     # degenerate into greedy damage, which is exactly the failure mode the
     # controls exist to detect -- so catch it here instead.
-    saved = load_from_zip_file(path, device="cpu")[1]["policy"]
-    missing_critic = [k for k in _CRITIC_KEY_PREFIXES
+    _data, _params, _ = load_from_zip_file(path, device="cpu")
+    saved = _params["policy"]
+    # FlattenExtractor is PARAMETERLESS, so a legitimate --obs_type ram
+    # checkpoint has no vf_features_extractor.* keys at all
+    # (clean_derivative_free_spar.py:581 selects it for non-image spaces). Absence
+    # there is not evidence of an untrained critic; only the modules that always
+    # carry weights are worth asserting on.
+    _required = [k for k in _CRITIC_KEY_PREFIXES
+                 if k != "vf_features_extractor" or _obs_is_image(_data)]
+    missing_critic = [k for k in _required
                       if not any(name.startswith(k) for name in saved)]
     if missing_critic:
         raise SystemExit(
@@ -625,6 +683,10 @@ def build_parser():
     p.add_argument("--lbr_controls", type=str, default="True",
                    help="legacy all-or-nothing switch: True adds greedy+shuffle "
                         "to lbr. Ignored when --lbr_modes is given.")
+    p.add_argument("--ram_mask", type=str, default="",
+                   help="RAM byte-index .npy, required only when the checkpoint "
+                        "was trained with a MASKED ram observation (the checkpoint "
+                        "records the width, not which bytes).")
     p.add_argument("--lbr_modes", type=str, default="",
                    help="comma-separated subset of {lbr,greedy,shuffle}; overrides "
                         "--lbr_controls. e.g. 'greedy' runs ONLY the greedy-damage "
@@ -693,7 +755,9 @@ def run_matchup(ckpt, state, head_idx, label, directions, args):
     """
     print(f"\n[LBR] ===== matchup {head_idx}: {label} =====")
     print(f"[LBR] state {state}")
-    venv = build_lbr_venv(state, args.lbr_n_envs)
+    venv = build_lbr_venv(state, args.lbr_n_envs,
+                          **infer_obs_kwargs(load_from_zip_file(ckpt, device="cpu")[0],
+                                             getattr(args, "ram_mask", None) or None))
     out = {}
     try:
         model, detection = load_checkpoint(ckpt, venv, args.device)
