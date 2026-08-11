@@ -555,7 +555,16 @@ class RolloutBuffer(BaseBuffer):
 
     def reset(self) -> None:
 
-        self.observations = np.zeros((self.buffer_size, self.n_envs) + self.obs_shape, dtype=np.uint8)
+  # dtype from the observation SPACE, not hard-coded uint8. Image obs are
+        # genuinely uint8 in [0,255] so this is a no-op for them, but a float
+        # observation (--obs_type ram / info, values in [0,1]) was TRUNCATED TO
+        # ZERO on write: training then read an all-zeros observation while
+        # collection had used the real one. Symptom was the adversary's
+        # first-minibatch KL drifting 0 -> 0.14 (invisible while the policy is
+        # near-uniform, growing as it sharpens), tripping target_kl every
+        # iteration and collapsing self-play at a reproducible 159,744 steps.
+        self.observations = np.zeros((self.buffer_size, self.n_envs) + self.obs_shape,
+                                     dtype=self.observation_space.dtype)
         self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
@@ -732,8 +741,18 @@ class Q_RolloutBuffer(RolloutBuffer):
     def __init__(self, buffer_size: int, observation_space: spaces.Space, action_space: spaces.Space, device: Union[th.device, str] = "auto", gae_lambda: float = 1, gamma: float = 0.99, n_envs: int = 1):
         super().__init__(buffer_size, observation_space, action_space, device, gae_lambda, gamma, n_envs)
     def reset(self) -> None:
-        self.next_observations = np.zeros((self.buffer_size, self.n_envs) + self.obs_shape, dtype=np.uint8)
-        self.observations = np.zeros((self.buffer_size, self.n_envs) + self.obs_shape, dtype=np.uint8)
+        self.next_observations = np.zeros((self.buffer_size, self.n_envs) + self.obs_shape,
+                                          dtype=self.observation_space.dtype)
+  # dtype from the observation SPACE, not hard-coded uint8. Image obs are
+        # genuinely uint8 in [0,255] so this is a no-op for them, but a float
+        # observation (--obs_type ram / info, values in [0,1]) was TRUNCATED TO
+        # ZERO on write: training then read an all-zeros observation while
+        # collection had used the real one. Symptom was the adversary's
+        # first-minibatch KL drifting 0 -> 0.14 (invisible while the policy is
+        # near-uniform, growing as it sharpens), tripping target_kl every
+        # iteration and collapsing self-play at a reproducible 159,744 steps.
+        self.observations = np.zeros((self.buffer_size, self.n_envs) + self.obs_shape,
+                                     dtype=self.observation_space.dtype)
         self.ego_actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
         self.adv_actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
@@ -950,7 +969,7 @@ class AdvRolloutBuffer(BaseBuffer):
             self.dones = th.zeros((self.buffer_size, self.n_envs), dtype=th.float32).pin_memory()
             self.side_flags = th.zeros((self.buffer_size, self.n_envs, 1), dtype=th.float32).pin_memory()
         else:
-            self.observations = np.zeros(obs_shape, dtype=np.uint8)
+            self.observations = np.zeros(obs_shape, dtype=self.observation_space.dtype)
             self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
             self.dstb_actions = np.zeros((self.buffer_size, self.n_envs, self.dstb_action_dim), dtype=np.float32)
             self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
