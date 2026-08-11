@@ -31,7 +31,8 @@ from .noise import ActionNoise
 from .policies import ActorCriticPolicy, ActorCriticCnnPolicy, MultiInputActorCriticPolicy
 from typing import Union, Type, Optional, Dict, Any, List, Tuple
 #from stable_baselines3.common.clean_new_policies import CleanActorActorCriticPolicy
-from stable_baselines3.common.torch_layers import BaseFeaturesExtractor, FlattenExtractor, MlpExtractorAdv, NatureCNN
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor, FlattenExtractor, MlpExtractorAdv, NatureCNN, RamMlpExtractor
+from stable_baselines3.common.preprocessing import is_image_space
 from utils import select_matchup_env, move_optimizer_to_device
 
 class PopArtHead(nn.Module):
@@ -252,6 +253,15 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         self.minimax_q = bool(minimax_q)
         self.minimax_n_ego = int(minimax_n_ego)
         self.minimax_n_adv = int(minimax_n_adv)
+        # Non-image observations (--obs_type ram / info) cannot go through
+        # NatureCNN, which asserts an image space. Swap in the MLP front end
+        # ONLY when the caller left the default -- an explicit
+        # features_extractor_class is always honoured. RamMlpExtractor emits the
+        # same features_dim=512 as NatureCNN, so nothing downstream changes.
+        if features_extractor_class is NatureCNN and not is_image_space(
+                observation_space, check_channels=False, normalized_image=False):
+            features_extractor_class = RamMlpExtractor
+            features_extractor_kwargs = features_extractor_kwargs or {}
         super().__init__(observation_space = observation_space,
         action_space = action_space,
         lr_schedule = lr_schedule[0],

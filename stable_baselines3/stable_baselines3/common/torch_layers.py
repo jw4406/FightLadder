@@ -104,6 +104,37 @@ class NatureCNN(BaseFeaturesExtractor):
         return self.linear(self.cnn(observations))
 
 
+class RamMlpExtractor(BaseFeaturesExtractor):
+    """Feature extractor for flat RAM observations -- the MLP analogue of NatureCNN.
+
+    Emits features_dim=512 exactly like NatureCNN, so every downstream module
+    (mlp_extractor, value_net, action_net, minimax_net) keeps the dimensions it
+    already has under the image observation. Only the front end changes.
+
+    SIZE WARNING. Full Genesis RAM is 65,536 bytes, so the first Linear is
+    65,536 x hidden. At hidden=512 that is ~33.5M params PER EXTRACTOR, and the
+    actor and critic do not share one (share_features_extractor=False), so ~67M
+    total before anything else. Nearly all of it reads bytes that never change.
+    Pass a --ram_mask to cut the input to the bytes that actually vary; the same
+    architecture then costs a small fraction of this.
+    """
+
+    def __init__(self, observation_space: spaces.Box, features_dim: int = 512,
+                 hidden: int = 512) -> None:
+        super().__init__(observation_space, features_dim)
+        n_input = int(get_flattened_obs_dim(observation_space))
+        self.net = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(n_input, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, features_dim),
+            nn.ReLU(),
+        )
+
+    def forward(self, observations: th.Tensor) -> th.Tensor:
+        return self.net(observations)
+
+
 def create_mlp(
     input_dim: int,
     output_dim: int,

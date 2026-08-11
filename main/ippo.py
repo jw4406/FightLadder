@@ -29,7 +29,7 @@ from common.justin.Generalist_SPAR import Generalist_SPAR
 from common.justin.derivative_free_spar import Derivative_Free_SPAR
 #from common.justin.derivative_free_spar_parallel import Derivative_Free_SPAR
 from stable_baselines3 import MAGICS_AL
-from common.retro_wrappers import SFWrapper, Monitor2P, InfoObsWrapper, EgoCentricImageWrapper
+from common.retro_wrappers import SFWrapper, Monitor2P, InfoObsWrapper, EgoCentricImageWrapper, RamObsWrapper
 import wandb
 
 PRETRAIN = True
@@ -113,8 +113,21 @@ def constructor(args, side, log_name=None, single_env=False):
     pass
 
 
+def _load_ram_mask(args):
+    """Index array for --ram_mask, or None for full RAM. Loaded once and passed
+    to every worker, rather than re-read in each of the N subprocesses."""
+    path = getattr(args, 'ram_mask', '') or ''
+    if not path:
+        return None
+    mask = np.load(path)
+    print(f"[obs] ram mask {path}: {mask.size:,} of 65,536 bytes "
+          f"({mask.size/65536:.1%})", flush=True)
+    return mask
+
+
 def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True,
-             null_combo=False, transform_action=False, seed=0, obs_type='image', ego_is_left=True):
+             null_combo=False, transform_action=False, seed=0, obs_type='image', ego_is_left=True,
+             ram_mask=None):
     def _init():
         players = 2
         env = retro.make(
@@ -127,10 +140,12 @@ def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=N
         env = SFWrapper(env, side=side, rendering=rendering, reset_type=reset_type, init_level=init_level,
                         state_dir=state_dir, verbose=verbose, enable_combo=enable_combo, null_combo=null_combo,
                         transform_action=transform_action)
-        #if obs_type == 'info':
-        #    env = InfoObsWrapper(env, ego_is_left=ego_is_left)
-        #elif not ego_is_left:
-        #    env = EgoCentricImageWrapper(env)
+        # Observation wrapper. NOTE: the InfoObsWrapper branch used to be
+        # commented out here, so --obs_type info silently did nothing.
+        if obs_type == 'ram':
+            env = RamObsWrapper(env, mask=ram_mask)
+        elif obs_type == 'info':
+            env = InfoObsWrapper(env, ego_is_left=ego_is_left)
         env = Monitor2P(env)
         env.seed(seed)
         return env
@@ -375,6 +390,7 @@ def env_generator(args, max_envs: int = 0, i_start: int = 0, j_start: int = 0, S
         env = []
         env_count = 0
         obs_type = getattr(args, 'obs_type', 'image')
+        ram_mask = _load_ram_mask(args)
         halfway = len(STATE) // 2
         use_mirror = getattr(args, 'use_mirror', False)
         for i in range(i_start, len(STATE)):
@@ -385,6 +401,7 @@ def env_generator(args, max_envs: int = 0, i_start: int = 0, j_start: int = 0, S
                 make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render,
                             enable_combo=args.enable_combo, null_combo=args.null_combo,
                             transform_action=args.transform_action, seed=0, obs_type=obs_type,
+                            ram_mask=ram_mask,
                             ego_is_left=ego_is_left))
             env_count += 1
             if exceed_max_envs(env_count, max_envs):
@@ -593,10 +610,12 @@ def main(args):
 
     def many_char_env_generator():
         obs_type = getattr(args, 'obs_type', 'image')
+        ram_mask = _load_ram_mask(args)
         halfway = len(STATE) // 2
         env = [make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render,
                         enable_combo=args.enable_combo, null_combo=args.null_combo,
                         transform_action=args.transform_action, seed=0, obs_type=obs_type,
+                        ram_mask=ram_mask,
                         ego_is_left=(i < halfway) if use_mirror else True) for i in range(len(STATE))]
         vec_env = SubprocVecEnv2P(env)
         if obs_type == 'image':
@@ -620,7 +639,10 @@ def main(args):
         # remove seeds
 
         
-        _ippo_policy = "MlpPolicy" if getattr(args, 'obs_type', 'image') == 'info' else "CnnPolicy"
+        # Any non-image observation needs the MLP policy. This used to test
+        # only for 'info', so --obs_type ram fell through to CnnPolicy and
+        # NatureCNN asserted on a 1-D Box.
+        _ippo_policy = "CnnPolicy" if getattr(args, 'obs_type', 'image') == 'image' else "MlpPolicy"
         finetune_model = IPPO(
             _ippo_policy,
             finetune_env,
@@ -1360,7 +1382,19 @@ if __name__ == "__main__":
     parser.add_argument('--model_arch_type', type=str, help='Model architecture type', default="spar", required=True, choices=["spar", "ippo", "2timescale"])
     parser.add_argument('--total_timesteps', type=int, help='How many total steps to train', default=int(1e8))
     parser.add_argument('--use_wandb', choices=['True', 'False'], help='Enable Weights & Biases logging', default='False')
-    parser.add_argument('--obs_type', type=str, help='Observation type: image or info', default='image', choices=['image', 'info'])
+    parser.add_argument('--obs_type', type=str, default='image', choices=['image', 'info', 'ram'],
+                        help="Observation type. 'image' is the FightLadder default. "
+                             "'ram' is the full 65,536-byte emulator RAM: pixels "
+                             "resolve 1 of 21 action-distinct successors at a median "
+                             "decision point at ANY resolution, while RAM resolves all "
+                             "21, and the difference persists (12 distinct futures at "
+                             "16 steps vs 3 in pixels). 'info' resolves 1 as well and "
+                             "is kept only for completeness.")
+    parser.add_argument('--ram_mask', type=str, default='',
+                        help='Optional .npy of RAM byte indices (see build_ram_mask.py). '
+                             'Empty = full RAM. Most of the 65,536 bytes never change, '
+                             'and a full-width input is ~16.8M params in the first layer '
+                             'alone, nearly all of it reading constants.')
     #parser.add_argument('--num_workers', type=int, help='Number of workers', default=5)
     #parser.add_argument('--num_adversary', type=int, help='Number of adversaries', default=1)
     #parser.add_argument('--n_global_env', type=int, help='Number of global environments', default=1)

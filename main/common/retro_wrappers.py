@@ -241,6 +241,15 @@ class SFWrapper(gym.Wrapper):
             "everything":   dig(allf, half=False, one_channel=False),
         }
 
+    def lbr_ram(self):
+        """Raw RAM as a uint8 array, for build_ram_mask.py.
+
+        65,536 bytes DOES cross the pipe here, unlike the other lbr_* methods --
+        acceptable because this runs offline in a one-shot mask build, never in
+        a training or LBR loop.
+        """
+        return np.ascontiguousarray(self.env.env.get_ram()).astype(np.uint8)
+
     def lbr_state_variants(self):
         """Digest of PURE RAM plus the raw info variables, for choosing an
         observation type.
@@ -631,6 +640,76 @@ class InfoObsWrapper(gym.Wrapper):
         else:
             _, reward, done, info = result
             return self._info_to_obs(info), reward, done, info
+
+
+class RamObsWrapper(gym.Wrapper):
+    """Replaces image observations with the raw emulator RAM.
+
+    WHY THIS EXISTS (measured 2026-08-10, spar_Ry_Sa_6720000):
+
+        distinct successors over 21 action-distinct joint actions, median
+            pixels (any resolution, any frame count, any channel set)     1
+            the 14 curated info variables, agent_status included          1
+            RAM                                                          21
+
+    The state that separates two different actions is NOT RENDERED -- almost
+    certainly buffered input and animation counters during hitstun/blockstun
+    lockout. No amount of resolution or frame coverage recovers it, so this is
+    partial observability rather than a preprocessing defect.
+
+    It is also PREDICTIVE, not transient: under an identical no-op continuation
+    RAM holds 12 distinct futures out to 16 steps, while pixels reach 3 -- after
+    the whole gamma=0.94 horizon has elapsed. So the information exists, matters,
+    and arrives far too late through pixels.
+
+    MASK. Most of the 65,536 bytes never change. `mask` is an index array of the
+    bytes worth feeding the network (see build_ram_mask.py); None means the full
+    RAM. Full RAM is the honest default; the mask exists because a 65,536-wide
+    input is ~16.8M parameters in the first layer alone, nearly all of it
+    reading constants.
+
+    Must return the 2P 5-tuple like InfoObsWrapper, or the SPAR path breaks.
+    """
+
+    def __init__(self, env, mask=None):
+        super().__init__(env)
+        self._mask = None if mask is None else np.asarray(mask, dtype=np.int64)
+        # Walk down to whatever actually owns get_ram(); the chain is
+        # SFWrapper -> FrameStack -> RetroEnv and `unwrapped` is not reliable
+        # through SFWrapper's custom __getattr__.
+        e = env
+        while not hasattr(e, "get_ram") and hasattr(e, "env"):
+            e = e.env
+        if not hasattr(e, "get_ram"):
+            raise RuntimeError("RamObsWrapper: no get_ram() below this wrapper")
+        self._retro = e
+        n_full = int(np.asarray(e.get_ram()).size)
+        if self._mask is not None:
+            if self._mask.max() >= n_full or self._mask.min() < 0:
+                raise ValueError(f"ram mask out of range for {n_full} bytes")
+            n = int(self._mask.size)
+        else:
+            n = n_full
+        self.ram_bytes_full = n_full
+        self.observation_space = Box(low=0.0, high=1.0, shape=(n,), dtype=np.float32)
+
+    def _ram_obs(self):
+        ram = np.asarray(self._retro.get_ram())
+        if self._mask is not None:
+            ram = ram[self._mask]
+        return (ram.astype(np.float32) / 255.0)
+
+    def reset(self, **kwargs):
+        self.env.reset(**kwargs)
+        return self._ram_obs()
+
+    def step(self, action):
+        result = self.env.step(action)
+        if len(result) == 5:
+            _, reward, reward_other, done, info = result
+            return self._ram_obs(), reward, reward_other, done, info
+        _, reward, done, info = result
+        return self._ram_obs(), reward, done, info
 
 
 class EgoCentricImageWrapper(gym.Wrapper):

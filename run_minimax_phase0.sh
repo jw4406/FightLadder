@@ -94,9 +94,20 @@ esac
 # for V: solve_matrix_game's eta is not scale-free, and at the measured
 # G_std ~0.0166 an un-normalized matrix collapses the solver to uniform play.
 # Normalizing Q makes eta meaningful instead of hand-tuned to the reward scale.
+# OBSERVATION. 'ram' is the whole point of this run: pixels resolve 1 of 21
+# action-distinct successors at a median decision point at ANY resolution, frame
+# count or channel set, while RAM resolves all 21 -- and the distinction is
+# PREDICTIVE (12 distinct futures still separated at 16 steps, vs 3 in pixels).
+# The 14 curated info variables also resolve 1, so --obs_type info would not have
+# helped. Full RAM is 65,536 bytes => ~67M params across the two feature
+# extractors; RAM_MASK cuts that to the bytes that actually move.
+OBS_TYPE="${OBS_TYPE:-ram}"
+RAM_MASK="${RAM_MASK:-}"
 POPART="${POPART:-False}"
 case "${POPART}" in True|False) ;; *) echo "POPART must be True|False" >&2; exit 1 ;; esac
 TAG="${ARM}"; [ "${POPART}" = "True" ] && TAG="${ARM}_popart"
+TAG="${TAG}_${OBS_TYPE}"
+[ -n "${RAM_MASK}" ] && TAG="${TAG}masked"
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 IPPO_PATH="${SCRIPT_DIR}/main/ippo.py"
@@ -127,7 +138,8 @@ CMD=(
     --total_timesteps 150000000
     --ego_style learning --adv_style learning
     --render False --model_file "" --master_use_stag False --async_update False
-    --obs_type image
+    --obs_type "${OBS_TYPE}"
+    --ram_mask "${RAM_MASK}"
     --gamma 0.94
     --vtrace_enabled "${VTRACE_ENABLED}" --vtrace_seq_len 64
     --vtrace_c_bar 1.0 --vtrace_rho_bar 5.0 --vtrace_replay_capacity 15000
@@ -147,6 +159,7 @@ mkdir -p "${SCRIPT_DIR}/logs"
 echo "=== minimax-Q PHASE 0 (head trains, feeds nothing) ==="
 echo "  arm        : ${ARM}   (vtrace_enabled=${VTRACE_ENABLED})"
 echo "  base       : arm A c_lr 3e-5, gamma 0.94, popart=${POPART}"
+echo "  obs        : ${OBS_TYPE}${RAM_MASK:+  mask=${RAM_MASK}}"
 echo "  task_dir   : ${FIGHTLADDER_TASK_DIR}"
 echo "  log        : ${LOG}"
 echo "  watch      : train/minimax_coverage, train/minimax_q_branch_std"
