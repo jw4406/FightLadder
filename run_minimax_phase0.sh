@@ -149,6 +149,12 @@ case "${MINIMAX_HEAD}" in matrix|factored) ;;
 # Rank of the interaction term, 'factored' only. Measured on 2,400 states:
 # gamma has median rank 2 and p90 rank 4, so 4 covers p90.
 MINIMAX_RANK="${MINIMAX_RANK:-4}"
+# PHASE 1 SWITCH. 0.0 = the head feeds NOTHING (diagnostic; every result so far
+# was measured here). >0 blends V_minimax into the GAE bootstrap and the head
+# starts moving the policy. Requires GAE_LAMBDA=0 -- see ippo.py --gae_lambda.
+MINIMAX_BOOTSTRAP_KAPPA="${MINIMAX_BOOTSTRAP_KAPPA:-0.0}"
+MINIMAX_BOOTSTRAP_WARMUP="${MINIMAX_BOOTSTRAP_WARMUP:-0}"
+GAE_LAMBDA="${GAE_LAMBDA:-0.95}"
 # Learning rates. Defaults are arm A (c_lr 3e-5), which is the config the gate
 # was designed around. c_lr 1e-5 is "arm B" from the earlier calibration work.
 #
@@ -209,6 +215,9 @@ CMD=(
     --minimax_q True --minimax_stop_grad True
     --minimax_target "${MINIMAX_TARGET}"
     --minimax_head "${MINIMAX_HEAD}" --minimax_rank "${MINIMAX_RANK}"
+    --minimax_bootstrap_kappa "${MINIMAX_BOOTSTRAP_KAPPA}"
+    --minimax_bootstrap_warmup "${MINIMAX_BOOTSTRAP_WARMUP}"
+    --gae_lambda "${GAE_LAMBDA}"
     --minimax_iters 1024 --minimax_eta 0.5
     --use_stagnation_early_stop False --use_stagnation_velocity_signal False
     --use_stagnation_entropy_signal False --stagnation_patience 20000
@@ -223,7 +232,17 @@ mkdir -p "${SCRIPT_DIR}/logs"
 echo "=== minimax-Q PHASE 0 (head trains, feeds nothing) ==="
 echo "  arm        : ${ARM}   (vtrace_enabled=${VTRACE_ENABLED})"
 echo "  lrs        : c_lr=${C_LR}  d_lr=${D_LR}  v_lr=${V_LR}   (d/c ratio $(awk -v d="${D_LR}" -v c="${C_LR}" 'BEGIN{printf "%.1fx", d/c}'))"
-echo "  base       : gamma 0.94, popart=${POPART}"
+echo "  base       : gamma 0.94, gae_lambda=${GAE_LAMBDA}, popart=${POPART}"
+if [ "${MINIMAX_BOOTSTRAP_KAPPA}" != "0.0" ]; then
+  echo "  *** PHASE 1 : kappa=${MINIMAX_BOOTSTRAP_KAPPA} warmup=${MINIMAX_BOOTSTRAP_WARMUP}"
+  echo "  *** the head now MOVES THE POLICY. watch train/minimax_boot_scale_ratio"
+  [ "${GAE_LAMBDA}" = "0" ] || [ "${GAE_LAMBDA}" = "0.0" ] || \
+    echo "  *** WARNING: kappa>0 with gae_lambda=${GAE_LAMBDA} is UNSOUND (off-policy"
+  [ "${MINIMAX_TARGET}" = "minimax" ] || \
+    echo "  *** WARNING: minimax_target=returns with kappa>0 is DOUBLY self-referential"
+else
+  echo "  phase      : 0 (head feeds nothing; kappa=0 is bitwise inert)"
+fi
 echo "  obs        : ${OBS_TYPE}${RAM_MASK:+  mask=${RAM_MASK}}"
 echo "  mm target  : ${MINIMAX_TARGET}$([ "${MINIMAX_TARGET}" = minimax ] && \
     echo '   (option B: r + gamma*V_mm(s'"'"'); ev/target_corr are MEANINGLESS)')"

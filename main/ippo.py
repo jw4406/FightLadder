@@ -777,6 +777,8 @@ def main(args):
                 minimax_head=getattr(args, 'minimax_head', 'matrix'),
                 minimax_rank=getattr(args, 'minimax_rank', 4),
                 minimax_target=getattr(args, 'minimax_target', 'returns'),
+                minimax_bootstrap_kappa=getattr(args, 'minimax_bootstrap_kappa', 0.0),
+                minimax_bootstrap_warmup=getattr(args, 'minimax_bootstrap_warmup', 0),
                 minimax_iters=args.minimax_iters,
                 minimax_eta=args.minimax_eta,
                 minimax_stat_every=args.minimax_stat_every,
@@ -1420,6 +1422,25 @@ if __name__ == "__main__":
                              "agreement with on-policy returns, which this "
                              "target deliberately abandons; use "
                              "minimax_corr_q_reward as the sign guard instead.")
+    parser.add_argument('--minimax_bootstrap_kappa', type=float, default=0.0,
+                        help="PHASE 1. Fraction of the GAE bootstrap taken from "
+                             "V_minimax instead of the scalar critic: "
+                             "V_boot = (1-k)*V_scalar + k*V_mm. 0.0 (default) is "
+                             "PHASE 0 -- the head feeds NOTHING and the code path "
+                             "is not even entered, so behaviour is BITWISE "
+                             "identical to --minimax_q False plus a head. >0 lets "
+                             "the joint-action critic move the policy. "
+                             "REQUIRES --gae_lambda 0: the minimax bootstrap is an "
+                             "OFF-POLICY target and a lambda-return mixes on-policy "
+                             "rewards into it, which is unsound without a Retrace "
+                             "trace (not built). Note lambda 0 ALSO changes the "
+                             "bias/variance tradeoff, so a kappa=0 arm at lambda 0 "
+                             "is required as the control.")
+    parser.add_argument('--minimax_bootstrap_warmup', type=int, default=0,
+                        help='Steps over which kappa ramps linearly 0 -> its target. '
+                             '0 = no ramp. This is the safety valve: it is the first '
+                             'change where a diverging head diverges the POLICY '
+                             'rather than just a measurement.')
     parser.add_argument('--minimax_rank', type=int, default=4,
                         help='rank r of the interaction term for --minimax_head '
                              'factored. Measured on 2,400 states: gamma has median '

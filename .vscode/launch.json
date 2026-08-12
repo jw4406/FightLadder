@@ -89,7 +89,15 @@
                 // self-referential -- watch train/minimax_q_scale against
                 // train/minimax_target_scale, and note that minimax_ev and
                 // minimax_target_corr stop being meaningful under it.
-                "--minimax_target", "returns"
+                "--minimax_target", "returns",
+                // PHASE 1 switch. 0.0 = the head feeds NOTHING and the code path
+                // is not entered, so behaviour is BITWISE identical to Phase 0.
+                // >0 blends V_minimax into the GAE bootstrap and the head starts
+                // moving the policy -- and REQUIRES --gae_lambda 0, because the
+                // minimax bootstrap is off-policy and a lambda-return mixes
+                // on-policy rewards into it (unsound without a Retrace trace).
+                "--minimax_bootstrap_kappa", "0.0",
+                "--minimax_bootstrap_warmup", "0"
             ]
         },
         {

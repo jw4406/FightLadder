@@ -178,6 +178,8 @@ class CleanDerivativeFreeSPAR(PPO):
             minimax_head: str = "matrix",
             minimax_rank: int = 4,
             minimax_target: str = "returns",
+            minimax_bootstrap_kappa: float = 0.0,
+            minimax_bootstrap_warmup: int = 0,
             minimax_iters: int = 1024,
             minimax_eta: float = 0.5,
             minimax_stat_every: int = 10,
@@ -292,6 +294,11 @@ class CleanDerivativeFreeSPAR(PPO):
         # Littman's operator, target = r + gamma*V_mm(s'). Self-referential.
         # See _minimax_q_update.
         self.minimax_target = str(minimax_target)
+        # PHASE 1. 0.0 = the head feeds NOTHING (diagnostic, the default and the
+        # only mode measured so far). >0 blends V_minimax into the GAE bootstrap
+        # and the head starts moving the policy. See _minimax_bootstrap.
+        self.minimax_bootstrap_kappa = float(minimax_bootstrap_kappa)
+        self.minimax_bootstrap_warmup = int(minimax_bootstrap_warmup)
         self.minimax_iters = int(minimax_iters)
         self.minimax_eta = float(minimax_eta)
         self.minimax_stat_every = int(minimax_stat_every)
@@ -877,6 +884,10 @@ class CleanDerivativeFreeSPAR(PPO):
             values = self.policy.value_forward(obs_as_tensor(new_obs, self.device))
             #values_other = rollout_policy_other.predict_values(obs_as_tensor(new_obs, self.device))
 
+        # PHASE 1: swap the bootstrap to V_minimax. No-op (and no solve) at
+        # kappa 0, which is the default -- see _minimax_bootstrap.
+        values = self._minimax_bootstrap(rollout_buffer, adversary_buffers,
+                                         new_obs, values)
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
         for i in range(self.num_adversaries):
             adversary_buffers[i].compute_returns_and_advantage(last_values=-values[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], dones=dones[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv])
@@ -1095,6 +1106,12 @@ class CleanDerivativeFreeSPAR(PPO):
             last_ego_values = self.policy.value_forward(last_obs_tensor, side_flag=last_ego_side_tensor)
             last_adv_values = -last_ego_values
 
+        # PHASE 1, mirror path. side_flag is passed here because the mirror
+        # encoder needs it; omitting it would silently evaluate the wrong seat.
+        last_ego_values = self._minimax_bootstrap(
+            rollout_buffer, adversary_buffers, new_obs, last_ego_values,
+            side_flag=last_ego_side_tensor)
+        last_adv_values = -last_ego_values
         rollout_buffer.compute_returns_and_advantage(last_values=last_ego_values, dones=dones)
         for i in range(self.num_adversaries):
             adversary_buffers[i].compute_returns_and_advantage(last_values=last_adv_values[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv], dones=dones[i * self.n_env_per_adv : (i + 1) * self.n_env_per_adv])
@@ -2360,6 +2377,115 @@ class CleanDerivativeFreeSPAR(PPO):
         if self.clip_range_vf is not None:
             clip_range_vf_val = self.clip_range_vf(self._current_progress_remaining)
             self.logger.record("train/clip_range_vf", clip_range_vf_val)
+
+    def _minimax_kappa(self):
+        """How much of the bootstrap is V_minimax right now. 0.0 = PHASE 0."""
+        k = float(getattr(self, "minimax_bootstrap_kappa", 0.0))
+        if k == 0.0:
+            return 0.0
+        w = int(getattr(self, "minimax_bootstrap_warmup", 0))
+        if w > 0:
+            k *= min(1.0, float(self.num_timesteps) / float(w))
+        return k
+
+    @th.no_grad()
+    def _minimax_values_for(self, obs, buf_num, side_flag=None, chunk=4096):
+        """V_mm(s) = equilibrium value of the head's Q(s,.,.), for a batch."""
+        out = []
+        for i in range(0, obs.shape[0], chunk):
+            M = self.policy.minimax_matrices(obs[i:i + chunk], buf_num=buf_num,
+                                             side_flag=side_flag, stop_grad=True)
+            out.append(solve_matrix_game(
+                M, iters=getattr(self, "minimax_iters", 1024),
+                eta=getattr(self, "minimax_eta", 0.5)).V.reshape(-1))
+        return th.cat(out)
+
+    def _minimax_bootstrap(self, rollout_buffer, adversary_buffers, last_obs,
+                           last_values, side_flag=None):
+        """PHASE 1. Replace the bootstrap value with the MINIMAX value.
+
+            V_boot = (1 - kappa) * V_scalar + kappa * V_mm
+
+        overwriting rollout_buffer.values IN PLACE and returning the replacement
+        for last_values. Everything downstream -- compute_returns_and_advantage,
+        the advantages, the policy loss, the value loss -- then runs UNCHANGED on
+        the new values. No new return path, and lambda is whatever --gae_lambda
+        says (use 0 -- see LAMBDA below).
+
+        KAPPA == 0 RETURNS BEFORE COMPUTING ANYTHING. The solve does not run and
+        the buffer is never written, so Phase 0 is BITWISE identical, not
+        approximately so. A test asserts exactly that. This is what keeps the
+        diagnostic/feeding switch a runtime flag rather than a code fork.
+
+        LAMBDA. Use --gae_lambda 0. The minimax bootstrap is an OFF-POLICY
+        target; a lambda-return mixes ON-POLICY intermediate rewards into it,
+        which is unsound without a Retrace-style trace (not built). At lambda 0
+        the target is r + gamma*V_mm(s') and the question is clean. Note lambda 0
+        ALSO changes the policy's bias/variance tradeoff, so a kappa=0 arm at
+        lambda 0 is REQUIRED as the control -- otherwise an observed difference
+        cannot be attributed to the operator rather than to lambda.
+
+        WHAT THIS COUPLES, deliberately and worth stating: the value loss now
+        regresses value_net onto returns built from V_mm, so V_scalar drifts
+        toward V_minimax over training and the two stop being independent. That
+        is arguably the point, but it means kappa is not a clean interpolation
+        after the first few rollouts.
+
+        SOLVED ONCE PER ROLLOUT over all buffer states (~74 ms for 12,288 states
+        at 1024 iters, ~2.5% of env time). Never per minibatch -- that cost 3x
+        throughput when the diagnostic path did it.
+        """
+        kappa = self._minimax_kappa()
+        if kappa == 0.0:
+            return last_values
+        if not getattr(self, "minimax_q", False):
+            raise RuntimeError("--minimax_bootstrap_kappa > 0 requires --minimax_q True")
+        if getattr(self, "vtrace_enabled", False):
+            raise RuntimeError("--minimax_bootstrap_kappa > 0 requires "
+                               "--vtrace_enabled False; the V-trace path has its "
+                               "own value targets and would disagree about what V is")
+        bn = [0]
+        obs = rollout_buffer.observations
+        T, n_envs = obs.shape[0], obs.shape[1]
+        flat = th.as_tensor(obs.reshape((T * n_envs,) + obs.shape[2:])).to(self.device)
+        v_mm = self._minimax_values_for(flat, bn, side_flag=side_flag).reshape(T, n_envs)
+
+        v_old = rollout_buffer.values
+        was_np = isinstance(v_old, np.ndarray)
+        v_old_t = th.as_tensor(v_old).to(self.device).float().reshape(T, n_envs)
+        v_new = (1.0 - kappa) * v_old_t + kappa * v_mm
+        if not th.isfinite(v_new).all():
+            raise RuntimeError("V_minimax bootstrap produced non-finite values; "
+                               "the head has diverged -- check train/minimax_q_scale")
+        rollout_buffer.values = (v_new.cpu().numpy().astype(np.float32)
+                                 if was_np else v_new.to(v_old.dtype))
+
+        # Adversary buffers hold the SAME transitions, sliced by adversary, in
+        # the ADV frame -- so they get the negated ego value, exactly as the
+        # existing last_values=-values convention does. Recomputing V_mm on
+        # their observations would be the same solve twice with a sign.
+        for i in range(self.num_adversaries):
+            sl = slice(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
+            ab = adversary_buffers[i]
+            a_np = isinstance(ab.values, np.ndarray)
+            neg = (-v_new[:, sl])
+            ab.values = (neg.cpu().numpy().astype(np.float32)
+                         if a_np else neg.to(ab.values.dtype))
+
+        lo = th.as_tensor(last_obs).to(self.device)
+        lv_mm = self._minimax_values_for(lo, bn, side_flag=side_flag)
+        lv = (1.0 - kappa) * th.as_tensor(last_values).to(self.device).float().reshape(-1) \
+             + kappa * lv_mm
+        self._minimax_stats = {
+            **(getattr(self, "_minimax_stats", None) or {}),
+            "boot_kappa": kappa,
+            "boot_v_mm_std": float(v_mm.std()),
+            "boot_v_scalar_std": float(v_old_t.std()),
+            # >> 1 means V_mm is far wilder than the value it replaces, which is
+            # the first thing to look at if the policy destabilises.
+            "boot_scale_ratio": float(v_mm.std() / v_old_t.std().clamp_min(1e-12)),
+        }
+        return lv.reshape(th.as_tensor(last_values).shape)
 
     def _minimax_frozen_head(self, buf_num, live_head):
         """Snapshot of the minimax head that supplies V_mm(s'), refreshed ONCE
