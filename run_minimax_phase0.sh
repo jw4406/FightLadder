@@ -108,6 +108,12 @@ case "${POPART}" in True|False) ;; *) echo "POPART must be True|False" >&2; exit
 TAG="${ARM}"; [ "${POPART}" = "True" ] && TAG="${ARM}_popart"
 TAG="${TAG}_${OBS_TYPE}"
 [ -n "${RAM_MASK}" ] && TAG="${TAG}masked"
+# RUN_SUFFIX isolates a run that shares every other setting with an existing
+# arm. RUN_ROOT (and therefore FIGHTLADDER_TASK_DIR) derives from TAG, and two
+# trainers pointed at one task dir silently overwrite each other's checkpoints
+# -- that has already destroyed one baseline. Any re-run of an existing arm
+# MUST set this.
+[ -n "${RUN_SUFFIX:-}" ] && TAG="${TAG}_${RUN_SUFFIX}"
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 IPPO_PATH="${SCRIPT_DIR}/main/ippo.py"
@@ -135,7 +141,7 @@ CMD=(
     --use_lr_annealing False --lr_anneal_coeff .995
     --num_env_steps 512 --training_batch_size 1024
     --checkpoint_interval 20000                 # x24 envs = every 480k steps
-    --total_timesteps 150000000
+    --total_timesteps "${TOTAL_TIMESTEPS:-150000000}"
     --ego_style learning --adv_style learning
     --render False --model_file "" --master_use_stag False --async_update False
     --obs_type "${OBS_TYPE}"

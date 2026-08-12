@@ -55,6 +55,12 @@ MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
 RETRY_SLEEP_S="${RETRY_SLEEP_S:-120}"
 
 # --- LBR settings (full fidelity -- nothing traded away for speed) -----------
+# A checkpoint records the WIDTH of its observation but not WHICH RAM bytes, so a
+# masked-ram arm cannot be evaluated without the .npy used for training.
+# infer_obs_kwargs() hard-exits when it sees a 1-D obs narrower than full RAM and
+# no mask, so leaving this empty on a masked arm fails loudly rather than
+# silently evaluating the wrong observation. Empty = image or full-ram arm.
+RAM_MASK="${RAM_MASK:-}"
 EVAL_PROT="both"         # both directions: eps_ego AND eps_adv
 LBR_CONTROLS="True"      # legacy all-or-nothing; IGNORED when LBR_MODES is set
 # Subset of {lbr,greedy,shuffle}. Empty = legacy (honour LBR_CONTROLS).
@@ -112,6 +118,7 @@ run_worker() {
             echo "[w${wid}] START $(date '+%F %T'): ${base} (attempt ${attempt}/${MAX_ATTEMPTS})" | tee -a "${log}"
             python -u "${LBR_PATH}" \
                 --main_checkpoint_model_path "${ckpt}" \
+                --ram_mask "${RAM_MASK}" \
                 --eval_prot "${EVAL_PROT}" \
                 --lbr_ego_topk "${LBR_EGO_TOPK}" \
                 --lbr_stride "${LBR_STRIDE}" \
@@ -149,6 +156,7 @@ echo "  modes       : ${LBR_MODES:-<legacy: controls=${LBR_CONTROLS}>}"
 echo "  out subdir  : ${OUTPUT_SUBDIR:-<derived from ckpt name>}"
 echo "  workers     : ${N_WORKERS}  (${LBR_N_ENVS} envs each)"
 echo "  directions  : ${EVAL_PROT}   controls: ${LBR_CONTROLS}   episodes: ${LBR_EPISODES}"
+echo "  ram_mask    : ${RAM_MASK:-<none: image or full-ram arm>}"
 echo "  logs        : ${LOGS_DIR}/worker_*.log"
 echo "  resume      : marker files in ${MARK_DIR}"
 
