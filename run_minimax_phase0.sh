@@ -149,6 +149,18 @@ case "${MINIMAX_HEAD}" in matrix|factored) ;;
 # Rank of the interaction term, 'factored' only. Measured on 2,400 states:
 # gamma has median rank 2 and p90 rank 4, so 4 covers p90.
 MINIMAX_RANK="${MINIMAX_RANK:-4}"
+# Learning rates. Defaults are arm A (c_lr 3e-5), which is the config the gate
+# was designed around. c_lr 1e-5 is "arm B" from the earlier calibration work.
+#
+# NOTE THE TIMESCALE RATIO, it is the thing that actually varies here: d_lr/c_lr
+# is 3.3x at the arm-A default and 10x at c_lr 1e-5. The adversary already
+# learns faster than the ego BY DESIGN, and a faster learner overwhelming a
+# slower one is a candidate mechanism for the one-sided drift seen on every arm
+# (final scores 0.079 / 0.083 / 0.958 from one algorithm). Raising the ratio
+# should make that MORE pronounced, not less -- worth knowing which way it goes.
+C_LR="${C_LR:-3e-5}"
+D_LR="${D_LR:-1e-4}"
+V_LR="${V_LR:-4e-4}"
 TAG="${ARM}"; [ "${POPART}" = "True" ] && TAG="${ARM}_popart"
 TAG="${TAG}_${OBS_TYPE}"
 [ -n "${RAM_MASK}" ] && TAG="${TAG}masked"
@@ -178,7 +190,7 @@ CMD=(
     python -u "${IPPO_PATH}"
     --player Ryu --opponents Sagat
     --num_env_to_load 1 --env_batch_size 24 --envs_per_matchup 24
-    --c_lr 3e-5 --d_lr 1e-4 --v_lr 4e-4        # arm A: avoids the collapse
+    --c_lr "${C_LR}" --d_lr "${D_LR}" --v_lr "${V_LR}"
     --num_perturbs 10 --use_mirror False --ego_side left --side both
     --transform_action True --model_arch_type spar
     --save_dir "${FIGHTLADDER_TASK_DIR}/todo"
@@ -210,7 +222,8 @@ LOG="${SCRIPT_DIR}/logs/minimax_phase0_${TAG}.log"
 mkdir -p "${SCRIPT_DIR}/logs"
 echo "=== minimax-Q PHASE 0 (head trains, feeds nothing) ==="
 echo "  arm        : ${ARM}   (vtrace_enabled=${VTRACE_ENABLED})"
-echo "  base       : arm A c_lr 3e-5, gamma 0.94, popart=${POPART}"
+echo "  lrs        : c_lr=${C_LR}  d_lr=${D_LR}  v_lr=${V_LR}   (d/c ratio $(awk -v d="${D_LR}" -v c="${C_LR}" 'BEGIN{printf "%.1fx", d/c}'))"
+echo "  base       : gamma 0.94, popart=${POPART}"
 echo "  obs        : ${OBS_TYPE}${RAM_MASK:+  mask=${RAM_MASK}}"
 echo "  mm target  : ${MINIMAX_TARGET}$([ "${MINIMAX_TARGET}" = minimax ] && \
     echo '   (option B: r + gamma*V_mm(s'"'"'); ev/target_corr are MEANINGLESS)')"
