@@ -102,9 +102,53 @@ esac
 # helped. Full RAM is 65,536 bytes => ~67M params across the two feature
 # extractors; RAM_MASK cuts that to the bytes that actually move.
 OBS_TYPE="${OBS_TYPE:-ram}"
+# ############################################################################
+# THE MASK FILE IS LOAD-BEARING AND EFFECTIVELY IRREPLACEABLE. It is a list of
+# RAM BYTE INDICES, and it DEFINES the observation space. A checkpoint records
+# the WIDTH of its observation but not WHICH bytes, so:
+#
+#   * every checkpoint from a masked run is UNEVALUABLE without the exact .npy
+#     it was trained with -- local_best_response.py hard-exits rather than guess
+#   * regenerating with build_ram_mask.py on a DIFFERENT run gives a DIFFERENT
+#     byte set of the same or similar width, which would load without error and
+#     silently feed the wrong bytes to every probe
+#
+# main/ram_mask.npy is therefore COMMITTED and must be treated as immutable for
+# as long as any checkpoint trained against it still matters. Do not regenerate
+# in place; write a new file under a new name.
+# ############################################################################
 RAM_MASK="${RAM_MASK:-}"
 POPART="${POPART:-False}"
 case "${POPART}" in True|False) ;; *) echo "POPART must be True|False" >&2; exit 1 ;; esac
+# What the joint-action head regresses onto. 'returns' (default) is option A --
+# the existing lambda-returns, which are DATA and never reference Q, so it
+# cannot diverge. 'minimax' is option B, Littman's operator:
+#     target = r + gamma * V_mm(s') * (1 - done)
+# with V_mm the equilibrium value of the head's OWN matrix at the successor.
+# Self-referential, so watch train/minimax_q_scale and train/minimax_target_scale
+# -- drifting TOGETHER is divergence. Note minimax_ev and minimax_target_corr
+# are MEANINGLESS under 'minimax' (they score agreement with on-policy returns,
+# which this target abandons); the gate is the only valid comparison.
+MINIMAX_TARGET="${MINIMAX_TARGET:-returns}"
+case "${MINIMAX_TARGET}" in returns|minimax) ;;
+    *) echo "MINIMAX_TARGET must be returns|minimax" >&2; exit 1 ;; esac
+# Joint-action critic PARAMETERIZATION -- orthogonal to MINIMAX_TARGET above.
+# 'matrix' is the 484-cell free head: one Linear(512,484), every cell an
+# independent row of 513 params with no structural relation to any other.
+# 'factored' is the ANOVA form  Q = V + A_ego + A_adv + e_ego^T W(s) e_adv:
+# 61 outputs, ~100% gradient density against the matrix head's 0.207%, and W
+# zero-initialised so it starts EXACTLY additive and grows interaction only if
+# the data pays for it. Adds the train/minimax_fx_* readouts (w_norm,
+# gamma_share, anti_share, noop_emb), which turn the offline payoff ANOVA into
+# live metrics. CAVEAT on noop_emb: it reads the EMBEDDINGS, but the byte-
+# identical-action gap actually lives in a_ego_out (22 independent 513-param
+# rows), so it is not a direct measure of that gap.
+MINIMAX_HEAD="${MINIMAX_HEAD:-matrix}"
+case "${MINIMAX_HEAD}" in matrix|factored) ;;
+    *) echo "MINIMAX_HEAD must be matrix|factored" >&2; exit 1 ;; esac
+# Rank of the interaction term, 'factored' only. Measured on 2,400 states:
+# gamma has median rank 2 and p90 rank 4, so 4 covers p90.
+MINIMAX_RANK="${MINIMAX_RANK:-4}"
 TAG="${ARM}"; [ "${POPART}" = "True" ] && TAG="${ARM}_popart"
 TAG="${TAG}_${OBS_TYPE}"
 [ -n "${RAM_MASK}" ] && TAG="${TAG}masked"
@@ -151,6 +195,8 @@ CMD=(
     --vtrace_c_bar 1.0 --vtrace_rho_bar 5.0 --vtrace_replay_capacity 15000
     --popart "${POPART}"
     --minimax_q True --minimax_stop_grad True
+    --minimax_target "${MINIMAX_TARGET}"
+    --minimax_head "${MINIMAX_HEAD}" --minimax_rank "${MINIMAX_RANK}"
     --minimax_iters 1024 --minimax_eta 0.5
     --use_stagnation_early_stop False --use_stagnation_velocity_signal False
     --use_stagnation_entropy_signal False --stagnation_patience 20000
@@ -166,6 +212,10 @@ echo "=== minimax-Q PHASE 0 (head trains, feeds nothing) ==="
 echo "  arm        : ${ARM}   (vtrace_enabled=${VTRACE_ENABLED})"
 echo "  base       : arm A c_lr 3e-5, gamma 0.94, popart=${POPART}"
 echo "  obs        : ${OBS_TYPE}${RAM_MASK:+  mask=${RAM_MASK}}"
+echo "  mm target  : ${MINIMAX_TARGET}$([ "${MINIMAX_TARGET}" = minimax ] && \
+    echo '   (option B: r + gamma*V_mm(s'"'"'); ev/target_corr are MEANINGLESS)')"
+echo "  mm head    : ${MINIMAX_HEAD}$([ "${MINIMAX_HEAD}" = factored ] && \
+    echo "   rank=${MINIMAX_RANK}  (watch train/minimax_fx_w_norm)")"
 echo "  task_dir   : ${FIGHTLADDER_TASK_DIR}"
 echo "  log        : ${LOG}"
 echo "  watch      : train/minimax_coverage, train/minimax_q_branch_std"

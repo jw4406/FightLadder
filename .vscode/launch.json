@@ -72,7 +72,24 @@
                 // and RENAMES value_net state_dict keys, so a popart run cannot
                 // load any checkpoint written without it -- start from scratch.
                 "--popart", "False",
-                "--popart_beta", "3e-4"
+                "--popart_beta", "3e-4",
+                // Kept in sync with run_minimax_phase0.sh. All three are INERT
+                // while --minimax_q is False (ippo.py's default), which is the
+                // case for this config -- they are here so the two launchers
+                // stay in step, not because this run uses them.
+                //
+                // Joint-action critic parameterization. 'matrix' is the 484-cell
+                // free head; 'factored' is V + A_ego + A_adv + e^T W(s) e --
+                // 61 outputs and ~100% gradient density instead of 0.207%.
+                "--minimax_head", "matrix",
+                "--minimax_rank", "4",
+                // What the head regresses onto. 'returns' = option A, the
+                // lambda-returns (DATA, cannot diverge). 'minimax' = option B,
+                // Littman's operator r + gamma*V_mm(s'), which is
+                // self-referential -- watch train/minimax_q_scale against
+                // train/minimax_target_scale, and note that minimax_ev and
+                // minimax_target_corr stop being meaningful under it.
+                "--minimax_target", "returns"
             ]
         },
         {
