@@ -175,6 +175,8 @@ class CleanDerivativeFreeSPAR(PPO):
             popart: bool = False,
             popart_beta: float = 3e-4,
             minimax_q: bool = False,
+            minimax_head: str = "matrix",
+            minimax_rank: int = 4,
             minimax_iters: int = 1024,
             minimax_eta: float = 0.5,
             minimax_stat_every: int = 10,
@@ -280,6 +282,10 @@ class CleanDerivativeFreeSPAR(PPO):
         # with the flag off). Only flip stop_grad once the gate has been passed:
         # Q must beat SHUFFLED Q at branch selection, where V does not.
         self.minimax_q = bool(minimax_q)
+        # 'matrix' (default) keeps the 484-cell free head. 'factored' selects the
+        # ANOVA decomposition; see FactoredMinimaxHead.
+        self.minimax_head = str(minimax_head)
+        self.minimax_rank = int(minimax_rank)
         self.minimax_iters = int(minimax_iters)
         self.minimax_eta = float(minimax_eta)
         self.minimax_stat_every = int(minimax_stat_every)
@@ -573,6 +579,8 @@ class CleanDerivativeFreeSPAR(PPO):
         self.policy_kwargs['popart'] = getattr(self, "popart", False)
         self.policy_kwargs['popart_beta'] = getattr(self, "popart_beta", 3e-4)
         self.policy_kwargs['minimax_q'] = getattr(self, "minimax_q", False)
+        self.policy_kwargs['minimax_head'] = getattr(self, "minimax_head", "matrix")
+        self.policy_kwargs['minimax_rank'] = getattr(self, "minimax_rank", 4)
         
         # Set features_extractor_class based on whether observation space is an image
         if is_image_space(self.observation_space):
@@ -1710,7 +1718,9 @@ class CleanDerivativeFreeSPAR(PPO):
                 self.policy.dstb_optimizer.step()
                 if do_onpolicy_value:
                     self.policy.value_optimizer.step()
-                self._minimax_q_update(rollout_data, [i])
+                # Blended path is adversary-only by construction, so the buffer
+                # is always an adversary buffer and the returns are ADV frame.
+                self._minimax_q_update(rollout_data, [i], adv_frame=True)
             if stop:
                 break
 
@@ -2014,7 +2024,13 @@ class CleanDerivativeFreeSPAR(PPO):
                         # earlier is unreachable at num_adversaries == 1, which is every
                         # experiment we run; the first smoke test logged no minimax
                         # metrics at all, which is how that was caught.
-                        self._minimax_q_update(rollout_data, [i])
+                        #
+                        # `update_adversary` is exactly the buffer selector used at
+                        # the top of this loop (adversary_buffers vs rollout_buffer),
+                        # so it is the same discriminator that sets the frame. Read
+                        # it from there rather than re-deriving it.
+                        self._minimax_q_update(rollout_data, [i],
+                                               adv_frame=bool(update_adversary))
                     #self.policy.value_optimizer.step()
 
                 # Trust-region hard stop (parity with the blended path + standard
@@ -2335,9 +2351,14 @@ class CleanDerivativeFreeSPAR(PPO):
             clip_range_vf_val = self.clip_range_vf(self._current_progress_remaining)
             self.logger.record("train/clip_range_vf", clip_range_vf_val)
 
-    def _minimax_q_update(self, rollout_data, buf_num, side_flag=None):
+    def _minimax_q_update(self, rollout_data, buf_num, side_flag=None, *, adv_frame):
         """PHASE 0, option A: regress Q(s, a_ego, a_adv) onto the EXISTING
         lambda-returns. Returns the loss, or None when --minimax_q is off.
+
+        adv_frame is KEYWORD-ONLY AND HAS NO DEFAULT, deliberately. It selects
+        the sign of the target, getting it wrong is silent, and a default would
+        let a new call site inherit the wrong one by omission -- which is
+        exactly how the bug this parameter fixes survived. See FRAME below.
 
         WHY option A and not the minimax bootstrap: this fits Q^pi -- the value
         of a joint action given both players continue with their current
@@ -2363,12 +2384,18 @@ class CleanDerivativeFreeSPAR(PPO):
         M = self.policy.minimax_matrices(
             rollout_data.observations, buf_num=buf_num, side_flag=side_flag,
             stop_grad=getattr(self, "minimax_stop_grad", True))
-        # A joint-action critic needs BOTH seats' actions. The adversary path's
-        # samples are AdvRolloutBufferSamples and carry dstb_actions; the EGO
-        # path's buffer carries only its own, so there is no joint action to
-        # index and this update is skipped there. Recorded rather than passed
-        # over silently -- a head that trains on half the updates and looks
-        # fine is exactly the kind of thing that surfaces days later.
+        # A joint-action critic needs BOTH seats' actions, and BOTH buffers
+        # carry them: AdvRolloutBufferSamples as `dstb_actions`,
+        # Q_RolloutBufferSamples (the EGO buffer) as `adv_actions`. So this
+        # update runs on BOTH passes and the skip below is dead in every
+        # configuration we run -- kept only as a guard for a future buffer type.
+        #
+        # An earlier comment here asserted the opposite ("the ego path carries
+        # only its own action, so this is skipped there"). It was wrong, and
+        # because the frame negation below was unconditional, the ego pass was
+        # training the head on a SIGN-FLIPPED target for the whole of Phase 0.
+        # `skipped_no_adv_actions` never appeared in a single log, which is the
+        # evidence that the skip never fired.
         a_adv_t = getattr(rollout_data, "dstb_actions", None)
         if a_adv_t is None:
             a_adv_t = getattr(rollout_data, "adv_actions", None)
@@ -2385,10 +2412,17 @@ class CleanDerivativeFreeSPAR(PPO):
 
         # FRAME. MinimaxHead is EGO-payoff by construction (that convention is
         # what lets the adversary's value be -Q and collapses the six negation
-        # sites). This update only ever runs on the ADVERSARY pass -- the ego
-        # pass has no dstb_actions and returns early above -- and that buffer's
-        # stored returns are in the ADVERSARY frame. So the target must be
-        # negated to reach ego frame.
+        # sites). The two buffers store returns in DIFFERENT frames:
+        #
+        #   adversary buffers  ADV frame  -- fed -rewards (see the rollout) and
+        #                                 last_values=-values, so negate to
+        #                                 reach ego frame.
+        #   ego rollout_buffer EGO frame  -- already the head's convention, so
+        #                                 DO NOT negate.
+        #
+        # Negating unconditionally trained the head to predict +G on one pass
+        # and -G on the other, i.e. half the updates actively undid the other
+        # half. That is why the caller must state the frame explicitly.
         #
         # Getting this wrong is silent and total: measured on the 6.72M
         # checkpoint before the fix, best-fit was G = -0.990*Q + 0.0009,
@@ -2399,7 +2433,9 @@ class CleanDerivativeFreeSPAR(PPO):
         # I reasoned about this frame for PopArt and concluded mu cancels in a
         # difference of normalized quantities. True there; NOT true here, where
         # the loss is a direct regression onto returns. Nothing cancels.
-        target = -rollout_data.returns.reshape(-1)
+        target = rollout_data.returns.reshape(-1)
+        if adv_frame:
+            target = -target
         loss = F.mse_loss(target, q_played)
 
         self.policy.minimax_optimizer.zero_grad()
@@ -2427,7 +2463,7 @@ class CleanDerivativeFreeSPAR(PPO):
             _tv = float(_t.var())
             _v = head.cell_visits.reshape(-1)
             _vp = th.quantile(_v.float(), th.tensor([0.10, 0.50], device=_v.device))
-        self._minimax_stats = {
+        _stats = {
             "loss": float(loss),
             # loss alone is UNINTERPRETABLE: MSE ~ target variance is exactly
             # what a head that learned only the mean produces, and that is what
@@ -2442,6 +2478,26 @@ class CleanDerivativeFreeSPAR(PPO):
             # indistinguishable from "Q never saw those branches" and the gate
             # result means nothing.
             "coverage": head.coverage(),
+            # FACTORED HEAD ONLY. These turn the offline experiments that
+            # motivated this parameterization into live training metrics:
+            #   w_norm       ||W(s)||. ZERO at init by construction, so any
+            #                growth is the data asking for interaction. If it
+            #                stays ~0, gamma is not earning its place and the
+            #                44-output separable head would do.
+            #   gamma_share  fraction of WITHIN-state energy in the interaction.
+            #                Offline on the true payoff: 0.069.
+            #   anti_share   antisymmetric (cyclic / rock-paper-scissors) share
+            #                of gamma -- the part that forces mixing. Offline:
+            #                0.441. Tracking that means the head is capturing
+            #                real structure rather than fitting noise.
+            #   noop_emb     ||e_ego(0) - e_ego(9)||, the byte-identical action
+            #                pair. Truth is 0. Now 4 params per action instead of
+            #                513; if this does not fall, the density argument for
+            #                the whole parameterization was wrong.
+            **({f"fx_{k}": v for k, v in head.interaction_stats(
+                    self.policy.minimax_latent(rollout_data.observations,
+                                               side_flag=side_flag)).items()}
+               if hasattr(head, "interaction_stats") else {}),
             # coverage (fraction of cells EVER touched) read 1.000 for the whole
             # first run while hiding a 1,400x imbalance underneath. The
             # distribution is what actually matters.
@@ -2471,6 +2527,20 @@ class CleanDerivativeFreeSPAR(PPO):
             # this is ~0 then Q is too, and the direction is dead.
             "q_branch_std": float(M.detach().std(dim=(1, 2)).mean()),
         }
+        # PER-FRAME COPIES. This dict is rebuilt on every call, so whichever
+        # pass ran last silently overwrote the other's numbers -- which is how a
+        # sign error on ONE seat stayed invisible while the aggregate looked
+        # merely mediocre (target_corr +0.414 rather than negative). Keep both
+        # seats' sign guards alive simultaneously; if either goes negative the
+        # frame has diverged again on that seat specifically.
+        _prev = getattr(self, "_minimax_stats", None) or {}
+        _sfx = "adv" if adv_frame else "ego"
+        _stats[f"target_corr_{_sfx}"] = _stats["target_corr"]
+        _stats[f"ev_{_sfx}"] = _stats["ev"]
+        for _k in ("target_corr_ego", "ev_ego", "target_corr_adv", "ev_adv"):
+            if _k not in _stats and _k in _prev:
+                _stats[_k] = _prev[_k]
+        self._minimax_stats = _stats
         return loss
 
     def dummy_policy_update(self, update_ego=True, update_adversary=True):

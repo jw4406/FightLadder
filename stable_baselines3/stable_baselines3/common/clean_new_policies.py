@@ -195,6 +195,148 @@ class MinimaxHead(nn.Module):
         return float((self.cell_visits > 0).float().mean())
 
 
+class FactoredMinimaxHead(nn.Module):
+    """Joint-action critic as an explicit ANOVA decomposition.
+
+        Q(s,i,j) = V(s) + A_ego(s,i) + A_adv(s,j) + e_ego(i)^T W(s) e_adv(j)
+                   \\____/   \\____________________/   \\______________________/
+                     mu           main effects              interaction
+
+    Emits the SAME (B, n_ego, n_adv) tensor as MinimaxHead, so minimax_matrices,
+    solve_matrix_game, LBR's minimax modes and every diagnostic work unchanged.
+
+    WHY THIS SHAPE. Measured on 2,400 states of the one-step payoff (masked RAM,
+    2.4M, every state non-forced):
+
+        mu                     94.9% of total variance   -> V(s)
+        alpha + beta            4.9%                     -> 22 + 22 outputs
+        gamma (INTERACTION)     0.24% of total, 6.9% of within-state
+          singular spectrum   s1=.494 s2=.192 s3=.102 s4=.063
+          rank for 90% energy  median 2, p90 4           -> r = 4 suffices
+          antisymmetric share  0.441                     -> the cyclic RPS part
+                                                            is nearly half of it
+
+    So the 484-cell free matrix spends 440 outputs on a term that is rank ~2. It
+    also gets ONE gradient per transition (0.207% density), and the measured
+    consequence was not slow learning but WRONG learning: output rows for two
+    byte-identical actions stayed at ||dw||/||w|| = sqrt(2) -- statistically
+    independent -- over 12M steps, and Q collapsed to a per-cell constant b_ij.
+
+    ORTHOGONALITY IS THE POINT. The four terms are mutually orthogonal under the
+    uniform inner product, so none can compete for another's directions. That is
+    enforced structurally:
+      * A_ego / A_adv are centred over their own action index
+      * the embeddings are centred, which makes gamma DOUBLY centred for free:
+        sum_i gamma_ij = (sum_i e_ego(i))^T W e_adv(j) = 0, and likewise columns.
+        gamma therefore lives in the correct 21x21 = 441-dim space and cannot
+        leak into mu/alpha/beta.
+
+    W IS ZERO-INITIALISED, so at step 0 this is EXACTLY the additive head and the
+    interaction grows only if the data pays for it. It cannot start worse than
+    separable. ||W(s)|| is then a live readout of how much interaction is
+    actually being used -- the quantity we previously had to measure offline.
+
+    Cost against MinimaxHead at r=4: 819,437 params vs 1,036,260, and 61 outputs
+    vs 484, all of which receive gradient every step.
+    """
+
+    def __init__(self, trunk: nn.Module, latent_dim: int, n_ego: int, n_adv: int,
+                 rank: int = 4):
+        super().__init__()
+        self.n_ego = int(n_ego)
+        self.n_adv = int(n_adv)
+        self.rank = int(rank)
+        self.trunk = trunk
+        self.v_out = nn.Linear(latent_dim, 1)
+        self.a_ego_out = nn.Linear(latent_dim, self.n_ego)
+        self.a_adv_out = nn.Linear(latent_dim, self.n_adv)
+        # Global (state-independent) action embeddings. Global rather than
+        # per-state U(s)V(s)^T on purpose: an observation of action i updates
+        # e_ego[i], which appears in EVERY cell of row i across ALL states, so
+        # the data pools. Per-state factors would only touch row i of that
+        # state's U and give back the density problem.
+        self.e_ego = nn.Parameter(th.randn(self.n_ego, self.rank) * 0.1)
+        self.e_adv = nn.Parameter(th.randn(self.n_adv, self.rank) * 0.1)
+        self.w_out = nn.Linear(latent_dim, self.rank * self.rank)
+        nn.init.zeros_(self.w_out.weight)
+        nn.init.zeros_(self.w_out.bias)
+        # Same buffer as MinimaxHead so the coverage diagnostics are unchanged.
+        self.register_buffer("cell_visits", th.zeros(self.n_ego, self.n_adv))
+
+    def _centred_embeddings(self):
+        """Centring here, not at init: the parameters drift during training and
+        the double-centring guarantee must hold at every step, not just step 0."""
+        return (self.e_ego - self.e_ego.mean(dim=0, keepdim=True),
+                self.e_adv - self.e_adv.mean(dim=0, keepdim=True))
+
+    def components(self, latent_vf: th.Tensor):
+        """(V, A_ego, A_adv, gamma) separately -- lets diagnostics read the
+        decomposition directly instead of re-deriving it from the matrix."""
+        h = self.trunk(latent_vf)
+        v = self.v_out(h).squeeze(-1)                                  # (B,)
+        a_e = self.a_ego_out(h)
+        a_a = self.a_adv_out(h)
+        a_e = a_e - a_e.mean(dim=-1, keepdim=True)                     # (B,n_ego)
+        a_a = a_a - a_a.mean(dim=-1, keepdim=True)                     # (B,n_adv)
+        ee, ea = self._centred_embeddings()
+        W = self.w_out(h).view(-1, self.rank, self.rank)               # (B,r,r)
+        # gamma_ij = ee[i] . W . ea[j]
+        g = th.einsum("ir,brc,jc->bij", ee, W, ea)                     # (B,n_ego,n_adv)
+        return v, a_e, a_a, g
+
+    def forward(self, latent_vf: th.Tensor) -> th.Tensor:
+        """(B, latent) -> (B, n_ego, n_adv), matching MinimaxHead exactly."""
+        v, a_e, a_a, g = self.components(latent_vf)
+        return v[:, None, None] + a_e[:, :, None] + a_a[:, None, :] + g
+
+    def played(self, latent_vf: th.Tensor, a_ego: th.Tensor, a_adv: th.Tensor) -> th.Tensor:
+        """Q at the joint action actually taken. (B,) -- what the loss regresses."""
+        M = self(latent_vf)
+        b = th.arange(M.shape[0], device=M.device)
+        return M[b, a_ego.long().reshape(-1), a_adv.long().reshape(-1)]
+
+    @th.no_grad()
+    def note_visits(self, a_ego: th.Tensor, a_adv: th.Tensor) -> None:
+        idx = (a_ego.long().reshape(-1) * self.n_adv + a_adv.long().reshape(-1))
+        flat = self.cell_visits.view(-1)
+        flat.scatter_add_(0, idx, th.ones_like(idx, dtype=flat.dtype))
+
+    def coverage(self) -> float:
+        return float((self.cell_visits > 0).float().mean())
+
+    @th.no_grad()
+    def interaction_stats(self, latent_vf: th.Tensor) -> dict:
+        """Live readout of whether the interaction term is earning its place.
+
+        w_norm      ||W(s)||_F. Zero at init by construction, so any growth is
+                    the data asking for interaction.
+        gamma_share fraction of WITHIN-state energy carried by gamma. Offline on
+                    the true payoff this measured 0.069.
+        anti_share  antisymmetric (cyclic / rock-paper-scissors) fraction of
+                    gamma -- the part that actually forces mixing. Measured 0.441
+                    on the true payoff; if the head tracks that it is capturing
+                    real structure rather than fitting noise.
+        noop_emb    ||e_ego(0) - e_ego(9)||. Actions 0 and 9 are byte-identical
+                    (DIRECTIONS_BUTTONS[0] == ATTACKS_BUTTONS[0] == []), so truth
+                    requires 0. Now 4 params per action instead of 513; if this
+                    does not fall, the density argument was wrong.
+        """
+        v, a_e, a_a, g = self.components(latent_vf)
+        W = self.w_out(self.trunk(latent_vf)).view(-1, self.rank, self.rank)
+        M = v[:, None, None] + a_e[:, :, None] + a_a[:, None, :] + g
+        within = M - M.mean(dim=(1, 2), keepdim=True)
+        anti = 0.5 * (g - g.transpose(1, 2))
+        ee, _ = self._centred_embeddings()
+        return {
+            "w_norm": float(W.flatten(1).norm(dim=1).mean()),
+            "gamma_share": float((g ** 2).sum() / (within ** 2).sum().clamp_min(1e-30)),
+            "anti_share": float((anti ** 2).sum() / (g ** 2).sum().clamp_min(1e-30)),
+            "noop_emb": float((ee[0] - ee[9]).norm()) if self.n_ego > 9 else float("nan"),
+            "a_ego_std": float(a_e.std()),
+            "a_adv_std": float(a_a.std()),
+        }
+
+
 class CleanActorActorCriticPolicy(ActorCriticPolicy):
     def __init__(self,
         observation_space: spaces.Space,
@@ -231,6 +373,8 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         # q_value_net's output from a scalar to an (n_ego x n_adv) matrix and
         # renames state_dict keys, so no earlier checkpoint loads into it.
         minimax_q: bool = False,
+        minimax_head: str = "matrix",
+        minimax_rank: int = 4,
         minimax_n_ego: int = 22,
         minimax_n_adv: int = 22,
     ):
@@ -253,6 +397,8 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         self.minimax_q = bool(minimax_q)
         self.minimax_n_ego = int(minimax_n_ego)
         self.minimax_n_adv = int(minimax_n_adv)
+        self.minimax_head = str(minimax_head)
+        self.minimax_rank = int(minimax_rank)
         # Non-image observations (--obs_type ram / info) cannot go through
         # NatureCNN, which asserts an image space. Swap in the MLP front end
         # ONLY when the caller left the default -- an explicit
@@ -438,16 +584,28 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
             # q_value_net -- see the note there. Built only when enabled, so
             # with the flag off the module tree and state_dict are unchanged.
             if getattr(self, "minimax_q", False):
-                self.minimax_net[matchup_key] = MinimaxHead(
-                    nn.Sequential(
-                        nn.Linear(self.mlp_extractor.latent_dim_vf, value_hidden_size),
-                        self.activation_fn(),
-                        nn.Linear(value_hidden_size, value_hidden_size),
-                        self.activation_fn(),
-                        nn.Linear(value_hidden_size, value_hidden_size),
-                        self.activation_fn()),
-                    value_hidden_size,
-                    n_ego=self.minimax_n_ego, n_adv=self.minimax_n_adv)
+                _mm_trunk = nn.Sequential(
+                    nn.Linear(self.mlp_extractor.latent_dim_vf, value_hidden_size),
+                    self.activation_fn(),
+                    nn.Linear(value_hidden_size, value_hidden_size),
+                    self.activation_fn(),
+                    nn.Linear(value_hidden_size, value_hidden_size),
+                    self.activation_fn())
+                # 'matrix' is the 484-cell free head and stays the DEFAULT, so
+                # every existing checkpoint and config is unaffected. 'factored'
+                # is the ANOVA decomposition -- see FactoredMinimaxHead for the
+                # measurements that motivate it (gamma is 0.24% of variance and
+                # rank ~2, while the free matrix spends 440 outputs on it at
+                # 0.207% gradient density).
+                if getattr(self, "minimax_head", "matrix") == "factored":
+                    self.minimax_net[matchup_key] = FactoredMinimaxHead(
+                        _mm_trunk, value_hidden_size,
+                        n_ego=self.minimax_n_ego, n_adv=self.minimax_n_adv,
+                        rank=getattr(self, "minimax_rank", 4))
+                else:
+                    self.minimax_net[matchup_key] = MinimaxHead(
+                        _mm_trunk, value_hidden_size,
+                        n_ego=self.minimax_n_ego, n_adv=self.minimax_n_adv)
         # Init weights: use orthogonal initialization
         # with small initial weight for the output
         if self.ortho_init:
@@ -668,6 +826,23 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         dstb_log_prob = th.hstack(dstb_log_prob)
         #dstb_log_prob = test
         return dstb_actions, dstb_log_prob
+
+    @th.no_grad()
+    def minimax_latent(self, obs, side_flag=None):
+        """The latent the minimax head consumes. Same path minimax_matrices uses.
+
+        Exposed so diagnostics (FactoredMinimaxHead.interaction_stats) can read
+        the head's own inputs without duplicating the encoder path, which is
+        exactly the kind of near-copy that drifts out of sync.
+        """
+        new_obs = preprocess_obs(obs, self.observation_space,
+                                 normalize_images=self.normalize_images)
+        vf_features = self.vf_features_extractor(new_obs)
+        if self.use_mirror and side_flag is not None:
+            return self.mlp_extractor.forward_critic(
+                vf_features,
+                side_flag=th.ones(vf_features.shape[0], 1).to(self.device) * side_flag)
+        return self.mlp_extractor.forward_critic(vf_features)
 
     def minimax_matrices(self, obs, buf_num=None, side_flag=None, stop_grad=True):
         """Q(s, ., .) payoff matrices for a batch of observations. (B, n_ego, n_adv)

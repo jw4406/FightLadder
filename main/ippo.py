@@ -774,6 +774,8 @@ def main(args):
                 popart=(args.popart == 'True'),
                 popart_beta=args.popart_beta,
                 minimax_q=(args.minimax_q == 'True'),
+                minimax_head=getattr(args, 'minimax_head', 'matrix'),
+                minimax_rank=getattr(args, 'minimax_rank', 4),
                 minimax_iters=args.minimax_iters,
                 minimax_eta=args.minimax_eta,
                 minimax_stat_every=args.minimax_stat_every,
@@ -1390,6 +1392,19 @@ if __name__ == "__main__":
                              "21, and the difference persists (12 distinct futures at "
                              "16 steps vs 3 in pixels). 'info' resolves 1 as well and "
                              "is kept only for completeness.")
+    parser.add_argument('--minimax_head', type=str, default='matrix',
+                        choices=['matrix', 'factored'],
+                        help="Joint-action critic parameterization. 'matrix' is the "
+                             "484-cell free head (default, unchanged). 'factored' is "
+                             "the ANOVA decomposition V + A_ego + A_adv + "
+                             "e_ego^T W(s) e_adv: 61 outputs instead of 484, ~100%% "
+                             "gradient density instead of 0.207%%, and W zero-init so "
+                             "it starts EXACTLY additive and grows interaction only "
+                             "if the data pays for it.")
+    parser.add_argument('--minimax_rank', type=int, default=4,
+                        help='rank r of the interaction term for --minimax_head '
+                             'factored. Measured on 2,400 states: gamma has median '
+                             'rank 2 and p90 rank 4, so 4 covers p90.')
     parser.add_argument('--ram_mask', type=str, default='',
                         help='Optional .npy of RAM byte indices (see build_ram_mask.py). '
                              'Empty = full RAM. Most of the 65,536 bytes never change, '
