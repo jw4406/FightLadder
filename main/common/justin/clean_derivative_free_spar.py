@@ -2778,6 +2778,16 @@ class CleanDerivativeFreeSPAR(PPO):
         # seats' sign guards alive simultaneously; if either goes negative the
         # frame has diverged again on that seat specifically.
         _prev = getattr(self, "_minimax_stats", None) or {}
+        # PHASE 1 keys are written by _minimax_bootstrap at COLLECT time, while
+        # this runs at TRAIN time -- two producers, one dict, and this one
+        # rebuilds it from scratch. Without carrying them forward the boot_*
+        # metrics never reach the logger at all, which is how they were missing
+        # for the first 282k steps of the first Phase 1 arm. Same failure mode as
+        # the per-seat keys below, and as the overwrite that hid the ego-pass
+        # frame bug: whichever writer runs LAST owns the dict.
+        for _bk, _bv in _prev.items():
+            if _bk.startswith("boot_"):
+                _stats[_bk] = _bv
         _sfx = "adv" if adv_frame else "ego"
         _stats[f"target_corr_{_sfx}"] = _stats["target_corr"]
         _stats[f"ev_{_sfx}"] = _stats["ev"]
