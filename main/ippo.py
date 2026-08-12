@@ -776,6 +776,7 @@ def main(args):
                 minimax_q=(args.minimax_q == 'True'),
                 minimax_head=getattr(args, 'minimax_head', 'matrix'),
                 minimax_rank=getattr(args, 'minimax_rank', 4),
+                minimax_target=getattr(args, 'minimax_target', 'returns'),
                 minimax_iters=args.minimax_iters,
                 minimax_eta=args.minimax_eta,
                 minimax_stat_every=args.minimax_stat_every,
@@ -1401,6 +1402,24 @@ if __name__ == "__main__":
                              "gradient density instead of 0.207%%, and W zero-init so "
                              "it starts EXACTLY additive and grows interaction only "
                              "if the data pays for it.")
+    parser.add_argument('--minimax_target', type=str, default='returns',
+                        choices=['returns', 'minimax'],
+                        help="What the joint-action head regresses onto. "
+                             "'returns' (default, unchanged) is option A: the "
+                             "existing lambda-returns -- DATA, never references "
+                             "Q, cannot diverge. 'minimax' is option B, "
+                             "Littman's operator: target = r + gamma*V_mm(s') "
+                             "where V_mm is the equilibrium value of the head's "
+                             "OWN matrix at the successor, solved by optimistic "
+                             "MWU. lambda=0 by construction. Self-referential, "
+                             "so watch train/minimax_q_scale and "
+                             "train/minimax_target_gap_max: q_scale and "
+                             "target_scale drifting TOGETHER is divergence. "
+                             "NOTE minimax_ev and minimax_target_corr become "
+                             "meaningless under 'minimax' -- they measure "
+                             "agreement with on-policy returns, which this "
+                             "target deliberately abandons; use "
+                             "minimax_corr_q_reward as the sign guard instead.")
     parser.add_argument('--minimax_rank', type=int, default=4,
                         help='rank r of the interaction term for --minimax_head '
                              'factored. Measured on 2,400 states: gamma has median '

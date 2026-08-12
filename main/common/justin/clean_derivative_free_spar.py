@@ -177,6 +177,7 @@ class CleanDerivativeFreeSPAR(PPO):
             minimax_q: bool = False,
             minimax_head: str = "matrix",
             minimax_rank: int = 4,
+            minimax_target: str = "returns",
             minimax_iters: int = 1024,
             minimax_eta: float = 0.5,
             minimax_stat_every: int = 10,
@@ -286,6 +287,11 @@ class CleanDerivativeFreeSPAR(PPO):
         # ANOVA decomposition; see FactoredMinimaxHead.
         self.minimax_head = str(minimax_head)
         self.minimax_rank = int(minimax_rank)
+        # 'returns' (default) = option A, regress Q onto the lambda-returns:
+        # DATA, never references Q, cannot diverge. 'minimax' = option B,
+        # Littman's operator, target = r + gamma*V_mm(s'). Self-referential.
+        # See _minimax_q_update.
+        self.minimax_target = str(minimax_target)
         self.minimax_iters = int(minimax_iters)
         self.minimax_eta = float(minimax_eta)
         self.minimax_stat_every = int(minimax_stat_every)
@@ -581,6 +587,10 @@ class CleanDerivativeFreeSPAR(PPO):
         self.policy_kwargs['minimax_q'] = getattr(self, "minimax_q", False)
         self.policy_kwargs['minimax_head'] = getattr(self, "minimax_head", "matrix")
         self.policy_kwargs['minimax_rank'] = getattr(self, "minimax_rank", 4)
+        # minimax_target is a TRAINER-side choice (it selects the loss target),
+        # not a policy one, so it deliberately does NOT go into policy_kwargs --
+        # adding it there would change the policy signature and break checkpoint
+        # loading for no benefit.
         
         # Set features_extractor_class based on whether observation space is an image
         if is_image_space(self.observation_space):
@@ -2351,6 +2361,37 @@ class CleanDerivativeFreeSPAR(PPO):
             clip_range_vf_val = self.clip_range_vf(self._current_progress_remaining)
             self.logger.record("train/clip_range_vf", clip_range_vf_val)
 
+    def _minimax_frozen_head(self, buf_num, live_head):
+        """Snapshot of the minimax head that supplies V_mm(s'), refreshed ONCE
+        per rollout.
+
+        WHY A SNAPSHOT AND NOT THE LIVE HEAD. Option B's target is built from
+        the head's own Q at the successor, so without freezing, the target moves
+        under every minibatch and every epoch -- the network chases a value it
+        is simultaneously changing. That is the textbook way to make a
+        bootstrapped fixed point diverge, and worse, it makes divergence
+        indistinguishable from "Q is simply wrong", which is the exact
+        ambiguity that caused option B to be deferred in the first place.
+
+        Keyed on num_timesteps, which advances once per rollout, so the refresh
+        happens exactly once no matter how many passes/epochs/minibatches call
+        in. That avoids threading a refresh call through two call sites and the
+        learn loop, where a missed one would silently mean a stale target.
+        """
+        stamp = int(self.num_timesteps)
+        cache = getattr(self, "_mm_frozen", None)
+        if cache is None or cache.get("stamp") != stamp:
+            cache = {"stamp": stamp, "heads": {}}
+            self._mm_frozen = cache
+        key = id(live_head)
+        h = cache["heads"].get(key)
+        if h is None:
+            h = deepcopy(live_head).eval()
+            for p in h.parameters():
+                p.requires_grad_(False)
+            cache["heads"][key] = h
+        return h
+
     def _minimax_q_update(self, rollout_data, buf_num, side_flag=None, *, adv_frame):
         """PHASE 0, option A: regress Q(s, a_ego, a_adv) onto the EXISTING
         lambda-returns. Returns the loss, or None when --minimax_q is off.
@@ -2433,9 +2474,50 @@ class CleanDerivativeFreeSPAR(PPO):
         # I reasoned about this frame for PopArt and concluded mu cancels in a
         # difference of normalized quantities. True there; NOT true here, where
         # the loss is a direct regression onto returns. Nothing cancels.
-        target = rollout_data.returns.reshape(-1)
-        if adv_frame:
-            target = -target
+        _tgt_gap = None
+        _boot = None
+        if str(getattr(self, "minimax_target", "returns")) == "minimax":
+            # OPTION B -- LITTMAN'S OPERATOR.
+            #     target = r + gamma * V_mm(s') * (1 - done)
+            # V_mm is the equilibrium value of the head's OWN 22x22 matrix at
+            # the successor, solved by the same optimistic-MWU routine. lambda=0
+            # by construction: the target is purely local to one transition, so
+            # nothing has to survive the minibatch shuffle and no buffer field
+            # is needed. lambda>0 would mix ON-POLICY intermediate rewards into
+            # an off-policy target and is unsound without a Retrace-style trace.
+            #
+            # THE ASYMMETRY TO WATCH. One transition trains exactly ONE of the
+            # 484 cells (the joint action observed), but the max-min READS all
+            # 484 at the successor. The target therefore depends on cells that
+            # have never received a gradient, and max preferentially selects the
+            # largest -- which the no-op probe measured at 1.39x the entire
+            # spread of Q across actions. That is what q_scale/td_error are for.
+            nxt = getattr(rollout_data, "next_observations", None)
+            if nxt is None:
+                raise RuntimeError(
+                    "--minimax_target minimax requires next_observations, and "
+                    "this buffer's samples do not carry them. Refusing to fall "
+                    "back to the returns target: mixing two different targets "
+                    "in one head is worse than not running at all.")
+            r = rollout_data.rewards.reshape(-1).float()
+            d = rollout_data.dones.reshape(-1).float()
+            # FRAME. Option A negates the RETURN; here it is the REWARD, because
+            # the adversary buffer stores -rewards while V_mm is already
+            # ego-frame (the head is ego-payoff). Same parameter, same reason.
+            r_ego = -r if adv_frame else r
+            frozen = self._minimax_frozen_head(buf_num, head)
+            with th.no_grad():
+                M_next = frozen(self.policy.minimax_latent(nxt, side_flag=side_flag))
+                _sol_t = solve_matrix_game(
+                    M_next, iters=getattr(self, "minimax_iters", 1024),
+                    eta=getattr(self, "minimax_eta", 0.5))
+                _boot = float(self.gamma) * _sol_t.V.reshape(-1) * (1.0 - d)
+                target = r_ego + _boot
+            _tgt_gap = _sol_t.gap
+        else:
+            target = rollout_data.returns.reshape(-1)
+            if adv_frame:
+                target = -target
         loss = F.mse_loss(target, q_played)
 
         self.policy.minimax_optimizer.zero_grad()
@@ -2527,6 +2609,42 @@ class CleanDerivativeFreeSPAR(PPO):
             # this is ~0 then Q is too, and the direction is dead.
             "q_branch_std": float(M.detach().std(dim=(1, 2)).mean()),
         }
+        # OPTION B ONLY -- telling DIVERGENCE apart from "Q is simply wrong".
+        # That ambiguity is the stated reason option B was deferred, so it gets
+        # instrumented rather than argued about:
+        #   q_scale        ||Q||. A self-referential bootstrap that is diverging
+        #                  blows this up without the loss necessarily rising,
+        #                  because the target inflates alongside the prediction.
+        #   target_scale   same for the target. q_scale/target_scale drifting
+        #                  TOGETHER is divergence; q_scale alone is not.
+        #   td_error       |target - Q(s,i,j)|, the quantity actually minimised.
+        #   bootstrap_frac share of |target| coming from gamma*V_mm(s') rather
+        #                  than r. At gamma 0.94 this should be large; near zero
+        #                  means the bootstrap is inert and this is greedy.
+        #   target_gap*    duality gap of the solve that BUILT THE TARGET (the
+        #                  one above is a sampled diagnostic on s, not s'). An
+        #                  unconverged solve here corrupts the target itself.
+        #   corr_q_reward  replacement sign guard. target_corr compares Q with
+        #                  the on-policy return, which option B deliberately
+        #                  abandons, so it stops being a sign check -- but Q
+        #                  must still move WITH immediate reward.
+        if _boot is not None:
+            with th.no_grad():
+                _t = target.reshape(-1)
+                _r = rollout_data.rewards.reshape(-1).float()
+                _r = -_r if adv_frame else _r
+                _stats.update({
+                    "q_scale": float(q_played.detach().abs().mean()),
+                    "target_scale": float(_t.abs().mean()),
+                    "td_error": float((_t - q_played.detach()).abs().mean()),
+                    "bootstrap_frac": float(_boot.abs().mean()
+                                            / _t.abs().mean().clamp_min(1e-12)),
+                    "target_gap": float(_tgt_gap.median()),
+                    "target_gap_max": float(_tgt_gap.max()),
+                    "corr_q_reward": float(th.corrcoef(th.stack(
+                        [q_played.detach().reshape(-1), _r]))[0, 1])
+                        if q_played.numel() > 1 else float("nan"),
+                })
         # PER-FRAME COPIES. This dict is rebuilt on every call, so whichever
         # pass ran last silently overwrote the other's numbers -- which is how a
         # sign error on ONE seat stayed invisible while the aggregate looked
