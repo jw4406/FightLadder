@@ -108,7 +108,16 @@ run_worker() {
         if [ $(( i % N_WORKERS )) -ne "${wid}" ]; then continue; fi
         local ckpt="${ALL_CKPTS[$i]}"
         local base; base="$(basename "${ckpt}" .task)"
-        local mark="${MARK_DIR}/${base}.done"
+        # DISAMBIGUATE BY FULL PATH, not basename. Every arm names its
+        # checkpoints spar_Ry_Sa_<steps>_steps.task, so two arms swept together
+        # collide: ONE done-marker for both (the second is skipped as already
+        # complete on a resume) and ONE set of br_rewards files (the second
+        # OVERWRITES the first). That already happened -- the gate_clr1e5 sweep
+        # produced two valid sets of numbers in the worker logs and left no way
+        # on disk to tell which arm produced which. Same class as the
+        # FIGHTLADDER_TASK_DIR collision that destroyed a baseline.
+        local ckid; ckid="$(printf '%s' "${ckpt}" | md5sum | cut -c1-8)"
+        local mark="${MARK_DIR}/${base}__${ckid}.done"
         if [ -f "${mark}" ]; then
             echo "[w${wid}] SKIP (done): ${base}" | tee -a "${log}"
             continue
@@ -116,6 +125,10 @@ run_worker() {
         local rc=1 attempt=1
         while [ "${attempt}" -le "${MAX_ATTEMPTS}" ]; do
             echo "[w${wid}] START $(date '+%F %T'): ${base} (attempt ${attempt}/${MAX_ATTEMPTS})" | tee -a "${log}"
+            # FULL PATH, because the basename alone does not identify the arm and
+            # every arm uses the same one. Without this line a completed sweep can
+            # leave numbers that cannot be attributed to a configuration at all.
+            echo "[w${wid}] CKPT  ${ckpt}" | tee -a "${log}"
             python -u "${LBR_PATH}" \
                 --main_checkpoint_model_path "${ckpt}" \
                 --ram_mask "${RAM_MASK}" \

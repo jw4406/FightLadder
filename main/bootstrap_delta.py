@@ -76,7 +76,7 @@ def main(argv=None):
         n, na = venv.num_envs, ops.n_actions
         rng = np.random.RandomState(0)
 
-        M_all, PE_all, PA_all, V0_all = [], [], [], []
+        M_all, PE_all, PA_all, V0_all, R_all = [], [], [], [], []
         obs = venv.reset()
         n_exp = int(np.ceil(a.n_states / n))
         for e in range(n_exp):
@@ -105,6 +105,12 @@ def main(argv=None):
             venv.env_method("lbr_restore", EXPAND_ROOT)
             venv.env_method("lbr_drop", EXPAND_ROOT)
             M_all.append((R + gamma * V1 * (~DN)).transpose(2, 0, 1))
+            # R SAVED SEPARATELY. M mixes the exact emulator reward with
+            # gamma*V_scalar(s'), and V is a TRAINED critic -- so an interaction
+            # measured on M cannot be told apart from critic error that happens
+            # to vary across the 484 successors. R alone has NO critic in it, so
+            # its ANOVA is the part of the interaction that is unarguably real.
+            R_all.append(R.transpose(2, 0, 1))
             print(f"   expansion {e+1}/{n_exp}", flush=True)
     finally:
         venv.close()
@@ -170,7 +176,8 @@ def main(argv=None):
           f"   (Bellman inconsistency of the critic itself)")
 
     raw = os.path.join(REPO_ROOT, a.out.replace(".json", "_raw.npz"))
-    np.savez_compressed(raw, M=M, PE=PE, PA=PA, V0=V0)
+    np.savez_compressed(raw, M=M, PE=PE, PA=PA, V0=V0,
+                        R=np.concatenate(R_all))
     print(f"\n  raw matrices -> {raw}")
 
     res = {"checkpoint": os.path.basename(a.ckpt), "n_states": S,

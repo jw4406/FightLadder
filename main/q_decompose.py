@@ -42,7 +42,20 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--ckpt", required=True)
+    ap.add_argument("--ckpt", default="")
+    ap.add_argument("--npz", default="",
+                    help="Decompose a SAVED payoff matrix (M from bootstrap_delta) "
+                         "instead of the head's Q. This is how the head is compared "
+                         "against the emulator-derived payoff AT THE SAME CHECKPOINT: "
+                         "identical ANOVA code on both sides, so a difference cannot "
+                         "come from a reimplementation. Note M = r + gamma*V_scalar(s'), "
+                         "so its ACTION axis is exact (emulator) but the V(s') term is "
+                         "the trained critic and is NOT validated.")
+    ap.add_argument("--npz_key", default="M",
+                    help="Which array in the npz to decompose. 'M' = r + gamma*V(s') "
+                         "(action axis exact, V term unvalidated). 'R' = the EXACT "
+                         "emulator reward with NO critic anywhere -- its interaction "
+                         "is the part that cannot be critic noise.")
     ap.add_argument("--ram_mask", type=str, default="")
     ap.add_argument("--n_states", type=int, default=200)
     ap.add_argument("--n_envs", type=int, default=4)
@@ -58,6 +71,19 @@ def main(argv=None):
                                      PolicyOps, resolve_matchups,
                                      infer_obs_kwargs, REPO_ROOT)
 
+    if a.npz:
+        d = np.load(a.npz)
+        if a.npz_key not in d:
+            raise SystemExit(f"npz has {list(d.files)}, no '{a.npz_key}' -- recollect "
+                             f"with the bootstrap_delta that saves R")
+        M = d[a.npz_key].astype(np.float64)
+        kind = ("EMULATOR PAYOFF r + gamma*V_scalar(s')" if a.npz_key == "M"
+                else "EXACT EMULATOR REWARD (no critic)")
+        comps = []
+        print(f"  source: {os.path.basename(a.npz)}  {M.shape[0]} states")
+        return _analyse(M, comps, kind, os.path.basename(a.npz), a)
+    if not a.ckpt:
+        raise SystemExit("need --ckpt or --npz")
     data = load_from_zip_file(a.ckpt, device="cpu")[0]
     head_idx, label, state = resolve_matchups(data, "all")[0]
     venv = build_lbr_venv(state, a.n_envs,
@@ -92,6 +118,14 @@ def main(argv=None):
         venv.close()
 
     M = np.concatenate(Ms)                              # (S, ne, na)
+    return _analyse(M, comps, kind, os.path.basename(a.ckpt), a)
+
+
+def _analyse(M, comps, kind, label, a):
+    """The decomposition itself. Shared by the head path and the --npz path so
+    the two are guaranteed to be measured the same way."""
+    import numpy as np
+    import os
     S, ne, na = M.shape
 
     mu = M.mean(axis=(1, 2))
@@ -108,8 +142,8 @@ def main(argv=None):
     resid = abs(ss_mu + ss_al + ss_be + ss_ga - ss_tot) / max(ss_tot, 1e-30)
 
     print("=" * 74)
-    print(f"Q DECOMPOSITION  {os.path.basename(a.ckpt)}")
-    print(f"  head {kind}   {S} states   {ne}x{na} actions")
+    print(f"Q DECOMPOSITION  {label}")
+    print(f"  source {kind}   {S} states   {ne}x{na} actions")
     print("=" * 74)
     print(f"  SS identity residual {resid:.2e}   (must be ~0; orthogonality check)")
 
@@ -148,7 +182,7 @@ def main(argv=None):
     print(f"  gamma antisymmetric share {float((anti ** 2).sum() / max((gamma ** 2).sum(), 1e-30)):.4f}"
           f"   (isotropic null {null:.4f})")
 
-    res = {"checkpoint": os.path.basename(a.ckpt), "head": kind, "n_states": S,
+    res = {"checkpoint": label, "head": kind, "n_states": S,
            "ss_residual": resid,
            "share_total": {"mu": ss_mu / ss_tot, "alpha": ss_al / ss_tot,
                            "beta": ss_be / ss_tot, "gamma": ss_ga / ss_tot},
