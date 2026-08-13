@@ -112,6 +112,39 @@ VTRACE_RHO_BAR=""
 #   POPART_BETA     unset => 3e-4 (van Hasselt et al. 2016).
 POPART=""
 POPART_BETA=""
+# ---------------------------------------------------------------------------
+# OBSERVATION + MINIMAX-Q knobs. ALL EMPTY BY DEFAULT, so a rendered job behaves
+# EXACTLY as before unless the sweep sets them -- same contract as GAMMA/POPART
+# above (empty => flag omitted => ippo.py's own default applies).
+#
+#   OBS_TYPE / RAM_MASK  'ram' + a byte-index .npy. THE MASK IS LOAD-BEARING: a
+#                   checkpoint records the WIDTH of its observation but not WHICH
+#                   bytes, so a masked run is unevaluable without the exact file
+#                   it trained with, and a DIFFERENT mask of the same width would
+#                   load silently and feed the wrong bytes. RAM_MASK must
+#                   therefore point INSIDE the per-config repo copy, not at a
+#                   submitting-host path that will not exist on the compute node.
+#
+#   GAE_LAMBDA      unset => 0.95. Set 0 for a minimax bootstrap: that target is
+#                   OFF-POLICY and a lambda-return splices ON-POLICY intermediate
+#                   rewards into it, which is unsound without a Retrace trace
+#                   (not built). lambda 0 ALSO changes the bias/variance
+#                   tradeoff, so a kappa=0 arm at lambda 0 is the required
+#                   control.
+#
+#   MINIMAX_BOOTSTRAP_KAPPA   0.0 = PHASE 0, the joint-action head trains and
+#                   feeds NOTHING; the code path is not entered, so behaviour is
+#                   bitwise identical to not having a head. >0 = PHASE 1, the
+#                   head moves the policy.
+OBS_TYPE=""
+RAM_MASK=""
+GAE_LAMBDA=""
+MINIMAX_Q=""
+MINIMAX_HEAD=""
+MINIMAX_RANK=""
+MINIMAX_TARGET=""
+MINIMAX_BOOTSTRAP_KAPPA=""
+MINIMAX_BOOTSTRAP_WARMUP=""
 # Blend the multi-head adversary trunk update (spar arch only). "False" keeps the
 # unchanged sequential per-head update; "True" gives one mean-over-heads trunk step.
 BLEND_ADVERSARY_HEADS="False"
@@ -215,6 +248,34 @@ for i in $(seq 1 ${NUM_WORKERS}); do
     fi
     if [ -n "${POPART_BETA}" ]; then
         CMD+=( --popart_beta "${POPART_BETA}" )
+    fi
+    if [ -n "${OBS_TYPE}" ]; then
+        CMD+=( --obs_type "${OBS_TYPE}" )
+    fi
+    # Resolved against the PER-CONFIG repo copy, so the mask travels with the job.
+    if [ -n "${RAM_MASK}" ]; then
+        CMD+=( --ram_mask "$WORKDIR/$JOBID/FightLadder/${RAM_MASK}" )
+    fi
+    if [ -n "${GAE_LAMBDA}" ]; then
+        CMD+=( --gae_lambda "${GAE_LAMBDA}" )
+    fi
+    if [ -n "${MINIMAX_Q}" ]; then
+        CMD+=( --minimax_q "${MINIMAX_Q}" )
+    fi
+    if [ -n "${MINIMAX_HEAD}" ]; then
+        CMD+=( --minimax_head "${MINIMAX_HEAD}" )
+    fi
+    if [ -n "${MINIMAX_RANK}" ]; then
+        CMD+=( --minimax_rank "${MINIMAX_RANK}" )
+    fi
+    if [ -n "${MINIMAX_TARGET}" ]; then
+        CMD+=( --minimax_target "${MINIMAX_TARGET}" )
+    fi
+    if [ -n "${MINIMAX_BOOTSTRAP_KAPPA}" ]; then
+        CMD+=( --minimax_bootstrap_kappa "${MINIMAX_BOOTSTRAP_KAPPA}" )
+    fi
+    if [ -n "${MINIMAX_BOOTSTRAP_WARMUP}" ]; then
+        CMD+=( --minimax_bootstrap_warmup "${MINIMAX_BOOTSTRAP_WARMUP}" )
     fi
 
     if [ "${RUN_LIVE}" = "False" ]; then

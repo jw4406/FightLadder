@@ -13,7 +13,20 @@
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 DRY_RUN="True"
-PHASE="both"                             # train | br | both
+PHASE="both"                             # train | br | both  (WHICH JOBS to submit)
+# TRANCHE is a SEPARATE axis from PHASE -- it selects what the training job DOES:
+#   ""    render exactly as before this flag existed (no minimax knobs touched)
+#   p0    joint-action head trains and feeds NOTHING (kappa 0, bitwise inert)
+#   p1    head FEEDS the GAE bootstrap (kappa 1, gae_lambda 0, factored head)
+# Launch p0 and p1 as two tranches; the tag gains a _p0/_p1 suffix so their
+# trees cannot collide. A p1 tranche is ONLY interpretable against a p0 tranche
+# at the same gae_lambda, because lambda 0 changes bias/variance on its own.
+TRANCHE=""
+# Observation. RAM_MASK is REPO-RELATIVE (it is prefixed with the per-config
+# repo copy on the compute node) and MUST be committed -- a masked checkpoint is
+# unevaluable without the exact mask it trained with.
+OBS_TYPE=""
+RAM_MASK=""
 DISCOVER="False"                         # with PHASE=br: BR every existing lr_sweep/<tag> tree (ignores the grid)
 CLUSTER="neuronic"                       # neuronic | della
 WORKDIR="/scratch/gpfs/FISAC/jw4406/"    # scratch WORKDIR
@@ -85,6 +98,9 @@ CMD=(
     --resource_scale "${RESOURCE_SCALE}"
     --dry_run "${DRY_RUN}"
 )
+if [ -n "${TRANCHE}" ]; then CMD+=(--tranche "${TRANCHE}"); fi
+if [ -n "${OBS_TYPE}" ]; then CMD+=(--obs_type "${OBS_TYPE}"); fi
+if [ -n "${RAM_MASK}" ]; then CMD+=(--ram_mask "${RAM_MASK}"); fi
 if [ "${DISCOVER}" = "True" ]; then CMD+=(--discover); fi
 if [ -n "${VTRACE_SEQ_LEN}" ]; then CMD+=(--vtrace_seq_len "${VTRACE_SEQ_LEN}"); fi
 if [ -n "${BLEND_ADVERSARY_HEADS}" ]; then CMD+=(--blend_adversary_heads "${BLEND_ADVERSARY_HEADS}"); fi

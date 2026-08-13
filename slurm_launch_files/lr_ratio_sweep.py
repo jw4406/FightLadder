@@ -42,6 +42,41 @@ CLUSTER_BR_TEMPLATE = {
 }
 
 
+# ---------------------------------------------------------------------------
+# TRANCHE PRESETS -- the p0/p1 axis, ORTHOGONAL to --phase (train|br|both).
+# They are deliberately NOT both called "phase": --phase selects which SLURM
+# jobs to submit, --tranche selects what the training job DOES.
+#
+#   p0  the joint-action head trains and feeds NOTHING. kappa=0 short-circuits
+#       before any compute, so the run is bitwise identical to one without a
+#       head. This is the regime every measurement to date was taken in.
+#   p1  the head feeds the GAE bootstrap. REQUIRES gae_lambda 0: the minimax
+#       target is OFF-POLICY and a lambda-return splices ON-POLICY intermediate
+#       rewards into it, unsound without a Retrace trace (not built).
+#
+# HEAD IS PINNED TO 'factored' FOR p1, not left settable: the 484-cell matrix
+# head puts 81-91% of its action-conditional energy into rank-10 NOISE, and
+# max_p min_q reads all 484 cells to build every target. Bootstrapping a policy
+# on a max over noise is the worst available version of this.
+#
+# A p1 tranche is only interpretable ALONGSIDE a p0 tranche at the SAME
+# gae_lambda, because lambda 0 changes the bias/variance tradeoff on its own.
+TRANCHES = {
+    "p0": {
+        "minimax_q": "True", "minimax_head": "factored", "minimax_rank": "4",
+        "minimax_target": "returns",
+        "minimax_bootstrap_kappa": "0.0", "minimax_bootstrap_warmup": "0",
+        "gae_lambda": None,          # None => leave ippo.py's default (0.95)
+    },
+    "p1": {
+        "minimax_q": "True", "minimax_head": "factored", "minimax_rank": "4",
+        "minimax_target": "minimax",
+        "minimax_bootstrap_kappa": "1.0", "minimax_bootstrap_warmup": "2000000",
+        "gae_lambda": "0",
+    },
+}
+
+
 def _fmt_lr(x):
     """Exact, compact LR string: 6 significant figures, trailing zeros stripped
     (e.g. 1e-5 -> '1e-05', 1.6e-4 -> '0.00016', 6.4e-4 -> '0.00064'). `.0e`
@@ -53,7 +88,7 @@ def _sanitize(lr_str):
     return lr_str.replace(".", "p").replace("-", "m").replace("+", "")
 
 
-def compute_configs(c_lr, d_mults, v_mults, max_v_lr):
+def compute_configs(c_lr, d_mults, v_mults, max_v_lr, tranche=None):
     """Yield dicts for each valid (m_d, m_v): enforces c<d<v and v_lr<=max_v_lr."""
     configs, skipped = [], []
     for m_d in d_mults:
@@ -70,7 +105,8 @@ def compute_configs(c_lr, d_mults, v_mults, max_v_lr):
                 skipped.append((m_d, m_v, f"v_lr {v_lr:.2e} > max_v_lr {max_v_lr:.2e}"))
                 continue
             configs.append({
-                "m_d": m_d, "m_v": m_v, "tag": f"md{m_d:g}_mv{m_v:g}",
+                "m_d": m_d, "m_v": m_v,
+                "tag": f"md{m_d:g}_mv{m_v:g}" + (f"_{tranche}" if tranche else ""),
                 "c_lr": c_lr, "d_lr": d_lr, "v_lr": v_lr,
             })
     return configs, skipped
@@ -117,7 +153,8 @@ def _della_env_transform(text):
 
 def render_training_slurm(template_text, cfg, players, opponents, workdir,
                           sbatch_time, total_timesteps, vtrace_seq_len=None,
-                          blend_adversary_heads=None):
+                          blend_adversary_heads=None, tranche=None,
+                          obs_type=None, ram_mask=None):
     """Substitute LRs / matchup / paths into the training template, and pin the
     run dir to a deterministic per-config tree (JOBID -> lr_sweep/<tag>) so
     training, tasks, checkpoints and BR outputs all share one location."""
@@ -148,6 +185,26 @@ def render_training_slurm(template_text, cfg, players, opponents, workdir,
     if blend_adversary_heads is not None:
         subs.append((r'(?m)^BLEND_ADVERSARY_HEADS=".*"$',
                      f'BLEND_ADVERSARY_HEADS="{blend_adversary_heads}"'))
+    # Observation knobs. RAM_MASK is stored REPO-RELATIVE and the template
+    # prefixes $WORKDIR/$JOBID/FightLadder/, so the mask travels with the
+    # per-config copy instead of pointing at a submitting-host path.
+    if obs_type is not None:
+        subs.append((r'(?m)^OBS_TYPE=".*"$', f'OBS_TYPE="{obs_type}"'))
+    if ram_mask is not None:
+        subs.append((r'(?m)^RAM_MASK=".*"$', f'RAM_MASK="{ram_mask}"'))
+    # Tranche knobs. Applied ONLY when a tranche is named, so an unflagged sweep
+    # renders byte-identically to before this feature existed.
+    if tranche:
+        t = TRANCHES[tranche]
+        for var, key in (("MINIMAX_Q", "minimax_q"),
+                         ("MINIMAX_HEAD", "minimax_head"),
+                         ("MINIMAX_RANK", "minimax_rank"),
+                         ("MINIMAX_TARGET", "minimax_target"),
+                         ("MINIMAX_BOOTSTRAP_KAPPA", "minimax_bootstrap_kappa"),
+                         ("MINIMAX_BOOTSTRAP_WARMUP", "minimax_bootstrap_warmup"),
+                         ("GAE_LAMBDA", "gae_lambda")):
+            if t[key] is not None:
+                subs.append((rf'(?m)^{var}=".*"$', f'{var}="{t[key]}"'))
     return _apply(template_text, subs, "training template")
 
 
@@ -243,6 +300,21 @@ def parse_args():
                         "scales by the co-located count). Default 1 = template base cpus.")
     # --- plumbing ---
     p.add_argument("--phase", choices=["train", "br", "both"], default="both")
+    p.add_argument("--tranche", choices=["p0", "p1"], default=None,
+                   help="Minimax tranche, ORTHOGONAL to --phase (which selects which "
+                        "SLURM jobs to submit). p0 = head trains and feeds nothing "
+                        "(kappa 0, bitwise inert). p1 = head feeds the GAE bootstrap "
+                        "(kappa 1, gae_lambda 0, factored head pinned). Omit to render "
+                        "exactly as before this flag existed. The tag gains a _p0/_p1 "
+                        "suffix so the two tranches get separate trees.")
+    p.add_argument("--obs_type", default=None,
+                   help="e.g. 'ram'. Omit to keep the template default.")
+    p.add_argument("--ram_mask", default=None,
+                   help="Mask path RELATIVE TO THE REPO ROOT, e.g. 'main/ram_mask.npy'. "
+                        "The template prefixes the per-config copy, so it must be "
+                        "committed and repo-relative -- an absolute submitting-host "
+                        "path will not exist on the compute node. A masked checkpoint "
+                        "is UNEVALUABLE without the exact mask it trained with.")
     p.add_argument("--discover", action="store_true",
                    help="[--phase br] Ignore the grid; launch one orchestrator per existing "
                         "$WORKDIR/lr_sweep/<tag> training tree. Run where $WORKDIR is mounted.")
@@ -274,7 +346,8 @@ def main():
                      f"{args.workdir.rstrip('/')}/lr_sweep/ (is $WORKDIR mounted here? "
                      "run this on the cluster).")
     else:
-        configs, skipped = compute_configs(args.c_lr, args.d_mults, args.v_mults, args.max_v_lr)
+        configs, skipped = compute_configs(args.c_lr, args.d_mults, args.v_mults,
+                                          args.max_v_lr, args.tranche)
         if skipped:
             print("Skipped configs:")
             for m_d, m_v, why in skipped:
@@ -294,8 +367,12 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
 
     src = "discovered" if args.discover else f"c_lr={args.c_lr:g}"
+    _tr = f" | tranche={args.tranche}" if args.tranche else ""
+    if args.tranche == "p1":
+        print("  *** TRANCHE p1: the head FEEDS the bootstrap (kappa 1, gae_lambda 0).")
+        print("  *** Only interpretable against a p0 tranche at the SAME gae_lambda.")
     print(f"\n{'MODE: DRY-RUN (nothing submitted)' if dry_run else 'MODE: LIVE'} | "
-          f"phase={args.phase} | {len(configs)} configs | {src}\n")
+          f"phase={args.phase} | {len(configs)} configs | {src}{_tr}\n")
     for cfg in configs:
         tag = cfg["tag"]
         tree = f"{args.workdir.rstrip('/')}/lr_sweep/{tag}/FightLadder/main"
@@ -310,7 +387,9 @@ def main():
             text = render_training_slurm(train_tpl, cfg, args.player, args.opponent_list,
                                          args.workdir, args.sbatch_time, args.main_training_steps,
                                          vtrace_seq_len=args.vtrace_seq_len,
-                                         blend_adversary_heads=args.blend_adversary_heads)
+                                         blend_adversary_heads=args.blend_adversary_heads,
+                                         tranche=args.tranche, obs_type=args.obs_type,
+                                         ram_mask=args.ram_mask)
             path = os.path.join(
                 args.out_dir,
                 f"main_training_spar_clr{_sanitize(_fmt_lr(cfg['c_lr']))}"

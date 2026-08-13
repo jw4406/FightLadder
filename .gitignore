@@ -52,8 +52,14 @@ main/critic_diagnostics/
 main/critic_diag_RyGu_tier0/
 main/critic_diagnostics_armA_powered/
 main/critic*
+main/minimax*
 # ...but NOT the diagnostic SOURCE. `main/critic*` is meant for the result
 # dirs and JSON above; it was also swallowing critic_diagnostics.py and
 # critic_ceiling.py, so the whole diagnostic suite sat outside version control.
 !main/critic*.py
+# Same trap for `main/minimax*`, which was added for the minimax_phase0_* run
+# dirs but also matches minimax_axis_diag.py, minimax_noop_decomp.py etc. Those
+# happen to be safe ONLY because they were already tracked before the rule
+# existed -- a NEW minimax_*.py would be silently invisible.
+!main/minimax*.py
 main/*json
