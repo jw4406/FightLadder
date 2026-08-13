@@ -90,6 +90,13 @@
                 // train/minimax_target_scale, and note that minimax_ev and
                 // minimax_target_corr stop being meaningful under it.
                 "--minimax_target", "returns",
+                // Analytic action-embedding basis from gamma_basis.py. Empty =
+                // learn them, which measured 4.93% of the true interaction
+                // against 3.63% for a random subspace; the computed basis
+                // reaches 59.24% at rank 4 and 84.93% at rank 8. Frozen after
+                // loading by default. Its rank MUST match --minimax_rank.
+                "--minimax_embed", "",
+                "--minimax_freeze_embed", "True",
                 // PHASE 1 switch. 0.0 = the head feeds NOTHING and the code path
                 // is not entered, so behaviour is BITWISE identical to Phase 0.
                 // >0 blends V_minimax into the GAE bootstrap and the head starts

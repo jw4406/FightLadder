@@ -177,6 +177,9 @@ class CleanDerivativeFreeSPAR(PPO):
             minimax_q: bool = False,
             minimax_head: str = "matrix",
             minimax_rank: int = 4,
+            minimax_w_init: float = 0.01,
+            minimax_embed: str = "",
+            minimax_freeze_embed: bool = True,
             minimax_target: str = "returns",
             minimax_bootstrap_kappa: float = 0.0,
             minimax_bootstrap_warmup: int = 0,
@@ -289,6 +292,9 @@ class CleanDerivativeFreeSPAR(PPO):
         # ANOVA decomposition; see FactoredMinimaxHead.
         self.minimax_head = str(minimax_head)
         self.minimax_rank = int(minimax_rank)
+        self.minimax_w_init = float(minimax_w_init)
+        self.minimax_embed = str(minimax_embed)
+        self.minimax_freeze_embed = bool(minimax_freeze_embed)
         # 'returns' (default) = option A, regress Q onto the lambda-returns:
         # DATA, never references Q, cannot diverge. 'minimax' = option B,
         # Littman's operator, target = r + gamma*V_mm(s'). Self-referential.
@@ -594,6 +600,9 @@ class CleanDerivativeFreeSPAR(PPO):
         self.policy_kwargs['minimax_q'] = getattr(self, "minimax_q", False)
         self.policy_kwargs['minimax_head'] = getattr(self, "minimax_head", "matrix")
         self.policy_kwargs['minimax_rank'] = getattr(self, "minimax_rank", 4)
+        self.policy_kwargs['minimax_w_init'] = getattr(self, "minimax_w_init", 0.01)
+        self.policy_kwargs['minimax_embed'] = getattr(self, "minimax_embed", "")
+        self.policy_kwargs['minimax_freeze_embed'] = getattr(self, "minimax_freeze_embed", True)
         # minimax_target is a TRAINER-side choice (it selects the loss target),
         # not a policy one, so it deliberately does NOT go into policy_kwargs --
         # adding it there would change the policy signature and break checkpoint

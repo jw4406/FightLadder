@@ -49,11 +49,14 @@ def check(name, cond, detail=""):
     print(f"  {'PASS' if cond else 'FAIL'}  {name}{('  ' + detail) if detail else ''}")
 
 
-def make(rank=R, seed=0):
+def make(rank=R, seed=0, w_init=0.0):
+    """w_init defaults to 0.0 HERE so the structural guarantees below (exact
+    additivity at init) are still tested; the SHIPPED default is 0.01 and gets
+    its own checks."""
     th.manual_seed(seed)
     trunk = nn.Sequential(nn.Linear(LATENT, LATENT), nn.LeakyReLU(),
                           nn.Linear(LATENT, LATENT), nn.LeakyReLU())
-    return FactoredMinimaxHead(trunk, LATENT, NE, NA, rank=rank)
+    return FactoredMinimaxHead(trunk, LATENT, NE, NA, rank=rank, w_init=w_init)
 
 
 def main():
@@ -152,6 +155,29 @@ def main():
                                       "coverage", "cell_visits")))
     h.note_visits(th.tensor([1, 2]), th.tensor([3, 4]))
     check("note_visits / coverage work", h.coverage() > 0)
+
+    # ---- W INIT SCALE: the embedding-gradient fix -------------------------
+    # gamma_ij = sum_rc e_ego[i,r] W[r,c] e_adv[j,c], so d(gamma)/d(e_ego) is
+    # PROPORTIONAL TO W. At W==0 the embeddings get literally no gradient and sit
+    # at their random init through the cold start. Measured consequence at 14.4M:
+    # only 4.93% of the true interaction lay inside the learned embedding
+    # subspace, against 56.43% reachable at the same rank (3.63% = random).
+    # This asserts the mechanism directly rather than the symptom.
+    for wi, want_grad in ((0.0, False), (0.01, True)):
+        hw = make(seed=5, w_init=wi)
+        xw = th.randn(8, LATENT)
+        hw.played(xw, th.randint(0, NE, (8,)), th.randint(0, NA, (8,))).sum().backward()
+        ge = float(hw.e_ego.grad.abs().max()) if hw.e_ego.grad is not None else 0.0
+        gw = float(hw.w_out.weight.grad.abs().max())
+        got = ge > 0.0
+        check(f"w_init={wi}: embeddings {'DO' if want_grad else 'do NOT'} get gradient",
+              got == want_grad, f"|d/d e_ego| = {ge:.3e}   |d/d w_out| = {gw:.3e}")
+    check("w_init=0.0 still gives EXACTLY the additive head",
+          make(seed=5, w_init=0.0).components(th.randn(4, LATENT))[3].abs().max().item() == 0.0)
+    hd_ = make(seed=5, w_init=0.01)
+    g_small = hd_.components(th.randn(4, LATENT))[3].abs().max().item()
+    check("w_init=0.01 gives a SMALL but nonzero interaction",
+          0.0 < g_small < 0.05, f"max|gamma| at init = {g_small:.2e}")
 
     st = h.interaction_stats(x)
     check("interaction_stats returns the live readouts",

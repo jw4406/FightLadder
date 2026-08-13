@@ -149,6 +149,18 @@ case "${MINIMAX_HEAD}" in matrix|factored) ;;
 # Rank of the interaction term, 'factored' only. Measured on 2,400 states:
 # gamma has median rank 2 and p90 rank 4, so 4 covers p90.
 MINIMAX_RANK="${MINIMAX_RANK:-4}"
+# Init scale for the factored head's W(s), as a MULTIPLIER on torch's default
+# Linear init. 0.0 = the original exact zeros. d(gamma)/d(e_ego) is PROPORTIONAL
+# TO W, so at W==0 the action embeddings get NO gradient until W has grown --
+# measured at 14.4M, only 4.93% of the true interaction lay inside the learned
+# embedding subspace vs 56.43% reachable at the same rank (3.63% = random).
+MINIMAX_W_INIT="${MINIMAX_W_INIT:-0.01}"
+# Analytic action-embedding basis from gamma_basis.py (energy-optimal rank-r
+# subspace of the emulator's interaction). Empty = learn them, which measured
+# 4.93% of true gamma against 3.63% random. Rank in the npz MUST match
+# MINIMAX_RANK. Frozen by default.
+MINIMAX_EMBED="${MINIMAX_EMBED:-}"
+MINIMAX_FREEZE_EMBED="${MINIMAX_FREEZE_EMBED:-True}"
 # PHASE 1 SWITCH. 0.0 = the head feeds NOTHING (diagnostic; every result so far
 # was measured here). >0 blends V_minimax into the GAE bootstrap and the head
 # starts moving the policy. Requires GAE_LAMBDA=0 -- see ippo.py --gae_lambda.
@@ -215,6 +227,9 @@ CMD=(
     --minimax_q True --minimax_stop_grad True
     --minimax_target "${MINIMAX_TARGET}"
     --minimax_head "${MINIMAX_HEAD}" --minimax_rank "${MINIMAX_RANK}"
+    --minimax_w_init "${MINIMAX_W_INIT}"
+    --minimax_freeze_embed "${MINIMAX_FREEZE_EMBED}"
+    ${MINIMAX_EMBED:+--minimax_embed "${MINIMAX_EMBED}"}
     --minimax_bootstrap_kappa "${MINIMAX_BOOTSTRAP_KAPPA}"
     --minimax_bootstrap_warmup "${MINIMAX_BOOTSTRAP_WARMUP}"
     --gae_lambda "${GAE_LAMBDA}"
@@ -247,7 +262,7 @@ echo "  obs        : ${OBS_TYPE}${RAM_MASK:+  mask=${RAM_MASK}}"
 echo "  mm target  : ${MINIMAX_TARGET}$([ "${MINIMAX_TARGET}" = minimax ] && \
     echo '   (option B: r + gamma*V_mm(s'"'"'); ev/target_corr are MEANINGLESS)')"
 echo "  mm head    : ${MINIMAX_HEAD}$([ "${MINIMAX_HEAD}" = factored ] && \
-    echo "   rank=${MINIMAX_RANK}  (watch train/minimax_fx_w_norm)")"
+    echo "   rank=${MINIMAX_RANK} w_init=${MINIMAX_W_INIT}  (watch train/minimax_fx_w_norm)")"
 echo "  task_dir   : ${FIGHTLADDER_TASK_DIR}"
 echo "  log        : ${LOG}"
 echo "  watch      : train/minimax_coverage, train/minimax_q_branch_std"

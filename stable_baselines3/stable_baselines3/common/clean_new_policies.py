@@ -241,7 +241,8 @@ class FactoredMinimaxHead(nn.Module):
     """
 
     def __init__(self, trunk: nn.Module, latent_dim: int, n_ego: int, n_adv: int,
-                 rank: int = 4):
+                 rank: int = 4, w_init: float = 0.01,
+                 embed_init=None, freeze_embed: bool = True):
         super().__init__()
         self.n_ego = int(n_ego)
         self.n_adv = int(n_adv)
@@ -257,11 +258,70 @@ class FactoredMinimaxHead(nn.Module):
         # state's U and give back the density problem.
         self.e_ego = nn.Parameter(th.randn(self.n_ego, self.rank) * 0.1)
         self.e_adv = nn.Parameter(th.randn(self.n_adv, self.rank) * 0.1)
+        # ANALYTIC BASIS. embed_init is an .npz (or dict) of e_ego/e_adv computed
+        # by gamma_basis.py as the energy-optimal rank-r subspace of the EMULATOR's
+        # interaction. Measured on p1_clr1e5 @14.4M: the LEARNED embeddings held
+        # 4.93% of the true gamma against 3.63% for a RANDOM subspace, while the
+        # computed basis reaches 59.24% at rank 4 and 84.93% at rank 8. SGD was not
+        # finding this; it is a 22x22 eigendecomposition.
+        #
+        # FROZEN BY DEFAULT. These 176 params encode which ACTIONS are similar --
+        # a property of the game, not of the policy -- and the on-policy gradient
+        # is exactly what produced the 4.93% subspace, so leaving them live invites
+        # the same signal to undo the initialisation.
+        self.freeze_embed = False
+        if embed_init is not None:
+            self._load_embed(embed_init, bool(freeze_embed))
+        # W INIT SCALE, as a MULTIPLIER on torch's default Linear init so it is
+        # independent of latent_dim. w_init=0.0 reproduces the original exact
+        # zeros; the default 0.01 is 1% of standard.
+        #
+        # WHY NOT ZERO ANY MORE. gamma_ij = sum_rc e_ego[i,r] W[r,c] e_adv[j,c], so
+        #     d gamma / d e_ego = sum_c W[r,c] e_adv[j,c]     -> EXACTLY 0 when W = 0
+        #     d gamma / d W     = e_ego[i,r] e_adv[j,c]       -> nonzero at init
+        # With W zero-initialised the EMBEDDINGS receive no gradient at all until
+        # W has grown, so they sit at their random init through the cold start.
+        # Measured on p1_clr1e5 @14.4M: only 4.93% of the true interaction lies
+        # inside the learned embedding subspace, against 56.43% reachable by the
+        # BEST rank-4 global basis and 3.63% for a RANDOM one -- i.e. the
+        # embeddings ended up barely better than random.
+        #
+        # The cost is the exact-additive-at-init guarantee: at w_init>0 the head
+        # starts with a small nonzero interaction rather than provably separable.
+        # Set 0.0 to recover that.
         self.w_out = nn.Linear(latent_dim, self.rank * self.rank)
-        nn.init.zeros_(self.w_out.weight)
-        nn.init.zeros_(self.w_out.bias)
+        self.w_init = float(w_init)
+        with th.no_grad():
+            self.w_out.weight.mul_(self.w_init)
+            self.w_out.bias.mul_(self.w_init)
         # Same buffer as MinimaxHead so the coverage diagnostics are unchanged.
         self.register_buffer("cell_visits", th.zeros(self.n_ego, self.n_adv))
+
+    def _load_embed(self, src, freeze):
+        """Install a precomputed basis. Shape mismatch RAISES rather than
+        broadcasting -- a silently transposed or wrong-rank basis would train
+        without error and be invisible."""
+        import numpy as _np
+        d = _np.load(src) if isinstance(src, str) else src
+        # ascontiguousarray, not asarray: the basis comes from eigh + a [:, ::-1]
+        # reversal, which yields NEGATIVE STRIDES that th.as_tensor rejects. Loading
+        # from .npz happens to materialise a fresh array and hides this, so it would
+        # only surface when arrays are passed directly.
+        ee = _np.ascontiguousarray(d["e_ego"])
+        ea = _np.ascontiguousarray(d["e_adv"])
+        want_e, want_a = (self.n_ego, self.rank), (self.n_adv, self.rank)
+        if ee.shape != want_e or ea.shape != want_a:
+            raise ValueError(
+                f"embed_init shapes {ee.shape}/{ea.shape} != expected "
+                f"{want_e}/{want_a}. The basis must be built at the SAME rank as "
+                f"--minimax_rank; gamma_basis.py records its rank in the npz.")
+        with th.no_grad():
+            self.e_ego.copy_(th.as_tensor(ee, dtype=self.e_ego.dtype))
+            self.e_adv.copy_(th.as_tensor(ea, dtype=self.e_adv.dtype))
+        self.freeze_embed = bool(freeze)
+        if self.freeze_embed:
+            self.e_ego.requires_grad_(False)
+            self.e_adv.requires_grad_(False)
 
     def _centred_embeddings(self):
         """Centring here, not at init: the parameters drift during training and
@@ -375,6 +435,9 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         minimax_q: bool = False,
         minimax_head: str = "matrix",
         minimax_rank: int = 4,
+        minimax_w_init: float = 0.01,
+        minimax_embed: str = "",
+        minimax_freeze_embed: bool = True,
         minimax_n_ego: int = 22,
         minimax_n_adv: int = 22,
     ):
@@ -399,6 +462,9 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
         self.minimax_n_adv = int(minimax_n_adv)
         self.minimax_head = str(minimax_head)
         self.minimax_rank = int(minimax_rank)
+        self.minimax_w_init = float(minimax_w_init)
+        self.minimax_embed = str(minimax_embed)
+        self.minimax_freeze_embed = bool(minimax_freeze_embed)
         # Non-image observations (--obs_type ram / info) cannot go through
         # NatureCNN, which asserts an image space. Swap in the MLP front end
         # ONLY when the caller left the default -- an explicit
@@ -601,7 +667,10 @@ class CleanActorActorCriticPolicy(ActorCriticPolicy):
                     self.minimax_net[matchup_key] = FactoredMinimaxHead(
                         _mm_trunk, value_hidden_size,
                         n_ego=self.minimax_n_ego, n_adv=self.minimax_n_adv,
-                        rank=getattr(self, "minimax_rank", 4))
+                        rank=getattr(self, "minimax_rank", 4),
+                        w_init=getattr(self, "minimax_w_init", 0.01),
+                        embed_init=(getattr(self, "minimax_embed", "") or None),
+                        freeze_embed=getattr(self, "minimax_freeze_embed", True))
                 else:
                     self.minimax_net[matchup_key] = MinimaxHead(
                         _mm_trunk, value_hidden_size,

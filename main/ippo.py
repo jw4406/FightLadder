@@ -776,6 +776,9 @@ def main(args):
                 minimax_q=(args.minimax_q == 'True'),
                 minimax_head=getattr(args, 'minimax_head', 'matrix'),
                 minimax_rank=getattr(args, 'minimax_rank', 4),
+                minimax_w_init=getattr(args, 'minimax_w_init', 0.01),
+                minimax_embed=getattr(args, 'minimax_embed', ''),
+                minimax_freeze_embed=(getattr(args, 'minimax_freeze_embed', 'True') == 'True'),
                 minimax_target=getattr(args, 'minimax_target', 'returns'),
                 minimax_bootstrap_kappa=getattr(args, 'minimax_bootstrap_kappa', 0.0),
                 minimax_bootstrap_warmup=getattr(args, 'minimax_bootstrap_warmup', 0),
@@ -1441,6 +1444,31 @@ if __name__ == "__main__":
                              '0 = no ramp. This is the safety valve: it is the first '
                              'change where a diverging head diverges the POLICY '
                              'rather than just a measurement.')
+    parser.add_argument('--minimax_embed', type=str, default='',
+                        help="Path to an .npz from gamma_basis.py holding e_ego/e_adv: "
+                             "the energy-optimal rank-r subspace of the EMULATOR's "
+                             "interaction, computed by eigendecomposition rather than "
+                             "learned. Measured at 14.4M the LEARNED embeddings held "
+                             "4.93%% of true gamma (random = 3.63%%) while the computed "
+                             "basis reaches 59.24%% at rank 4 and 84.93%% at rank 8. The "
+                             "npz rank MUST match --minimax_rank; a mismatch raises.")
+    parser.add_argument('--minimax_freeze_embed', choices=['True', 'False'], default='True',
+                        help="Freeze the embeddings after loading --minimax_embed. "
+                             "Default True: they encode which ACTIONS are similar, a "
+                             "property of the game rather than the policy, and the "
+                             "on-policy gradient is what produced the 4.93%% subspace "
+                             "in the first place.")
+    parser.add_argument('--minimax_w_init', type=float, default=0.01,
+                        help="Init scale for the factored head's W(s), as a MULTIPLIER "
+                             "on torch's default Linear init. 0.0 reproduces the "
+                             "original exact zeros. WHY NONZERO: d(gamma)/d(e_ego) is "
+                             "proportional to W, so with W==0 the ACTION EMBEDDINGS "
+                             "receive no gradient at all until W has grown. Measured "
+                             "consequence at 14.4M: only 4.93%% of the true interaction "
+                             "lay inside the learned embedding subspace, vs 56.43%% "
+                             "reachable at the same rank and 3.63%% for a RANDOM "
+                             "subspace. Cost: the head no longer starts provably "
+                             "additive.")
     parser.add_argument('--minimax_rank', type=int, default=4,
                         help='rank r of the interaction term for --minimax_head '
                              'factored. Measured on 2,400 states: gamma has median '
