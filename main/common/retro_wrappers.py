@@ -484,7 +484,7 @@ class SFWrapper(gym.Wrapper):
             #     self.save_state_to_file(f"Level{self.level}.{self.total_timesteps}.state")
 
             if (agent_hp < 0 and enemy_hp < 0) or (timesup and agent_hp == enemy_hp):
-                custom_reward = 1
+                custom_reward = -1
                 custom_reward_inverse = 1
                 if (self.reset_type == "round"):
                     custom_done = True
