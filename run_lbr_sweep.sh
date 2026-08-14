@@ -61,7 +61,7 @@ RETRY_SLEEP_S="${RETRY_SLEEP_S:-120}"
 # no mask, so leaving this empty on a masked arm fails loudly rather than
 # silently evaluating the wrong observation. Empty = image or full-ram arm.
 RAM_MASK="${RAM_MASK:-}"
-EVAL_PROT="both"         # both directions: eps_ego AND eps_adv
+EVAL_PROT="${EVAL_PROT:-both}"         # both directions: eps_ego AND eps_adv
 LBR_CONTROLS="True"      # legacy all-or-nothing; IGNORED when LBR_MODES is set
 # Subset of {lbr,greedy,shuffle}. Empty = legacy (honour LBR_CONTROLS).
 # Set to "greedy" for a 3x cheaper sweep: lbr-with-critic scored eps <= 0 on every
@@ -70,7 +70,7 @@ LBR_CONTROLS="True"      # legacy all-or-nothing; IGNORED when LBR_MODES is set
 # non-vacuous bound. The highest-priority mode present owns the sidecar JSON and
 # the selfplay_rewards/ file, so greedy-only still yields a computable eps.
 LBR_MODES="${LBR_MODES:-}"
-LBR_EPISODES="50"
+LBR_EPISODES="${LBR_EPISODES:-50}"
 # Episodes finish in rounds of N_ENVS at a time, so the real cost is
 # ceil(EPISODES / N_ENVS) rounds. 12 envs needs 5 rounds (60 episodes stepped for
 # 50 wanted, 17% wasted); 13 needs only 4 (52 episodes, 4% wasted). One extra env

@@ -25,14 +25,14 @@ CHECKPOINTS=(
 # False: LBR replaces the ego.
 # both:  run BOTH directions -- needed for the full gap, since the two directions
 #        are the two eps terms and either alone is half the picture.
-EVAL_PROT="both"
+EVAL_PROT="${EVAL_PROT:-both}"
 
 # Ego actions to marginalize the one-step branch over, weighted by pi_ego.
 # 1 would be clairvoyance in a simultaneous-move game and is NOT a lower bound.
 LBR_EGO_TOPK="4"
 
 LBR_STRIDE="1"
-LBR_EPISODES="50"
+LBR_EPISODES="${LBR_EPISODES:-50}"
 # 16 is the measured knee of the env scaling curve, but that assumes the box is
 # otherwise idle. Lowered to 12 so an LBR sweep can run alongside a live training
 # job (which holds envs_per_matchup of its own) without oversubscribing the cores.

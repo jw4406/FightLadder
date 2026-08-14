@@ -54,6 +54,12 @@ def main(argv=None):
     ap.add_argument("--n_envs", type=int, default=6)
     ap.add_argument("--device", type=str, default="cuda")
     ap.add_argument("--out", type=str, default="bootstrap_delta.json")
+    ap.add_argument("--save_obs", action="store_true",
+                    help="Also save the ROOT observation for every state. Needed to "
+                         "use the enumerated matrices as TRAINING data for the head "
+                         "-- without it the matrices can only be a diagnostic. Adds "
+                         "roughly obs_width*4 bytes per state (~5 MB for 600 states "
+                         "of masked RAM), so it is opt-in.")
     a = ap.parse_args(argv)
 
     import numpy as np
@@ -76,7 +82,7 @@ def main(argv=None):
         n, na = venv.num_envs, ops.n_actions
         rng = np.random.RandomState(0)
 
-        M_all, PE_all, PA_all, V0_all, R_all = [], [], [], [], []
+        M_all, PE_all, PA_all, V0_all, R_all, OBS_all = [], [], [], [], [], []
         obs = venv.reset()
         n_exp = int(np.ceil(a.n_states / n))
         for e in range(n_exp):
@@ -84,6 +90,12 @@ def main(argv=None):
                 obs = venv.step(ops.joint(ops.sample_ego(obs, rng),
                                           ops.sample_adv(obs, rng)))[0]
             # Policies and V at the ROOT, before any branching.
+            # OBS is what lets the enumerated matrices be used as TRAINING data
+            # rather than only as a diagnostic: without the root observation
+            # there is no way to ask the real head to predict M(s). Off by
+            # default because it is the only field that scales with obs width.
+            if a.save_obs:
+                OBS_all.append(np.asarray(obs).copy())
             PE_all.append(ops.ego_probs(obs))
             PA_all.append(ops.adv_probs(obs))
             V0_all.append(ops.values_ego(obs))
@@ -176,8 +188,9 @@ def main(argv=None):
           f"   (Bellman inconsistency of the critic itself)")
 
     raw = os.path.join(REPO_ROOT, a.out.replace(".json", "_raw.npz"))
+    _extra = {"OBS": np.concatenate(OBS_all)} if OBS_all else {}
     np.savez_compressed(raw, M=M, PE=PE, PA=PA, V0=V0,
-                        R=np.concatenate(R_all))
+                        R=np.concatenate(R_all), **_extra)
     print(f"\n  raw matrices -> {raw}")
 
     res = {"checkpoint": os.path.basename(a.ckpt), "n_states": S,
