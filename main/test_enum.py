@@ -25,10 +25,16 @@ import numpy as np
 import torch as th
 
 OK = True
+N_RUN = 0
+# A test that never RUNS is indistinguishable from one that passes -- a
+# dispatch line I forgot cost an hour today while ALL PASS printed. So the
+# count is asserted, not assumed. Bump this deliberately when adding a check.
+EXPECTED_CHECKS = 23
 
 
 def check(name, cond, detail=""):
-    global OK
+    global OK, N_RUN
+    N_RUN += 1
     OK &= bool(cond)
     print(f"  {'PASS' if cond else 'FAIL'}  {name}{('  ' + detail) if detail else ''}")
 
@@ -193,6 +199,35 @@ def test_aux_loss_and_k():
     check("buffer is bounded", len(a._enum_store) == 2)
 
 
+def test_leaf_matches_target():
+    """The enumerated leaf must use the SAME value function as the on-policy term.
+
+    This is the bug that produced held-out EV -4.9: option B regresses onto
+    r + gamma*V_mm(s') while the enumerated target was built with V_scalar, so
+    the head was pulled toward two inconsistent definitions of Q. Option A
+    regresses onto lambda-returns, which estimate Q^pi, so the SCALAR leaf is
+    correct there -- the branch is not a preference, each matches its own target.
+    """
+    from common.justin.clean_derivative_free_spar import CleanDerivativeFreeSPAR as C
+    a = FakeAlgo(enum_every=100)
+    a._enum_leaf_values = C._enum_leaf_values.__get__(a)
+    calls = {"scalar": 0}
+    a._enum_values = lambda obs, buf: (calls.__setitem__("scalar", calls["scalar"] + 1)
+                                       or np.zeros(len(obs)))
+    a.minimax_target = "returns"
+    a._enum_leaf_values(np.zeros((4, 3)), [0])
+    check("option A (returns) uses the SCALAR leaf", calls["scalar"] == 1)
+
+    a.minimax_target = "minimax"
+    try:
+        a._enum_leaf_values(np.zeros((4, 3)), [0])
+        used_scalar = calls["scalar"] == 2
+    except Exception:
+        used_scalar = False          # took the V_mm path and hit the fake policy
+    check("option B (minimax) does NOT use the scalar leaf", not used_scalar,
+          "it must solve the matrix game for V_mm instead")
+
+
 def test_joint_and_splice():
     a = FakeAlgo()
     j = a._enum_joint(3, 7, 4)
@@ -211,8 +246,14 @@ def main():
     print("== inert when off ==");       test_inert_when_off()
     print("== schedule ==");             test_schedule()
     print("== aux loss / enum_k ==");    test_aux_loss_and_k()
+    print("== leaf matches target =="); test_leaf_matches_target()
     print("== joint / splice ==");       test_joint_and_splice()
-    print("\n  ALL PASS" if OK else "\n  FAILURES PRESENT")
+    global OK
+    if N_RUN != EXPECTED_CHECKS:
+        print(f"\n  FAIL  expected {EXPECTED_CHECKS} checks, {N_RUN} RAN -- a check "
+              f"was skipped or never dispatched, which is NOT a pass")
+        OK = False
+    print(f"\n  ALL PASS ({N_RUN} checks)" if OK else "\n  FAILURES PRESENT")
     raise SystemExit(0 if OK else 1)
 
 

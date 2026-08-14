@@ -2465,6 +2465,10 @@ class CleanDerivativeFreeSPAR(PPO):
         self.logger.record("train/enum_env_steps", float(self._enum_env_steps))
         self.logger.record("train/enum_states",
                            float(sum(len(o) for o, _ in self._enum_store)))
+        # 1 = V_mm leaf (matches option B), 0 = scalar leaf (matches option A).
+        # Logged because a MISMATCH here is silent and was worth -4.9 EV.
+        self.logger.record("train/enum_leaf_is_vmm",
+                           1.0 if str(getattr(self, "minimax_target", "returns")) == "minimax" else 0.0)
         if self.num_timesteps < getattr(self, "_enum_next_at", 0):
             return
         self._enum_next_at = self.num_timesteps + self.enum_every
@@ -2494,8 +2498,8 @@ class CleanDerivativeFreeSPAR(PPO):
                     DN[i, j] = d
                     succ.append(self._enum_splice(o1, d, infos))
                     self._enum_env_steps += n
-                V1[i] = self._enum_values(np.concatenate(succ, axis=0),
-                                          buf_num).reshape(na, n)
+                V1[i] = self._enum_leaf_values(np.concatenate(succ, axis=0),
+                                               buf_num).reshape(na, n)
             venv.env_method("lbr_restore", KEY)
             venv.env_method("lbr_drop", KEY)
         finally:
@@ -2519,6 +2523,38 @@ class CleanDerivativeFreeSPAR(PPO):
             if d[k] and isinstance(infos[k], dict) and "terminal_observation" in infos[k]:
                 o1[k] = infos[k]["terminal_observation"]
         return o1
+
+    def _enum_leaf_values(self, obs, buf_num, side_flag=None, chunk=2048):
+        """The leaf value for the enumerated target, MATCHING the on-policy term.
+
+        THE BUG THIS FIXES. The head is trained on the SUM of two regressions.
+        Under --minimax_target minimax the on-policy term regresses onto
+        r + gamma*V_mm(s'), where V_mm is the equilibrium of the head's own
+        matrix. The enumerated term was built with r + gamma*V_scalar(s') --
+        because it reused bootstrap_delta's construction, which is a DIAGNOSTIC
+        and rightly uses the scalar critic. Under kappa=1 those are very
+        different objects, so every update pulled the head toward two mutually
+        inconsistent definitions of Q. Measured consequence: training loss fell
+        while held-out EV sat at -4.9, i.e. worse than a constant predictor.
+
+        Under --minimax_target returns the on-policy term regresses onto the
+        lambda-returns, which estimate Q^pi, whose one-step form IS
+        r + gamma*V^pi(s') = r + gamma*V_scalar(s'). So the scalar critic is the
+        CORRECT leaf there, and this returns it unchanged. The two branches are
+        not a preference; each matches its own on-policy target.
+        """
+        if str(getattr(self, "minimax_target", "returns")) != "minimax":
+            return self._enum_values(obs, buf_num)
+        head = self.policy.minimax_head_for(buf_num)
+        frozen = self._minimax_frozen_head(buf_num, head)
+        out = []
+        for i in range(0, obs.shape[0], chunk):
+            t = th.as_tensor(obs[i:i + chunk], device=self.device).float()
+            Mn = frozen(self.policy.minimax_latent(t, side_flag=side_flag))
+            sol = solve_matrix_game(Mn, iters=getattr(self, "minimax_iters", 1024),
+                                    eta=getattr(self, "minimax_eta", 0.5))
+            out.append(sol.V.reshape(-1).cpu().numpy())
+        return np.concatenate(out)
 
     def _enum_values(self, obs, buf_num):
         """V_ego over a branch batch.

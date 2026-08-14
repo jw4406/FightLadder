@@ -22,10 +22,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 
 OK = True
+N_RUN = 0
+# A test that never RUNS is indistinguishable from one that passes -- a
+# dispatch line I forgot cost an hour today while ALL PASS printed. So the
+# count is asserted, not assumed. Bump this deliberately when adding a check.
+EXPECTED_CHECKS = 12
 
 
 def check(name, cond, detail=""):
-    global OK
+    global OK, N_RUN
+    N_RUN += 1
     OK &= bool(cond)
     print(f"  {'PASS' if cond else 'FAIL'}  {name}{('  ' + detail) if detail else ''}")
 
@@ -123,7 +129,12 @@ def main():
     g10 = Guard(tol=1e-6, patience=3)
     check("just below tol IS saturated", feed_many(g10, "adv", [-9e-7] * 10) is not None)
 
-    print("\n  ALL PASS" if OK else "\n  FAILURES PRESENT")
+    global OK
+    if N_RUN != EXPECTED_CHECKS:
+        print(f"\n  FAIL  expected {EXPECTED_CHECKS} checks, {N_RUN} RAN -- a check "
+              f"was skipped or never dispatched, which is NOT a pass")
+        OK = False
+    print(f"\n  ALL PASS ({N_RUN} checks)" if OK else "\n  FAILURES PRESENT")
     raise SystemExit(0 if OK else 1)
 
 
