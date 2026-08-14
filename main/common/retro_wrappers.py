@@ -566,7 +566,40 @@ class Monitor2P(Monitor):
         self.rewards_other = []
         return super().reset(**kwargs)
     
+    def lbr_pause_monitor(self, paused: bool = True) -> bool:
+        """Suspend episode bookkeeping so the env can be BRANCHED and rewound.
+
+        Monitor2P corrupts a branching search in three separate ways, and all
+        three are silent-to-fatal rather than obvious:
+
+          1. `needs_reset` is set the moment any branch ends an episode, so the
+             NEXT restore-and-step raises RuntimeError and kills the worker.
+          2. every branch reward is appended to self.rewards, so the episode
+             return reported for the real trajectory includes counterfactual
+             rewards that were rewound away.
+          3. a done branch writes a full episode record, producing phantom
+             episodes in the monitor log and in rollout/ep_rew_mean.
+
+        Pausing is preferable to snapshotting the monitor: during enumeration we
+        want NO bookkeeping at all, so there is nothing to restore and no way for
+        the two copies to drift. The counterfactual steps are counted separately
+        by the algorithm as train/enum_env_steps.
+
+        Reaches through env_method like the other lbr_* methods, so it must be
+        public and must not start with an underscore.
+        """
+        self.__dict__["lbr_paused"] = bool(paused)
+        return bool(paused)
+
+    def lbr_monitor_paused(self) -> bool:
+        return bool(self.__dict__.get("lbr_paused", False))
+
     def step(self, action: Union[np.ndarray, int]) -> GymStepReturn:
+        if self.__dict__.get("lbr_paused", False):
+            # No guard, no accumulation, no episode record -- see
+            # lbr_pause_monitor. needs_reset is deliberately NOT set: the caller
+            # is about to rewind this env to a pre-branch snapshot.
+            return self.env.step(action)
         if self.needs_reset:
             raise RuntimeError("Tried to step environment that needs reset")
         observation, reward, reward_other, done, info = self.env.step(action)

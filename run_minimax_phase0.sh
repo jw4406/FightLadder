@@ -166,6 +166,20 @@ MINIMAX_FREEZE_EMBED="${MINIMAX_FREEZE_EMBED:-True}"
 # run spent 34M further steps as single-agent RL against a frozen bot, with a
 # plausible-looking score curve the whole time. ent_coef/dstb_ent_coef are 0.0,
 # so nothing else prevents it. False = warn but keep going.
+# COUNTERFACTUAL ENUMERATION. 0 = OFF and bitwise inert. >0 enumerates the full
+# 22x22 payoff at the current env states every N steps, using em.set_state to
+# rewind. PRIVILEGED access, training-time only; branch steps are logged as
+# train/enum_env_steps and any comparison must be budget-matched (~14.5%% at
+# 2M-step intervals).
+# x24 envs, so the default 20000 writes a checkpoint every 480k steps. A short
+# diagnostic run needs a much smaller value or it finishes without ever writing
+# one -- which silently makes the run unmeasurable by every checkpoint-based
+# probe (capture, LBR, bootstrap_delta).
+CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-20000}"
+ENUM_EVERY="${ENUM_EVERY:-0}"
+ENUM_K="${ENUM_K:-484}"
+ENUM_BUFFER="${ENUM_BUFFER:-8}"
+ENUM_LOSS_COEF="${ENUM_LOSS_COEF:-1.0}"
 ENTROPY_COLLAPSE_ABORT="${ENTROPY_COLLAPSE_ABORT:-True}"
 ENTROPY_COLLAPSE_TOL="${ENTROPY_COLLAPSE_TOL:-1e-6}"
 ENTROPY_COLLAPSE_PATIENCE="${ENTROPY_COLLAPSE_PATIENCE:-20}"
@@ -212,6 +226,32 @@ RUN_ROOT="${SCRIPT_DIR}/main/minimax_phase0_${TAG}"
 export FIGHTLADDER_TASK_DIR="${RUN_ROOT}/trained_models/tasks"
 mkdir -p "${FIGHTLADDER_TASK_DIR}/todo" "${FIGHTLADDER_TASK_DIR}/todo_continue"
 
+# ############################################################################
+# COLLISION GUARD. The comment above records that this has already destroyed a
+# baseline -- twice -- and it nearly happened a third time: RUN_TAG was passed
+# instead of RUN_SUFFIX, the misspelling was silently ignored, TAG fell through
+# to the default, and a throwaway run was pointed at a directory holding 126
+# checkpoints from a finished 60.48M arm. It was killed before its first
+# checkpoint interval by luck, not by design.
+#
+# The failure is silent in BOTH directions: a wrong variable name produces no
+# error, and an occupied task dir produces no warning. So check the thing that
+# actually matters -- is anything already there.
+# Catch the specific typo that caused the near-miss, rather than only its effect.
+if [ -n "${RUN_TAG:-}" ]; then
+    echo "REFUSING TO START: RUN_TAG is not a variable this script reads -- you want RUN_SUFFIX." >&2
+    echo "  RUN_TAG='${RUN_TAG}' would be silently ignored and the run would land in the DEFAULT task dir." >&2
+    exit 1
+fi
+_existing="$(find "${FIGHTLADDER_TASK_DIR}/todo" -maxdepth 1 -name '*.task' 2>/dev/null | wc -l)"
+if [ "${_existing}" -gt 0 ] && [ "${ALLOW_REUSE:-False}" != "True" ]; then
+    echo "REFUSING TO START: ${FIGHTLADDER_TASK_DIR}/todo already holds ${_existing} .task checkpoints." >&2
+    echo "  This run would overwrite them -- checkpoint names collide across runs." >&2
+    echo "  Set RUN_SUFFIX=<name> for a NEW run, or ALLOW_REUSE=True to resume this one." >&2
+    exit 1
+fi
+# ############################################################################
+
 CMD=(
     python -u "${IPPO_PATH}"
     --player Ryu --opponents Sagat
@@ -222,7 +262,7 @@ CMD=(
     --save_dir "${FIGHTLADDER_TASK_DIR}/todo"
     --use_lr_annealing False --lr_anneal_coeff .995
     --num_env_steps 512 --training_batch_size 1024
-    --checkpoint_interval 20000                 # x24 envs = every 480k steps
+    --checkpoint_interval "${CHECKPOINT_INTERVAL}"
     --total_timesteps "${TOTAL_TIMESTEPS:-150000000}"
     --ego_style learning --adv_style learning
     --render False --model_file "" --master_use_stag False --async_update False
@@ -238,6 +278,8 @@ CMD=(
     --minimax_w_init "${MINIMAX_W_INIT}"
     --minimax_freeze_embed "${MINIMAX_FREEZE_EMBED}"
     ${MINIMAX_EMBED:+--minimax_embed "${MINIMAX_EMBED}"}
+    --enum_every "${ENUM_EVERY}" --enum_k "${ENUM_K}"
+    --enum_buffer "${ENUM_BUFFER}" --enum_loss_coef "${ENUM_LOSS_COEF}"
     --entropy_collapse_abort "${ENTROPY_COLLAPSE_ABORT}"
     --entropy_collapse_tol "${ENTROPY_COLLAPSE_TOL}"
     --entropy_collapse_patience "${ENTROPY_COLLAPSE_PATIENCE}"

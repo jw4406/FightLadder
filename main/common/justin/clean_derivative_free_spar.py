@@ -125,6 +125,10 @@ class CleanDerivativeFreeSPAR(PPO):
             entropy_collapse_abort: bool = True,
             entropy_collapse_tol: float = 1e-6,
             entropy_collapse_patience: int = 20,
+            enum_every: int = 0,
+            enum_k: int = 484,
+            enum_buffer: int = 8,
+            enum_loss_coef: float = 1.0,
             vf_coef: float = 1.0,
             max_grad_norm: float = 0.5,
             use_sde: bool = False,
@@ -226,6 +230,29 @@ class CleanDerivativeFreeSPAR(PPO):
         # a healthy-looking score curve throughout. Detect and stop, rather than
         # discover it days later. ent_coef/dstb_ent_coef are 0.0 by default here,
         # so nothing else prevents this.
+        # COUNTERFACTUAL ACCESS. One transition trains exactly ONE of the 484
+        # cells, and that is measurably fatal to the interaction term: fitting
+        # the full Q from one cell per state recovers 0.95% of the true
+        # interaction subspace -- BELOW the 3.40% a random subspace scores --
+        # because a free per-state mean absorbs the lone observation and leaves
+        # zero residual for gamma. Enumerating the matrix instead takes the real
+        # head from ~5% to ~58%.
+        #
+        # This is PRIVILEGED information: it needs em.set_state(), which no
+        # model-free agent has. It is training-time only (the deployed policy
+        # queries nothing), but it changes the method's class, so every branch
+        # step is charged and logged as train/enum_env_steps and comparisons
+        # must be budget-matched.
+        #
+        # enum_every=0 disables it before any of the machinery is touched, so
+        # the default is bitwise identical to not having it.
+        self.enum_every = int(enum_every)
+        self.enum_k = int(enum_k)
+        self.enum_buffer = int(enum_buffer)
+        self.enum_loss_coef = float(enum_loss_coef)
+        self._enum_store = []          # list of (obs np.ndarray, M np.ndarray)
+        self._enum_env_steps = 0
+        self._enum_next_at = 0
         self.entropy_collapse_abort = bool(entropy_collapse_abort)
         self.entropy_collapse_tol = float(entropy_collapse_tol)
         self.entropy_collapse_patience = int(entropy_collapse_patience)
@@ -1414,6 +1441,12 @@ class CleanDerivativeFreeSPAR(PPO):
         _vt = getattr(self, "vtrace_trainer", None)
         if _vt is not None:
             _vt.pause()
+        # BEFORE the updates and AFTER the rollout: the branch steps are rewound,
+        # so nothing the policy update reads is contaminated, and the freshly
+        # enumerated matrices are available to every minibatch this iteration.
+        # Also inside the vtrace pause, so the value worker cannot write the
+        # value head while enumeration reads V(s') for the targets.
+        self._maybe_enumerate()
         try:
             if update_ego:
                 self.train_standard(update_ego=True, update_adversary=False)
@@ -2402,6 +2435,174 @@ class CleanDerivativeFreeSPAR(PPO):
             clip_range_vf_val = self.clip_range_vf(self._current_progress_remaining)
             self.logger.record("train/clip_range_vf", clip_range_vf_val)
 
+    @th.no_grad()
+    def _maybe_enumerate(self):
+        """Enumerate the full 22x22 payoff at the CURRENT env states, if due.
+
+        Runs on the TRAINING envs rather than a second stack: Monitor2P is the
+        only thing that breaks under branching, and lbr_pause_monitor suspends
+        exactly the three behaviours that break (see retro_wrappers). That
+        avoids duplicating the env config, the memory, and the subprocess count.
+
+        Called once per train(), AFTER the rollout is collected, so the branch
+        steps cannot contaminate the data the policy update sees. The envs are
+        snapshotted first and restored after, so the trajectory continues from
+        precisely where it left off.
+
+        Targets are stored, not successor observations: 484 successors x obs
+        width per state is gigabytes, while the 22x22 target is 1.9 KB. The cost
+        is that V(s') in the stored target ages -- and that is affordable,
+        measured: capture loses 0.01 points at realistic critic error and under
+        a point at twice the signal.
+        """
+        if int(getattr(self, "enum_every", 0)) <= 0 or not getattr(self, "minimax_q", False):
+            return
+        # Log the running totals on EVERY iteration, not only the ones that
+        # enumerate. Recording them inside the branch below made the key vanish
+        # from later dumps, which reads as "enumeration stopped" -- I misread it
+        # that way myself within minutes of the first run. The budget is the
+        # number that has to be quotable at any point, so it is always present.
+        self.logger.record("train/enum_env_steps", float(self._enum_env_steps))
+        self.logger.record("train/enum_states",
+                           float(sum(len(o) for o, _ in self._enum_store)))
+        if self.num_timesteps < getattr(self, "_enum_next_at", 0):
+            return
+        self._enum_next_at = self.num_timesteps + self.enum_every
+        venv = self.env
+        # Which matchup head V comes from. The enumeration runs on the whole
+        # vec-env, and evaluate_states needs a head to route through; head 0 is
+        # correct for the single-matchup configs this is run in, and asserting
+        # it here is better than silently averaging two matchups' values.
+        buf_num = [0]
+        na = int(getattr(self, "minimax_n_ego", 22))
+        n = venv.num_envs
+        KEY = "enum_root"
+        try:
+            venv.env_method("lbr_pause_monitor", True)
+            venv.env_method("lbr_snapshot", KEY)
+            obs0 = np.array(self._last_obs, copy=True)
+            R = np.zeros((na, na, n), dtype=np.float32)
+            V1 = np.zeros((na, na, n), dtype=np.float32)
+            DN = np.zeros((na, na, n), dtype=bool)
+            for i in range(na):
+                succ = []
+                for j in range(na):
+                    venv.env_method("lbr_restore", KEY)
+                    o1, r_l, r_r, d, infos = venv.step(self._enum_joint(i, j, n))
+                    d = np.asarray(d, dtype=bool)
+                    R[i, j] = np.asarray(r_l, dtype=np.float32).reshape(-1)
+                    DN[i, j] = d
+                    succ.append(self._enum_splice(o1, d, infos))
+                    self._enum_env_steps += n
+                V1[i] = self._enum_values(np.concatenate(succ, axis=0),
+                                          buf_num).reshape(na, n)
+            venv.env_method("lbr_restore", KEY)
+            venv.env_method("lbr_drop", KEY)
+        finally:
+            venv.env_method("lbr_pause_monitor", False)
+        M = (R + float(self.gamma) * V1 * (~DN)).transpose(2, 0, 1)
+        self._enum_store.append((obs0, M.astype(np.float32)))
+        if len(self._enum_store) > self.enum_buffer:
+            self._enum_store.pop(0)
+        self.logger.record("train/enum_env_steps", float(self._enum_env_steps))
+        self.logger.record("train/enum_states", float(sum(len(o) for o, _ in self._enum_store)))
+
+    def _enum_joint(self, i, j, n):
+        """The vec-env action for 'every env plays joint action (i, j)'."""
+        return np.stack([np.full(n, i, dtype=np.int64),
+                         np.full(n, j, dtype=np.int64)], axis=1)
+
+    def _enum_splice(self, o1, d, infos):
+        """Recover the true post-step obs where the worker auto-reset."""
+        o1 = np.array(o1, copy=True)
+        for k in range(len(d)):
+            if d[k] and isinstance(infos[k], dict) and "terminal_observation" in infos[k]:
+                o1[k] = infos[k]["terminal_observation"]
+        return o1
+
+    def _enum_values(self, obs, buf_num):
+        """V_ego over a branch batch.
+
+        NOT predict_values: it calls self.value_net(...), and value_net is a
+        ModuleDict in the multi-matchup policy, so it raises "Module [ModuleDict]
+        is missing the required forward function". Unit tests cannot catch this
+        -- they stub the policy -- and it took a live run to surface.
+
+        evaluate_states divides env_indices by envs_per_matchup unconditionally
+        (its =None default is a lie), then with len(buf_num)==1 forces the whole
+        batch through that head. So feed indices that map to OUR head, exactly
+        as PolicyOps.values_ego does in local_best_response.
+        """
+        head = int(buf_num[0])
+        t = th.as_tensor(obs, device=self.device).float()
+        env_idx = th.full((t.shape[0],), head * self.policy.envs_per_matchup,
+                          dtype=th.long, device=self.device)
+        v = self.policy.evaluate_states(t, buf_num=[head], env_indices=env_idx)
+        return v.reshape(-1).cpu().numpy()
+
+    def _enum_aux_loss(self, buf_num, side_flag=None):
+        """MSE of the head against the ENUMERATED matrices, all 484 cells.
+
+        enum_k < 484 subsamples the cells, which is the privilege ladder: the
+        pilot measured 35/69/59/85/53% of the full-enumeration capture at k=16
+        across five checkpoints, i.e. NO stable knee, so the default is the full
+        matrix and a cheaper k must be justified per run rather than assumed.
+        """
+        # Same defensive access as the call site: no _enum_* state on an object
+        # unpickled from a pre-feature checkpoint.
+        if int(getattr(self, "enum_every", 0)) <= 0 or not getattr(self, "_enum_store", None):
+            return None
+        obs = np.concatenate([o for o, _ in self._enum_store], axis=0)
+        M = np.concatenate([m for _, m in self._enum_store], axis=0)
+        obs_t = th.as_tensor(obs, device=self.device).float()
+        M_t = th.as_tensor(M, device=self.device).float()
+
+        # HOLDOUT. The buffer is small (enum_buffer x n_envs states) and every
+        # minibatch re-fits ALL of it, so the training loss falls even if the
+        # head is only memorising those states -- and this codebase has already
+        # seen a joint-action head put 81-91% of within-state energy into rank-10
+        # NOISE while its loss improved. A descending enum_loss is therefore NOT
+        # evidence of anything on its own; enum_loss_holdout is.
+        #
+        # Split by a fixed stride rather than at random so a state stays on the
+        # same side for its whole life in the buffer -- a per-step reshuffle
+        # would leak every held-out state into training within a few updates.
+        n = len(M_t)
+        hold = th.arange(n, device=self.device) % 5 == 0      # 20% held out
+        if n < 10 or not bool(hold.any()) or bool(hold.all()):
+            hold = th.zeros(n, dtype=th.bool, device=self.device)
+
+        P = self.policy.minimax_matrices(
+            obs_t, buf_num=buf_num, side_flag=side_flag,
+            stop_grad=getattr(self, "minimax_stop_grad", True))
+        na = M_t.shape[-1]
+        if self.enum_k >= na * na:
+            per_state = ((P - M_t) ** 2).mean(dim=(1, 2))
+        else:
+            idx = th.randperm(na * na, device=self.device)[:max(1, self.enum_k)]
+            per_state = ((P.reshape(n, -1)[:, idx]
+                          - M_t.reshape(n, -1)[:, idx]) ** 2).mean(dim=1)
+        if bool(hold.any()):
+            # EXPLAINED VARIANCE, not just MSE. An MSE is uninterpretable without
+            # the target's own variance: a head that learns nothing but the MEAN
+            # scores MSE ~ var(M), and this repo has already shipped a run where
+            # 2e-04 looked small against target_std 0.017 and meant exactly that.
+            # ev <= 0 => no better than predicting the mean, whatever the MSE.
+            with th.no_grad():
+                Mh = M_t[hold]
+                resid = float(per_state[hold].mean())
+                var = float(Mh.var(unbiased=False))
+                ev = 1.0 - resid / var if var > 1e-30 else float("nan")
+            self._minimax_stats = {
+                **getattr(self, "_minimax_stats", {}),
+                "enum_loss_holdout": resid,
+                "enum_ev_holdout": ev,
+                "enum_target_var": var,
+                "enum_n_train": float((~hold).sum()),
+            }
+            return per_state[~hold].mean()
+        return per_state.mean()
+
     def _check_entropy_collapse(self, prefix, entropy_losses):
         """Stop the run when a policy saturates to exactly zero entropy.
 
@@ -2706,6 +2907,20 @@ class CleanDerivativeFreeSPAR(PPO):
             if adv_frame:
                 target = -target
         loss = F.mse_loss(target, q_played)
+
+        # The enumerated matrices are the ONLY term that sees more than the one
+        # played cell. Added rather than substituted so the on-policy signal --
+        # which is on-distribution and never stale -- still trains the head.
+        # getattr, not a direct call: a model unpickled from a checkpoint written
+        # before this feature has no _enum_* state, and the frame/isolation tests
+        # drive this method on a minimal stand-in. Matches the defensive access
+        # used for every other optional attribute in this file.
+        _enum_fn = getattr(self, "_enum_aux_loss", None)
+        _enum = _enum_fn(buf_num, side_flag) if _enum_fn is not None else None
+        if _enum is not None:
+            self._minimax_stats = {**getattr(self, "_minimax_stats", {}),
+                                   "enum_loss": float(_enum.detach())}
+            loss = loss + self.enum_loss_coef * _enum
 
         self.policy.minimax_optimizer.zero_grad()
         loss.backward()

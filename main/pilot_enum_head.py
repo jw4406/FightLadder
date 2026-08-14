@@ -46,6 +46,12 @@ def main(argv=None):
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--holdout", type=float, default=0.3)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--max_train", type=int, nargs="+", default=[0],
+                    help="Cap the number of TRAINING states, to reproduce the live "
+                         "loop's regime. The live buffer holds ~24 states per "
+                         "enumeration event and reached only 76 after 150k steps, "
+                         "against this pilot's 420 -- so a result that needs 420 "
+                         "does not transfer. 0 = use all.")
     ap.add_argument("--json_out", default="", help="machine-readable results, for "
                                                   "cross-checkpoint aggregation")
     a = ap.parse_args(argv)
@@ -119,6 +125,7 @@ def main(argv=None):
               f"{base_cap:.2%}   head gamma-share (holdout) {head_gamma_share(te):.2%}")
 
         rng = np.random.RandomState(0)
+        _tr_full = tr
         out = {"ckpt": os.path.basename(a.ckpt), "npz": os.path.basename(a.npz),
                "target": a.target, "n_states": int(S),
                "steps": int(data.get("num_timesteps") or 0),
@@ -126,8 +133,11 @@ def main(argv=None):
                    max(((d["R"] - d["R"].mean(axis=(1, 2), keepdims=True)) ** 2).sum(), 1e-30)),
                "base_capture": float(base_cap),
                "base_gamma_share": float(head_gamma_share(te)), "arms": {}}
-        print(f"\n{'enum_k':>7} {'capture':>9} {'gamma-share':>12} {'holdout MSE':>13}")
+        print(f"\n{'enum_k':>7} {'n_train':>7} {'capture':>9} {'gamma-share':>12} "
+              f"{'holdout MSE':>11} {'holdout EV':>9}")
         for k in a.enum_k:
+          for _cap in a.max_train:
+            tr = _tr_full[:_cap] if _cap else _tr_full
             head.load_state_dict(head0)                     # same start every arm
             params = [p for p in head.parameters() if p.requires_grad]
             opt = th.optim.AdamW(params, lr=a.lr)
@@ -152,9 +162,14 @@ def main(argv=None):
                 Pte = policy.minimax_matrices(obs_t[te], buf_num=[head_idx])
                 mse = float(((Pte - tgt_t[te]) ** 2).mean())
             cap_k, gs_k = head_capture(), head_gamma_share(te)
-            out["arms"][str(k)] = {"capture": float(cap_k),
-                                   "gamma_share": float(gs_k), "holdout_mse": mse}
-            print(f"{k:>7} {cap_k:>9.2%} {gs_k:>12.2%} {mse:>13.3e}")
+            with th.no_grad():
+                var = float(tgt_t[te].var())
+            ev = 1.0 - mse / var if var > 0 else float("nan")
+            out["arms"][f"{k}_{_cap}"] = {"capture": float(cap_k),
+                                          "gamma_share": float(gs_k),
+                                          "holdout_mse": mse, "holdout_ev": ev,
+                                          "n_train": int(len(tr))}
+            print(f"{k:>7} {len(tr):>7} {cap_k:>9.2%} {gs_k:>12.2%} {mse:>11.3e} {ev:>9.3f}")
 
         head.load_state_dict(head0)
         if a.json_out:

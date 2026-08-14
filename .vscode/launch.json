@@ -104,6 +104,18 @@
                 // single-agent RL against a frozen bot while its score curve
                 // still looked plausible. ent_coef/dstb_ent_coef are 0.0, so
                 // nothing else prevents this. "False" = warn but keep going.
+                // Counterfactual enumeration. 0 = OFF and bitwise inert.
+                // One transition trains ONE of 484 cells; fitting the full Q
+                // from one cell per state recovers 0.95% of the true
+                // interaction -- BELOW the 3.40% a random subspace scores.
+                // Enumerating takes the real head from ~5% to ~58%. PRIVILEGED
+                // (needs em.set_state), training-time only; branch steps are
+                // logged as train/enum_env_steps so comparisons can be
+                // budget-matched.
+                "--enum_every", "0",
+                "--enum_k", "484",
+                "--enum_buffer", "8",
+                "--enum_loss_coef", "1.0",
                 "--entropy_collapse_abort", "True",
                 "--entropy_collapse_tol", "1e-6",
                 "--entropy_collapse_patience", "20",

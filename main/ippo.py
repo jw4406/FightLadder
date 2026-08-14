@@ -773,6 +773,10 @@ def main(args):
                 blend_adversary_heads=(args.blend_adversary_heads == 'True'),
                 popart=(args.popart == 'True'),
                 popart_beta=args.popart_beta,
+                enum_every=getattr(args, 'enum_every', 0),
+                enum_k=getattr(args, 'enum_k', 484),
+                enum_buffer=getattr(args, 'enum_buffer', 8),
+                enum_loss_coef=getattr(args, 'enum_loss_coef', 1.0),
                 entropy_collapse_abort=(getattr(args, 'entropy_collapse_abort', 'True') == 'True'),
                 entropy_collapse_tol=getattr(args, 'entropy_collapse_tol', 1e-6),
                 entropy_collapse_patience=getattr(args, 'entropy_collapse_patience', 20),
@@ -1461,6 +1465,30 @@ if __name__ == "__main__":
                              "property of the game rather than the policy, and the "
                              "on-policy gradient is what produced the 4.93%% subspace "
                              "in the first place.")
+    parser.add_argument('--enum_every', type=int, default=0,
+                        help="Env steps between full 22x22 ENUMERATIONS of the payoff "
+                             "at the current env states. 0 = OFF and bitwise inert. "
+                             "WHY: one transition trains ONE of 484 cells, and fitting "
+                             "the full Q from one cell per state recovers 0.95%% of the "
+                             "true interaction subspace -- BELOW the 3.40%% a random "
+                             "subspace scores. Enumerating takes the real head from ~5%% "
+                             "to ~58%%. This is PRIVILEGED access (needs em.set_state), "
+                             "training-time only; every branch step is charged and "
+                             "logged as train/enum_env_steps, so comparisons must be "
+                             "budget-matched.")
+    parser.add_argument('--enum_k', type=int, default=484,
+                        help="Cells observed per enumerated state; 484 = the full "
+                             "matrix. The privilege ladder. Measured across five "
+                             "checkpoints, k=16 recovered 35/69/59/85/53%% of the full "
+                             "capture -- NO stable knee -- so a cheaper k must be "
+                             "justified per run rather than assumed.")
+    parser.add_argument('--enum_buffer', type=int, default=8,
+                        help="Enumerations retained. Targets age (V(s') is stale), which "
+                             "is affordable: capture loses 0.01 points at realistic "
+                             "critic error and under a point at 2x the signal.")
+    parser.add_argument('--enum_loss_coef', type=float, default=1.0,
+                        help="Weight of the enumerated-matrix loss, ADDED to the "
+                             "on-policy single-cell loss rather than replacing it.")
     parser.add_argument('--entropy_collapse_abort', choices=['True', 'False'], default='True',
                         help="Stop the run when a policy saturates to EXACTLY zero "
                              "entropy. This is an absorbing state -- no probability "
