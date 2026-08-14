@@ -122,6 +122,9 @@ class CleanDerivativeFreeSPAR(PPO):
             normalize_advantage: bool = False,
             ent_coef: float = 0.0,
             dstb_ent_coef: float = 0.0,
+            entropy_collapse_abort: bool = True,
+            entropy_collapse_tol: float = 1e-6,
+            entropy_collapse_patience: int = 20,
             vf_coef: float = 1.0,
             max_grad_norm: float = 0.5,
             use_sde: bool = False,
@@ -216,6 +219,17 @@ class CleanDerivativeFreeSPAR(PPO):
 
         self.update_left = update_left
         self.dstb_ent_coef = dstb_ent_coef
+        # Entropy saturation is an ABSORBING state: a policy at exactly zero
+        # entropy has no probability mass to move, so its gradient is zero and it
+        # can never recover. p1_clr1e5_winit hit it on the ADVERSARY at 3.77M and
+        # spent the next 34M steps as single-agent RL against a frozen bot, with
+        # a healthy-looking score curve throughout. Detect and stop, rather than
+        # discover it days later. ent_coef/dstb_ent_coef are 0.0 by default here,
+        # so nothing else prevents this.
+        self.entropy_collapse_abort = bool(entropy_collapse_abort)
+        self.entropy_collapse_tol = float(entropy_collapse_tol)
+        self.entropy_collapse_patience = int(entropy_collapse_patience)
+        self._entropy_zero_streak = {"ego": 0, "adv": 0}
         self.dstb_action_space = dstb_action_space
         self.update_right = update_right
         self.learning_rate = [c_learning_rate, d_learning_rate, v_learning_rate]
@@ -2374,6 +2388,7 @@ class CleanDerivativeFreeSPAR(PPO):
         prefix = "ego" if ego else "adv"
 
         self.logger.record(f"train/{prefix}_entropy_loss", np.mean(entropy_losses))
+        self._check_entropy_collapse(prefix, entropy_losses)
         self.logger.record(f"train/{prefix}_policy_gradient_loss", np.mean(pg_losses))
         self.logger.record(f"train/{prefix}_approx_kl", np.mean(approx_kl_divs))
         self.logger.record(f"train/{prefix}_explained_variance", explained_var)
@@ -2386,6 +2401,43 @@ class CleanDerivativeFreeSPAR(PPO):
         if self.clip_range_vf is not None:
             clip_range_vf_val = self.clip_range_vf(self._current_progress_remaining)
             self.logger.record("train/clip_range_vf", clip_range_vf_val)
+
+    def _check_entropy_collapse(self, prefix, entropy_losses):
+        """Stop the run when a policy saturates to exactly zero entropy.
+
+        entropy_loss is -mean(entropy), so |entropy_loss| ~ 0 means the policy is
+        a deterministic point mass. That is ABSORBING, not a transient: no
+        probability mass to move -> zero policy gradient -> it stays there. The
+        run keeps producing a plausible score curve while no longer being
+        self-play at all.
+
+        A streak is required rather than a single hit, so a momentarily-saturated
+        update does not kill an otherwise healthy run. For calibration: the arm
+        that died had 2761 consecutive zero blocks and the healthy one had 0 of
+        4608, so any patience in this range separates them cleanly.
+        """
+        if not entropy_losses:
+            return
+        mean_ent = float(np.mean(entropy_losses))
+        if not np.isfinite(mean_ent) or abs(mean_ent) >= self.entropy_collapse_tol:
+            self._entropy_zero_streak[prefix] = 0
+        else:
+            self._entropy_zero_streak[prefix] += 1
+        streak = self._entropy_zero_streak[prefix]
+        self.logger.record(f"train/{prefix}_entropy_zero_streak", streak)
+        if streak and streak % max(1, self.entropy_collapse_patience // 4) == 0:
+            print(f"[ENTROPY WARNING] {prefix} entropy has been ~0 for {streak} "
+                  f"updates (|{mean_ent:.3g}| < {self.entropy_collapse_tol:g}); "
+                  f"abort at {self.entropy_collapse_patience}", flush=True)
+        if self.entropy_collapse_abort and streak >= self.entropy_collapse_patience:
+            raise RuntimeError(
+                f"ENTROPY COLLAPSE on the {prefix} policy: |entropy| < "
+                f"{self.entropy_collapse_tol:g} for {streak} consecutive updates "
+                f"at {self.num_timesteps} steps. This is an absorbing state -- the "
+                f"policy gradient is zero and it cannot recover, so the run is no "
+                f"longer self-play. Aborting. Set --entropy_collapse_abort False "
+                f"to continue anyway (results downstream will not be valid "
+                f"self-play measurements).")
 
     def _minimax_kappa(self):
         """How much of the bootstrap is V_minimax right now. 0.0 = PHASE 0."""

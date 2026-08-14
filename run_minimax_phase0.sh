@@ -161,6 +161,14 @@ MINIMAX_W_INIT="${MINIMAX_W_INIT:-0.01}"
 # MINIMAX_RANK. Frozen by default.
 MINIMAX_EMBED="${MINIMAX_EMBED:-}"
 MINIMAX_FREEZE_EMBED="${MINIMAX_FREEZE_EMBED:-True}"
+# Entropy saturation is ABSORBING: zero entropy -> zero policy gradient -> the
+# policy can never recover. p1_clr1e5_winit's ADVERSARY hit it at 3.77M and the
+# run spent 34M further steps as single-agent RL against a frozen bot, with a
+# plausible-looking score curve the whole time. ent_coef/dstb_ent_coef are 0.0,
+# so nothing else prevents it. False = warn but keep going.
+ENTROPY_COLLAPSE_ABORT="${ENTROPY_COLLAPSE_ABORT:-True}"
+ENTROPY_COLLAPSE_TOL="${ENTROPY_COLLAPSE_TOL:-1e-6}"
+ENTROPY_COLLAPSE_PATIENCE="${ENTROPY_COLLAPSE_PATIENCE:-20}"
 # PHASE 1 SWITCH. 0.0 = the head feeds NOTHING (diagnostic; every result so far
 # was measured here). >0 blends V_minimax into the GAE bootstrap and the head
 # starts moving the policy. Requires GAE_LAMBDA=0 -- see ippo.py --gae_lambda.
@@ -230,6 +238,9 @@ CMD=(
     --minimax_w_init "${MINIMAX_W_INIT}"
     --minimax_freeze_embed "${MINIMAX_FREEZE_EMBED}"
     ${MINIMAX_EMBED:+--minimax_embed "${MINIMAX_EMBED}"}
+    --entropy_collapse_abort "${ENTROPY_COLLAPSE_ABORT}"
+    --entropy_collapse_tol "${ENTROPY_COLLAPSE_TOL}"
+    --entropy_collapse_patience "${ENTROPY_COLLAPSE_PATIENCE}"
     --minimax_bootstrap_kappa "${MINIMAX_BOOTSTRAP_KAPPA}"
     --minimax_bootstrap_warmup "${MINIMAX_BOOTSTRAP_WARMUP}"
     --gae_lambda "${GAE_LAMBDA}"

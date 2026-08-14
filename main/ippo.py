@@ -773,6 +773,9 @@ def main(args):
                 blend_adversary_heads=(args.blend_adversary_heads == 'True'),
                 popart=(args.popart == 'True'),
                 popart_beta=args.popart_beta,
+                entropy_collapse_abort=(getattr(args, 'entropy_collapse_abort', 'True') == 'True'),
+                entropy_collapse_tol=getattr(args, 'entropy_collapse_tol', 1e-6),
+                entropy_collapse_patience=getattr(args, 'entropy_collapse_patience', 20),
                 minimax_q=(args.minimax_q == 'True'),
                 minimax_head=getattr(args, 'minimax_head', 'matrix'),
                 minimax_rank=getattr(args, 'minimax_rank', 4),
@@ -1458,6 +1461,22 @@ if __name__ == "__main__":
                              "property of the game rather than the policy, and the "
                              "on-policy gradient is what produced the 4.93%% subspace "
                              "in the first place.")
+    parser.add_argument('--entropy_collapse_abort', choices=['True', 'False'], default='True',
+                        help="Stop the run when a policy saturates to EXACTLY zero "
+                             "entropy. This is an absorbing state -- no probability "
+                             "mass to move means zero policy gradient, so the policy "
+                             "can never recover -- and the run silently stops being "
+                             "self-play while its score curve still looks plausible. "
+                             "MEASURED: p1_clr1e5_winit's ADVERSARY hit it at 3.77M and "
+                             "spent the next 34M steps as single-agent RL against a "
+                             "frozen bot. ent_coef/dstb_ent_coef are 0.0, so nothing "
+                             "else prevents it. False = warn only.")
+    parser.add_argument('--entropy_collapse_tol', type=float, default=1e-6,
+                        help="|mean entropy| below this counts as saturated.")
+    parser.add_argument('--entropy_collapse_patience', type=int, default=20,
+                        help="Consecutive saturated updates before aborting. The dead "
+                             "arm had 2761 in a row and the healthy one 0 of 4608, so "
+                             "anything in this range separates them cleanly.")
     parser.add_argument('--minimax_w_init', type=float, default=0.01,
                         help="Init scale for the factored head's W(s), as a MULTIPLIER "
                              "on torch's default Linear init. 0.0 reproduces the "

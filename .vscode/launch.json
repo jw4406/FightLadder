@@ -97,6 +97,16 @@
                 // loading by default. Its rank MUST match --minimax_rank.
                 "--minimax_embed", "",
                 "--minimax_freeze_embed", "True",
+                // Entropy saturation is ABSORBING: a policy at exactly zero
+                // entropy has no probability mass to move, so its gradient is
+                // zero and it can NEVER recover. MEASURED: p1_clr1e5_winit's
+                // adversary hit it at 3.77M and the run spent 34M more steps as
+                // single-agent RL against a frozen bot while its score curve
+                // still looked plausible. ent_coef/dstb_ent_coef are 0.0, so
+                // nothing else prevents this. "False" = warn but keep going.
+                "--entropy_collapse_abort", "True",
+                "--entropy_collapse_tol", "1e-6",
+                "--entropy_collapse_patience", "20",
                 // PHASE 1 switch. 0.0 = the head feeds NOTHING and the code path
                 // is not entered, so behaviour is BITWISE identical to Phase 0.
                 // >0 blends V_minimax into the GAE bootstrap and the head starts
