@@ -704,9 +704,19 @@ class RamObsWrapper(gym.Wrapper):
     Must return the 2P 5-tuple like InfoObsWrapper, or the SPAR path breaks.
     """
 
-    def __init__(self, env, mask=None):
+    def __init__(self, env, mask=None, stack=1):
         super().__init__(env)
         self._mask = None if mask is None else np.asarray(mask, dtype=np.int64)
+        # STACK. A single RAM frame is Markov for the game's mechanical state IF
+        # the mask kept the per-character state-machine bytes (move id, animation
+        # frame counter, hitstun timer) -- and `vary` mode keeps exactly that
+        # kind of byte, since counters change constantly. So stack=1 is the
+        # honest default and this is opt-in.
+        #
+        # It changes the OBSERVATION WIDTH, so a checkpoint trained at one stack
+        # cannot be loaded at another.
+        self._stack = max(1, int(stack))
+        self._hist = deque(maxlen=self._stack)
         # Walk down to whatever actually owns get_ram(); the chain is
         # SFWrapper -> FrameStack -> RetroEnv and `unwrapped` is not reliable
         # through SFWrapper's custom __getattr__.
@@ -724,16 +734,50 @@ class RamObsWrapper(gym.Wrapper):
         else:
             n = n_full
         self.ram_bytes_full = n_full
-        self.observation_space = Box(low=0.0, high=1.0, shape=(n,), dtype=np.float32)
+        self.ram_bytes_masked = n
+        self.observation_space = Box(low=0.0, high=1.0,
+                                     shape=(n * self._stack,), dtype=np.float32)
 
-    def _ram_obs(self):
+    def _frame(self):
         ram = np.asarray(self._retro.get_ram())
         if self._mask is not None:
             ram = ram[self._mask]
         return (ram.astype(np.float32) / 255.0)
 
+    def _ram_obs(self):
+        f = self._frame()
+        if self._stack == 1:
+            return f
+        self._hist.append(f)
+        while len(self._hist) < self._stack:      # first frames after a reset
+            self._hist.appendleft(f)
+        return np.concatenate(list(self._hist))
+
+    # The lbr_* methods live on SFWrapper, which this wrapper sits OUTSIDE of --
+    # so a plain env_method("lbr_snapshot") would forward straight past this
+    # history buffer and branches would inherit each other's frames. Intercept,
+    # save the deque, then delegate.
+    def lbr_snapshot(self, key="lbr_root"):
+        self.__dict__.setdefault("_ram_hist_store", {})[key] = list(self._hist)
+        return self.env.lbr_snapshot(key)
+
+    def lbr_restore(self, key="lbr_root"):
+        h = self.__dict__.get("_ram_hist_store", {}).get(key)
+        if h is not None:
+            self._hist = deque(h, maxlen=self._stack)
+        return self.env.lbr_restore(key)
+
+    def lbr_drop(self, key=None):
+        st = self.__dict__.get("_ram_hist_store", {})
+        if key is None:
+            st.clear()
+        else:
+            st.pop(key, None)
+        return self.env.lbr_drop(key)
+
     def reset(self, **kwargs):
         self.env.reset(**kwargs)
+        self._hist.clear()
         return self._ram_obs()
 
     def step(self, action):

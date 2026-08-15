@@ -127,7 +127,7 @@ def _load_ram_mask(args):
 
 def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True,
              null_combo=False, transform_action=False, seed=0, obs_type='image', ego_is_left=True,
-             ram_mask=None):
+             ram_mask=None, ram_stack=1):
     def _init():
         players = 2
         env = retro.make(
@@ -143,7 +143,7 @@ def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=N
         # Observation wrapper. NOTE: the InfoObsWrapper branch used to be
         # commented out here, so --obs_type info silently did nothing.
         if obs_type == 'ram':
-            env = RamObsWrapper(env, mask=ram_mask)
+            env = RamObsWrapper(env, mask=ram_mask, stack=ram_stack)
         elif obs_type == 'info':
             env = InfoObsWrapper(env, ego_is_left=ego_is_left)
         env = Monitor2P(env)
@@ -1507,6 +1507,15 @@ if __name__ == "__main__":
                              "bonus gradient is also proportional to movable probability "
                              "mass. A parameter RESET restores ln(22)=3.09 by "
                              "construction. Mirrors --reinit_adversary.")
+    parser.add_argument('--ram_stack', type=int, default=1,
+                        help="Concatenate this many consecutive RAM frames into one "
+                             "observation. 1 = single frame, the current behaviour. A "
+                             "single frame is probably already Markov for the game's "
+                             "MECHANICAL state -- the  mask keeps state-machine "
+                             "bytes (move id, animation frame counter, hitstun timer) "
+                             "because counters change constantly -- so this is opt-in. "
+                             "CHANGES THE OBSERVATION WIDTH, so a checkpoint trained at "
+                             "one stack cannot be loaded at another.")
     parser.add_argument('--ent_coef', type=float, default=0.0,
                         help="Entropy bonus on the EGO policy. The class default is "
                              "0.0 and ippo.py never overrode it, so every run to date "

@@ -118,6 +118,14 @@ OBS_TYPE="${OBS_TYPE:-ram}"
 # in place; write a new file under a new name.
 # ############################################################################
 RAM_MASK="${RAM_MASK:-}"
+
+# Concatenate this many consecutive RAM frames into one observation. 1 = single
+# frame, the historical behaviour. A single masked frame is probably already
+# Markov for the game's MECHANICAL state, since the mask keeps the per-character
+# state-machine bytes, so this is opt-in. It CHANGES THE OBSERVATION WIDTH: a
+# checkpoint trained at one stack cannot be loaded at another, and MODEL_FILE
+# warm-starts must use the same value.
+RAM_STACK="${RAM_STACK:-1}"
 POPART="${POPART:-False}"
 case "${POPART}" in True|False) ;; *) echo "POPART must be True|False" >&2; exit 1 ;; esac
 # What the joint-action head regresses onto. 'returns' (default) is option A --
@@ -298,6 +306,7 @@ CMD=(
     --render False --model_file "${MODEL_FILE}" --master_use_stag False --async_update False
     --obs_type "${OBS_TYPE}"
     --ram_mask "${RAM_MASK}"
+    --ram_stack "${RAM_STACK}"
     --gamma 0.94
     --vtrace_enabled "${VTRACE_ENABLED}" --vtrace_seq_len 64
     --vtrace_c_bar 1.0 --vtrace_rho_bar 5.0 --vtrace_replay_capacity 15000

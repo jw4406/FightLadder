@@ -121,7 +121,7 @@ def prof_report(total_s, label=""):
 
 def make_lbr_env(state, side="both", reset_type="round", enable_combo=True,
                  null_combo=False, transform_action=True, seed=0,
-                 obs_type="image", ram_mask=None):
+                 obs_type="image", ram_mask=None, ram_stack=1):
     """Env factory for LBR. Deliberately omits Monitor2P.
 
     Monitor2P is stateful and fails loudly under branching: it raises
@@ -146,7 +146,7 @@ def make_lbr_env(state, side="both", reset_type="round", enable_combo=True,
         # unreadable 65,536-element space dump; infer_obs_kwargs() reads the
         # right setting off the checkpoint so callers cannot get this wrong.
         if obs_type == "ram":
-            env = RamObsWrapper(env, mask=ram_mask)
+            env = RamObsWrapper(env, mask=ram_mask, stack=ram_stack)
         elif obs_type == "info":
             env = InfoObsWrapper(env)
         env.seed(seed)
@@ -189,10 +189,14 @@ def infer_obs_kwargs(data, ram_mask=None):
             f"--ram_mask was given. The checkpoint records the width, not which "
             f"bytes; pass the .npy used for training.")
     m = np.load(ram_mask) if isinstance(ram_mask, str) else np.asarray(ram_mask)
-    if m.size != n:
-        raise SystemExit(f"--ram_mask has {m.size} indices but the checkpoint "
-                         f"observation is {n} wide; wrong mask file.")
-    return {"obs_type": "ram", "ram_mask": m}
+    # The width is mask_size * ram_stack. Infer the stack depth rather than
+    # asking the caller for it: getting it wrong builds an env whose obs is a
+    # different WIDTH from the checkpoint, which fails deep in the first forward.
+    if m.size == 0 or n % m.size != 0:
+        raise SystemExit(f"--ram_mask has {m.size} indices, which does not divide "
+                         f"the checkpoint observation width {n}; wrong mask file.")
+    stack = n // m.size
+    return {"obs_type": "ram", "ram_mask": m, "ram_stack": stack}
 
 
 def preflight(venv, model):
