@@ -175,6 +175,12 @@ MINIMAX_FREEZE_EMBED="${MINIMAX_FREEZE_EMBED:-True}"
 # diagnostic run needs a much smaller value or it finishes without ever writing
 # one -- which silently makes the run unmeasurable by every checkpoint-based
 # probe (capture, LBR, bootstrap_delta).
+# Resume from an existing checkpoint instead of scratch. set_parameters() loads
+# the WHOLE policy including the minimax head, which is the point: a 600k run
+# from scratch never reaches an ENGAGED state distribution, and contact rate is
+# what determines whether there is any interaction to learn (7-12% from scratch
+# vs 90.7% at p1_clr1e5's 11.04M).
+MODEL_FILE="${MODEL_FILE:-}"
 CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-20000}"
 ENUM_EVERY="${ENUM_EVERY:-0}"
 ENUM_K="${ENUM_K:-484}"
@@ -265,7 +271,7 @@ CMD=(
     --checkpoint_interval "${CHECKPOINT_INTERVAL}"
     --total_timesteps "${TOTAL_TIMESTEPS:-150000000}"
     --ego_style learning --adv_style learning
-    --render False --model_file "" --master_use_stag False --async_update False
+    --render False --model_file "${MODEL_FILE}" --master_use_stag False --async_update False
     --obs_type "${OBS_TYPE}"
     --ram_mask "${RAM_MASK}"
     --gamma 0.94

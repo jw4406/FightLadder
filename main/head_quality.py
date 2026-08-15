@@ -44,6 +44,11 @@ def main(argv=None):
     ap.add_argument("--npz_glob", required=True, help="enum_*_raw.npz with OBS")
     ap.add_argument("--ram_mask", default="")
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--boot", type=int, default=2000,
+                    help="Bootstrap resamples OVER STATES for a 95%% CI on corrW(R). "
+                         "With no uncertainty attached, 0.62 against -0.09 is not "
+                         "obviously outside noise at 300 states -- the interval is "
+                         "the claim, not the point estimate.")
     a = ap.parse_args(argv)
 
     import numpy as np
@@ -99,8 +104,16 @@ def main(argv=None):
         # action-conditional structure is mismatch-free evidence either way.
         Rw = Rr - Rr.mean(axis=(1, 2), keepdims=True)
         cr = float(np.corrcoef(Pw.ravel(), Rw.ravel())[0, 1])
+        # resample STATES, not cells: the 484 cells within a state are highly
+        # dependent, so a cell-level bootstrap would understate the interval.
+        _rng = np.random.RandomState(0); _n = len(Pw); _cs = []
+        for _ in range(a.boot):
+            _i = _rng.randint(0, _n, _n)
+            _cs.append(np.corrcoef(Pw[_i].ravel(), Rw[_i].ravel())[0, 1])
+        _lo, _hi = np.percentile(_cs, 2.5), np.percentile(_cs, 97.5)
         print(f"{steps:11,} {len(T):7d} {ev(P, T):8.3f} {ev(Pw, Tw):10.3f} "
-              f"{cw:12.3f} {ev(Pw, Rw):9.3f} {cr:9.3f} {Pw.std():9.5f} {Tw.std():8.5f}")
+              f"{cw:12.3f} {ev(Pw, Rw):9.3f} {cr:9.3f} [{_lo:+.3f},{_hi:+.3f}]"
+              f" {Pw.std():8.5f} {Tw.std():8.5f}")
 
 
 if __name__ == "__main__":
