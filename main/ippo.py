@@ -625,7 +625,7 @@ def main(args):
 
     checkpoint_interval = args.checkpoint_interval # checkpoint_interval * num_envs = total_steps_per_checkpoint
 
-    def finetune_model_generator(model_file=None, reinit_adversary=False, lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
+    def finetune_model_generator(model_file=None, reinit_adversary=False, reinit_ego=False, lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
                                  other_lr_schedule=linear_schedule(5.0e-5, 2.5e-6),
                                  clip_range_schedule=linear_schedule(0.075, 0.025), STATE=None, model_arch_type=None):
         REMOVAL
@@ -773,10 +773,16 @@ def main(args):
                 blend_adversary_heads=(args.blend_adversary_heads == 'True'),
                 popart=(args.popart == 'True'),
                 popart_beta=args.popart_beta,
+                ent_coef=getattr(args, 'ent_coef', 0.0),
+                dstb_ent_coef=getattr(args, 'dstb_ent_coef', 0.0),
                 enum_every=getattr(args, 'enum_every', 0),
                 enum_k=getattr(args, 'enum_k', 484),
                 enum_buffer=getattr(args, 'enum_buffer', 8),
                 enum_loss_coef=getattr(args, 'enum_loss_coef', 1.0),
+                enum_contact_only=(getattr(args, 'enum_contact_only', 'False') == 'True'),
+                enum_probe=getattr(args, 'enum_probe', 0),
+                enum_walk=getattr(args, 'enum_walk', 40),
+                enum_probe_frac=getattr(args, 'enum_probe_frac', 1.0),
                 entropy_collapse_abort=(getattr(args, 'entropy_collapse_abort', 'True') == 'True'),
                 entropy_collapse_tol=getattr(args, 'entropy_collapse_tol', 1e-6),
                 entropy_collapse_patience=getattr(args, 'entropy_collapse_patience', 20),
@@ -1006,6 +1012,34 @@ def main(args):
                       f"(pi_dstb_features_extractor + dstb_action_net) and rebuilt "
                       f"dstb_optimizer at lr={lr_now}; ego and critic kept from the "
                       f"checkpoint", flush=True)
+            if reinit_ego:
+                # Mirror of reinit_adversary for the EGO. p1_clr1e5@11.04M has
+                # ego entropy 9e-6 with approx_kl EXACTLY 0.000 and
+                # clip_fraction 0.000 -- frozen, not merely low-entropy -- and a
+                # measured entropy bonus cannot escape that state (the bonus
+                # gradient is ALSO proportional to movable probability mass, so
+                # ent_coef 0.0/0.001/0.01 gave bit-identical runs).
+                #
+                # NOT rebuilding the optimizer, unlike reinit_adversary. That
+                # path reconstructs dstb_optimizer over only
+                # pi_dstb_features_extractor + dstb_action_net, while the
+                # ORIGINAL construction also covers mlp_extractor.dstb_net and
+                # the film layer -- so after a reinit those silently stop being
+                # optimized. reset_child_params re-initializes IN PLACE, so the
+                # parameter objects are unchanged and only the stale Adam
+                # moments need clearing. Clearing .state does exactly that and
+                # cannot drop parameters.
+                pol = finetune_model.policy
+                reset_child_params(pol.pi_ctrl_features_extractor)
+                reset_child_params(pol.action_net)
+                import collections
+                pol.ctrl_optimizer.state = collections.defaultdict(dict)
+                n = sum(p.numel() for p in pol.pi_ctrl_features_extractor.parameters()) \
+                  + sum(p.numel() for p in pol.action_net.parameters())
+                print(f"[reinit_ego] re-initialized {n:,} ego params "
+                      f"(pi_ctrl_features_extractor + action_net) and cleared "
+                      f"ctrl_optimizer moments; adversary and critic kept from the "
+                      f"checkpoint", flush=True)
         print("model generated")
         finetune_model.model_arch_type = model_arch_type
         # Ego value-head LR: only ippo/2timescale build a dedicated ego_value_optimizer.
@@ -1032,7 +1066,7 @@ def main(args):
         else:
             assert isinstance(REMOVAL, list)
             args.num_env = (12 - len(REMOVAL)) * 4
-    model = finetune_model_generator(args.model_file, reinit_adversary=(args.reinit_adversary == 'True'), lr_schedule=lr_schedule, other_lr_schedule=other_lr_schedule,
+    model = finetune_model_generator(args.model_file, reinit_adversary=(args.reinit_adversary == 'True'), reinit_ego=(getattr(args, 'reinit_ego', 'False') == 'True'), lr_schedule=lr_schedule, other_lr_schedule=other_lr_schedule,
                                      clip_range_schedule=clip_range_schedule, STATE=STATE, model_arch_type=args.model_arch_type)
     if REMOVAL is not None:
         model.REMOVAL = REMOVAL
@@ -1465,6 +1499,29 @@ if __name__ == "__main__":
                              "property of the game rather than the policy, and the "
                              "on-policy gradient is what produced the 4.93%% subspace "
                              "in the first place.")
+    parser.add_argument('--reinit_ego', choices=['True', 'False'], default='False',
+                        help="Re-initialize the EGO policy to maximum entropy on resume. "
+                             "An entropy COEFFICIENT cannot rescue a saturated policy -- "
+                             "measured: ent_coef 0.0/0.001/0.01 from a frozen-ego "
+                             "checkpoint gave bit-identical runs, because the entropy "
+                             "bonus gradient is also proportional to movable probability "
+                             "mass. A parameter RESET restores ln(22)=3.09 by "
+                             "construction. Mirrors --reinit_adversary.")
+    parser.add_argument('--ent_coef', type=float, default=0.0,
+                        help="Entropy bonus on the EGO policy. The class default is "
+                             "0.0 and ippo.py never overrode it, so every run to date "
+                             "has had NO entropy floor. Zero entropy is an ABSORBING "
+                             "state -- no probability mass to move means no gradient -- "
+                             "and p1_clr1e5_winit's adversary entered it at 3.77M and "
+                             "spent 34M steps as single-agent RL. A small nonzero value "
+                             "makes that state unreachable. Large values distort the "
+                             "objective: in a zero-sum game an entropy bonus on one side "
+                             "moves the equilibrium being solved for.")
+    parser.add_argument('--dstb_ent_coef', type=float, default=0.0,
+                        help="Entropy bonus on the ADVERSARY policy. Separate from "
+                             "--ent_coef on purpose: the collapse observed was on the "
+                             "ADVERSARY, and raising both sides perturbs both halves of "
+                             "the equilibrium at once.")
     parser.add_argument('--enum_every', type=int, default=0,
                         help="Env steps between full 22x22 ENUMERATIONS of the payoff "
                              "at the current env states. 0 = OFF and bitwise inert. "
@@ -1489,6 +1546,38 @@ if __name__ == "__main__":
     parser.add_argument('--enum_loss_coef', type=float, default=1.0,
                         help="Weight of the enumerated-matrix loss, ADDED to the "
                              "on-policy single-cell loss rather than replacing it.")
+    parser.add_argument('--enum_contact_only', choices=['True', 'False'], default='False',
+                        help="Keep only enumerated states where the joint action ACTUALLY "
+                             "affects reward, judged on the raw emulator reward R. In "
+                             "healthy self-play contact is 6-12%%, so ~93%% of enumerated "
+                             "states have gamma identically zero -- 484 copies of one "
+                             "number -- and the aux loss averages over them, which is the "
+                             "measured gating problem (78%% of MSE gradient voting W=0). "
+                             "Costs nothing extra to collect.")
+    parser.add_argument('--enum_probe', type=int, default=0,
+                        help="Screen candidate states with this many CHEAP joint-action "
+                             "branches before paying the full 484. 0 = off. At 6-12%% "
+                             "contact a full enumeration spends its whole budget ~90%% of "
+                             "the time producing 484 copies of one number; measured, "
+                             "614 buffered states with ~40 carrying interaction gave "
+                             "corrW(R) +0.050 while ~700 that did gave +0.605. So the "
+                             "binding constraint is CONTACT STATE COUNT, and screening "
+                             "buys them ~13x cheaper. Known risk: a few probe pairs can "
+                             "miss interaction confined to specific action combinations, "
+                             "biasing the set toward BROAD interaction.")
+    parser.add_argument('--enum_walk', type=int, default=40,
+                        help="Max on-policy steps to walk while hunting for a contact "
+                             "state. The true position is snapshotted first and restored "
+                             "after, so the training trajectory is unaffected.")
+    parser.add_argument('--enum_probe_frac', type=float, default=1.0,
+                        help="Fraction of envs to park on CONTACT states; the rest stay "
+                             "on ordinary on-policy states. 1.0 measured corrW(R) +0.028, "
+                             "WORSE than the natural 6.5%% contact (+0.050), with pred_std "
+                             "1.8x tgt_std -- a head trained only where interaction exists "
+                             "learns to see it everywhere, then is scored on a visitation "
+                             "that is ~93%% interaction-free. Below 1.0 keeps both kinds in "
+                             "the buffer. Requires --enum_contact_only False, or the "
+                             "ordinary states are filtered straight back out.")
     parser.add_argument('--entropy_collapse_abort', choices=['True', 'False'], default='True',
                         help="Stop the run when a policy saturates to EXACTLY zero "
                              "entropy. This is an absorbing state -- no probability "

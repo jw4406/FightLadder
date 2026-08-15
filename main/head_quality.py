@@ -56,6 +56,7 @@ def main(argv=None):
     from stable_baselines3.common.save_util import load_from_zip_file
     from local_best_response import (build_lbr_venv, load_checkpoint, preflight,
                                      resolve_matchups, infer_obs_kwargs)
+    from gamma_basis import gammas as _gam
 
     def ev(pred, tgt):
         resid = float(((pred - tgt) ** 2).mean())
@@ -63,8 +64,11 @@ def main(argv=None):
         return 1.0 - resid / var if var > 1e-30 else float("nan")
 
     print(f"{'ckpt':>11} {'states':>7} {'ev_all':>8} {'evW(M)':>10} "
-          f"{'corrW(M)':>12} {'evW(R)':>9} {'corrW(R)':>9} {'pred_std':>9} {'tgt_std':>8}")
+          f"{'corrW(M)':>12} {'evW(R)':>9} {'corrW(R)':>9} {'95% CI':>17}"
+          f" {'CONST':>8} {'headroom':>8}")
     print(f"{'':>11} {'':>7} {'':>8} {'<-- scalar critic = 0.000':>10}")
+    print(f"{'':>11}  CONST = a single fixed matrix for every state; HEADROOM = "
+          f"corrW(R) - CONST is the only part that is state-CONDITIONAL")
     for f in sorted(glob.glob(a.npz_glob)):
         steps = int(re.search(r"_(\d+)_raw", f).group(1))
         ck = os.path.join(a.run_dir, f"spar_Ry_Sa_{steps}_steps.task")
@@ -104,6 +108,23 @@ def main(argv=None):
         # action-conditional structure is mismatch-free evidence either way.
         Rw = Rr - Rr.mean(axis=(1, 2), keepdims=True)
         cr = float(np.corrcoef(Pw.ravel(), Rw.ravel())[0, 1])
+        # THE BASELINE THAT MUST BE BEATEN. corrW pools over every cell of every
+        # state, so if a regime's gamma matrices are all similar, a head that
+        # emits ONE FIXED matrix scores well while knowing nothing
+        # state-specific -- and the minimax operator reads one state at a time,
+        # so such a head cannot rank branches. Measured: the frozen-ego regime
+        # (517-step timer-out stalemates, mean pairwise gamma corr 0.36) gives a
+        # CONSTANT predictor corrW(R) = 0.412, so its celebrated head score of
+        # 0.605 was mostly free. Healthy self-play scores ~0.02 here. Reporting
+        # corrW without this column overstated a result by ~2/3 for a full day.
+        _gm = _gam(Rr)
+        _live = np.linalg.norm(_gm.reshape(len(_gm), -1), axis=1) > 1e-12
+        if _live.sum() >= 3:
+            _P = np.broadcast_to(_gm[_live].mean(axis=0), Rr.shape)
+            _Pw = _P - _P.mean(axis=(1, 2), keepdims=True)
+            _const = float(np.corrcoef(_Pw.ravel(), Rw.ravel())[0, 1])
+        else:
+            _const = float("nan")
         # resample STATES, not cells: the 484 cells within a state are highly
         # dependent, so a cell-level bootstrap would understate the interval.
         _rng = np.random.RandomState(0); _n = len(Pw); _cs = []
@@ -113,7 +134,7 @@ def main(argv=None):
         _lo, _hi = np.percentile(_cs, 2.5), np.percentile(_cs, 97.5)
         print(f"{steps:11,} {len(T):7d} {ev(P, T):8.3f} {ev(Pw, Tw):10.3f} "
               f"{cw:12.3f} {ev(Pw, Rw):9.3f} {cr:9.3f} [{_lo:+.3f},{_hi:+.3f}]"
-              f" {Pw.std():8.5f} {Tw.std():8.5f}")
+              f" {_const:8.3f} {cr - _const:+8.3f}")
 
 
 if __name__ == "__main__":

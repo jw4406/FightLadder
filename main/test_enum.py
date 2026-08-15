@@ -29,7 +29,7 @@ N_RUN = 0
 # A test that never RUNS is indistinguishable from one that passes -- a
 # dispatch line I forgot cost an hour today while ALL PASS printed. So the
 # count is asserted, not assumed. Bump this deliberately when adding a check.
-EXPECTED_CHECKS = 23
+EXPECTED_CHECKS = 29
 
 
 def check(name, cond, detail=""):
@@ -199,6 +199,67 @@ def test_aux_loss_and_k():
     check("buffer is bounded", len(a._enum_store) == 2)
 
 
+def test_probe():
+    """The cheap screen must detect contact, reject flat states, and be honest
+    about what it costs and what it misses.
+
+    A probe that returned True unconditionally would silently restore the old
+    behaviour at extra cost; one that returned False unconditionally would stop
+    all enumeration. Both look like "enumeration is running" from the logs.
+    """
+    from common.justin.clean_derivative_free_spar import CleanDerivativeFreeSPAR as C
+    na, n = 22, 3
+
+    class FakeVenv:
+        """Rewards depend on the joint action only when `contact` is set."""
+        def __init__(self, contact): self.contact = contact; self.steps = 0
+        def env_method(self, *a, **k): pass
+        def step(self, act):
+            self.steps += 1
+            i = int(act[0][0]); j = int(act[0][1])
+            r = (i * 0.01 + j * 0.001) if self.contact else 0.25
+            return None, np.full(n, r), np.full(n, -r), np.zeros(n, bool), [{}] * n
+
+    for contact, want in ((True, True), (False, False)):
+        a = FakeAlgo(enum_every=100)
+        a._enum_probe = C._enum_probe.__get__(a)
+        a.enum_probe = 4
+        v = FakeVenv(contact)
+        got = a._enum_probe(v, "k", na, n)
+        check(f"probe {'detects' if want else 'rejects'} "
+              f"{'contact' if contact else 'a FLAT state'}",
+              hasattr(got, "shape") and got.shape == (n,) and bool(got.all()) == want,
+              f"per-env mask {got}")
+        if contact:
+            check("probe costs exactly enum_probe steps", v.steps == 4, f"{v.steps}")
+            check("probe charges those steps to the budget",
+                  a._enum_env_steps == 4 * n, f"{a._enum_env_steps}")
+
+
+def test_contact_filter():
+    """States with gamma == 0 must be DROPPED, and judged on R not on the head.
+
+    At 6-12% contact ~93% of enumerated states have all 484 cells identical.
+    Averaging the aux loss over them is the gating problem. The filter must key
+    on the raw emulator reward: keying on the HEAD's own output would let a head
+    that merely predicts variation manufacture its own training set.
+    """
+    na = 22
+    rng = np.random.RandomState(0)
+    R = np.zeros((5, na, na))
+    R[1] = rng.randn(na, na)          # real interaction
+    R[3] = rng.randn(na, na)
+    R[0] = 7.0                        # constant -> gamma == 0, must be dropped
+    R[2] = 0.0
+    R[4] = -1.5
+    Rw = R - R.mean(axis=(1, 2), keepdims=True)
+    keep = np.linalg.norm(Rw.reshape(len(Rw), -1), axis=1) > 1e-12
+    check("contact filter keeps exactly the states with interaction",
+          list(np.where(keep)[0]) == [1, 3], f"kept {list(np.where(keep)[0])}")
+    check("a CONSTANT matrix is dropped however large its value", not keep[0],
+          "R[0] = 7.0 everywhere -> no joint-action structure")
+
+
 def test_leaf_matches_target():
     """The enumerated leaf must use the SAME value function as the on-policy term.
 
@@ -246,6 +307,8 @@ def main():
     print("== inert when off ==");       test_inert_when_off()
     print("== schedule ==");             test_schedule()
     print("== aux loss / enum_k ==");    test_aux_loss_and_k()
+    print("== probe ==");             test_probe()
+    print("== contact filter ==");     test_contact_filter()
     print("== leaf matches target =="); test_leaf_matches_target()
     print("== joint / splice ==");       test_joint_and_splice()
     global OK

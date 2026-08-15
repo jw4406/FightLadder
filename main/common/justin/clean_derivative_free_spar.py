@@ -129,6 +129,10 @@ class CleanDerivativeFreeSPAR(PPO):
             enum_k: int = 484,
             enum_buffer: int = 8,
             enum_loss_coef: float = 1.0,
+            enum_contact_only: bool = False,
+            enum_probe: int = 0,
+            enum_walk: int = 40,
+            enum_probe_frac: float = 1.0,
             vf_coef: float = 1.0,
             max_grad_norm: float = 0.5,
             use_sde: bool = False,
@@ -250,9 +254,27 @@ class CleanDerivativeFreeSPAR(PPO):
         self.enum_k = int(enum_k)
         self.enum_buffer = int(enum_buffer)
         self.enum_loss_coef = float(enum_loss_coef)
+        # Keep only states where the joint action ACTUALLY affects reward. At
+        # 6-12% contact in healthy self-play, ~93% of enumerated states have
+        # gamma identically zero -- 484 copies of the same number -- and the
+        # aux loss averages over them, so most of its gradient votes W=0. That
+        # is the measured gating problem, and dropping those states removes it
+        # without collecting anything extra.
+        self.enum_contact_only = bool(enum_contact_only)
+        self.enum_probe = int(enum_probe)
+        self.enum_walk = int(enum_walk)
+        # What FRACTION of envs to park on contact states. 1.0 = every state is
+        # contact, which measured corrW(R) +0.028 -- WORSE than the natural 6.5%
+        # (+0.050), with pred_std 1.8x tgt_std: a head trained only where
+        # interaction exists learns to see it everywhere, then is scored on a
+        # visitation that is ~93% interaction-free. Below 1.0 the unlocked envs
+        # stay on ordinary on-policy states, so the buffer holds both.
+        self.enum_probe_frac = float(enum_probe_frac)
         self._enum_store = []          # list of (obs np.ndarray, M np.ndarray)
         self._enum_env_steps = 0
         self._enum_next_at = 0
+        self._enum_skipped = 0
+        self._enum_walked = 0
         self.entropy_collapse_abort = bool(entropy_collapse_abort)
         self.entropy_collapse_tol = float(entropy_collapse_tol)
         self.entropy_collapse_patience = int(entropy_collapse_patience)
@@ -2481,8 +2503,50 @@ class CleanDerivativeFreeSPAR(PPO):
         na = int(getattr(self, "minimax_n_ego", 22))
         n = venv.num_envs
         KEY = "enum_root"
+        WALK = "enum_walk"
+        HOLD = "enum_hold"
         try:
             venv.env_method("lbr_pause_monitor", True)
+            # Snapshot the TRUE position first. Hunting for contact states means
+            # stepping the envs forward, and those steps belong to the rollout
+            # collector -- restoring WALK at the end leaves the training
+            # trajectory exactly where it was.
+            venv.env_method("lbr_snapshot", WALK)
+            # PER-ENV hunting. Enumeration is vectorised: the 484 branches cost
+            # the same whether 1 or 24 envs carry interaction, so accepting a
+            # batch because ANY env has contact -- which my first version did --
+            # buys nothing (P(any of 24 at p=0.065) = 80%, so it never walked).
+            # Instead lock each env in independently as it finds contact, and
+            # enumerate once every env is parked on a contact state.
+            locked = np.zeros(n, dtype=bool)
+            if self.enum_probe > 0:
+                for _ in range(max(1, self.enum_walk)):
+                    venv.env_method("lbr_snapshot", KEY,
+                                    indices=np.where(~locked)[0].tolist())
+                    fresh = self._enum_probe(venv, KEY, na, n, locked)
+                    for k in np.where(fresh & ~locked)[0]:
+                        venv.env_method("lbr_snapshot", HOLD, indices=[int(k)])
+                    locked |= fresh
+                    need = int(np.ceil(self.enum_probe_frac * n))
+                    if locked.sum() >= need:
+                        break
+                    idx = np.where(~locked)[0].tolist()
+                    venv.env_method("lbr_restore", KEY, indices=idx)
+                    a_e, a_a = self._enum_sample(self._last_obs, buf_num)
+                    o, _, _, _, _ = venv.step(np.stack([a_e, a_a], axis=1))
+                    self._last_obs = o
+                    self._enum_env_steps += n
+                    self._enum_walked += 1
+                self.logger.record("train/enum_walked", float(self._enum_walked))
+                self.logger.record("train/enum_locked_frac", float(locked.mean()))
+                if not locked.any():
+                    venv.env_method("lbr_restore", WALK)
+                    venv.env_method("lbr_drop", WALK)
+                    return
+                # park every locked env back on its own contact state
+                li = np.where(locked)[0].tolist()
+                venv.env_method("lbr_restore", HOLD, indices=li)
+                venv.env_method("lbr_drop", HOLD, indices=li)
             venv.env_method("lbr_snapshot", KEY)
             obs0 = np.array(self._last_obs, copy=True)
             R = np.zeros((na, na, n), dtype=np.float32)
@@ -2502,14 +2566,83 @@ class CleanDerivativeFreeSPAR(PPO):
                                                buf_num).reshape(na, n)
             venv.env_method("lbr_restore", KEY)
             venv.env_method("lbr_drop", KEY)
+            venv.env_method("lbr_restore", WALK)
+            venv.env_method("lbr_drop", WALK)
         finally:
             venv.env_method("lbr_pause_monitor", False)
         M = (R + float(self.gamma) * V1 * (~DN)).transpose(2, 0, 1)
+        if self.enum_contact_only:
+            # judged on R, the raw emulator reward -- no critic, so a head that
+            # merely predicts variation cannot make a state look like contact.
+            Rw = R.transpose(2, 0, 1)
+            Rw = Rw - Rw.mean(axis=(1, 2), keepdims=True)
+            keep = np.linalg.norm(Rw.reshape(len(Rw), -1), axis=1) > 1e-12
+            self.logger.record("train/enum_contact_frac", float(keep.mean()))
+            obs0, M = obs0[keep], M[keep]
+            if len(M) == 0:
+                return
         self._enum_store.append((obs0, M.astype(np.float32)))
         if len(self._enum_store) > self.enum_buffer:
             self._enum_store.pop(0)
         self.logger.record("train/enum_env_steps", float(self._enum_env_steps))
         self.logger.record("train/enum_states", float(sum(len(o) for o, _ in self._enum_store)))
+
+    def _enum_probe(self, venv, key, na, n, locked=None):
+        """Which envs show reward variation under a few cheap branches?
+
+        Returns a PER-ENV boolean, not a batch verdict. My first version
+        returned `.any()` across envs, which is useless here: enumeration is
+        vectorised, so the 484 branches cost the same whether 1 or 24 envs carry
+        interaction, and P(any of 24 at p=0.065) = 80% meant it accepted the
+        first candidate every time and never walked (enum_walked stayed 0).
+
+        Judged on the raw emulator reward, so nothing the head predicts can make
+        a state look like contact.
+
+        KNOWN RISK -- FALSE NEGATIVES. A handful of probe pairs can miss
+        interaction confined to specific action combinations, biasing the
+        collected set toward states with BROAD interaction. Measurable by
+        full-enumerating probe-rejected states and counting missed contact.
+        """
+        rs = []
+        rng = np.random.RandomState(int(self.num_timesteps) & 0xFFFF)
+        for _ in range(int(self.enum_probe)):
+            i = int(rng.randint(0, na)); j = int(rng.randint(0, na))
+            venv.env_method("lbr_restore", key,
+                            indices=None if locked is None
+                            else np.where(~locked)[0].tolist())
+            _, r_l, _, _, _ = venv.step(self._enum_joint(i, j, n))
+            rs.append(np.asarray(r_l, dtype=np.float64).reshape(-1))
+            self._enum_env_steps += n
+        venv.env_method("lbr_restore", key,
+                        indices=None if locked is None
+                        else np.where(~locked)[0].tolist())
+        R = np.stack(rs)                       # (probe, n_envs)
+        return (R.max(axis=0) - R.min(axis=0)) > 1e-12
+
+    def _enum_sample(self, obs, buf_num):
+        """On-policy (ego, adv) actions for walking between probe candidates.
+
+        Mirrors PolicyOps.ego_probs / adv_probs in local_best_response -- there
+        is no public accessor for either distribution, and the adversary path
+        needs buf_num and evaluate=True. Written out rather than guessed: an
+        earlier version called get_dstb_distribution, which does not exist.
+        """
+        from stable_baselines3.common.preprocessing import preprocess_obs
+        with th.no_grad():
+            t = th.as_tensor(obs, device=self.device).float()
+            x = preprocess_obs(t, self.policy.observation_space,
+                               normalize_images=self.policy.normalize_images)
+            fe = self.policy.pi_ctrl_features_extractor(x)
+            de = self.policy._get_ego_action_dist_from_latent(
+                self.policy.mlp_extractor.ego_forward(fe))
+            fa = self.policy.pi_dstb_features_extractor(x)
+            da = self.policy._get_adv_action_dist_from_latent(
+                self.policy.mlp_extractor.adv_forward(fa, side_flag=None),
+                buf_num=buf_num, evaluate=True)[0]
+            a_e = de.distribution[0].sample().cpu().numpy().reshape(-1)
+            a_a = da.distribution[0].sample().cpu().numpy().reshape(-1)
+        return a_e, a_a
 
     def _enum_joint(self, i, j, n):
         """The vec-env action for 'every env plays joint action (i, j)'."""

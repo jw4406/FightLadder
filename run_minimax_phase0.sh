@@ -180,12 +180,36 @@ MINIMAX_FREEZE_EMBED="${MINIMAX_FREEZE_EMBED:-True}"
 # from scratch never reaches an ENGAGED state distribution, and contact rate is
 # what determines whether there is any interaction to learn (7-12% from scratch
 # vs 90.7% at p1_clr1e5's 11.04M).
+# Entropy floor. BOTH default 0.0, which is what every run to date used -- and
+# zero entropy is an ABSORBING state (no mass to move => no gradient), which
+# killed p1_clr1e5_winit's adversary at 3.77M. Separate per side: the collapse
+# was on the ADVERSARY, and a bonus on one side of a zero-sum game moves the
+# equilibrium being solved for, so raising both is not the same intervention.
+# Re-init the EGO to max entropy on resume. An entropy COEFFICIENT cannot escape
+# a saturated policy -- measured, ent_coef 0.0/0.001/0.01 from a frozen-ego
+# checkpoint gave bit-identical runs. Only a parameter RESET restores ln(22)=3.09.
+REINIT_EGO="${REINIT_EGO:-False}"
+ENT_COEF="${ENT_COEF:-0.0}"
+DSTB_ENT_COEF="${DSTB_ENT_COEF:-0.0}"
 MODEL_FILE="${MODEL_FILE:-}"
 CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-20000}"
 ENUM_EVERY="${ENUM_EVERY:-0}"
 ENUM_K="${ENUM_K:-484}"
 ENUM_BUFFER="${ENUM_BUFFER:-8}"
 ENUM_LOSS_COEF="${ENUM_LOSS_COEF:-1.0}"
+# Drop enumerated states with gamma == 0. At 6-12% contact in healthy self-play
+# ~93% of states are all-identical cells, and averaging over them is the gating
+# problem. Judged on R (no critic), so the head cannot fake contact.
+ENUM_CONTACT_ONLY="${ENUM_CONTACT_ONLY:-False}"
+# Screen with N cheap branches before paying the full 484. 0 = off. Contact
+# state COUNT is the binding constraint (614 states/~40 contact -> corrW +0.050;
+# ~700 contact -> +0.605), and screening buys them ~13x cheaper.
+ENUM_PROBE="${ENUM_PROBE:-0}"
+ENUM_WALK="${ENUM_WALK:-40}"
+# Fraction of envs parked on contact. 1.0 gave corrW(R) +0.028, worse than the
+# natural 6.5% (+0.050): a head trained only where interaction exists learns to
+# see it everywhere. Needs ENUM_CONTACT_ONLY=False to keep the ordinary states.
+ENUM_PROBE_FRAC="${ENUM_PROBE_FRAC:-1.0}"
 ENTROPY_COLLAPSE_ABORT="${ENTROPY_COLLAPSE_ABORT:-True}"
 ENTROPY_COLLAPSE_TOL="${ENTROPY_COLLAPSE_TOL:-1e-6}"
 ENTROPY_COLLAPSE_PATIENCE="${ENTROPY_COLLAPSE_PATIENCE:-20}"
@@ -284,8 +308,13 @@ CMD=(
     --minimax_w_init "${MINIMAX_W_INIT}"
     --minimax_freeze_embed "${MINIMAX_FREEZE_EMBED}"
     ${MINIMAX_EMBED:+--minimax_embed "${MINIMAX_EMBED}"}
+    --reinit_ego "${REINIT_EGO}"
+    --ent_coef "${ENT_COEF}" --dstb_ent_coef "${DSTB_ENT_COEF}"
     --enum_every "${ENUM_EVERY}" --enum_k "${ENUM_K}"
     --enum_buffer "${ENUM_BUFFER}" --enum_loss_coef "${ENUM_LOSS_COEF}"
+    --enum_contact_only "${ENUM_CONTACT_ONLY}"
+    --enum_probe "${ENUM_PROBE}" --enum_walk "${ENUM_WALK}"
+    --enum_probe_frac "${ENUM_PROBE_FRAC}"
     --entropy_collapse_abort "${ENTROPY_COLLAPSE_ABORT}"
     --entropy_collapse_tol "${ENTROPY_COLLAPSE_TOL}"
     --entropy_collapse_patience "${ENTROPY_COLLAPSE_PATIENCE}"

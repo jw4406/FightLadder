@@ -112,10 +112,38 @@
                 // (needs em.set_state), training-time only; branch steps are
                 // logged as train/enum_env_steps so comparisons can be
                 // budget-matched.
+                // Entropy floor, per side. Both default 0.0 -- which is what
+                // every run so far used. Zero entropy is ABSORBING (no mass to
+                // move means no gradient) and killed one arm's adversary at
+                // 3.77M. Kept separate because a bonus on one side of a
+                // zero-sum game moves the equilibrium being solved for.
+                // Re-init the EGO to max entropy on resume. An entropy
+                // COEFFICIENT cannot escape a saturated policy: measured,
+                // ent_coef 0.0/0.001/0.01 from a frozen-ego checkpoint gave
+                // bit-identical runs, because the bonus gradient is also
+                // proportional to movable probability mass.
+                "--reinit_ego", "False",
+                "--ent_coef", "0.0",
+                "--dstb_ent_coef", "0.0",
                 "--enum_every", "0",
                 "--enum_k", "484",
                 "--enum_buffer", "8",
                 "--enum_loss_coef", "1.0",
+                // Keep only enumerated states whose joint action actually
+                // affects reward (judged on raw R). At 6-12% contact in healthy
+                // self-play ~93% of states have gamma identically zero, and
+                // averaging over them is the measured gating problem.
+                "--enum_contact_only", "False",
+                // Screen candidates with N cheap branches before paying 484.
+                // 0 = off. Contact-state COUNT is the binding constraint, and
+                // screening buys them ~13x cheaper.
+                "--enum_probe", "0",
+                "--enum_walk", "40",
+                // Fraction of envs parked on contact. 1.0 measured corrW(R)
+                // +0.028 -- worse than the natural 6.5% (+0.050) -- because a
+                // head trained only where interaction exists learns to see it
+                // everywhere. Needs --enum_contact_only False.
+                "--enum_probe_frac", "1.0",
                 "--entropy_collapse_abort", "True",
                 "--entropy_collapse_tol", "1e-6",
                 "--entropy_collapse_patience", "20",
