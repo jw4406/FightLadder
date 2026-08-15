@@ -16,7 +16,7 @@ import numpy as np, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from local_best_response import make_lbr_env, infer_obs_kwargs
 
-EXPECTED_CHECKS = 9
+EXPECTED_CHECKS = 12
 NC = 0
 def chk(name, cond):
     global NC; NC += 1
@@ -73,6 +73,26 @@ chk("obs width inferred back from the checkpoint width",
     infer_obs_kwargs({"observation_space": type("S", (), {"shape": (4*n,)})()},
                      mask)["ram_stack"] == 4)
 e4.close()
+del e4
+
+# --- stride ----------------------------------------------------------------
+# An agent step advances num_step_frames=8 emulator frames. At the default
+# stride 8 the stack samples once per agent step; at stride 1 it samples
+# consecutive emulator frames, which is the only way to see events shorter than
+# a step (a special move's active frames last ~2-4).
+e12 = make_lbr_env(ST, obs_type="ram", ram_mask=mask, ram_stack=12, ram_stride=1,
+                   seed=0)()
+chk("stride does not change the obs width", e12.observation_space.shape == (12*n,))
+o = e12.reset()
+chk("reset still fills every slot",
+    all(np.array_equal(o[i*n:(i+1)*n], o[:n]) for i in range(12)))
+o = e12.step(ACTS[0])[0]
+sl = [o[i*n:(i+1)*n] for i in range(12)]
+# after ONE step from reset, the newest 8 slots are the 8 emulator frames that
+# step generated, so they cannot all be equal unless the game froze.
+chk("stride=1 resolves WITHIN an agent step (sub-step frames differ)",
+    len({sl[i].tobytes() for i in range(4, 12)}) > 1)
+e12.close()
 
 if NC != EXPECTED_CHECKS:
     raise SystemExit(f"FAILED: ran {NC} checks, expected {EXPECTED_CHECKS} -- "

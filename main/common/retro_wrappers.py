@@ -90,6 +90,13 @@ class SFWrapper(gym.Wrapper):
             self.action_space = MultiBinary(self.action_dim)
             self.action_transformer = None
         
+        # Per-emulator-frame hook. An agent step advances num_step_frames (8)
+        # emulator frames, so anything sampled once per agent STEP is sampled at
+        # stride 8 and ALIASES OUT events shorter than that -- a special move's
+        # active frames last ~2-4. RamObsWrapper installs a callback here when it
+        # needs sub-step resolution. None => zero cost, the historical path.
+        self.ram_tap = None
+
         self.reset_type = reset_type
         self.rendering = rendering
 
@@ -447,6 +454,8 @@ class SFWrapper(gym.Wrapper):
         for i in range(self.num_step_frames):            
             # Keep the button pressed for (num_step_frames - 1) frames.
             obs, _reward, _done, info = self.env.step(action_seq[i])
+            if self.ram_tap is not None:
+                self.ram_tap()          # AFTER the frame, so it sees post-frame RAM
             self.update_status(info)
             if self.rendering:
                 self.env.render()
@@ -704,7 +713,7 @@ class RamObsWrapper(gym.Wrapper):
     Must return the 2P 5-tuple like InfoObsWrapper, or the SPAR path breaks.
     """
 
-    def __init__(self, env, mask=None, stack=1):
+    def __init__(self, env, mask=None, stack=1, stride=8):
         super().__init__(env)
         self._mask = None if mask is None else np.asarray(mask, dtype=np.int64)
         # STACK. A single RAM frame is Markov for the game's mechanical state IF
@@ -716,7 +725,16 @@ class RamObsWrapper(gym.Wrapper):
         # It changes the OBSERVATION WIDTH, so a checkpoint trained at one stack
         # cannot be loaded at another.
         self._stack = max(1, int(stack))
-        self._hist = deque(maxlen=self._stack)
+        # STRIDE, in EMULATOR frames. The default 8 equals num_step_frames, i.e.
+        # one sample per agent step -- and at that stride every stacked frame
+        # except the newest is SHARED by all 484 branches of a state, so stacking
+        # cannot change one-step branch distinguishability at all. Only stride < 8
+        # adds branch-discriminating information. That is the thing under test.
+        self._stride = max(1, int(stride))
+        # The buffer is in emulator frames; the observation samples every _stride
+        # frames back from the newest.
+        self._depth = (self._stack - 1) * self._stride + 1
+        self._hist = deque(maxlen=self._depth)
         # Walk down to whatever actually owns get_ram(); the chain is
         # SFWrapper -> FrameStack -> RetroEnv and `unwrapped` is not reliable
         # through SFWrapper's custom __getattr__.
@@ -737,6 +755,13 @@ class RamObsWrapper(gym.Wrapper):
         self.ram_bytes_masked = n
         self.observation_space = Box(low=0.0, high=1.0,
                                      shape=(n * self._stack,), dtype=np.float32)
+        if self._stack > 1:
+            # Reach past this wrapper to SFWrapper, which owns the frame loop.
+            sf = self.env
+            while not hasattr(sf, "num_step_frames"):
+                sf = sf.env
+            sf.ram_tap = self._tap_frame
+            self._sf = sf
 
     def _frame(self):
         ram = np.asarray(self._retro.get_ram())
@@ -744,14 +769,19 @@ class RamObsWrapper(gym.Wrapper):
             ram = ram[self._mask]
         return (ram.astype(np.float32) / 255.0)
 
+    def _tap_frame(self):
+        self._hist.append(self._frame())
+
     def _ram_obs(self):
-        f = self._frame()
         if self._stack == 1:
-            return f
-        self._hist.append(f)
-        while len(self._hist) < self._stack:      # first frames after a reset
-            self._hist.appendleft(f)
-        return np.concatenate(list(self._hist))
+            return self._frame()
+        if not self._hist:                        # reset, or a restore into an
+            f = self._frame()                     # empty history
+            self._hist.extend([f] * self._depth)
+        h = list(self._hist)
+        # Sample every _stride frames back from the newest, oldest slot first.
+        idx = [max(0, len(h) - 1 - i * self._stride) for i in range(self._stack)]
+        return np.concatenate([h[i] for i in reversed(idx)])
 
     # The lbr_* methods live on SFWrapper, which this wrapper sits OUTSIDE of --
     # so a plain env_method("lbr_snapshot") would forward straight past this
@@ -764,7 +794,7 @@ class RamObsWrapper(gym.Wrapper):
     def lbr_restore(self, key="lbr_root"):
         h = self.__dict__.get("_ram_hist_store", {}).get(key)
         if h is not None:
-            self._hist = deque(h, maxlen=self._stack)
+            self._hist = deque(h, maxlen=self._depth)
         return self.env.lbr_restore(key)
 
     def lbr_drop(self, key=None):
@@ -774,6 +804,12 @@ class RamObsWrapper(gym.Wrapper):
         else:
             st.pop(key, None)
         return self.env.lbr_drop(key)
+
+    def ram_tail(self, n):
+        """Last n masked emulator frames, oldest first. For offline (k, stride)
+        sweeps: one rollout can be re-sampled at every combination."""
+        h = list(self._hist)[-int(n):]
+        return np.stack(h) if h else np.zeros((0, 0), dtype=np.float32)
 
     def reset(self, **kwargs):
         self.env.reset(**kwargs)

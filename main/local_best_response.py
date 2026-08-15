@@ -121,7 +121,7 @@ def prof_report(total_s, label=""):
 
 def make_lbr_env(state, side="both", reset_type="round", enable_combo=True,
                  null_combo=False, transform_action=True, seed=0,
-                 obs_type="image", ram_mask=None, ram_stack=1):
+                 obs_type="image", ram_mask=None, ram_stack=1, ram_stride=8):
     """Env factory for LBR. Deliberately omits Monitor2P.
 
     Monitor2P is stateful and fails loudly under branching: it raises
@@ -146,7 +146,7 @@ def make_lbr_env(state, side="both", reset_type="round", enable_combo=True,
         # unreadable 65,536-element space dump; infer_obs_kwargs() reads the
         # right setting off the checkpoint so callers cannot get this wrong.
         if obs_type == "ram":
-            env = RamObsWrapper(env, mask=ram_mask, stack=ram_stack)
+            env = RamObsWrapper(env, mask=ram_mask, stack=ram_stack, stride=ram_stride)
         elif obs_type == "info":
             env = InfoObsWrapper(env)
         env.seed(seed)
@@ -196,7 +196,17 @@ def infer_obs_kwargs(data, ram_mask=None):
         raise SystemExit(f"--ram_mask has {m.size} indices, which does not divide "
                          f"the checkpoint observation width {n}; wrong mask file.")
     stack = n // m.size
-    return {"obs_type": "ram", "ram_mask": m, "ram_stack": stack}
+    # STRIDE IS NOT RECOVERABLE FROM THE WIDTH -- k=12/stride=1 and k=12/stride=8
+    # produce identically-shaped observations with completely different content,
+    # and a mismatch would build an env that silently feeds the checkpoint the
+    # wrong temporal window. Until it is recorded in the checkpoint, it comes
+    # from the environment and is announced.
+    stride = int(os.environ.get("FIGHTLADDER_RAM_STRIDE", 8))
+    if stack > 1:
+        print(f"[obs] ram_stack={stack} inferred from width; ram_stride={stride} "
+              f"from FIGHTLADDER_RAM_STRIDE (default 8). A stride mismatch with "
+              f"training is SILENT -- verify it.", flush=True)
+    return {"obs_type": "ram", "ram_mask": m, "ram_stack": stack, "ram_stride": stride}
 
 
 def preflight(venv, model):
