@@ -112,6 +112,24 @@ def main(argv=None):
             return capture(Gtrue, np.linalg.qr(ee)[0][:, :r],
                            np.linalg.qr(ea)[0][:, :r])
 
+        def head_signal(idx):
+            """corrW/evW against R -- the MISMATCH-FREE test.
+
+            capture measures only the EMBEDDING SUBSPACE. A head can span the
+            right subspace and still predict nothing: p1_clr1e5 scored
+            corrW(R) ~0.03 at every checkpoint, and the enumfast run reached
+            enum_ev_holdout +0.85 while corrW(R) was -0.012 -- it had learned to
+            predict its OWN bootstrap. So the pilot's capture gain is not
+            evidence of usable signal, and this closes that gap.
+            """
+            with th.no_grad():
+                P = policy.minimax_matrices(obs_t[idx], buf_num=[head_idx]).cpu().numpy().astype(np.float64)
+            Rr = d["R"].astype(np.float64)[idx]
+            Pw = P - P.mean(axis=(1, 2), keepdims=True)
+            Rw = Rr - Rr.mean(axis=(1, 2), keepdims=True)
+            evr = 1.0 - float(((Pw - Rw) ** 2).mean()) / max(float(Rw.var()), 1e-30)
+            return float(np.corrcoef(Pw.ravel(), Rw.ravel())[0, 1]), evr
+
         def head_gamma_share(idx):
             """gamma as a share of the head's own within-state energy, held out."""
             with th.no_grad():
@@ -134,7 +152,7 @@ def main(argv=None):
                "base_capture": float(base_cap),
                "base_gamma_share": float(head_gamma_share(te)), "arms": {}}
         print(f"\n{'enum_k':>7} {'n_train':>7} {'capture':>9} {'gamma-share':>12} "
-              f"{'holdout MSE':>11} {'holdout EV':>9}")
+              f"{'holdout MSE':>11} {'holdoutEV':>9} {'corrW(R)':>10} {'evW(R)':>9}")
         for k in a.enum_k:
           for _cap in a.max_train:
             tr = _tr_full[:_cap] if _cap else _tr_full
@@ -162,6 +180,7 @@ def main(argv=None):
                 Pte = policy.minimax_matrices(obs_t[te], buf_num=[head_idx])
                 mse = float(((Pte - tgt_t[te]) ** 2).mean())
             cap_k, gs_k = head_capture(), head_gamma_share(te)
+            corr_r, ev_r = head_signal(te)
             with th.no_grad():
                 var = float(tgt_t[te].var())
             ev = 1.0 - mse / var if var > 0 else float("nan")
@@ -169,7 +188,8 @@ def main(argv=None):
                                           "gamma_share": float(gs_k),
                                           "holdout_mse": mse, "holdout_ev": ev,
                                           "n_train": int(len(tr))}
-            print(f"{k:>7} {len(tr):>7} {cap_k:>9.2%} {gs_k:>12.2%} {mse:>11.3e} {ev:>9.3f}")
+            print(f"{k:>7} {len(tr):>7} {cap_k:>9.2%} {gs_k:>12.2%} {mse:>11.3e} {ev:>9.3f} "
+                  f"{corr_r:>10.3f} {ev_r:>9.3f}")
 
         head.load_state_dict(head0)
         if a.json_out:
