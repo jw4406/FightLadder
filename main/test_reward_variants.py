@@ -20,7 +20,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from local_best_response import make_lbr_env
 
-EXPECTED_CHECKS = 7
+EXPECTED_CHECKS = 9
 NC = 0
 
 
@@ -71,6 +71,10 @@ pr = roll(pressure_beta=0.01, pressure_range=60.0, attack_statuses=ATK)
 chk("pressure beta=0.01 is zero-sum", np.abs(pr[:, 0] + pr[:, 1]).max() < 1e-12)
 chk("pressure beta=0.01 actually CHANGED the reward",
     not np.array_equal(pr, base))
+
+tr = roll(trade_kappa=4.0, attack_statuses=ATK)
+chk("trade kappa=4 is zero-sum", np.abs(tr[:, 0] + tr[:, 1]).max() < 1e-12)
+chk("trade kappa=4 actually CHANGED the reward", not np.array_equal(tr, base))
 
 if NC != EXPECTED_CHECKS:
     raise SystemExit(f"FAILED: ran {NC} checks, expected {EXPECTED_CHECKS} -- a "

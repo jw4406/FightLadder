@@ -39,7 +39,7 @@ LBR_SF_ATTRS = (
 
 class SFWrapper(gym.Wrapper):
 
-    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=()):
+    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, trade_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reset_close_range=0.0, close_max_steps=40):
         super(SFWrapper, self).__init__(env)
         self.env = FrameStack(env, num_stack=num_stack)
 
@@ -79,11 +79,36 @@ class SFWrapper(gym.Wrapper):
         #                     CHANGES THE GAME (it is not potential-based), so
         #                     the equilibrium moves and prior numbers do not
         #                     transfer.
+        #   trade_kappa       scales the whole exchange by whether BOTH sides
+        #                     are attacking. This is the only one of the three
+        #                     that is JOINT BY CONSTRUCTION: the multiplier is a
+        #                     PRODUCT of the two players' indicators, so it lands
+        #                     in the ANOVA interaction term rather than in the
+        #                     main effects. pressure_beta, by contrast, is a
+        #                     DIFFERENCE of per-player indicators -- additive by
+        #                     construction, so it can only dilute gamma's share.
+        # START-STATE INTERVENTION. Measured scaling law (contact_density.py,
+        # 1600 policy-free roots): as root separation |agent_x - enemy_x| falls
+        # from 185-210px to 0-64px, contact goes 3.4% -> 18.8% and the
+        # interaction magnitude |gamma| goes 0.0039 -> 0.0316, an 8x swing. This
+        # walks the fighters together at the start of each round so training
+        # BEGINS in the regime where the joint payoff actually has structure.
+        #
+        # It touches no reward, so the game stays EXACTLY zero-sum and the
+        # payoff is untouched -- unlike the three reward variants, all of which
+        # were measured to DILUTE gamma's share rather than raise it.
+        #
+        # CAVEAT worth stating: this changes where each round STARTS, not where
+        # the equilibrium lives. Agents remain free to retreat, so whether the
+        # contact rate survives training is the open question, not a given.
+        self.reset_close_range = float(reset_close_range)
+        self.close_max_steps = int(close_max_steps)
         self.counterhit_kappa = float(counterhit_kappa)
+        self.trade_kappa = float(trade_kappa)
         self.pressure_beta = float(pressure_beta)
         self.pressure_range = float(pressure_range)
         self.attack_statuses = frozenset(int(x) for x in attack_statuses)
-        if (self.counterhit_kappa or self.pressure_beta) and not self.attack_statuses:
+        if (self.counterhit_kappa or self.trade_kappa or self.pressure_beta) and not self.attack_statuses:
             raise ValueError(
                 "counterhit_kappa/pressure_beta need attack_statuses; derive them "
                 "with contact_density.py --mode analyze rather than guessing.")
@@ -367,7 +392,39 @@ class SFWrapper(gym.Wrapper):
 
         self.total_timesteps = 0
     
-        return self._get_obs(obs)
+        out = self._get_obs(obs)
+        if self.reset_close_range > 0:
+            out = self._walk_close(out)
+        return out
+
+    def _walk_close(self, out):
+        """Walk both fighters toward each other until they are within range.
+
+        Goes through self.step() rather than the raw emulator so the round/match
+        state machine, the frame stack and the RAM tap all advance exactly as
+        they do in play. At round start both are at full hp with a full timer, so
+        no damage or termination is possible during the walk.
+        """
+        if self.action_transformer is None:
+            raise ValueError("reset_close_range needs --transform_action True "
+                             "(it moves via DIRECTIONS_BUTTONS indices)")
+        LEFT, RIGHT = 3, 4          # DIRECTIONS_BUTTONS indices
+        for _ in range(self.close_max_steps):
+            d = self.env.env.data.lookup_all()
+            ax, ex = d['agent_x'], d['enemy_x']
+            if abs(ex - ax) <= self.reset_close_range:
+                break
+            act = np.array([RIGHT, LEFT]) if ex > ax else np.array([LEFT, RIGHT])
+            res = self.step(act)
+            out = res[0]
+            if res[-2]:             # done -- should be unreachable at round start
+                break
+        # The walk consumed steps and hp is untouched, but prev_*_hp must match
+        # the CURRENT hp or the first real step bills their difference as damage.
+        d = self.env.env.data.lookup_all()
+        self.prev_agent_hp = d['agent_hp']
+        self.prev_enemy_hp = d['enemy_hp']
+        return out
 
     def update_status(self, info, bonus=False):
         # info['level'] = self.level
@@ -579,8 +636,16 @@ class SFWrapper(gym.Wrapper):
                 if self.counterhit_kappa:
                     w_e += self.counterhit_kappa * (info['enemy_status'] in self.attack_statuses)
                     w_a += self.counterhit_kappa * (info['agent_status'] in self.attack_statuses)
-                custom_reward = self.dense_coeff * (self.aggresive_coeff * D_e * w_e - D_a * w_a)
-                custom_reward_inverse = self.dense_coeff * (self.aggresive_coeff * D_a * w_a - D_e * w_e)
+                # trade: a PRODUCT of both indicators, so it scales the whole
+                # antisymmetric exchange and stays zero-sum while contributing
+                # to the interaction term rather than the main effects.
+                trade = 1.0
+                if self.trade_kappa:
+                    trade += self.trade_kappa * (
+                        (info['agent_status'] in self.attack_statuses) and
+                        (info['enemy_status'] in self.attack_statuses))
+                custom_reward = trade * self.dense_coeff * (self.aggresive_coeff * D_e * w_e - D_a * w_a)
+                custom_reward_inverse = trade * self.dense_coeff * (self.aggresive_coeff * D_a * w_a - D_e * w_e)
                 if self.pressure_beta:
                     in_rng = abs(info['agent_x'] - info['enemy_x']) <= self.pressure_range
                     p_a = float(in_rng and (info['agent_status'] in self.attack_statuses))

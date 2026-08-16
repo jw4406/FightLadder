@@ -141,6 +141,8 @@ RAM_STRIDE="${RAM_STRIDE:-8}"
 # `contact_density.py --mode analyze`, which derives them from data. Guessing
 # them silently changes what the reward means.
 COUNTERHIT_KAPPA="${COUNTERHIT_KAPPA:-0.0}"
+TRADE_KAPPA="${TRADE_KAPPA:-0.0}"
+RESET_CLOSE_RANGE="${RESET_CLOSE_RANGE:-0.0}"
 PRESSURE_BETA="${PRESSURE_BETA:-0.0}"
 PRESSURE_RANGE="${PRESSURE_RANGE:-0.0}"
 ATTACK_STATUSES="${ATTACK_STATUSES:-}"
@@ -267,6 +269,8 @@ TAG="${TAG}_${OBS_TYPE}"
 # MUST set this.
 [ "${RAM_STACK}" != "1" ] && TAG="${TAG}_k${RAM_STACK}s${RAM_STRIDE}"
 [ "${COUNTERHIT_KAPPA}" != "0.0" ] && TAG="${TAG}_ch${COUNTERHIT_KAPPA}"
+[ "${TRADE_KAPPA}" != "0.0" ] && TAG="${TAG}_tr${TRADE_KAPPA}"
+[ "${RESET_CLOSE_RANGE}" != "0.0" ] && TAG="${TAG}_cr${RESET_CLOSE_RANGE}"
 [ "${PRESSURE_BETA}" != "0.0" ] && TAG="${TAG}_pb${PRESSURE_BETA}"
 [ -n "${RUN_SUFFIX:-}" ] && TAG="${TAG}_${RUN_SUFFIX}"
 
@@ -330,6 +334,8 @@ CMD=(
     --ram_stack "${RAM_STACK}"
     --ram_stride "${RAM_STRIDE}"
     --counterhit_kappa "${COUNTERHIT_KAPPA}"
+    --trade_kappa "${TRADE_KAPPA}"
+    --reset_close_range "${RESET_CLOSE_RANGE}"
     --pressure_beta "${PRESSURE_BETA}"
     --pressure_range "${PRESSURE_RANGE}"
     --attack_statuses "${ATTACK_STATUSES}"

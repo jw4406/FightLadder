@@ -26,6 +26,8 @@ NPZ_GLOB="${NPZ_GLOB:-contact_density/cd_s*.npz}"
 N_EXPECT="${N_EXPECT:-4}"
 SUMMARY="${SUMMARY:-contact_density/cd_summary.json}"
 TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-12000000}"
+# Without this the arms build a 65536-wide observation and die on a CUDA OOM.
+RAM_MASK="${RAM_MASK:-${SCRIPT_DIR}/main/ram_mask.npy}"
 LAUNCH_TRAINING="${LAUNCH_TRAINING:-True}"
 WAIT_TIMEOUT_S="${WAIT_TIMEOUT_S:-7200}"
 LOG="${SCRIPT_DIR}/logs/contact_chain.log"
@@ -66,9 +68,17 @@ d = json.load(open(sys.argv[1]))
 base = d["baseline"]
 cands = [("kappa", r["kappa"], r) for r in d.get("test1", []) if r["kappa"] > 0]
 cands += [("beta", r["beta"], r) for r in d.get("test2", []) if r["beta"] > 0]
+cands += [("trade", r["kappa"], r) for r in d.get("test3", []) if r["kappa"] > 0]
 if not cands:
     print("none 0 0 0", base["gamma_share"], base["contact"]); raise SystemExit
+# MUST BEAT DOING NOTHING. The first run of this rule took the max over the
+# positive-weight candidates and never compared against the baseline, so it
+# selected trade=0.5 at gamma_share 10.049% when the baseline was 10.073% --
+# it launched a treatment measured to be WORSE than the control.
 kind, val, r = max(cands, key=lambda c: c[2]["gamma_share"])
+if r["gamma_share"] <= base["gamma_share"]:
+    kind, val = "none", 0
+    r = base
 print(kind, val, r["gamma_share"], r["contact"], base["gamma_share"], base["contact"])
 PY
 )"
@@ -80,7 +90,14 @@ RNG=$(python -c "import json;print(json.load(open('${SUMMARY}'))['range_px'])")
 say "attack_statuses=${ATK}  range_px=${RNG}"
 
 if [ "${LAUNCH_TRAINING}" != "True" ]; then say "LAUNCH_TRAINING=False, stopping"; exit 0; fi
-if [ "${PICK_KIND}" = "none" ]; then say "no positive variant to test, stopping"; exit 0; fi
+# Every reward variant was measured to DILUTE gamma's share, so the fallback is
+# the one intervention that did work: the start-state range, which touches no
+# reward at all and therefore cannot dilute anything.
+if [ "${PICK_KIND}" = "none" ]; then
+    say "no reward variant beats baseline; falling back to the START-STATE arm"
+    PICK_KIND=closerange
+    PICK_VAL="${CLOSE_RANGE_PX:-64}"
+fi
 
 # ---- launch the paired arms -------------------------------------------------
 # Phase 0: MINIMAX_BOOTSTRAP_KAPPA=0 so the head is INERT and cannot change the
@@ -89,20 +106,27 @@ if [ "${PICK_KIND}" = "none" ]; then say "no positive variant to test, stopping"
 cd "${SCRIPT_DIR}"
 say "launching CONTROL arm (baseline reward)"
 nohup env RUN_SUFFIX=cdctl TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS}" \
-    MINIMAX_HEAD=factored MINIMAX_BOOTSTRAP_KAPPA=0.0 CHECKPOINT_INTERVAL=200000 \
+    RAM_MASK="${RAM_MASK}" MINIMAX_HEAD=factored MINIMAX_BOOTSTRAP_KAPPA=0.0 CHECKPOINT_INTERVAL=200000 \
     ./run_minimax_phase0.sh vtoff > logs/cd_arm_control.log 2>&1 &
 sleep 45
 
-if [ "${PICK_KIND}" = "kappa" ]; then
-    say "launching TREATMENT arm counterhit_kappa=${PICK_VAL}"
-    nohup env RUN_SUFFIX=cdkap TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS}" \
-        MINIMAX_HEAD=factored MINIMAX_BOOTSTRAP_KAPPA=0.0 CHECKPOINT_INTERVAL=200000 \
-        COUNTERHIT_KAPPA="${PICK_VAL}" ATTACK_STATUSES="${ATK}" \
+if [ "${PICK_KIND}" = "closerange" ]; then
+    say "launching TREATMENT arm reset_close_range=${PICK_VAL}px"
+    nohup env RUN_SUFFIX=cdclose TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS}" \
+        RAM_MASK="${RAM_MASK}" MINIMAX_HEAD=factored MINIMAX_BOOTSTRAP_KAPPA=0.0 \
+        CHECKPOINT_INTERVAL=200000 RESET_CLOSE_RANGE="${PICK_VAL}" \
+        ./run_minimax_phase0.sh vtoff > logs/cd_arm_treat.log 2>&1 &
+elif [ "${PICK_KIND}" = "kappa" ] || [ "${PICK_KIND}" = "trade" ]; then
+    say "launching TREATMENT arm ${PICK_KIND}_kappa=${PICK_VAL}"
+    nohup env RUN_SUFFIX=cd${PICK_KIND} TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS}" \
+        RAM_MASK="${RAM_MASK}" MINIMAX_HEAD=factored MINIMAX_BOOTSTRAP_KAPPA=0.0 CHECKPOINT_INTERVAL=200000 \
+        "$([ "${PICK_KIND}" = trade ] && echo TRADE_KAPPA || echo COUNTERHIT_KAPPA)=${PICK_VAL}" \
+        ATTACK_STATUSES="${ATK}" \
         ./run_minimax_phase0.sh vtoff > logs/cd_arm_treat.log 2>&1 &
 else
     say "launching TREATMENT arm pressure_beta=${PICK_VAL}"
     nohup env RUN_SUFFIX=cdbet TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS}" \
-        MINIMAX_HEAD=factored MINIMAX_BOOTSTRAP_KAPPA=0.0 CHECKPOINT_INTERVAL=200000 \
+        RAM_MASK="${RAM_MASK}" MINIMAX_HEAD=factored MINIMAX_BOOTSTRAP_KAPPA=0.0 CHECKPOINT_INTERVAL=200000 \
         PRESSURE_BETA="${PICK_VAL}" PRESSURE_RANGE="${RNG}" ATTACK_STATUSES="${ATK}" \
         ./run_minimax_phase0.sh vtoff > logs/cd_arm_treat.log 2>&1 &
 fi

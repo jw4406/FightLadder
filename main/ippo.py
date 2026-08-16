@@ -138,6 +138,8 @@ def _reward_env_kwargs(args):
         ram_stack=int(getattr(args, "ram_stack", 1)),
         ram_stride=int(getattr(args, "ram_stride", 8)),
         counterhit_kappa=float(getattr(args, "counterhit_kappa", 0.0)),
+        trade_kappa=float(getattr(args, "trade_kappa", 0.0)),
+        reset_close_range=float(getattr(args, "reset_close_range", 0.0)),
         pressure_beta=float(getattr(args, "pressure_beta", 0.0)),
         pressure_range=float(getattr(args, "pressure_range", 0.0)),
         attack_statuses=tuple(int(x) for x in st.split(",") if x.strip()),
@@ -146,7 +148,7 @@ def _reward_env_kwargs(args):
 
 def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True,
              null_combo=False, transform_action=False, seed=0, obs_type='image', ego_is_left=True,
-             ram_mask=None, ram_stack=1, ram_stride=8, counterhit_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=()):
+             ram_mask=None, ram_stack=1, ram_stride=8, counterhit_kappa=0.0, trade_kappa=0.0, reset_close_range=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=()):
     def _init():
         players = 2
         env = retro.make(
@@ -1539,6 +1541,15 @@ if __name__ == "__main__":
                              "it was mid-attack. Antisymmetric, so the game stays "
                              "zero-sum. Raises the ANOVA interaction term gamma "
                              "specifically. 0.0 = unchanged.")
+    parser.add_argument('--reset_close_range', type=float, default=0.0,
+                        help="Walk the fighters to within this many pixels at the "
+                             "start of each round. Touches no reward, so the game "
+                             "stays exactly zero-sum. 0 = unchanged.")
+    parser.add_argument('--trade_kappa', type=float, default=0.0,
+                        help="Scale the whole exchange by (1 + kappa) when BOTH "
+                             "sides are attacking. A PRODUCT of both players' "
+                             "indicators, so it is joint by construction and "
+                             "lands in the ANOVA interaction term. 0.0 = unchanged.")
     parser.add_argument('--pressure_beta', type=float, default=0.0,
                         help="Antisymmetric bonus for being the one in range and "
                              "attacking. Raises contact rate. CHANGES THE GAME (not "
