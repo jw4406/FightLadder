@@ -60,7 +60,8 @@ def collect(a):
 
     mask = np.load(a.ram_mask)
     rng = np.random.RandomState(a.seed)
-    env = make_lbr_env(a.state, obs_type="ram", ram_mask=mask, seed=a.seed)()
+    env = make_lbr_env(a.state, obs_type="ram", ram_mask=mask, seed=a.seed,
+                       num_step_frames=a.num_step_frames)()
     na = env.lbr_config()["n_actions"]
     print(f"[cd] {na}x{na} branches, {a.n_roots} roots, state={a.state}", flush=True)
 
@@ -341,6 +342,11 @@ def main(argv=None):
     ap.add_argument("--n_roots", type=int, default=150)
     ap.add_argument("--warmup", type=int, default=40)
     ap.add_argument("--gap", type=int, default=5)
+    ap.add_argument("--num_step_frames", type=int, default=8,
+                    help="Emulator frames per decision. At 8 an exchange can "
+                         "resolve inside ONE branch, so the joint dependence is "
+                         "settled before the next choice; halving it is the one "
+                         "structural lever that touches no reward.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--npz", nargs="*", default=[])
     ap.add_argument("--kappas", default="0,0.5,1,2,4,8")

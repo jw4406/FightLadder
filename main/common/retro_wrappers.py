@@ -48,6 +48,9 @@ class SFWrapper(gym.Wrapper):
 
         self.num_stack = num_stack
         self.num_step_frames = num_step_frames
+        # Motion inputs are rebuilt to fill exactly num_step_frames, so the
+        # frame skip is adjustable without breaking the combo assert.
+        self.sf_combos = build_sf_combos(num_step_frames)
 
         self.aggresive_coeff = 1.0
         self.dense_coeff = 1.0
@@ -126,7 +129,7 @@ class SFWrapper(gym.Wrapper):
         self.action_dim = 12 + 3 if (enable_combo or null_combo) else 12 # 3 bits for combos
         if transform_action:
             # self.action_space = MultiDiscrete([len(DIRECTIONS_BUTTONS) + len(ATTACKS_BUTTONS) + len(COMBOS) for _ in range(self.players)])
-            self.action_space = MultiDiscrete([len(DIRECTIONS_BUTTONS) + len(ATTACKS_BUTTONS) + len(SF_COMBOS)]) if (enable_combo or null_combo) else MultiDiscrete([len(DIRECTIONS_BUTTONS) + len(ATTACKS_BUTTONS)])
+            self.action_space = MultiDiscrete([len(DIRECTIONS_BUTTONS) + len(ATTACKS_BUTTONS) + len(self.sf_combos)]) if (enable_combo or null_combo) else MultiDiscrete([len(DIRECTIONS_BUTTONS) + len(ATTACKS_BUTTONS)])
             def action_transformer(action):
                 players_action = []
                 for player_action in action:
@@ -507,11 +510,11 @@ class SFWrapper(gym.Wrapper):
             if self.enable_combo:
                 combo_id = int(4 * action[-3] + 2 * action[-2] + action[-1])
             else:
-                combo_id = len(SF_COMBOS)
-            if combo_id >= len(SF_COMBOS):
+                combo_id = len(self.sf_combos)
+            if combo_id >= len(self.sf_combos):
                 action_seq = [np.hstack([action[:12], np.zeros_like(action[:12])]) for _ in range(self.num_step_frames)]
             else:
-                combo = SF_COMBOS[combo_id]
+                combo = self.sf_combos[combo_id]
                 assert self.num_step_frames == len(combo)
                 action_seq = combo
                 action_seq = [np.hstack([combo[t], np.zeros_like(combo[t])]) for t in range(self.num_step_frames)]
@@ -520,11 +523,11 @@ class SFWrapper(gym.Wrapper):
             if self.enable_combo:
                 combo_id = int(4 * action[-3] + 2 * action[-2] + action[-1])
             else:
-                combo_id = len(SF_COMBOS)
-            if combo_id >= len(SF_COMBOS):
+                combo_id = len(self.sf_combos)
+            if combo_id >= len(self.sf_combos):
                 action_seq = [np.hstack([np.zeros_like(action[:12]), action[:12]]) for _ in range(self.num_step_frames)]
             else:
-                combo = SF_COMBOS[combo_id]
+                combo = self.sf_combos[combo_id]
                 assert self.num_step_frames == len(combo)
                 action_seq = combo
                 action_seq = [np.hstack([np.zeros_like(combo[t]), combo[t]]) for t in range(self.num_step_frames)]
@@ -534,13 +537,13 @@ class SFWrapper(gym.Wrapper):
             if self.enable_combo:
                 combo_ids = [int(4 * action[self.action_dim - 3] + 2 * action[self.action_dim - 2] + action[self.action_dim - 1]), int(4 * action[-3] + 2 * action[-2] + action[-1])]
             else:
-                combo_ids = [len(SF_COMBOS), len(SF_COMBOS)]
+                combo_ids = [len(self.sf_combos), len(self.sf_combos)]
             action_seqs = []
             for player_id, combo_id in enumerate(combo_ids):
-                if combo_id >= len(SF_COMBOS):
+                if combo_id >= len(self.sf_combos):
                     action_seq = [action[player_id * self.action_dim : player_id * self.action_dim + 12] for _ in range(self.num_step_frames)]
                 else:
-                    combo = SF_COMBOS[combo_id]
+                    combo = self.sf_combos[combo_id]
                     assert self.num_step_frames == len(combo)
                     action_seq = combo
                 action_seqs.append(action_seq)

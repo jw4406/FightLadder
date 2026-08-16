@@ -137,6 +137,7 @@ def _reward_env_kwargs(args):
     return dict(
         ram_stack=int(getattr(args, "ram_stack", 1)),
         ram_stride=int(getattr(args, "ram_stride", 8)),
+        num_step_frames=int(getattr(args, "num_step_frames", 8)),
         counterhit_kappa=float(getattr(args, "counterhit_kappa", 0.0)),
         trade_kappa=float(getattr(args, "trade_kappa", 0.0)),
         reset_close_range=float(getattr(args, "reset_close_range", 0.0)),
@@ -148,7 +149,7 @@ def _reward_env_kwargs(args):
 
 def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True,
              null_combo=False, transform_action=False, seed=0, obs_type='image', ego_is_left=True,
-             ram_mask=None, ram_stack=1, ram_stride=8, counterhit_kappa=0.0, trade_kappa=0.0, reset_close_range=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=()):
+             ram_mask=None, ram_stack=1, ram_stride=8, num_step_frames=8, counterhit_kappa=0.0, trade_kappa=0.0, reset_close_range=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=()):
     def _init():
         players = 2
         env = retro.make(
@@ -1530,6 +1531,14 @@ if __name__ == "__main__":
                              "bonus gradient is also proportional to movable probability "
                              "mass. A parameter RESET restores ln(22)=3.09 by "
                              "construction. Mirrors --reinit_adversary.")
+    parser.add_argument('--num_step_frames', type=int, default=8,
+                        help="Emulator frames per agent decision. At the default 8 "
+                             "an entire exchange (startup, active, hit) can resolve "
+                             "inside ONE step, so the joint dependence is settled "
+                             "before the agent chooses again. Must divide evenly by "
+                             "the 4 inputs in a motion command. Halving it doubles "
+                             "agent steps per second of game time, so arms must be "
+                             "budget-matched on EMULATOR FRAMES, not on steps.")
     parser.add_argument('--ram_stride', type=int, default=8,
                         help="Emulator frames between stacked RAM samples. 8 = one "
                              "per agent step (the default). Stride 8 makes stacking "

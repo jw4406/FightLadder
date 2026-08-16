@@ -27,14 +27,40 @@ SF_COMBOS_BUTTONS = [
     [['LEFT'], ['DOWN'], ['DOWN', 'LEFT'], ['X']], #'Shoryuken-L'
     [['DOWN'], ['DOWN', 'RIGHT'], ['RIGHT'], ['A']], # 'Tatsumaki-L'
 ]
-SF_COMBOS = []
-for combo_buttons in SF_COMBOS_BUTTONS:
-    action_seq = []
-    for combo_button in combo_buttons:
-        button = [int(b in combo_button) for b in BUTTONS]
-        for _ in range(2):
-            action_seq.append(np.array(button))
-    SF_COMBOS.append(action_seq)
+def build_sf_combos(num_step_frames=8):
+    """Motion inputs stretched to fill exactly num_step_frames emulator frames.
+
+    SFWrapper asserts num_step_frames == len(combo), so the historical hardcoded
+    `range(2)` pinned the frame skip at 8 (4 inputs x 2 frames). Deriving the
+    repeat count from the frame budget is what makes the skip adjustable, which
+    is the point: at 8 frames a whole exchange resolves inside ONE decision, so
+    the joint dependence is settled before the agent chooses again.
+
+    Fails loudly rather than silently truncating a motion input -- a Hadouken
+    missing its final frame is not a Hadouken, and the agent would just see an
+    action that never works.
+    """
+    n_inputs = len(SF_COMBOS_BUTTONS[0])
+    if any(len(c) != n_inputs for c in SF_COMBOS_BUTTONS):
+        raise ValueError("SF_COMBOS_BUTTONS entries differ in length")
+    if num_step_frames % n_inputs != 0:
+        raise ValueError(
+            f"num_step_frames={num_step_frames} is not divisible by the {n_inputs} "
+            f"inputs in a motion command; a combo cannot be stretched to fit it "
+            f"without dropping or duplicating an input unevenly.")
+    reps = num_step_frames // n_inputs
+    out = []
+    for combo_buttons in SF_COMBOS_BUTTONS:
+        action_seq = []
+        for combo_button in combo_buttons:
+            button = [int(b in combo_button) for b in BUTTONS]
+            for _ in range(reps):
+                action_seq.append(np.array(button))
+        out.append(action_seq)
+    return out
+
+
+SF_COMBOS = build_sf_combos(8)
 
 DIRECTIONS_BUTTONS = [
     [], ['UP'], ['DOWN'], ['LEFT'], ['RIGHT'], 
