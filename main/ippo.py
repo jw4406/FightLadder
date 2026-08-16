@@ -159,9 +159,20 @@ def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=N
             obs_type=retro.Observations.IMAGE,
             players=players
         )
+        # EVERY new SFWrapper knob must be forwarded HERE. They were previously
+        # declared as CLI flags, threaded into make_env's signature, and then
+        # silently dropped at this call -- so --reset_close_range, --num_step_frames
+        # and the three reward variants were all accepted and ignored. The
+        # close-range arm trained to weights BIT-IDENTICAL to its control before
+        # this was caught. test_env_plumbing.py now asserts each one arrives.
         env = SFWrapper(env, side=side, rendering=rendering, reset_type=reset_type, init_level=init_level,
                         state_dir=state_dir, verbose=verbose, enable_combo=enable_combo, null_combo=null_combo,
-                        transform_action=transform_action)
+                        transform_action=transform_action,
+                        num_step_frames=num_step_frames,
+                        counterhit_kappa=counterhit_kappa, trade_kappa=trade_kappa,
+                        pressure_beta=pressure_beta, pressure_range=pressure_range,
+                        attack_statuses=attack_statuses,
+                        reset_close_range=reset_close_range)
         # Observation wrapper. NOTE: the InfoObsWrapper branch used to be
         # commented out here, so --obs_type info silently did nothing.
         if obs_type == 'ram':
