@@ -68,6 +68,23 @@ def main(argv=None):
                          "read -359164. Aggregates were fine; the byte-level "
                          "table was not.")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--mlp", action="store_true",
+                    help="also run a 2-hidden-layer MLP per arm. The ridge is a "
+                         "LINEAR probe, and this codebase has already been "
+                         "burned once by a linear null that a 3-layer head "
+                         "overturned -- so the linear result cannot settle "
+                         "sufficiency on its own.")
+    ap.add_argument("--mlp_hidden", type=int, default=512)
+    ap.add_argument("--mlp_epochs", type=int, default=200)
+    ap.add_argument("--mlp_seeds", type=int, default=3,
+                    help="the claim under test is a ~0.002 EV difference, so a "
+                         "single seed cannot support it")
+    ap.add_argument("--mlp_wds", default="1e-5,1e-4,1e-3,1e-2")
+    ap.add_argument("--mlp_lrs", default="3e-4,1e-3,3e-3",
+                    help="swept and selected on val alongside wd. A wide-input "
+                         "arm that is merely badly conditioned would otherwise "
+                         "score low and read as 'history does not help' -- the "
+                         "same artifact the ridge lambda grid produced.")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--out", default="preflight_markov.json")
     a = ap.parse_args(argv)
@@ -238,12 +255,89 @@ def main(argv=None):
                     median_byte=float(np.median(per_byte)), lam=lam,
                     per_byte=per_byte)
 
+    def mlp_ev(X, name):
+        """Same features, same splits, same selection protocol -- nonlinear.
+
+        Capacity differs across arms by construction (k=1 gives d=1921, k=12
+        gives d=22526), which is precisely what the SHUFFLED arm controls for:
+        it has k=12's feature count with the temporal link destroyed.
+        """
+        Xt = th.as_tensor(X, dtype=th.float32, device=dev)
+        sd = Xt[m_tr].std(0)
+        alive = sd > 1e-6
+        Xt = (Xt[:, alive] - Xt[m_tr][:, alive].mean(0)) / sd[alive]
+        Xtr, Xva, Xte = Xt[m_tr], Xt[m_va], Xt[m_te]
+        Ytr = Yt[m_tr].float(); Yva = Yt[m_va].float(); Yte = Yt[m_te].float()
+        ymu = Ytr.mean(0)
+        dva = ((Yva - ymu) ** 2)
+        dte = ((Yte - ymu) ** 2)
+        d_in, d_out = Xtr.shape[1], Ytr.shape[1]
+        runs = []
+        for seed in range(a.mlp_seeds):
+            best = (-1e9, None, None, None)
+            for wd, lr in [(w, l) for w in wds for l in lrs]:
+                th.manual_seed(1000 * seed + 7)
+                net = th.nn.Sequential(
+                    th.nn.Linear(d_in, a.mlp_hidden), th.nn.ReLU(),
+                    th.nn.Linear(a.mlp_hidden, a.mlp_hidden), th.nn.ReLU(),
+                    th.nn.Linear(a.mlp_hidden, d_out)).to(dev)
+                opt = th.optim.AdamW(net.parameters(), lr=lr, weight_decay=wd)
+                g = th.Generator(device="cpu"); g.manual_seed(1000 * seed + 7)
+                for ep in range(a.mlp_epochs):
+                    net.train()
+                    perm = th.randperm(len(Xtr), generator=g).to(dev)
+                    for i in range(0, len(perm), 256):
+                        b = perm[i:i + 256]
+                        loss = th.nn.functional.mse_loss(net(Xtr[b]), Ytr[b] - ymu)
+                        opt.zero_grad(); loss.backward(); opt.step()
+                    net.eval()
+                    with th.no_grad():
+                        ev = float(1 - ((Yva - (net(Xva) + ymu)) ** 2).mean()
+                                   / dva.mean())
+                    if np.isfinite(ev) and ev > best[0]:
+                        with th.no_grad():
+                            pt = net(Xte) + ymu
+                        best = (ev, (wd, lr), ep, pt)
+            if best[3] is None:
+                raise SystemExit(f"FAILED: no finite validation EV for {name}")
+            # If the best epoch is the LAST one, training was still improving and
+            # the budget is truncated -- the exact analogue of the ridge lambda
+            # landing on its grid boundary, which is what produced EV -7487.
+            if best[2] == a.mlp_epochs - 1:
+                raise SystemExit(
+                    f"FAILED: {name} seed {seed} peaked on the FINAL epoch "
+                    f"({a.mlp_epochs}). Validation EV was still rising, so this "
+                    f"is not the MLP's best -- raise --mlp_epochs.")
+            _, hp, ep, pt = best
+            num = ((Yte - pt) ** 2).mean(0)
+            runs.append((float(1 - num.mean() / dte.mean().clamp_min(1e-30)),
+                         (1 - num / dte.mean(0).clamp_min(1e-30)).cpu().numpy(),
+                         hp, ep))
+        pooled = float(np.mean([r[0] for r in runs]))
+        spread = float(np.std([r[0] for r in runs]))
+        per_byte = np.mean([r[1] for r in runs], axis=0)
+        med = float(np.median(per_byte))
+        print(f"  {name:>16}  wd={runs[0][2][0]:g} lr={runs[0][2][1]:g} "
+              f"ep~{int(np.mean([r[3] for r in runs]))}"
+              f"  feat={int(alive.sum())}  pooled_EV={pooled:.4f}+-{spread:.4f}  "
+              f"median_byte={med:.4f}", flush=True)
+        return dict(pooled=pooled, pooled_sd=spread, mean_byte=med,
+                    median_byte=med, lam=str(runs[0][2]), per_byte=per_byte)
+
+    scorer, wds, lrs = ridge_ev, None, None
+    if a.mlp:
+        wds = [float(x) for x in a.mlp_wds.split(",") if x.strip()]
+        lrs = [float(x) for x in a.mlp_lrs.split(",") if x.strip()]
+        scorer = mlp_ev
+        print(f"\n  MLP: {a.mlp_hidden}x2 hidden, {a.mlp_seeds} seeds, "
+              f"wd {wds} x lr {lrs}, <= {a.mlp_epochs} epochs", flush=True)
+
     print(f"\n  held-out EV predicting the NEXT masked RAM frame\n")
     res = {}
     for k in ks:
-        res[f"k{k}"] = ridge_ev(features(k), f"k={k}")
-    res["k12_shuffled"] = ridge_ev(features(max(ks), shuffled=True),
-                                   f"k={max(ks)} SHUFFLED")
+        res[f"k{k}"] = scorer(features(k), f"k={k}")
+    res["k12_shuffled"] = scorer(features(max(ks), shuffled=True),
+                                 f"k={max(ks)} SHUFFLED")
 
     kmax = f"k{max(ks)}"
     d_hist = res[kmax]["mean_byte"] - res["k1"]["mean_byte"]

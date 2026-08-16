@@ -126,6 +126,24 @@ RAM_MASK="${RAM_MASK:-}"
 # checkpoint trained at one stack cannot be loaded at another, and MODEL_FILE
 # warm-starts must use the same value.
 RAM_STACK="${RAM_STACK:-1}"
+RAM_STRIDE="${RAM_STRIDE:-8}"
+
+# CONTACT-DENSITY REWARD VARIANTS. Both default to 0.0 = the historical reward,
+# bitwise. The dense reward is D_e - D_a, identically zero when no damage lands,
+# so the payoff is CONSTANT in the joint action on ~94% of states and the ANOVA
+# interaction term gamma is exactly zero there. These add joint structure while
+# staying ANTISYMMETRIC, hence zero-sum, which minimax-Q requires.
+#
+# Do NOT reach for `aggresive_coeff` instead: r + r_inv = (a-1)(D_e + D_a), so
+# any a != 1 makes the game general-sum and invalidates the minimax operator.
+#
+# ATTACK_STATUSES and PRESSURE_RANGE must come from
+# `contact_density.py --mode analyze`, which derives them from data. Guessing
+# them silently changes what the reward means.
+COUNTERHIT_KAPPA="${COUNTERHIT_KAPPA:-0.0}"
+PRESSURE_BETA="${PRESSURE_BETA:-0.0}"
+PRESSURE_RANGE="${PRESSURE_RANGE:-0.0}"
+ATTACK_STATUSES="${ATTACK_STATUSES:-}"
 POPART="${POPART:-False}"
 case "${POPART}" in True|False) ;; *) echo "POPART must be True|False" >&2; exit 1 ;; esac
 # What the joint-action head regresses onto. 'returns' (default) is option A --
@@ -247,6 +265,9 @@ TAG="${TAG}_${OBS_TYPE}"
 # trainers pointed at one task dir silently overwrite each other's checkpoints
 # -- that has already destroyed one baseline. Any re-run of an existing arm
 # MUST set this.
+[ "${RAM_STACK}" != "1" ] && TAG="${TAG}_k${RAM_STACK}s${RAM_STRIDE}"
+[ "${COUNTERHIT_KAPPA}" != "0.0" ] && TAG="${TAG}_ch${COUNTERHIT_KAPPA}"
+[ "${PRESSURE_BETA}" != "0.0" ] && TAG="${TAG}_pb${PRESSURE_BETA}"
 [ -n "${RUN_SUFFIX:-}" ] && TAG="${TAG}_${RUN_SUFFIX}"
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -307,6 +328,11 @@ CMD=(
     --obs_type "${OBS_TYPE}"
     --ram_mask "${RAM_MASK}"
     --ram_stack "${RAM_STACK}"
+    --ram_stride "${RAM_STRIDE}"
+    --counterhit_kappa "${COUNTERHIT_KAPPA}"
+    --pressure_beta "${PRESSURE_BETA}"
+    --pressure_range "${PRESSURE_RANGE}"
+    --attack_statuses "${ATTACK_STATUSES}"
     --gamma 0.94
     --vtrace_enabled "${VTRACE_ENABLED}" --vtrace_seq_len 64
     --vtrace_c_bar 1.0 --vtrace_rho_bar 5.0 --vtrace_replay_capacity 15000

@@ -121,7 +121,7 @@ def prof_report(total_s, label=""):
 
 def make_lbr_env(state, side="both", reset_type="round", enable_combo=True,
                  null_combo=False, transform_action=True, seed=0,
-                 obs_type="image", ram_mask=None, ram_stack=1, ram_stride=8):
+                 obs_type="image", ram_mask=None, ram_stack=1, ram_stride=8, **sf_kwargs):
     """Env factory for LBR. Deliberately omits Monitor2P.
 
     Monitor2P is stateful and fails loudly under branching: it raises
@@ -140,7 +140,7 @@ def make_lbr_env(state, side="both", reset_type="round", enable_combo=True,
         env = SFWrapper(env, side=side, rendering=False, reset_type=reset_type,
                         init_level=1, state_dir=None, verbose=False,
                         enable_combo=enable_combo, null_combo=null_combo,
-                        transform_action=transform_action)
+                        transform_action=transform_action, **sf_kwargs)
         # Must match the CHECKPOINT's observation space. Building an image env
         # for a --obs_type ram policy fails deep inside the first forward with an
         # unreadable 65,536-element space dump; infer_obs_kwargs() reads the

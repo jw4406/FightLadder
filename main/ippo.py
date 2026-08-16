@@ -125,9 +125,28 @@ def _load_ram_mask(args):
     return mask
 
 
+def _reward_env_kwargs(args):
+    """Env kwargs that must reach EVERY make_env call.
+
+    ram_stack was previously declared as a CLI flag and never forwarded to the
+    training call site, so --ram_stack was accepted and silently ignored.
+    Routing all of these through one helper means a new knob cannot be wired
+    into one call site and forgotten at the other.
+    """
+    st = getattr(args, "attack_statuses", "") or ""
+    return dict(
+        ram_stack=int(getattr(args, "ram_stack", 1)),
+        ram_stride=int(getattr(args, "ram_stride", 8)),
+        counterhit_kappa=float(getattr(args, "counterhit_kappa", 0.0)),
+        pressure_beta=float(getattr(args, "pressure_beta", 0.0)),
+        pressure_range=float(getattr(args, "pressure_range", 0.0)),
+        attack_statuses=tuple(int(x) for x in st.split(",") if x.strip()),
+    )
+
+
 def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True,
              null_combo=False, transform_action=False, seed=0, obs_type='image', ego_is_left=True,
-             ram_mask=None, ram_stack=1):
+             ram_mask=None, ram_stack=1, ram_stride=8, counterhit_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=()):
     def _init():
         players = 2
         env = retro.make(
@@ -143,7 +162,7 @@ def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=N
         # Observation wrapper. NOTE: the InfoObsWrapper branch used to be
         # commented out here, so --obs_type info silently did nothing.
         if obs_type == 'ram':
-            env = RamObsWrapper(env, mask=ram_mask, stack=ram_stack)
+            env = RamObsWrapper(env, mask=ram_mask, stack=ram_stack, stride=ram_stride)
         elif obs_type == 'info':
             env = InfoObsWrapper(env, ego_is_left=ego_is_left)
         env = Monitor2P(env)
@@ -391,6 +410,7 @@ def env_generator(args, max_envs: int = 0, i_start: int = 0, j_start: int = 0, S
         env_count = 0
         obs_type = getattr(args, 'obs_type', 'image')
         ram_mask = _load_ram_mask(args)
+        _envkw = _reward_env_kwargs(args)
         halfway = len(STATE) // 2
         use_mirror = getattr(args, 'use_mirror', False)
         for i in range(i_start, len(STATE)):
@@ -401,7 +421,7 @@ def env_generator(args, max_envs: int = 0, i_start: int = 0, j_start: int = 0, S
                 make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render,
                             enable_combo=args.enable_combo, null_combo=args.null_combo,
                             transform_action=args.transform_action, seed=0, obs_type=obs_type,
-                            ram_mask=ram_mask,
+                            ram_mask=ram_mask, **_envkw,
                             ego_is_left=ego_is_left))
             env_count += 1
             if exceed_max_envs(env_count, max_envs):
@@ -611,11 +631,12 @@ def main(args):
     def many_char_env_generator():
         obs_type = getattr(args, 'obs_type', 'image')
         ram_mask = _load_ram_mask(args)
+        _envkw = _reward_env_kwargs(args)
         halfway = len(STATE) // 2
         env = [make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render,
                         enable_combo=args.enable_combo, null_combo=args.null_combo,
                         transform_action=args.transform_action, seed=0, obs_type=obs_type,
-                        ram_mask=ram_mask,
+                        ram_mask=ram_mask, **_envkw,
                         ego_is_left=(i < halfway) if use_mirror else True) for i in range(len(STATE))]
         vec_env = SubprocVecEnv2P(env)
         if obs_type == 'image':
@@ -1507,6 +1528,27 @@ if __name__ == "__main__":
                              "bonus gradient is also proportional to movable probability "
                              "mass. A parameter RESET restores ln(22)=3.09 by "
                              "construction. Mirrors --reinit_adversary.")
+    parser.add_argument('--ram_stride', type=int, default=8,
+                        help="Emulator frames between stacked RAM samples. 8 = one "
+                             "per agent step (the default). Stride 8 makes stacking "
+                             "INERT for branch distinguishability, since every frame "
+                             "but the newest is shared across branches; only stride "
+                             "< 8 resolves sub-step events.")
+    parser.add_argument('--counterhit_kappa', type=float, default=0.0,
+                        help="Scale damage by (1 + kappa) when the side that RECEIVED "
+                             "it was mid-attack. Antisymmetric, so the game stays "
+                             "zero-sum. Raises the ANOVA interaction term gamma "
+                             "specifically. 0.0 = unchanged.")
+    parser.add_argument('--pressure_beta', type=float, default=0.0,
+                        help="Antisymmetric bonus for being the one in range and "
+                             "attacking. Raises contact rate. CHANGES THE GAME (not "
+                             "potential-based), so prior baselines do not transfer.")
+    parser.add_argument('--pressure_range', type=float, default=0.0,
+                        help="|agent_x - enemy_x| counted as in range. Derive from "
+                             "contact_density.py, do not guess.")
+    parser.add_argument('--attack_statuses', type=str, default="",
+                        help="Comma-separated agent_status values meaning 'attacking'. "
+                             "Derived by contact_density.py --mode analyze.")
     parser.add_argument('--ram_stack', type=int, default=1,
                         help="Concatenate this many consecutive RAM frames into one "
                              "observation. 1 = single frame, the current behaviour. A "

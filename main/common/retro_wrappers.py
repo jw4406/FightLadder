@@ -39,7 +39,7 @@ LBR_SF_ATTRS = (
 
 class SFWrapper(gym.Wrapper):
 
-    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False):
+    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=()):
         super(SFWrapper, self).__init__(env)
         self.env = FrameStack(env, num_stack=num_stack)
 
@@ -51,6 +51,44 @@ class SFWrapper(gym.Wrapper):
 
         self.aggresive_coeff = 1.0
         self.dense_coeff = 1.0
+
+        # CONTACT-DENSITY REWARD VARIANTS. Both default to 0.0, which leaves the
+        # in-fight reward bitwise unchanged.
+        #
+        # The problem they address: the dense reward is D_e - D_a, which is
+        # IDENTICALLY ZERO whenever no damage lands -- for all 484 joint actions
+        # at once. On such a state the payoff is constant in the actions, so the
+        # ANOVA interaction term gamma is exactly zero and a joint-action critic
+        # has nothing to represent. Damage is the only channel by which the
+        # payoff depends on actions at all, which is why gamma is zero on ~94%
+        # of states.
+        #
+        # Both terms below are ANTISYMMETRIC -- r_inverse = -r exactly -- so the
+        # game stays ZERO-SUM, which minimax-Q requires. Note that the existing
+        # `aggresive_coeff` is NOT: r + r_inv = (a-1)(D_e + D_a), zero only at
+        # a == 1. It is the obvious dial for "more aggression" and it would
+        # silently invalidate the operator under evaluation.
+        #
+        #   counterhit_kappa  weights damage landed while the RECIPIENT is in an
+        #                     attack state. A counter-hit is the purest joint
+        #                     event in the game -- neither action alone predicts
+        #                     it -- so this raises gamma SPECIFICALLY rather
+        #                     than just raising contact.
+        #   pressure_beta     antisymmetric bonus for being the one in range and
+        #                     attacking. Raises contact directly. This one
+        #                     CHANGES THE GAME (it is not potential-based), so
+        #                     the equilibrium moves and prior numbers do not
+        #                     transfer.
+        self.counterhit_kappa = float(counterhit_kappa)
+        self.pressure_beta = float(pressure_beta)
+        self.pressure_range = float(pressure_range)
+        self.attack_statuses = frozenset(int(x) for x in attack_statuses)
+        if (self.counterhit_kappa or self.pressure_beta) and not self.attack_statuses:
+            raise ValueError(
+                "counterhit_kappa/pressure_beta need attack_statuses; derive them "
+                "with contact_density.py --mode analyze rather than guessing.")
+        if self.pressure_beta and self.pressure_range <= 0:
+            raise ValueError("pressure_beta needs a positive pressure_range")
 
         self.total_timesteps = 0
 
@@ -532,8 +570,23 @@ class SFWrapper(gym.Wrapper):
                             self.level += 1
             # While the fighting is still going on
             else:
-                custom_reward = self.dense_coeff * (self.aggresive_coeff * (self.prev_enemy_hp - enemy_hp) - (self.prev_agent_hp - agent_hp))
-                custom_reward_inverse = self.dense_coeff * (self.aggresive_coeff * (self.prev_agent_hp - agent_hp) - (self.prev_enemy_hp - enemy_hp))
+                D_e = self.prev_enemy_hp - enemy_hp
+                D_a = self.prev_agent_hp - agent_hp
+                # counter-hit: scale each side's damage by whether the side that
+                # RECEIVED it was mid-attack. w_e weights damage dealt TO the
+                # enemy, so it reads the ENEMY's status.
+                w_e = w_a = 1.0
+                if self.counterhit_kappa:
+                    w_e += self.counterhit_kappa * (info['enemy_status'] in self.attack_statuses)
+                    w_a += self.counterhit_kappa * (info['agent_status'] in self.attack_statuses)
+                custom_reward = self.dense_coeff * (self.aggresive_coeff * D_e * w_e - D_a * w_a)
+                custom_reward_inverse = self.dense_coeff * (self.aggresive_coeff * D_a * w_a - D_e * w_e)
+                if self.pressure_beta:
+                    in_rng = abs(info['agent_x'] - info['enemy_x']) <= self.pressure_range
+                    p_a = float(in_rng and (info['agent_status'] in self.attack_statuses))
+                    p_e = float(in_rng and (info['enemy_status'] in self.attack_statuses))
+                    custom_reward += self.pressure_beta * (p_a - p_e)
+                    custom_reward_inverse += self.pressure_beta * (p_e - p_a)
                 self.prev_agent_hp = agent_hp
                 self.prev_enemy_hp = enemy_hp
                 custom_done = False
