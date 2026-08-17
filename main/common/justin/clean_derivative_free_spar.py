@@ -186,6 +186,9 @@ class CleanDerivativeFreeSPAR(PPO):
             popart: bool = False,
             popart_beta: float = 3e-4,
             minimax_q: bool = False,
+            adam_eps: float = -1.0,
+            value_loss_fn: str = "mse",
+            huber_delta: float = 1.0,
             coma_coef: float = 0.0,
             coma_diag: bool = False,
             minimax_head: str = "matrix",
@@ -356,6 +359,16 @@ class CleanDerivativeFreeSPAR(PPO):
         # 'matrix' (default) keeps the 484-cell free head. 'factored' selects the
         # ANOVA decomposition; see FactoredMinimaxHead.
         # Counterfactual (COMA) baseline. 0.0 + diag off is BITWISE inert.
+        # Adam eps for the VALUE optimizer only (algorithms.py builds it with
+        # **policy.optimizer_kwargs; ctrl/dstb use plain AdamW). Rewards are
+        # scaled 0.001 so return sigma ~0.0166 and value grads land ~1e-5..1e-6.
+        # Adam's update lr*m/(sqrt(v)+eps) is scale-invariant EXCEPT through eps,
+        # so if sqrt(v) is not comfortably above the 1e-8 default, eps is
+        # throttling the value head and "critic EV ~ 0" is an optimiser artefact.
+        # -1.0 means "leave the default alone" and is bitwise inert.
+        self.adam_eps = float(adam_eps)
+        self.value_loss_fn = str(value_loss_fn)
+        self.huber_delta = float(huber_delta)
         self.coma_coef = float(coma_coef)
         self.coma_diag = bool(coma_diag)
         self.minimax_head = str(minimax_head)
@@ -666,6 +679,10 @@ class CleanDerivativeFreeSPAR(PPO):
         self.policy_kwargs['popart'] = getattr(self, "popart", False)
         self.policy_kwargs['popart_beta'] = getattr(self, "popart_beta", 3e-4)
         self.policy_kwargs['minimax_q'] = getattr(self, "minimax_q", False)
+        if getattr(self, 'adam_eps', -1.0) > 0:
+            _ok = dict(self.policy_kwargs.get('optimizer_kwargs') or {})
+            _ok['eps'] = float(self.adam_eps)
+            self.policy_kwargs['optimizer_kwargs'] = _ok
         self.policy_kwargs['minimax_head'] = getattr(self, "minimax_head", "matrix")
         self.policy_kwargs['minimax_rank'] = getattr(self, "minimax_rank", 4)
         self.policy_kwargs['minimax_w_init'] = getattr(self, "minimax_w_init", 0.01)
@@ -1775,9 +1792,9 @@ class CleanDerivativeFreeSPAR(PPO):
                     #   normalize(a) - normalize(b) == (a - b) / sigma
                     if _pa is not None:
                         _s = _pa.sigma.detach()
-                        value_loss = F.mse_loss(rollout_data.returns / _s, values_pred / _s)
+                        value_loss = self._value_loss(values_pred / _s, rollout_data.returns / _s)
                     else:
-                        value_loss = F.mse_loss(rollout_data.returns, values_pred)
+                        value_loss = self._value_loss(values_pred, rollout_data.returns)
                     value_losses.append(value_loss.item())
 
                     if entropy is None:
@@ -2042,9 +2059,9 @@ class CleanDerivativeFreeSPAR(PPO):
                     # in a difference of normalized quantities).
                     if _pa is not None:
                         _s = _pa.sigma.detach()
-                        value_loss = F.mse_loss(rollout_data.returns / _s, values_pred / _s)
+                        value_loss = self._value_loss(values_pred / _s, rollout_data.returns / _s)
                     else:
-                        value_loss = F.mse_loss(rollout_data.returns, values_pred)
+                        value_loss = self._value_loss(values_pred, rollout_data.returns)
                     value_losses.append(value_loss.item())
 
                     # Entropy loss favor exploration
@@ -2103,6 +2120,53 @@ class CleanDerivativeFreeSPAR(PPO):
                     if do_onpolicy_value:
                         self.policy.value_grads_autograd_order.append([self.policy.value_optimizer.param_groups[0]['params'][i].grad for i in range(len(self.policy.value_optimizer.param_groups[0]['params']))])
                     self.policy.value_loss.append(value_loss)
+                    # VALUE-HEAD GRADIENT NORM, measured BEFORE clipping.
+                    #
+                    # Rewards are scaled by 0.001, so return sigma ~0.0166 and the
+                    # MSE value loss ~1.6e-4. Adam is scale-invariant in its update
+                    # magnitude -- update = lr*m/(sqrt(v)+eps) -- EXCEPT through
+                    # eps. If sqrt(v) is not comfortably above eps (default 1e-8),
+                    # eps is silently throttling the value head and "critic EV ~ 0"
+                    # would be an optimiser artefact rather than an aleatoric limit.
+                    # That is the question this logs, and it is also why the honest
+                    # fix would be eps, not rescaling the reward: rescaling is a
+                    # no-op for Adam and would instead start engaging max_grad_norm
+                    # (0.5), which currently never binds at this scale.
+                    # VALUE-HEAD GRADIENT NORM, and whether CLIPPING decides it.
+                    #
+                    # clip_grad_norm_ below runs over self.policy.parameters() --
+                    # ego actor + adversary actor + value net TOGETHER -- so the
+                    # value head's effective step depends on the POLICY's gradient
+                    # magnitude, and when the joint norm exceeds max_grad_norm
+                    # (0.5) every value grad is rescaled by 0.5/joint.
+                    #
+                    # That decides whether Adam's eps can matter at all. Adam is
+                    # scale-invariant except through eps; if clipping binds, the
+                    # grads reaching Adam are renormalised to O(0.5) and eps=1e-8
+                    # is irrelevant. eps can only bite when clipping NEVER fires.
+                    # An earlier version of this compared the VALUE-ONLY norm
+                    # against 0.5, which is not the quantity the clip tests -- the
+                    # joint norm is strictly larger, so clipping fires when that
+                    # flag said it had not.
+                    _log_g = do_onpolicy_value and self._n_updates % 50 == 0
+                    if _log_g:
+                        _vp = [q for g in self.policy.value_optimizer.param_groups
+                               for q in g["params"] if q.grad is not None]
+                        _all = [q for q in self.policy.parameters() if q.grad is not None]
+                        if _vp and _all:
+                            _vn = float(th.sqrt(sum((q.grad.float() ** 2).sum() for q in _vp)))
+                            _jn = float(th.sqrt(sum((q.grad.float() ** 2).sum() for q in _all)))
+                            _ne = sum(q.grad.numel() for q in _vp)
+                            _scale = min(1.0, self.max_grad_norm / max(_jn, 1e-30))
+                            self.logger.record("train/value_grad_norm", _vn)
+                            self.logger.record("train/joint_grad_norm", _jn)
+                            # THE gate: 1.0 means the clip fired and eps cannot matter
+                            self.logger.record("train/clip_fired", float(_jn > self.max_grad_norm))
+                            self.logger.record("train/clip_scale", _scale)
+                            # per-element RMS AFTER the clip -- what Adam actually sees,
+                            # and the number to compare against eps.
+                            self.logger.record("train/value_grad_rms_postclip",
+                                               _vn * _scale / max(_ne, 1) ** 0.5)
                     # Clip grad norm
                     if do_onpolicy_value:
                         # Worker is parked (pure-offload disabled or paused during train),
@@ -2890,24 +2954,45 @@ class CleanDerivativeFreeSPAR(PPO):
         """
         coef = float(getattr(self, "coma_coef", 0.0))
         diag = bool(getattr(self, "coma_diag", False))
+        if not getattr(self, "_coma_announced", False):
+            self._coma_announced = True
+            print(f"[coma] _coma_correction reached: coef={coef} diag={diag}",
+                  flush=True)
         if coef == 0.0 and not diag:
             return
         if not getattr(self, "minimax_q", False):
             raise RuntimeError("--coma_coef/--coma_diag require --minimax_q True "
                                "(the counterfactual baseline reads Q(s,i,j))")
 
+        # Buffer fields are sometimes numpy and sometimes CUDA tensors depending
+        # on the path that filled them, and np.asarray() on a CUDA tensor raises.
+        def _t(x):
+            return (x if isinstance(x, th.Tensor)
+                    else th.as_tensor(np.asarray(x))).to(self.device)
+
         obs = rollout_buffer.observations
-        T, n_envs = obs.shape[0], obs.shape[1]
-        flat = th.as_tensor(obs.reshape((T * n_envs,) + obs.shape[2:])).to(self.device)
+        T, n_envs = int(rollout_buffer.buffer_size), int(rollout_buffer.n_envs)
+        # The buffer's arrays are swap_and_flatten()ed IN PLACE by get() during
+        # the previous update, so by the time train() runs again `observations`
+        # may be (T*n_envs, ...) rather than (T, n_envs, ...). Derive the layout
+        # from buffer_size/n_envs and accept either, loudly.
+        nobs = int(np.prod(obs.shape))
+        per = nobs // max(T * n_envs, 1)
+        if T * n_envs * per != nobs:
+            raise RuntimeError(
+                f"COMA: cannot map observations of shape {tuple(obs.shape)} "
+                f"(size {nobs}) onto buffer_size={T} x n_envs={n_envs}. "
+                f"advantages shape {tuple(np.shape(rollout_buffer.advantages))}, "
+                f"actions shape {tuple(np.shape(rollout_buffer.actions))}.")
+        flat = _t(obs).reshape(T * n_envs, per) if per > 1 else _t(obs).reshape(T * n_envs)
 
         # Realised actions, in the layout the buffers store them (T, n_envs).
-        ego_a = th.as_tensor(np.asarray(rollout_buffer.actions)).to(self.device)
-        ego_a = ego_a.reshape(T, n_envs).long()
+        ego_a = _t(rollout_buffer.actions).reshape(T, n_envs).long()
         adv_a = th.zeros_like(ego_a)
         for i in range(self.num_adversaries):
             sl = slice(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
-            ai = th.as_tensor(np.asarray(adversary_buffers[i].actions)).to(self.device)
-            adv_a[:, sl] = ai.reshape(T, self.n_env_per_adv).long()
+            adv_a[:, sl] = _t(adversary_buffers[i].actions).reshape(
+                T, self.n_env_per_adv).long()
 
         d_beta = th.zeros(T * n_envs, device=self.device)
         d_alpha = th.zeros(T * n_envs, device=self.device)
@@ -2930,7 +3015,7 @@ class CleanDerivativeFreeSPAR(PPO):
         d_beta = d_beta.reshape(T, n_envs)
         d_alpha = d_alpha.reshape(T, n_envs)
 
-        adv_ego = th.as_tensor(np.asarray(rollout_buffer.advantages)).to(self.device).float()
+        adv_ego = _t(rollout_buffer.advantages).float().reshape(T, n_envs)
         stats = {
             "coma_coef": coef,
             "coma_beta_std": float(d_beta.std()),
@@ -2948,6 +3033,11 @@ class CleanDerivativeFreeSPAR(PPO):
                         .reshape(T, n_envs)).var() / adv_ego.var().clamp_min(1e-30))),
         }
         self._minimax_stats = {**(getattr(self, "_minimax_stats", None) or {}), **stats}
+        # Record DIRECTLY rather than relying on _minimax_stats reaching the dump
+        # site: several code paths reassign that dict between here and the log,
+        # and the diagnostic is worthless if its numbers do not appear.
+        for _k, _v in stats.items():
+            self.logger.record(f"train/{_k}", _v)
         if coef == 0.0:
             return                                   # diag only: nothing applied
 
@@ -2959,7 +3049,7 @@ class CleanDerivativeFreeSPAR(PPO):
             sl = slice(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
             ab = adversary_buffers[i]
             a_np = isinstance(ab.advantages, np.ndarray)
-            av = th.as_tensor(np.asarray(ab.advantages)).to(self.device).float()
+            av = _t(ab.advantages).float().reshape(T, self.n_env_per_adv)
             # SIGN. The head is EGO-perspective, so the adversary's payoff is -Q
             # and its own main effect enters negated. A flipped sign here is the
             # single most dangerous line in this method -- the same mistake on
@@ -2984,6 +3074,28 @@ class CleanDerivativeFreeSPAR(PPO):
                                              side_flag=None)
         dist = p._get_adv_action_dist_from_latent(latent, buf_num=[0], evaluate=True)[0]
         return dist.distribution[0].probs
+
+    def _value_loss(self, pred, targ):
+        """MSE or Huber on the value target.
+
+        WHY HUBER IS MOTIVATED HERE, not just tried: the per-step reward is
+        D_e - D_a, which is EXACTLY ZERO on ~91% of steps and spikes to
+        +-0.01..0.03 when a hit lands. The discounted return is therefore a sum
+        of mostly zeros with occasional spikes -- spike-and-slab -- and MSE on
+        that shape is dominated by the rare spikes. The measured return-
+        prediction ceiling is EV ~0.074 at the best horizon, i.e. the target is
+        ~93% noise, which is precisely the regime where a robust loss changes
+        how gradients respond to outliers.
+
+        beta is set as a MULTIPLE OF THE BATCH RETURN STD so the transition
+        point tracks the return scale (measured sigma ~0.0166) instead of being
+        a magic constant that silently becomes pure-L2 or pure-L1 if the scale
+        moves.
+        """
+        if getattr(self, "value_loss_fn", "mse") != "huber":
+            return F.mse_loss(targ, pred)
+        beta = float(getattr(self, "huber_delta", 1.0)) * float(targ.std().clamp_min(1e-8))
+        return F.smooth_l1_loss(pred, targ, beta=beta)
 
     def _minimax_bootstrap(self, rollout_buffer, adversary_buffers, last_obs,
                            last_values, side_flag=None):
@@ -3502,7 +3614,7 @@ class CleanDerivativeFreeSPAR(PPO):
                             values - rollout_data.old_values, -clip_range_vf, clip_range_vf
                         )
                     # Value loss using the TD(gae_lambda) target
-                    value_loss = F.mse_loss(rollout_data.returns, values_pred)
+                    value_loss = self._value_loss(values_pred, rollout_data.returns)
                     value_losses.append(value_loss.item())
 
                     # Entropy loss favor exploration

@@ -822,6 +822,9 @@ def main(args):
                 entropy_collapse_tol=getattr(args, 'entropy_collapse_tol', 1e-6),
                 entropy_collapse_patience=getattr(args, 'entropy_collapse_patience', 20),
                 minimax_q=(args.minimax_q == 'True'),
+                adam_eps=float(getattr(args, 'adam_eps', -1.0)),
+                value_loss_fn=getattr(args, 'value_loss_fn', 'mse'),
+                huber_delta=float(getattr(args, 'huber_delta', 1.0)),
                 coma_coef=float(getattr(args, 'coma_coef', 0.0)),
                 coma_diag=(str(getattr(args, 'coma_diag', 'False')) == 'True'),
                 minimax_head=getattr(args, 'minimax_head', 'matrix'),
@@ -1544,6 +1547,22 @@ if __name__ == "__main__":
                              "bonus gradient is also proportional to movable probability "
                              "mass. A parameter RESET restores ln(22)=3.09 by "
                              "construction. Mirrors --reinit_adversary.")
+    parser.add_argument('--adam_eps', type=float, default=-1.0,
+                        help="Adam epsilon for the VALUE optimizer. -1 keeps the "
+                             "torch default (1e-8), bitwise inert. Adam is "
+                             "scale-invariant except through eps, so this is the "
+                             "right knob for tiny-gradient regimes -- not rescaling "
+                             "the reward, which is a no-op for Adam and would "
+                             "instead start engaging max_grad_norm.")
+    parser.add_argument('--value_loss_fn', type=str, default='mse',
+                        choices=['mse','huber'],
+                        help="Value loss. Returns are spike-and-slab (zero on "
+                             "~91%% of steps, occasional spikes) and ~93%% noise "
+                             "at this horizon, which is the regime where a robust "
+                             "loss helps. mse = unchanged.")
+    parser.add_argument('--huber_delta', type=float, default=1.0,
+                        help="Huber transition point, in units of the BATCH RETURN "
+                             "STD, so it tracks the return scale.")
     parser.add_argument('--coma_coef', type=float, default=0.0,
                         help="Counterfactual (COMA) baseline strength. Subtracts the "
                              "OPPONENT'S ANOVA main effect from each seat's advantage: "

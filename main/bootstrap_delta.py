@@ -54,6 +54,10 @@ def main(argv=None):
     ap.add_argument("--n_envs", type=int, default=6)
     ap.add_argument("--device", type=str, default="cuda")
     ap.add_argument("--out", type=str, default="bootstrap_delta.json")
+    ap.add_argument("--num_step_frames", type=int, default=8,
+                    help="MUST match the checkpoint. An nsf=16 policy enumerated "
+                         "in an nsf=8 env is evaluated on a different game, and "
+                         "nothing would raise -- the obs width is identical.")
     ap.add_argument("--save_obs", action="store_true",
                     help="Also save the ROOT observation for every state. Needed to "
                          "use the enumerated matrices as TRAINING data for the head "
@@ -73,6 +77,7 @@ def main(argv=None):
     data = load_from_zip_file(a.ckpt, device="cpu")[0]
     head_idx, label, state = resolve_matchups(data, "all")[0]
     venv = build_lbr_venv(state, a.n_envs,
+                          num_step_frames=a.num_step_frames,
                           **infer_obs_kwargs(data, a.ram_mask or None))
     try:
         model, _ = load_checkpoint(a.ckpt, venv, a.device)

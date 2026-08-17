@@ -161,6 +161,9 @@ NUM_STEP_FRAMES="${NUM_STEP_FRAMES:-8}"
 # temporal the realised reduction is much smaller. Gate on
 # train/coma_ego_var_reduction beating train/coma_shuffled_var_reduction by a
 # clear margin, and >5%, before spending an arm on COMA_COEF>0.
+ADAM_EPS="${ADAM_EPS:--1.0}"
+VALUE_LOSS_FN="${VALUE_LOSS_FN:-mse}"
+HUBER_DELTA="${HUBER_DELTA:-1.0}"
 COMA_COEF="${COMA_COEF:-0.0}"
 COMA_DIAG="${COMA_DIAG:-False}"
 PRESSURE_BETA="${PRESSURE_BETA:-0.0}"
@@ -293,6 +296,8 @@ TAG="${TAG}_${OBS_TYPE}"
 [ "${RESET_CLOSE_RANGE}" != "0.0" ] && TAG="${TAG}_cr${RESET_CLOSE_RANGE}"
 [ "${NUM_STEP_FRAMES}" != "8" ] && TAG="${TAG}_nsf${NUM_STEP_FRAMES}"
 [ "${COMA_COEF}" != "0.0" ] && TAG="${TAG}_coma${COMA_COEF}"
+[ "${VALUE_LOSS_FN}" != "mse" ] && TAG="${TAG}_${VALUE_LOSS_FN}${HUBER_DELTA}"
+[ "${ADAM_EPS}" != "-1.0" ] && TAG="${TAG}_eps${ADAM_EPS}"
 [ "${PRESSURE_BETA}" != "0.0" ] && TAG="${TAG}_pb${PRESSURE_BETA}"
 [ -n "${RUN_SUFFIX:-}" ] && TAG="${TAG}_${RUN_SUFFIX}"
 
@@ -359,6 +364,9 @@ CMD=(
     --trade_kappa "${TRADE_KAPPA}"
     --reset_close_range "${RESET_CLOSE_RANGE}"
     --num_step_frames "${NUM_STEP_FRAMES}"
+    --adam_eps "${ADAM_EPS}"
+    --value_loss_fn "${VALUE_LOSS_FN}"
+    --huber_delta "${HUBER_DELTA}"
     --coma_coef "${COMA_COEF}"
     --coma_diag "${COMA_DIAG}"
     --pressure_beta "${PRESSURE_BETA}"
@@ -420,6 +428,8 @@ echo "  mm head    : ${MINIMAX_HEAD}$([ "${MINIMAX_HEAD}" = factored ] && \
 echo "  task_dir   : ${FIGHTLADDER_TASK_DIR}"
 echo "  log        : ${LOG}"
 echo "  frames/step: ${NUM_STEP_FRAMES}   close_range: ${RESET_CLOSE_RANGE}px
+  adam eps   : ${ADAM_EPS} (-1 = torch default 1e-8)
+  value loss : ${VALUE_LOSS_FN} (huber_delta=${HUBER_DELTA} x return std)
   coma       : coef=${COMA_COEF} diag=${COMA_DIAG}
   reward var : counterhit=${COUNTERHIT_KAPPA} trade=${TRADE_KAPPA} pressure=${PRESSURE_BETA} atk_status=[${ATTACK_STATUSES}]
   ckpt every : ${CHECKPOINT_INTERVAL} PER-ENV steps (x24 envs = $(( CHECKPOINT_INTERVAL * 24 )) total)

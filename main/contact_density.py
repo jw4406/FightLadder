@@ -91,6 +91,11 @@ def collect(a):
     if missing:
         raise SystemExit(f"FAILED: info is missing {missing}; got {sorted(info)}")
 
+    # The ROOT OBSERVATION, so the same collection can answer "is gamma
+    # LEARNABLE from what the network actually sees?" -- the ceiling on any
+    # head, and the gate that gamma_share (noise-gameable) cannot provide.
+    OBS = np.zeros((a.n_roots, int(np.asarray(env.observation_space.shape).prod())),
+                   np.float32)
     ROOT = np.zeros((a.n_roots, len(FIELDS)), np.float64)
     POST = np.zeros((a.n_roots, na, na, len(FIELDS)), np.float64)
     RL = np.zeros((a.n_roots, na, na), np.float64)
@@ -110,6 +115,7 @@ def collect(a):
         # exactly the variable under study.
         try:
             ROOT[root] = [info[f] for f in FIELDS]
+            OBS[root] = np.asarray(env._ram_obs(), dtype=np.float32).ravel()
             env.lbr_snapshot(ROOT_KEY)
             for i in range(na):
                 for j in range(na):
@@ -145,9 +151,11 @@ def collect(a):
             print(f"[cd] {root+1}/{a.n_roots} roots", flush=True)
     env.close()
 
-    ROOT, POST, RL, RR, DONE = (x[valid] for x in (ROOT, POST, RL, RR, DONE))
+    ROOT, POST, RL, RR, DONE, OBS = (x[valid] for x in
+                                     (ROOT, POST, RL, RR, DONE, OBS))
     np.savez_compressed(a.out, ROOT=ROOT, POST=POST, RL=RL, RR=RR, DONE=DONE,
-                        fields=np.array(FIELDS), na=na, n_skipped=n_skipped)
+                        OBS=OBS, fields=np.array(FIELDS), na=na,
+                        n_skipped=n_skipped)
     frac = n_skipped / max(a.n_roots, 1)
     print(f"[cd] wrote {a.out}  {len(ROOT)} valid roots, {n_skipped} dropped ({frac:.1%})",
           flush=True)
