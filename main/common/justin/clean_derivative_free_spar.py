@@ -186,6 +186,8 @@ class CleanDerivativeFreeSPAR(PPO):
             popart: bool = False,
             popart_beta: float = 3e-4,
             minimax_q: bool = False,
+            coma_coef: float = 0.0,
+            coma_diag: bool = False,
             minimax_head: str = "matrix",
             minimax_rank: int = 4,
             minimax_w_init: float = 0.01,
@@ -353,6 +355,9 @@ class CleanDerivativeFreeSPAR(PPO):
         self.minimax_q = bool(minimax_q)
         # 'matrix' (default) keeps the 484-cell free head. 'factored' selects the
         # ANOVA decomposition; see FactoredMinimaxHead.
+        # Counterfactual (COMA) baseline. 0.0 + diag off is BITWISE inert.
+        self.coma_coef = float(coma_coef)
+        self.coma_diag = bool(coma_diag)
         self.minimax_head = str(minimax_head)
         self.minimax_rank = int(minimax_rank)
         self.minimax_w_init = float(minimax_w_init)
@@ -1469,6 +1474,9 @@ class CleanDerivativeFreeSPAR(PPO):
         # Also inside the vtrace pause, so the value worker cannot write the
         # value head while enumeration reads V(s') for the targets.
         self._maybe_enumerate()
+        # AFTER compute_returns_and_advantage (end of collect_rollouts) and
+        # BEFORE any policy update reads rollout_data.advantages.
+        self._coma_correction(self.rollout_buffer, self.adversary_buffers)
         try:
             if update_ego:
                 self.train_standard(update_ego=True, update_adversary=False)
@@ -2830,6 +2838,152 @@ class CleanDerivativeFreeSPAR(PPO):
                 M, iters=getattr(self, "minimax_iters", 1024),
                 eta=getattr(self, "minimax_eta", 0.5)).V.reshape(-1))
         return th.cat(out)
+
+    def _coma_correction(self, rollout_buffer, adversary_buffers):
+        """COUNTERFACTUAL BASELINE. Remove the OTHER player's main effect from
+        each seat's advantage.
+
+        Standard PG uses A = G - V(s). V(s) is a function of state only, so it
+        cancels the ANOVA mu term and nothing else: the advantage still carries
+        alpha_i + beta_j + gamma_ij. The beta_j part is pure noise from the ego's
+        point of view -- "my advantage estimate was bad because THEY happened to
+        throw a fireball" -- and it is not small. Measured on 1600 enumerated
+        states (contact_density.py):
+
+            alpha 48.6%   beta 41.3%   gamma 10.1%   of within-state energy
+
+        A counterfactual baseline marginalises the seat's OWN action while
+        holding the opponent's REALISED action fixed:
+
+            b_ego(s,j) = SUM_i pi_ego(i) Q(s,i,j)  =  mu + beta_j + g_j
+            A_ego      = G - b_ego                 =  alpha_i + (gamma_ij - g_j)
+
+        where g_j = SUM_i pi_ego(i) gamma_ij. gamma is centred over i only in the
+        UNWEIGHTED sense, so g_j vanishes exactly when pi_ego is uniform and is
+        otherwise a function of j that rides along with beta. Harmless -- it
+        still does not depend on the ego's own action, so the baseline stays
+        unbiased -- but the correction is beta PLUS that marginal, not beta
+        alone. test_coma.py pins both the general identity and the uniform case.
+
+        so the ego drops beta (41.3%) and the adversary drops alpha (48.6%).
+        Note the counterintuitive part: you marginalise your OWN action and what
+        cancels is the OPPONENT'S main effect.
+
+        UNBIASED BY CONSTRUCTION. b does not depend on the seat's own action, so
+        E_i[grad log pi(i) * b] = b * E_i[grad log pi(i)] = 0. This is what makes
+        it safe where "add V to LBR branch selection" was not: there the critic
+        CHOSE (and flipped +0.139 into -0.229); here it only CENTRES. A wrong
+        head degrades variance reduction and can never bias the gradient.
+
+        WE SUBTRACT THE HEAD'S OWN MEAN, not V(s). If the scalar critic's V and
+        the head's mu disagree, that mismatch would leak into every advantage at
+        the state. Using the head's own grand mean makes the correction exactly
+        the term intended and lets the two networks disagree harmlessly.
+
+        BITWISE INERT AT coma_coef == 0 WITH coma_diag OFF -- returns before
+        touching anything, exactly like _minimax_bootstrap at kappa 0. With
+        coma_diag ON it computes the correction and LOGS what it would have
+        done without applying it, which is the go/no-go measurement: the
+        alpha/beta shares above are of WITHIN-STATE energy, and if most
+        advantage variance is across-state or temporal the realised reduction is
+        much smaller.
+        """
+        coef = float(getattr(self, "coma_coef", 0.0))
+        diag = bool(getattr(self, "coma_diag", False))
+        if coef == 0.0 and not diag:
+            return
+        if not getattr(self, "minimax_q", False):
+            raise RuntimeError("--coma_coef/--coma_diag require --minimax_q True "
+                               "(the counterfactual baseline reads Q(s,i,j))")
+
+        obs = rollout_buffer.observations
+        T, n_envs = obs.shape[0], obs.shape[1]
+        flat = th.as_tensor(obs.reshape((T * n_envs,) + obs.shape[2:])).to(self.device)
+
+        # Realised actions, in the layout the buffers store them (T, n_envs).
+        ego_a = th.as_tensor(np.asarray(rollout_buffer.actions)).to(self.device)
+        ego_a = ego_a.reshape(T, n_envs).long()
+        adv_a = th.zeros_like(ego_a)
+        for i in range(self.num_adversaries):
+            sl = slice(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
+            ai = th.as_tensor(np.asarray(adversary_buffers[i].actions)).to(self.device)
+            adv_a[:, sl] = ai.reshape(T, self.n_env_per_adv).long()
+
+        d_beta = th.zeros(T * n_envs, device=self.device)
+        d_alpha = th.zeros(T * n_envs, device=self.device)
+        chunk = 4096
+        ea, aa = ego_a.reshape(-1), adv_a.reshape(-1)
+        for i0 in range(0, flat.shape[0], chunk):
+            sl = slice(i0, min(i0 + chunk, flat.shape[0]))
+            Q = self.policy.minimax_matrices(flat[sl], buf_num=[0], side_flag=None,
+                                             stop_grad=True)          # (B,na,na)
+            pe = self._coma_probs(flat[sl], seat="ego")               # (B,na)
+            pa = self._coma_probs(flat[sl], seat="adv")               # (B,na)
+            # b_ego(s,j) for every j, then index the realised one
+            b_all = th.einsum("bi,bij->bj", pe, Q)                    # mu + beta_j
+            a_all = th.einsum("bij,bj->bi", Q, pa)                    # mu + alpha_i
+            grand = th.einsum("bj,bj->b", b_all, pa)                  # mu
+            idx = th.arange(Q.shape[0], device=self.device)
+            d_beta[sl] = b_all[idx, aa[sl]] - grand
+            d_alpha[sl] = a_all[idx, ea[sl]] - grand
+
+        d_beta = d_beta.reshape(T, n_envs)
+        d_alpha = d_alpha.reshape(T, n_envs)
+
+        adv_ego = th.as_tensor(np.asarray(rollout_buffer.advantages)).to(self.device).float()
+        stats = {
+            "coma_coef": coef,
+            "coma_beta_std": float(d_beta.std()),
+            "coma_alpha_std": float(d_alpha.std()),
+            "coma_adv_std_before": float(adv_ego.std()),
+            # THE GATE. Fraction of ego advantage variance the correction removes.
+            # Below ~5% the arm is not worth running.
+            "coma_ego_var_reduction": float(
+                1.0 - ((adv_ego - d_beta).var() / adv_ego.var().clamp_min(1e-30))),
+            # CONTROL: the same correction paired to SHUFFLED states. A real
+            # reduction must beat this; a correction that merely has the right
+            # marginal scale will shrink variance by luck.
+            "coma_shuffled_var_reduction": float(
+                1.0 - ((adv_ego - d_beta.reshape(-1)[th.randperm(T * n_envs, device=self.device)]
+                        .reshape(T, n_envs)).var() / adv_ego.var().clamp_min(1e-30))),
+        }
+        self._minimax_stats = {**(getattr(self, "_minimax_stats", None) or {}), **stats}
+        if coef == 0.0:
+            return                                   # diag only: nothing applied
+
+        was_np = isinstance(rollout_buffer.advantages, np.ndarray)
+        new_ego = adv_ego - coef * d_beta
+        rollout_buffer.advantages = (new_ego.cpu().numpy().astype(np.float32)
+                                     if was_np else new_ego)
+        for i in range(self.num_adversaries):
+            sl = slice(i * self.n_env_per_adv, (i + 1) * self.n_env_per_adv)
+            ab = adversary_buffers[i]
+            a_np = isinstance(ab.advantages, np.ndarray)
+            av = th.as_tensor(np.asarray(ab.advantages)).to(self.device).float()
+            # SIGN. The head is EGO-perspective, so the adversary's payoff is -Q
+            # and its own main effect enters negated. A flipped sign here is the
+            # single most dangerous line in this method -- the same mistake on
+            # the ego target invalidated all of Phase 0.
+            nv = av + coef * d_alpha[:, sl]
+            ab.advantages = (nv.cpu().numpy().astype(np.float32) if a_np else nv)
+
+    @th.no_grad()
+    def _coma_probs(self, obs, seat):
+        """pi(.|s) for one seat. Mirrors the verified PolicyOps path rather than
+        inventing a new one -- get_dstb_distribution does not exist and an
+        invented accessor would silently return the wrong seat."""
+        from stable_baselines3.common.preprocessing import preprocess_obs
+        p = self.policy
+        x = preprocess_obs(obs, p.observation_space,
+                           normalize_images=p.normalize_images)
+        if seat == "ego":
+            latent = p.mlp_extractor.ego_forward(p.pi_ctrl_features_extractor(x))
+            dist = p._get_ego_action_dist_from_latent(latent)
+            return dist.distribution[0].probs
+        latent = p.mlp_extractor.adv_forward(p.pi_dstb_features_extractor(x),
+                                             side_flag=None)
+        dist = p._get_adv_action_dist_from_latent(latent, buf_num=[0], evaluate=True)[0]
+        return dist.distribution[0].probs
 
     def _minimax_bootstrap(self, rollout_buffer, adversary_buffers, last_obs,
                            last_values, side_flag=None):

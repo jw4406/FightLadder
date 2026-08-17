@@ -822,6 +822,8 @@ def main(args):
                 entropy_collapse_tol=getattr(args, 'entropy_collapse_tol', 1e-6),
                 entropy_collapse_patience=getattr(args, 'entropy_collapse_patience', 20),
                 minimax_q=(args.minimax_q == 'True'),
+                coma_coef=float(getattr(args, 'coma_coef', 0.0)),
+                coma_diag=(str(getattr(args, 'coma_diag', 'False')) == 'True'),
                 minimax_head=getattr(args, 'minimax_head', 'matrix'),
                 minimax_rank=getattr(args, 'minimax_rank', 4),
                 minimax_w_init=getattr(args, 'minimax_w_init', 0.01),
@@ -1542,6 +1544,19 @@ if __name__ == "__main__":
                              "bonus gradient is also proportional to movable probability "
                              "mass. A parameter RESET restores ln(22)=3.09 by "
                              "construction. Mirrors --reinit_adversary.")
+    parser.add_argument('--coma_coef', type=float, default=0.0,
+                        help="Counterfactual (COMA) baseline strength. Subtracts the "
+                             "OPPONENT'S ANOVA main effect from each seat's advantage: "
+                             "ego drops beta (41.3%% of within-state energy), adversary "
+                             "drops alpha (48.6%%). Unbiased by construction -- the "
+                             "baseline does not depend on the seat's own action -- so a "
+                             "wrong head degrades variance reduction but cannot bias the "
+                             "gradient. 0.0 = unchanged.")
+    parser.add_argument('--coma_diag', type=str, default="False", choices=["True", "False"],
+                        help="Compute the correction and LOG what it would have done "
+                             "WITHOUT applying it. Bitwise inert on training. This is "
+                             "the go/no-go measurement: watch train/coma_ego_var_reduction "
+                             "against train/coma_shuffled_var_reduction.")
     parser.add_argument('--num_step_frames', type=int, default=8,
                         help="Emulator frames per agent decision. At the default 8 "
                              "an entire exchange (startup, active, hit) can resolve "

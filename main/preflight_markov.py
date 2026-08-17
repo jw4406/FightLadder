@@ -333,15 +333,42 @@ def main(argv=None):
               f"wd {wds} x lr {lrs}, <= {a.mlp_epochs} epochs", flush=True)
 
     print(f"\n  held-out EV predicting the NEXT masked RAM frame\n")
-    res = {}
+    res, out = {}, {}
     for k in ks:
         res[f"k{k}"] = scorer(features(k), f"k={k}")
-    res["k12_shuffled"] = scorer(features(max(ks), shuffled=True),
-                                 f"k={max(ks)} SHUFFLED")
+    # A SHUFFLED CONTROL AT EVERY DEPTH, not just the deepest. The first version
+    # controlled only k=12, which left the k=2 and k=4 gains -- the only positive
+    # signal in the whole probe -- with no capacity-matched comparison. That
+    # matters here because the k=12 shuffle itself scored ABOVE k=1 in the MLP
+    # (0.4550 vs 0.4040): adding 21k RANDOM history features bought +0.051 with
+    # zero information, so capacity demonstrably moves this probe on its own.
+    for k in ks:
+        if k > 1:
+            res[f"k{k}_shuffled"] = scorer(features(k, shuffled=True),
+                                           f"k={k} SHUFFLED")
 
     kmax = f"k{max(ks)}"
+    print(f"\n  {'depth':>7} {'vs k=1':>9} {'vs OWN shuffle':>15}   reading")
+    for k in ks:
+        if k == 1:
+            continue
+        g1 = res[f"k{k}"]["pooled"] - res["k1"]["pooled"]
+        gc = res[f"k{k}"]["pooled"] - res[f"k{k}_shuffled"]["pooled"]
+        # Real history must beat BOTH: k=1 (it adds something) and its own
+        # capacity-matched shuffle (what it adds is the temporal ORDER, not the
+        # extra parameters). Either one alone is not evidence.
+        if g1 > 0 and gc > 0:
+            rd = "history"
+        elif g1 > 0:
+            rd = "CAPACITY, not history"
+        else:
+            rd = "no gain"
+        print(f"  {'k='+str(k):>7} {g1:+9.4f} {gc:+15.4f}   {rd}")
+        out.setdefault("depth_table", []).append(
+            dict(k=k, gain_vs_k1=g1, gain_vs_own_shuffle=gc, reading=rd))
+
     d_hist = res[kmax]["mean_byte"] - res["k1"]["mean_byte"]
-    d_ctrl = res[kmax]["mean_byte"] - res["k12_shuffled"]["mean_byte"]
+    d_ctrl = res[kmax]["mean_byte"] - res[f"k{max(ks)}_shuffled"]["mean_byte"]
     pb1, pbk = res["k1"]["per_byte"], res[kmax]["per_byte"]
     gain = pbk - pb1
     big = np.where(gain > 0.05)[0]
@@ -357,8 +384,8 @@ def main(argv=None):
         for i in order[:12]:
             print(f"      0x{addr[i]:04X}   {pb1[big[i]]:.3f} -> {pbk[big[i]]:.3f}")
 
-    out = {k: {kk: vv for kk, vv in v.items() if kk != "per_byte"}
-           for k, v in res.items()}
+    out.update({k: {kk: vv for kk, vv in v.items() if kk != "per_byte"}
+                for k, v in res.items()})
     out["history_gain"] = d_hist
     out["control_gain"] = d_ctrl
     out["n_bytes_improved"] = int(len(big))

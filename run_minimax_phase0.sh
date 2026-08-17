@@ -146,6 +146,23 @@ RESET_CLOSE_RANGE="${RESET_CLOSE_RANGE:-0.0}"
 # Emulator frames per decision. Halving it doubles agent steps per second of
 # game time, so TOTAL_TIMESTEPS must be doubled to budget-match on frames.
 NUM_STEP_FRAMES="${NUM_STEP_FRAMES:-8}"
+
+# COUNTERFACTUAL (COMA) BASELINE. Subtracts the OPPONENT's ANOVA main effect
+# from each seat's advantage -- ego drops beta (41.3% of within-state energy),
+# adversary drops alpha (48.6%). Unbiased: the baseline does not depend on the
+# seat's own action, so a wrong head loses variance reduction but cannot bias
+# the gradient. That is what makes it safe where "add V to LBR branch
+# selection" was not (+0.139 -> -0.229): there the critic CHOSE, here it only
+# CENTRES.
+#
+# RUN COMA_DIAG=True FIRST. It computes the correction and logs what it WOULD
+# have done without applying it, bitwise inert. The published alpha/beta shares
+# are of WITHIN-STATE energy; if most advantage variance is across-state or
+# temporal the realised reduction is much smaller. Gate on
+# train/coma_ego_var_reduction beating train/coma_shuffled_var_reduction by a
+# clear margin, and >5%, before spending an arm on COMA_COEF>0.
+COMA_COEF="${COMA_COEF:-0.0}"
+COMA_DIAG="${COMA_DIAG:-False}"
 PRESSURE_BETA="${PRESSURE_BETA:-0.0}"
 PRESSURE_RANGE="${PRESSURE_RANGE:-0.0}"
 ATTACK_STATUSES="${ATTACK_STATUSES:-}"
@@ -275,6 +292,7 @@ TAG="${TAG}_${OBS_TYPE}"
 [ "${TRADE_KAPPA}" != "0.0" ] && TAG="${TAG}_tr${TRADE_KAPPA}"
 [ "${RESET_CLOSE_RANGE}" != "0.0" ] && TAG="${TAG}_cr${RESET_CLOSE_RANGE}"
 [ "${NUM_STEP_FRAMES}" != "8" ] && TAG="${TAG}_nsf${NUM_STEP_FRAMES}"
+[ "${COMA_COEF}" != "0.0" ] && TAG="${TAG}_coma${COMA_COEF}"
 [ "${PRESSURE_BETA}" != "0.0" ] && TAG="${TAG}_pb${PRESSURE_BETA}"
 [ -n "${RUN_SUFFIX:-}" ] && TAG="${TAG}_${RUN_SUFFIX}"
 
@@ -341,6 +359,8 @@ CMD=(
     --trade_kappa "${TRADE_KAPPA}"
     --reset_close_range "${RESET_CLOSE_RANGE}"
     --num_step_frames "${NUM_STEP_FRAMES}"
+    --coma_coef "${COMA_COEF}"
+    --coma_diag "${COMA_DIAG}"
     --pressure_beta "${PRESSURE_BETA}"
     --pressure_range "${PRESSURE_RANGE}"
     --attack_statuses "${ATTACK_STATUSES}"
@@ -399,6 +419,10 @@ echo "  mm head    : ${MINIMAX_HEAD}$([ "${MINIMAX_HEAD}" = factored ] && \
     echo "   rank=${MINIMAX_RANK} w_init=${MINIMAX_W_INIT}  (watch train/minimax_fx_w_norm)")"
 echo "  task_dir   : ${FIGHTLADDER_TASK_DIR}"
 echo "  log        : ${LOG}"
-echo "  watch      : train/minimax_coverage, train/minimax_q_branch_std"
+echo "  frames/step: ${NUM_STEP_FRAMES}   close_range: ${RESET_CLOSE_RANGE}px
+  coma       : coef=${COMA_COEF} diag=${COMA_DIAG}
+  reward var : counterhit=${COUNTERHIT_KAPPA} trade=${TRADE_KAPPA} pressure=${PRESSURE_BETA} atk_status=[${ATTACK_STATUSES}]
+  ckpt every : ${CHECKPOINT_INTERVAL} PER-ENV steps (x24 envs = $(( CHECKPOINT_INTERVAL * 24 )) total)
+  watch      : train/minimax_coverage, train/minimax_q_branch_std"
 nohup "${CMD[@]}" > "${LOG}" 2>&1 &
 echo "  PID        : $!"
