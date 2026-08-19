@@ -1967,6 +1967,13 @@ if __name__ == "__main__":
     parser.add_argument('--null_combo', choices=['True', 'False'], help='Null action space for special move', default='False')
     parser.add_argument('--transform_action', choices=['True', 'False'], help='Transform action space to MultiDiscrete', default='False')
     parser.add_argument('--seed', type=int, help='Seed', default=0)
+    # Observation + reward knobs so the exploiter env MATCHES the target checkpoint.
+    # A ram-masked SPAR checkpoint has a (2105,) obs space; the default image env
+    # mismatches and load fails. reward_scale must match too (unscaled = 1.0).
+    parser.add_argument('--obs_type', type=str, default='image', help='image | ram. RAM-masked checkpoints need "ram".')
+    parser.add_argument('--ram_mask', type=str, default='', help='Path to RAM byte-index .npy (matches a ram-masked checkpoint).')
+    parser.add_argument('--reward_scale', type=float, default=0.001, help='1.0 = unscaled. Match the target checkpoint.')
+    parser.add_argument('--aggresive_coeff', type=float, default=1.0, help='1.0 = zero-sum. Match the target checkpoint.')
     parser.add_argument('--launch_local_br_eval', choices=['True', 'False'], help='Launch local br eval', default='False')
     parser.add_argument('--use_wandb', choices=['True', 'False'], help='Enable Weights & Biases logging', default='False')
     parser.add_argument(
@@ -2012,6 +2019,10 @@ if __name__ == "__main__":
         "null_combo": args.null_combo,
         "transform_action": args.transform_action,
         "seed": args.seed,
+        "obs_type": args.obs_type,
+        "ram_mask": args.ram_mask,
+        "reward_scale": args.reward_scale,
+        "aggresive_coeff": args.aggresive_coeff,
     }
     args.DEBUG = args.DEBUG == 'True'
     args.dedicated_exploiter = args.dedicated_exploiter == 'True'
