@@ -51,6 +51,16 @@ def main(argv=None):
     ap.add_argument("--gammas", default="0.5,0.75,0.9,0.94,0.99")
     ap.add_argument("--lambdas", default="0.3,0.6,0.8,0.95,1.0")
     ap.add_argument("--lams", default="1e-2,1e-1,1,10,100,1e3,1e4,1e5,1e6,1e7")
+    ap.add_argument("--reward_scale", type=float, default=0.001,
+                    help="MUST match the checkpoint's training reward_scale. A head "
+                         "trained unscaled (1.0) evaluated in a 0.001 env gives V ~1000x "
+                         "the returns and head_EV = -600000 (garbage). Not recoverable "
+                         "from the checkpoint, so pass it explicitly.")
+    ap.add_argument("--eval_seed", type=int, default=0,
+                    help="seeds the eval rollout AND the episode split. Training is "
+                         "deterministic (--seed does not change the policy), so the "
+                         "noise floor for head_EV comes from varying THIS across "
+                         "runs on ONE checkpoint.")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--out", default="value_gap.json")
     a = ap.parse_args(argv)
@@ -67,14 +77,15 @@ def main(argv=None):
     # that happens inside a SubprocVecEnv2P worker, the parent only sees the pipe
     # close (ConnectionResetError), not the real TypeError. Unpack by name.
     head_idx, _label, st = resolve_matchups(data, "all")[0]
-    venv = build_lbr_venv(st, a.n_envs, **infer_obs_kwargs(data, a.ram_mask or None))
+    venv = build_lbr_venv(st, a.n_envs, reward_scale=a.reward_scale,
+                          **infer_obs_kwargs(data, a.ram_mask or None))
     loaded = load_checkpoint(a.ckpt, venv, a.device)
     model = loaded[0] if isinstance(loaded, tuple) else loaded
     # head_idx from the checkpoint, NOT hardcoded 0. They coincide only while
     # num_adversaries == 1; the same "correct by accident of configuration"
     # hazard that value_forward already carries.
     ops = PolicyOps(model, head_idx=head_idx, lbr_is_adv=False)
-    rng = np.random.RandomState(0)
+    rng = np.random.RandomState(a.eval_seed)
 
     # ---- rollout: obs, reward, value, features, episode id ------------------
     OBS, REW, VAL, EP, DONE = [], [], [], [], []

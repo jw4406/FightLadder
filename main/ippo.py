@@ -144,12 +144,14 @@ def _reward_env_kwargs(args):
         pressure_beta=float(getattr(args, "pressure_beta", 0.0)),
         pressure_range=float(getattr(args, "pressure_range", 0.0)),
         attack_statuses=tuple(int(x) for x in st.split(",") if x.strip()),
+        reward_scale=float(getattr(args, "reward_scale", 0.001)),
+        aggresive_coeff=float(getattr(args, "aggresive_coeff", 1.0)),
     )
 
 
 def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True,
              null_combo=False, transform_action=False, seed=0, obs_type='image', ego_is_left=True,
-             ram_mask=None, ram_stack=1, ram_stride=8, num_step_frames=8, counterhit_kappa=0.0, trade_kappa=0.0, reset_close_range=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=()):
+             ram_mask=None, ram_stack=1, ram_stride=8, num_step_frames=8, counterhit_kappa=0.0, trade_kappa=0.0, reset_close_range=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reward_scale=0.001, aggresive_coeff=1.0):
     def _init():
         players = 2
         env = retro.make(
@@ -172,7 +174,9 @@ def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=N
                         counterhit_kappa=counterhit_kappa, trade_kappa=trade_kappa,
                         pressure_beta=pressure_beta, pressure_range=pressure_range,
                         attack_statuses=attack_statuses,
-                        reset_close_range=reset_close_range)
+                        reset_close_range=reset_close_range,
+                        reward_scale=reward_scale,
+                        aggresive_coeff=aggresive_coeff)
         # Observation wrapper. NOTE: the InfoObsWrapper branch used to be
         # commented out here, so --obs_type info silently did nothing.
         if obs_type == 'ram':
@@ -1554,6 +1558,17 @@ if __name__ == "__main__":
                              "right knob for tiny-gradient regimes -- not rescaling "
                              "the reward, which is a no-op for Adam and would "
                              "instead start engaging max_grad_norm.")
+    parser.add_argument('--value_clip_separate', type=str, default='False', choices=['True','False'],
+                        help="decouple value grads from the joint policy+value clip")
+    parser.add_argument('--reward_scale', type=float, default=0.001,
+                        help="multiplier on every reward. 0.001 = historical (inert). "
+                             "Sets the magnitude the value optimizer sees; 1.0 restores "
+                             "Adam's adaptive regime for the value head (sqrt(v) >> eps).")
+    parser.add_argument('--aggresive_coeff', type=float, default=1.0,
+                        help="weight on damage DEALT vs TAKEN. 1.0 = zero-sum (default). "
+                             "The paper uses 3 to incentivise combat, which makes the "
+                             "game GENERAL-SUM -- minimax-Q does not apply; a=3 arms are "
+                             "for state-visitation measurement only.")
     parser.add_argument('--value_loss_fn', type=str, default='mse',
                         choices=['mse','huber'],
                         help="Value loss. Returns are spike-and-slab (zero on "

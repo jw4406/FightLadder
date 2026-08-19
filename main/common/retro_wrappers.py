@@ -39,7 +39,7 @@ LBR_SF_ATTRS = (
 
 class SFWrapper(gym.Wrapper):
 
-    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, trade_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reset_close_range=0.0, close_max_steps=40):
+    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, trade_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reset_close_range=0.0, close_max_steps=40, reward_scale=0.001, aggresive_coeff=1.0):
         super(SFWrapper, self).__init__(env)
         self.env = FrameStack(env, num_stack=num_stack)
 
@@ -52,7 +52,12 @@ class SFWrapper(gym.Wrapper):
         # frame skip is adjustable without breaking the combo assert.
         self.sf_combos = build_sf_combos(num_step_frames)
 
-        self.aggresive_coeff = 1.0
+        # aggresive_coeff weights damage DEALT vs damage TAKEN in both the dense
+        # and terminal rewards. 1.0 = the historical zero-sum game (default). The
+        # FightLadder paper uses 3 to incentivise combat, which makes the game
+        # GENERAL-SUM (r_ego + r_adv = (a-1)(D_e+D_a) != 0), so minimax-Q does not
+        # apply to a != 1 -- an a=3 arm is for measuring STATE VISITATION only.
+        self.aggresive_coeff = float(aggresive_coeff)
         self.dense_coeff = 1.0
 
         # CONTACT-DENSITY REWARD VARIANTS. Both default to 0.0, which leaves the
@@ -171,6 +176,7 @@ class SFWrapper(gym.Wrapper):
         self.verbose = verbose
         self.enable_combo = enable_combo
         self.null_combo = null_combo
+        self.reward_scale = float(reward_scale)
 
     def save_state_to_file(self, name="test.state"):
         content = self.env.em.get_state()
@@ -668,12 +674,18 @@ class SFWrapper(gym.Wrapper):
         if custom_done:
             info['outcome'] = 'win' if (agent_hp > enemy_hp) else ('lose' if (agent_hp < enemy_hp) else 'draw')
 
+        # reward_scale defaults to 0.001 -> bitwise the historical behaviour.
+        # It sets the magnitude the VALUE optimizer sees: Adam is scale-invariant
+        # except through eps, and at 0.001 the value grads' second moment sqrt(v)
+        # falls to ~1e-9 (below eps=1e-8), knocking the value head out of Adam's
+        # adaptive regime. Unscaling (1.0) restores it. Measured, not assumed.
+        rs = getattr(self, 'reward_scale', 0.001)
         if self.side == 'left':
-            return self._get_obs(obs), 0.001 * custom_reward, custom_done, info 
+            return self._get_obs(obs), rs * custom_reward, custom_done, info
         elif self.side == 'right':
-            return self._get_obs(obs), 0.001 * custom_reward_inverse, custom_done, info 
+            return self._get_obs(obs), rs * custom_reward_inverse, custom_done, info
         else:
-            return self._get_obs(obs), 0.001 * custom_reward, 0.001 * custom_reward_inverse, custom_done, info 
+            return self._get_obs(obs), rs * custom_reward, rs * custom_reward_inverse, custom_done, info
 
 
 class Monitor2P(Monitor):

@@ -162,6 +162,9 @@ NUM_STEP_FRAMES="${NUM_STEP_FRAMES:-8}"
 # train/coma_ego_var_reduction beating train/coma_shuffled_var_reduction by a
 # clear margin, and >5%, before spending an arm on COMA_COEF>0.
 ADAM_EPS="${ADAM_EPS:--1.0}"
+VALUE_CLIP_SEPARATE="${VALUE_CLIP_SEPARATE:-False}"
+REWARD_SCALE="${REWARD_SCALE:-0.001}"
+AGGRESIVE_COEFF="${AGGRESIVE_COEFF:-1.0}"
 VALUE_LOSS_FN="${VALUE_LOSS_FN:-mse}"
 HUBER_DELTA="${HUBER_DELTA:-1.0}"
 COMA_COEF="${COMA_COEF:-0.0}"
@@ -269,7 +272,9 @@ ENTROPY_COLLAPSE_PATIENCE="${ENTROPY_COLLAPSE_PATIENCE:-20}"
 # starts moving the policy. Requires GAE_LAMBDA=0 -- see ippo.py --gae_lambda.
 MINIMAX_BOOTSTRAP_KAPPA="${MINIMAX_BOOTSTRAP_KAPPA:-0.0}"
 MINIMAX_BOOTSTRAP_WARMUP="${MINIMAX_BOOTSTRAP_WARMUP:-0}"
+GAMMA="${GAMMA:-0.94}"
 GAE_LAMBDA="${GAE_LAMBDA:-0.95}"
+SEED="${SEED:-0}"
 # Learning rates. Defaults are arm A (c_lr 3e-5), which is the config the gate
 # was designed around. c_lr 1e-5 is "arm B" from the earlier calibration work.
 #
@@ -282,6 +287,12 @@ GAE_LAMBDA="${GAE_LAMBDA:-0.95}"
 C_LR="${C_LR:-3e-5}"
 D_LR="${D_LR:-1e-4}"
 V_LR="${V_LR:-4e-4}"
+# LR annealing OFF by default (bitwise the historical constant-LR arms). Turn ON
+# for long runs to damp the game-dynamics oscillation -- constant-LR GDA cycles;
+# a decaying step size is the standard way to converge. Tune the coeff to the run
+# length (ExponentialLR per update; 0.9994 -> ~9% of initial over 50M/~4070 upd).
+USE_LR_ANNEALING="${USE_LR_ANNEALING:-False}"
+LR_ANNEAL_COEFF="${LR_ANNEAL_COEFF:-.995}"
 TAG="${ARM}"; [ "${POPART}" = "True" ] && TAG="${ARM}_popart"
 TAG="${TAG}_${OBS_TYPE}"
 [ -n "${RAM_MASK}" ] && TAG="${TAG}masked"
@@ -298,7 +309,13 @@ TAG="${TAG}_${OBS_TYPE}"
 [ "${COMA_COEF}" != "0.0" ] && TAG="${TAG}_coma${COMA_COEF}"
 [ "${VALUE_LOSS_FN}" != "mse" ] && TAG="${TAG}_${VALUE_LOSS_FN}${HUBER_DELTA}"
 [ "${ADAM_EPS}" != "-1.0" ] && TAG="${TAG}_eps${ADAM_EPS}"
+[ "${VALUE_CLIP_SEPARATE}" = "True" ] && TAG="${TAG}_vclip"
+[ "${REWARD_SCALE}" != "0.001" ] && TAG="${TAG}_rs${REWARD_SCALE}"
+[ "${AGGRESIVE_COEFF}" != "1.0" ] && TAG="${TAG}_ac${AGGRESIVE_COEFF}"
 [ "${PRESSURE_BETA}" != "0.0" ] && TAG="${TAG}_pb${PRESSURE_BETA}"
+[ "${GAMMA}" != "0.94" ] && TAG="${TAG}_g${GAMMA}"
+[ "${GAE_LAMBDA}" != "0.95" ] && TAG="${TAG}_lam${GAE_LAMBDA}"
+[ "${SEED}" != "0" ] && TAG="${TAG}_s${SEED}"
 [ -n "${RUN_SUFFIX:-}" ] && TAG="${TAG}_${RUN_SUFFIX}"
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -350,7 +367,7 @@ CMD=(
     --num_perturbs 10 --use_mirror False --ego_side left --side both
     --transform_action True --model_arch_type spar
     --save_dir "${FIGHTLADDER_TASK_DIR}/todo"
-    --use_lr_annealing False --lr_anneal_coeff .995
+    --use_lr_annealing "${USE_LR_ANNEALING}" --lr_anneal_coeff "${LR_ANNEAL_COEFF}"
     --num_env_steps 512 --training_batch_size 1024
     --checkpoint_interval "${CHECKPOINT_INTERVAL}"
     --total_timesteps "${TOTAL_TIMESTEPS:-150000000}"
@@ -365,6 +382,9 @@ CMD=(
     --reset_close_range "${RESET_CLOSE_RANGE}"
     --num_step_frames "${NUM_STEP_FRAMES}"
     --adam_eps "${ADAM_EPS}"
+    --value_clip_separate "${VALUE_CLIP_SEPARATE}"
+    --reward_scale "${REWARD_SCALE}"
+    --aggresive_coeff "${AGGRESIVE_COEFF}"
     --value_loss_fn "${VALUE_LOSS_FN}"
     --huber_delta "${HUBER_DELTA}"
     --coma_coef "${COMA_COEF}"
@@ -372,7 +392,7 @@ CMD=(
     --pressure_beta "${PRESSURE_BETA}"
     --pressure_range "${PRESSURE_RANGE}"
     --attack_statuses "${ATTACK_STATUSES}"
-    --gamma 0.94
+    --gamma "${GAMMA}"
     --vtrace_enabled "${VTRACE_ENABLED}" --vtrace_seq_len 64
     --vtrace_c_bar 1.0 --vtrace_rho_bar 5.0 --vtrace_replay_capacity 15000
     --popart "${POPART}"
@@ -395,6 +415,7 @@ CMD=(
     --minimax_bootstrap_kappa "${MINIMAX_BOOTSTRAP_KAPPA}"
     --minimax_bootstrap_warmup "${MINIMAX_BOOTSTRAP_WARMUP}"
     --gae_lambda "${GAE_LAMBDA}"
+    --seed "${SEED}"
     --minimax_iters 1024 --minimax_eta 0.5
     --use_stagnation_early_stop False --use_stagnation_velocity_signal False
     --use_stagnation_entropy_signal False --stagnation_patience 20000

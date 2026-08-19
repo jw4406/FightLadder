@@ -54,6 +54,12 @@ def main(argv=None):
     ap.add_argument("--n_envs", type=int, default=6)
     ap.add_argument("--device", type=str, default="cuda")
     ap.add_argument("--out", type=str, default="bootstrap_delta.json")
+    ap.add_argument("--reward_scale", type=float, default=0.001,
+                    help="MUST match the checkpoint's training scale. An UNSCALED "
+                         "head (reward_scale=1.0) enumerated in a 0.001-scale env "
+                         "compares a scale-1 Q against scale-0.001 payoffs -- evW "
+                         "goes to garbage (-1e6). corrW is scale-invariant and "
+                         "survives, but evW/headroom need this to be right.")
     ap.add_argument("--num_step_frames", type=int, default=8,
                     help="MUST match the checkpoint. An nsf=16 policy enumerated "
                          "in an nsf=8 env is evaluated on a different game, and "
@@ -78,6 +84,7 @@ def main(argv=None):
     head_idx, label, state = resolve_matchups(data, "all")[0]
     venv = build_lbr_venv(state, a.n_envs,
                           num_step_frames=a.num_step_frames,
+                          reward_scale=a.reward_scale,
                           **infer_obs_kwargs(data, a.ram_mask or None))
     try:
         model, _ = load_checkpoint(a.ckpt, venv, a.device)

@@ -145,6 +145,24 @@ MINIMAX_RANK=""
 MINIMAX_TARGET=""
 MINIMAX_BOOTSTRAP_KAPPA=""
 MINIMAX_BOOTSTRAP_WARMUP=""
+# ---------------------------------------------------------------------------
+# REWARD SCALE + ZERO-SUM knobs. SET HERE TO RUN ac=1, UNSCALED.
+#   REWARD_SCALE=1.0         raw hp-unit reward (ippo.py default 0.001 = "scaled").
+#                            Trains the value function at full magnitude and
+#                            un-binds Adam's second moment (sqrt(v) rises above
+#                            eps=1e-8, restoring self-adaptation on the value head).
+#   VALUE_CLIP_SEPARATE=True REQUIRED with unscaled reward: at reward_scale 1.0 the
+#                            value grads are ~1000x larger and would dominate the
+#                            joint clip_grad_norm(0.5), throttling the policy. Omit
+#                            it and the unscaled run is NOT comparable to a scaled one.
+#   AGGRESIVE_COEFF=1.0      ac=1 keeps the reward antisymmetric (zero-sum); a!=1
+#                            makes the game general-sum and invalidates minimax-Q.
+# Empty => flag omitted => ippo.py defaults (reward_scale 0.001, ac 1.0, vclip off).
+# NOTE: these are NEW ippo.py args -- the compute node's ippo.py MUST be synced
+# (git pull) or the job dies with "unrecognized arguments".
+REWARD_SCALE="1.0"
+AGGRESIVE_COEFF="1.0"
+VALUE_CLIP_SEPARATE="True"
 # Blend the multi-head adversary trunk update (spar arch only). "False" keeps the
 # unchanged sequential per-head update; "True" gives one mean-over-heads trunk step.
 BLEND_ADVERSARY_HEADS="False"
@@ -276,6 +294,16 @@ for i in $(seq 1 ${NUM_WORKERS}); do
     fi
     if [ -n "${MINIMAX_BOOTSTRAP_WARMUP}" ]; then
         CMD+=( --minimax_bootstrap_warmup "${MINIMAX_BOOTSTRAP_WARMUP}" )
+    fi
+    # Reward scale / zero-sum knobs (empty => ippo.py default). Set above for ac=1 unscaled.
+    if [ -n "${REWARD_SCALE}" ]; then
+        CMD+=( --reward_scale "${REWARD_SCALE}" )
+    fi
+    if [ -n "${AGGRESIVE_COEFF}" ]; then
+        CMD+=( --aggresive_coeff "${AGGRESIVE_COEFF}" )
+    fi
+    if [ -n "${VALUE_CLIP_SEPARATE}" ]; then
+        CMD+=( --value_clip_separate "${VALUE_CLIP_SEPARATE}" )
     fi
 
     if [ "${RUN_LIVE}" = "False" ]; then
