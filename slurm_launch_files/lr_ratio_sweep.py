@@ -151,10 +151,104 @@ def _della_env_transform(text):
     )
 
 
+# ---------------------------------------------------------------------------
+# FULL PASS-THROUGH TABLES. Every SLURM directive and body knob the launch
+# script owns, so a rendered job relies on NOTHING from cds_style_template.slurm
+# / br_orchestrator_job_template.slurm's own defaults. Each entry pairs the
+# argparse dest with the template token it overwrites; values come straight from
+# the CLI (defaults below are set to each template's CURRENT value, so an
+# unedited launch script renders byte-identically to before this feature).
+#
+# NOTE the minimax/GAE/obs family is deliberately ABSENT here -- it stays
+# --tranche-driven (a documented preset), and obs_type/ram_mask keep their own
+# conditional args. LRs / matchup / timesteps / vtrace_seq_len / blend are also
+# handled explicitly in the render functions.
+
+# Training template body vars (all quoted `VAR="..."`).
+_TRAIN_BODY_SUBS = [
+    ("run_live", "RUN_LIVE"),
+    ("num_env_to_load", "NUM_ENV_TO_LOAD"),
+    ("env_batch_size", "ENV_BATCH_SIZE"),
+    ("ego_value_head_lr", "EGO_VALUE_HEAD_LR"),
+    ("num_perturbs", "NUM_PERTURBS"),
+    ("use_mirror", "USE_MIRROR"),
+    ("ego_side", "EGO_SIDE"),
+    ("use_lr_annealing", "USE_LR_ANNEALING"),
+    ("lr_anneal_coeff", "LR_ANNEAL_COEFF"),
+    ("checkpoint_interval", "CHECKPOINT_INTERVAL"),
+    ("training_batch_size", "TRAINING_BATCH_SIZE"),
+    ("num_env_steps", "NUM_ENV_STEPS"),
+    ("vtrace_enabled", "VTRACE_ENABLED"),
+    ("gamma", "GAMMA"),
+    ("vtrace_c_bar", "VTRACE_C_BAR"),
+    ("vtrace_rho_bar", "VTRACE_RHO_BAR"),
+    ("popart", "POPART"),
+    ("popart_beta", "POPART_BETA"),
+    ("reward_scale", "REWARD_SCALE"),
+    ("aggresive_coeff", "AGGRESIVE_COEFF"),
+    ("value_clip_separate", "VALUE_CLIP_SEPARATE"),
+    ("ego_style", "EGO_STYLE"),
+    ("adv_style", "ADV_STYLE"),
+    ("envs_per_matchup", "ENVS_PER_MATCHUP"),
+    ("side", "SIDE"),
+    ("render", "RENDER"),
+    ("model_file", "MODEL_FILE"),
+    ("use_wandb", "USE_WANDB"),
+    ("transform_action", "TRANSFORM_ACTION"),
+    ("async_update", "ASYNC_UPDATE"),
+    ("model_arch_type", "MODEL_ARCH_TYPE"),
+]
+
+# Training template #SBATCH directives (value after the '='). job-name and
+# --time are handled in render_training_slurm; mail-type is handled separately
+# (two lines collapsed to one).
+_TRAIN_SBATCH_SUBS = [
+    ("train_nodes", "nodes"),
+    ("train_ntasks", "ntasks"),
+    ("train_cpus_per_task", "cpus-per-task"),
+    ("train_mem_per_cpu", "mem-per-cpu"),
+    ("train_gres", "gres"),
+]
+
+# Orchestrator template #SBATCH directives (CPU-only job: no --gres line).
+_ORCH_SBATCH_SUBS = [
+    ("orch_nodes", "nodes"),
+    ("orch_ntasks", "ntasks"),
+    ("orch_cpus_per_task", "cpus-per-task"),
+    ("orch_mem_per_cpu", "mem-per-cpu"),
+]
+
+
+def _body_var_subs(pairs, args):
+    """Regex subs for quoted `VAR="..."` body vars from an (dest, VAR) table."""
+    out = []
+    for dest, var in pairs:
+        out.append((rf'(?m)^{var}=".*"$', f'{var}="{getattr(args, dest)}"'))
+    return out
+
+
+def _sbatch_subs(pairs, args):
+    """Regex subs for `#SBATCH --key=<value>` directives from an (dest, key) table."""
+    out = []
+    for dest, key in pairs:
+        out.append((rf'(?m)^(#SBATCH --{re.escape(key)}=)\S+', rf'\g<1>{getattr(args, dest)}'))
+    return out
+
+
+def _mail_subs(args):
+    """Collapse the template's consecutive `#SBATCH --mail-type=` lines into one
+    (`--mail-type=<mail_type>`) and set `--mail-user`. Shared by both templates."""
+    return [
+        (r'(?m)^#SBATCH --mail-type=[^\n]*\n(?:#SBATCH --mail-type=[^\n]*\n)*',
+         f'#SBATCH --mail-type={args.mail_type}\n'),
+        (r'(?m)^(#SBATCH --mail-user=)\S+', rf'\g<1>{args.mail_user}'),
+    ]
+
+
 def render_training_slurm(template_text, cfg, players, opponents, workdir,
                           sbatch_time, total_timesteps, vtrace_seq_len=None,
                           blend_adversary_heads=None, tranche=None,
-                          obs_type=None, ram_mask=None):
+                          obs_type=None, ram_mask=None, args=None):
     """Substitute LRs / matchup / paths into the training template, and pin the
     run dir to a deterministic per-config tree (JOBID -> lr_sweep/<tag>) so
     training, tasks, checkpoints and BR outputs all share one location."""
@@ -205,6 +299,13 @@ def render_training_slurm(template_text, cfg, players, opponents, workdir,
                          ("GAE_LAMBDA", "gae_lambda")):
             if t[key] is not None:
                 subs.append((rf'(?m)^{var}=".*"$', f'{var}="{t[key]}"'))
+    # FULL PASS-THROUGH: every remaining SLURM directive + body knob comes from
+    # the launch script, so nothing is inherited from the template's defaults.
+    # NUM_WORKERS is unquoted in the template, so it gets its own pattern.
+    subs.append((r'(?m)^NUM_WORKERS=\S+$', f'NUM_WORKERS={args.num_workers}'))
+    subs += _body_var_subs(_TRAIN_BODY_SUBS, args)
+    subs += _sbatch_subs(_TRAIN_SBATCH_SUBS, args)
+    subs += _mail_subs(args)
     return _apply(template_text, subs, "training template")
 
 
@@ -213,7 +314,7 @@ def render_orchestrator_job(template_text, cfg, cluster, workdir, br_job_time,
                             step_stride, periodic_eval_freq, br_slurm_time, orch_dry_run,
                             exploiters_per_job, gpu_mem_fraction,
                             pack_across_checkpoints, pack_flush_timeout,
-                            resource_scale=1):
+                            resource_scale=1, args=None):
     """Substitute per-config values into the CPU-only BR-orchestrator job template.
     Paths derive from $WORKDIR/$MAIN_TRAINING_DIR inside the template."""
     subs = [
@@ -236,6 +337,10 @@ def render_orchestrator_job(template_text, cfg, cluster, workdir, br_job_time,
         (r'(?m)^PACK_FLUSH_TIMEOUT=".*"$', f'PACK_FLUSH_TIMEOUT="{pack_flush_timeout}"'),
         (r'(?m)^RESOURCE_SCALE=".*"$', f'RESOURCE_SCALE="{resource_scale}"'),
     ]
+    # FULL PASS-THROUGH: the orchestrator job's SLURM header (CPU-only, no --gres)
+    # + mail, from the launch script -- nothing inherited from template defaults.
+    subs += _sbatch_subs(_ORCH_SBATCH_SUBS, args)
+    subs += _mail_subs(args)
     return _apply(template_text, subs, "BR orchestrator template")
 
 
@@ -298,6 +403,64 @@ def parse_args():
     p.add_argument("--resource_scale", type=int, default=1,
                    help="Absolute cpu multiplier for PACKED BR jobs (cpu only; mem still "
                         "scales by the co-located count). Default 1 = template base cpus.")
+    # --- FULL PASS-THROUGH: SLURM header directives (both jobs) ---
+    # Defaults equal each template's CURRENT value, so an unedited launch script
+    # renders byte-identically; the launch script now OWNS every value.
+    p.add_argument("--train_nodes", default="1", help="Training job #SBATCH --nodes.")
+    p.add_argument("--train_ntasks", default="1", help="Training job #SBATCH --ntasks.")
+    p.add_argument("--train_cpus_per_task", default="72", help="Training job #SBATCH --cpus-per-task.")
+    p.add_argument("--train_mem_per_cpu", default="2G", help="Training job #SBATCH --mem-per-cpu.")
+    p.add_argument("--train_gres", default="gpu:1", help="Training job #SBATCH --gres.")
+    p.add_argument("--orch_nodes", default="1", help="BR-orchestrator job #SBATCH --nodes.")
+    p.add_argument("--orch_ntasks", default="1", help="BR-orchestrator job #SBATCH --ntasks.")
+    p.add_argument("--orch_cpus_per_task", default="2", help="BR-orchestrator job #SBATCH --cpus-per-task.")
+    p.add_argument("--orch_mem_per_cpu", default="4G", help="BR-orchestrator job #SBATCH --mem-per-cpu.")
+    p.add_argument("--mail_type", default="BEGIN,END",
+                   help="#SBATCH --mail-type for BOTH jobs; the template's two "
+                        "mail-type lines are collapsed to this one value.")
+    p.add_argument("--mail_user", default="jw4406@princeton.edu",
+                   help="#SBATCH --mail-user for both jobs.")
+    # --- FULL PASS-THROUGH: training template body knobs ---
+    # These default to the template's current value AND are set explicitly by the
+    # launch script, so nothing is inherited from cds_style_template.slurm.
+    p.add_argument("--num_workers", default="1", help="Parallel ippo instances per job.")
+    p.add_argument("--run_live", choices=["True", "False"], default="True",
+                   help="True = run ippo in-shell; False = nohup + log redirect.")
+    p.add_argument("--num_env_to_load", default="1")
+    p.add_argument("--env_batch_size", default="24")
+    p.add_argument("--ego_value_head_lr", default="",
+                   help="Ego value-head LR (ippo/2timescale). Empty = omit (spar).")
+    p.add_argument("--num_perturbs", default="10")
+    p.add_argument("--use_mirror", choices=["True", "False"], default="False")
+    p.add_argument("--ego_side", default="left")
+    p.add_argument("--use_lr_annealing", choices=["True", "False"], default="False")
+    p.add_argument("--lr_anneal_coeff", default=".995")
+    p.add_argument("--checkpoint_interval", default="50000")
+    p.add_argument("--training_batch_size", default="512")
+    p.add_argument("--num_env_steps", default="1024")
+    p.add_argument("--vtrace_enabled", default="",
+                   help="Empty = ippo.py default (True). False makes VTRACE_* knobs inert.")
+    p.add_argument("--gamma", default="",
+                   help="Empty = ippo.py default (spar 0.99). Discount factor.")
+    p.add_argument("--vtrace_c_bar", default="", help="Empty = ippo.py default (1.0).")
+    p.add_argument("--vtrace_rho_bar", default="", help="Empty = ippo.py default (5.0).")
+    p.add_argument("--popart", default="", help="Empty = ippo.py default (False).")
+    p.add_argument("--popart_beta", default="", help="Empty = ippo.py default (3e-4).")
+    p.add_argument("--reward_scale", default="1.0",
+                   help="1.0 = unscaled hp-unit reward (ippo.py default is 0.001).")
+    p.add_argument("--aggresive_coeff", default="1.0", help="1.0 keeps reward antisymmetric.")
+    p.add_argument("--value_clip_separate", choices=["True", "False"], default="True",
+                   help="Required True with unscaled reward.")
+    p.add_argument("--ego_style", default="learning")
+    p.add_argument("--adv_style", default="learning")
+    p.add_argument("--envs_per_matchup", default="2")
+    p.add_argument("--side", default="both")
+    p.add_argument("--render", choices=["True", "False"], default="False")
+    p.add_argument("--model_file", default="", help="Optional --model_file; empty = none.")
+    p.add_argument("--use_wandb", choices=["True", "False"], default="False")
+    p.add_argument("--transform_action", choices=["True", "False"], default="True")
+    p.add_argument("--async_update", choices=["True", "False"], default="False")
+    p.add_argument("--model_arch_type", default="spar")
     # --- plumbing ---
     p.add_argument("--phase", choices=["train", "br", "both"], default="both")
     p.add_argument("--tranche", choices=["p0", "p1"], default=None,
@@ -389,7 +552,7 @@ def main():
                                          vtrace_seq_len=args.vtrace_seq_len,
                                          blend_adversary_heads=args.blend_adversary_heads,
                                          tranche=args.tranche, obs_type=args.obs_type,
-                                         ram_mask=args.ram_mask)
+                                         ram_mask=args.ram_mask, args=args)
             path = os.path.join(
                 args.out_dir,
                 f"main_training_spar_clr{_sanitize(_fmt_lr(cfg['c_lr']))}"
@@ -413,7 +576,7 @@ def main():
                 args.step_stride, args.periodic_eval_freq, args.br_slurm_time,
                 args.br_orch_dry_run, args.exploiters_per_job, args.gpu_mem_fraction,
                 args.pack_across_checkpoints, args.pack_flush_timeout,
-                resource_scale=args.resource_scale)
+                resource_scale=args.resource_scale, args=args)
             path = os.path.join(args.out_dir, f"br_orchestrator_{tag}.slurm")
             with open(path, "w") as f:
                 f.write(text)

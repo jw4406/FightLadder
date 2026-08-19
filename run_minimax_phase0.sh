@@ -372,7 +372,7 @@ CMD=(
     --checkpoint_interval "${CHECKPOINT_INTERVAL}"
     --total_timesteps "${TOTAL_TIMESTEPS:-150000000}"
     --ego_style learning --adv_style learning
-    --render False --model_file "${MODEL_FILE}" --master_use_stag False --async_update False
+    --render False --model_file "${MODEL_FILE}" --async_update False
     --obs_type "${OBS_TYPE}"
     --ram_mask "${RAM_MASK}"
     --ram_stack "${RAM_STACK}"
@@ -417,12 +417,6 @@ CMD=(
     --gae_lambda "${GAE_LAMBDA}"
     --seed "${SEED}"
     --minimax_iters 1024 --minimax_eta 0.5
-    --use_stagnation_early_stop False --use_stagnation_velocity_signal False
-    --use_stagnation_entropy_signal False --stagnation_patience 20000
-    --stagnation_tolerance 1e-4 --stagnation_rel_tolerance 0.05
-    --stagnation_ema_beta 0.99 --stagnation_eps 1e-8 --stagnation_eval_games 0
-    --entropy_stagnation_weight 1.0 --stagnation_lr_factor 0.999
-    --stagnation_lr_patience 150
 )
 
 LOG="${SCRIPT_DIR}/logs/minimax_phase0_${TAG}.log"

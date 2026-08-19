@@ -792,18 +792,13 @@ def main(args):
                 ego_side=args.ego_side,
                 use_lr_annealing=args.use_lr_annealing,
                 lr_anneal_coeff=args.lr_anneal_coeff,
-                use_stagnation_early_stop=args.use_stagnation_early_stop,
-                use_stagnation_velocity_signal=args.use_stagnation_velocity_signal,
-                use_stagnation_entropy_signal=args.use_stagnation_entropy_signal,
-                stagnation_patience=args.stagnation_patience,
-                stagnation_tolerance=args.stagnation_tolerance,
-                stagnation_rel_tolerance=args.stagnation_rel_tolerance,
-                stagnation_ema_beta=args.stagnation_ema_beta,
-                stagnation_eps=args.stagnation_eps,
-                stagnation_eval_games=args.stagnation_eval_games,
-                entropy_stagnation_weight=args.entropy_stagnation_weight,
-                stagnation_lr_factor=args.stagnation_lr_factor,
-                stagnation_lr_patience=args.stagnation_lr_patience,
+                # Stagnation tracker disabled (the stagnation CLI was removed).
+                # These three False's reproduce the old master_use_stag=False
+                # path: use_elo_tracker is False in learn(), so the stagnation
+                # block is skipped and the tracker is built-but-unused.
+                use_stagnation_early_stop=False,
+                use_stagnation_velocity_signal=False,
+                use_stagnation_entropy_signal=False,
                 vtrace_enabled=(args.vtrace_enabled == 'True'),
                 vtrace_replay_capacity=args.vtrace_replay_capacity,
                 vtrace_seq_len=args.vtrace_seq_len,
@@ -867,15 +862,14 @@ def main(args):
                 ego_side=args.ego_side,
                 use_lr_annealing=args.use_lr_annealing,
                 lr_anneal_coeff=args.lr_anneal_coeff,
-                # Stagnation gates: CleanDerivativeFreeSPARIPPO inherits
-                # __init__ from CleanDerivativeFreeSPAR whose defaults are
-                # use_stagnation_velocity_signal=True and
-                # use_stagnation_entropy_signal=True. Without forwarding
-                # the args here, master_use_stag=False would not actually
-                # silence the EMA/entropy logs in learn() for the ippo arch.
-                use_stagnation_early_stop=args.use_stagnation_early_stop,
-                use_stagnation_velocity_signal=args.use_stagnation_velocity_signal,
-                use_stagnation_entropy_signal=args.use_stagnation_entropy_signal,
+                # Stagnation tracker disabled. CleanDerivativeFreeSPARIPPO
+                # inherits use_stagnation_velocity_signal/entropy_signal=True
+                # defaults from CleanDerivativeFreeSPAR, so we MUST pin these
+                # three to False here to keep the stagnation block skipped in
+                # learn() (the old master_use_stag=False behaviour).
+                use_stagnation_early_stop=False,
+                use_stagnation_velocity_signal=False,
+                use_stagnation_entropy_signal=False,
             )
         elif model_arch_type == '2timescale':
             finetune_model = CleanDerivativeFreeSPARIPPO(
@@ -900,11 +894,11 @@ def main(args):
                 ego_side=args.ego_side,
                 use_lr_annealing=args.use_lr_annealing,
                 lr_anneal_coeff=args.lr_anneal_coeff,
-                # See note above on the ippo branch — same inheritance
-                # default issue applies to the 2timescale arch.
-                use_stagnation_early_stop=args.use_stagnation_early_stop,
-                use_stagnation_velocity_signal=args.use_stagnation_velocity_signal,
-                use_stagnation_entropy_signal=args.use_stagnation_entropy_signal,
+                # Stagnation tracker disabled — see note on the ippo branch;
+                # same inheritance-default issue applies to the 2timescale arch.
+                use_stagnation_early_stop=False,
+                use_stagnation_velocity_signal=False,
+                use_stagnation_entropy_signal=False,
             )
         else:
             raise ValueError(f"Invalid model arch type: {model_arch_type}. Valid choices are \'spar\', \'ippo\', \'2timescale\'.")
@@ -1438,25 +1432,6 @@ if __name__ == "__main__":
     parser.add_argument("--lr_anneal_coeff", type=float, help="Learning rate anneal coefficient", default=0.995, required=True)
     parser.add_argument('--reset', choices=['round', 'match', 'game'],help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument("--side", type=str, help="Side", default="left", required=True, choices=["left", "right", "both"])
-    # Master gate for ALL stagnation behavior (EMA, entropy weighting,
-    # plateau/slope checks, LR adjustment, early-stop, and the associated
-    # logger/wandb records inside CleanDerivativeFreeSPAR.learn). When
-    # 'False', the per-signal use_stagnation_* flags below are forced to
-    # False after parsing so use_elo_tracker collapses to False and the
-    # entire stagnation block in learn() is skipped.
-    parser.add_argument("--master_use_stag", choices=['True', 'False'], help='Master switch for all stagnation logic and logging in main training', default='True', required=False)
-    parser.add_argument("--use_stagnation_early_stop", choices=['True', 'False'], help='Use stagnation signal for early stopping', default=True, required=True)
-    parser.add_argument("--use_stagnation_velocity_signal", choices=['True', 'False'], help='Use rating-movement velocity in stagnation metric', default=True, required=True)
-    parser.add_argument("--use_stagnation_entropy_signal", choices=['True', 'False'], help='Use policy entropy in stagnation metric', default=True, required=True)
-    parser.add_argument("--stagnation_patience", type=int, help="Stagnation patience checks", default=20, required=True)
-    parser.add_argument("--stagnation_tolerance", type=float, help="Absolute stagnation tolerance", default=1e-4, required=True)
-    parser.add_argument("--stagnation_rel_tolerance", type=float, help="Relative tolerance for dynamic stagnation threshold", default=0.05, required=True)
-    parser.add_argument("--stagnation_ema_beta", type=float, help="EMA beta for dynamic stagnation threshold scaling", default=0.99, required=True)
-    parser.add_argument("--stagnation_eps", type=float, help="Numerical epsilon floor for dynamic stagnation threshold", default=1e-8, required=True)
-    parser.add_argument("--stagnation_eval_games", type=int, help="Games before each stagnation evaluation", default=0, required=True)
-    parser.add_argument("--entropy_stagnation_weight", type=float, help="Weight for entropy contribution in stagnation metric", default=100.0, required=True)
-    parser.add_argument("--stagnation_lr_factor", type=float, help="Target factor for stagnation-triggered LR reduction", default=0.5, required=True)
-    parser.add_argument("--stagnation_lr_patience", type=int, help="Plateau checks before stagnation-triggered LR reduction", default=5, required=True)
     parser.add_argument('--render', choices=['True', 'False'], help='Whether to render the game screen', default='False')
     parser.add_argument('--enable_combo', choices=['True', 'False'], help='Enable special move action space for environment', default='True')
     parser.add_argument('--null_combo', choices=['True', 'False'], help='Null action space for special move', default='False')
@@ -1768,26 +1743,6 @@ if __name__ == "__main__":
     args.null_combo = True if args.null_combo == 'True' else False
     args.transform_action = True if args.transform_action == 'True' else False
     args.use_lr_annealing = True if args.use_lr_annealing == 'True' else False
-    args.use_stagnation_early_stop = True if args.use_stagnation_early_stop == 'True' else False
-    args.use_stagnation_velocity_signal = True if args.use_stagnation_velocity_signal == 'True' else False
-    args.use_stagnation_entropy_signal = True if args.use_stagnation_entropy_signal == 'True' else False
-    args.stagnation_eval_games = None if args.stagnation_eval_games <= 0 else args.stagnation_eval_games
-
-    # Master switch override. Forcing all three use_stagnation_* flags to
-    # False makes use_elo_tracker (in CleanDerivativeFreeSPAR.learn) evaluate
-    # False, which short-circuits the entire stagnation block: no
-    # tracker.check(), no logger.record / wandb.log of stagnation metrics,
-    # no LR adjustment, no early-stop break.
-    args.master_use_stag = True if args.master_use_stag == 'True' else False
-    if not args.master_use_stag:
-        print(
-            "[master_use_stag=False] Disabling all main-training stagnation "
-            "logic and logging: forcing use_stagnation_early_stop, "
-            "use_stagnation_velocity_signal, use_stagnation_entropy_signal -> False."
-        )
-        args.use_stagnation_early_stop = False
-        args.use_stagnation_velocity_signal = False
-        args.use_stagnation_entropy_signal = False
 
     # Print all runtime CLI settings in a readable way for debugging/repro.
     def _print_args_human_readable(parsed_args):
