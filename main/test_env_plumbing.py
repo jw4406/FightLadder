@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ippo
 from common.retro_wrappers import SFWrapper
 
-EXPECTED_CHECKS = 9
+EXPECTED_CHECKS = 13
 NC = 0
 
 
@@ -79,6 +79,15 @@ env.close(); del env, sf
 
 env, sf = build(trade_kappa=3.0, attack_statuses=(524,))
 chk("trade_kappa reaches SFWrapper", sf.trade_kappa == 3.0)
+env.close(); del env, sf
+
+env, sf = build(decision_timing="joint", actionable_statuses=(512, 514, 520),
+                dwell_frames=4, max_skip_frames=120)
+chk("decision_timing reaches SFWrapper", sf.decision_timing == "joint")
+chk("actionable_statuses reaches SFWrapper",
+    sf.actionable_statuses == frozenset({512, 514, 520}))
+chk("dwell_frames reaches SFWrapper", sf.dwell_frames == 4)
+chk("max_skip_frames reaches SFWrapper", sf.max_skip_frames == 120)
 env.close(); del env, sf
 
 if NC != EXPECTED_CHECKS:

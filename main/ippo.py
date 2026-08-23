@@ -146,12 +146,18 @@ def _reward_env_kwargs(args):
         attack_statuses=tuple(int(x) for x in st.split(",") if x.strip()),
         reward_scale=float(getattr(args, "reward_scale", 0.001)),
         aggresive_coeff=float(getattr(args, "aggresive_coeff", 1.0)),
+        decision_timing=getattr(args, "decision_timing", "off"),
+        actionable_statuses=tuple(
+            int(x) for x in (getattr(args, "actionable_statuses", "") or "").split(",")
+            if x.strip()),
+        max_skip_frames=int(getattr(args, "max_skip_frames", 90)),
+        dwell_frames=int(getattr(args, "dwell_frames", 1)),
     )
 
 
 def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True,
              null_combo=False, transform_action=False, seed=0, obs_type='image', ego_is_left=True,
-             ram_mask=None, ram_stack=1, ram_stride=8, num_step_frames=8, counterhit_kappa=0.0, trade_kappa=0.0, reset_close_range=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reward_scale=0.001, aggresive_coeff=1.0):
+             ram_mask=None, ram_stack=1, ram_stride=8, num_step_frames=8, counterhit_kappa=0.0, trade_kappa=0.0, reset_close_range=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1):
     def _init():
         players = 2
         env = retro.make(
@@ -176,7 +182,11 @@ def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=N
                         attack_statuses=attack_statuses,
                         reset_close_range=reset_close_range,
                         reward_scale=reward_scale,
-                        aggresive_coeff=aggresive_coeff)
+                        aggresive_coeff=aggresive_coeff,
+                        decision_timing=decision_timing,
+                        actionable_statuses=actionable_statuses,
+                        max_skip_frames=max_skip_frames,
+                        dwell_frames=dwell_frames)
         # Observation wrapper. NOTE: the InfoObsWrapper branch used to be
         # commented out here, so --obs_type info silently did nothing.
         if obs_type == 'ram':
@@ -1544,6 +1554,22 @@ if __name__ == "__main__":
                              "The paper uses 3 to incentivise combat, which makes the "
                              "game GENERAL-SUM -- minimax-Q does not apply; a=3 arms are "
                              "for state-visitation measurement only.")
+    # DECISION TIMING. 'off' (default) = fixed num_step_frames clock. 'ego'/'joint'
+    # hold NEUTRAL past locked (non-actionable) frames so decisions land where the
+    # action changes the render. MEASURED (obs_attribution --by_status): 81% of a
+    # SPAR ego's decision points are non-actionable and collapse all 21 actions to
+    # 1 identical frame; gating + dwell=4 recovers action-distinctness 1->~18/21
+    # with the CURRENT pixel pipeline. 'joint' (either player actionable) is the
+    # self-play-correct gate. actionable_statuses from obs_attribution --by_status.
+    parser.add_argument('--decision_timing', type=str, default='off',
+                        choices=['off', 'ego', 'joint'])
+    parser.add_argument('--actionable_statuses', type=str, default='512,514,520',
+                        help="ego agent_status values that are actionable "
+                             "(obs_attribution --by_status). Empty when off.")
+    parser.add_argument('--max_skip_frames', type=int, default=90)
+    parser.add_argument('--dwell_frames', type=int, default=1,
+                        help="require this many CONSECUTIVE actionable frames before "
+                             "returning -- skips the recovery-settle; 4 saturates.")
     parser.add_argument('--value_loss_fn', type=str, default='mse',
                         choices=['mse','huber'],
                         help="Value loss. Returns are spike-and-slab (zero on "

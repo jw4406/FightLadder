@@ -36,11 +36,18 @@ def main():
                     help="Force the ego to action 0, matching --ego_style zero_action. "
                          "Without this the probe rolls a SAMPLED ego, i.e. a state "
                          "distribution the critic never trained on.")
+    ap.add_argument("--reward_scale", type=float, default=0.001,
+                    help="MUST match the checkpoint's training reward_scale. The env "
+                         "rewards (and thus realized G) scale by this, while V was "
+                         "trained at the checkpoint's scale -- a mismatch makes V and G "
+                         "differ by that ratio and EV(V,G) blows up (e.g. -6e5 when a "
+                         "reward_scale=1.0 checkpoint is probed at the 0.001 default). "
+                         "reward_scale is NOT stored in the checkpoint, so pass it.")
     a = ap.parse_args()
     d = load_from_zip_file(a.ckpt, device="cpu")[0]
     T = a.T if a.T else int(d.get("vtrace_seq_len") or 64)
     hi, lab, state = resolve_matchups(d, "all")[0]
-    venv = build_lbr_venv(state, a.n_envs)
+    venv = build_lbr_venv(state, a.n_envs, reward_scale=a.reward_scale)
     try:
         m, _ = load_checkpoint(a.ckpt, venv, "cuda"); preflight(venv, m)
         ops = PolicyOps(m, head_idx=hi, lbr_is_adv=True)

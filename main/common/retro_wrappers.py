@@ -39,7 +39,7 @@ LBR_SF_ATTRS = (
 
 class SFWrapper(gym.Wrapper):
 
-    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, trade_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reset_close_range=0.0, close_max_steps=40, reward_scale=0.001, aggresive_coeff=1.0):
+    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, trade_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reset_close_range=0.0, close_max_steps=40, reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1):
         super(SFWrapper, self).__init__(env)
         self.env = FrameStack(env, num_stack=num_stack)
 
@@ -116,6 +116,32 @@ class SFWrapper(gym.Wrapper):
         self.pressure_beta = float(pressure_beta)
         self.pressure_range = float(pressure_range)
         self.attack_statuses = frozenset(int(x) for x in attack_statuses)
+        # DECISION TIMING. 'off' = fixed num_step_frames clock (default, inert).
+        # 'ego'/'joint' = after applying the action, keep stepping NEUTRAL until
+        # the ego (or either player) is actionable again, so decisions land on
+        # frames where the action actually changes the render. Measured: 81% of a
+        # SPAR ego's decision points are non-actionable (agent_status in a locked
+        # animation) and collapse all 21 actions to 1 identical frame; on
+        # ACTIONABLE frames the current pixel pipeline already resolves ~11/21.
+        # actionable_statuses is the empirical set (obs_attribution --by_status);
+        # it is a STRONG but IMPERFECT proxy (the byte spans startup/free
+        # sub-phases), so validate the distinctness jump before trusting it.
+        assert decision_timing in ("off", "ego", "joint"), decision_timing
+        self.decision_timing = decision_timing
+        self.actionable_statuses = frozenset(int(x) for x in actionable_statuses)
+        self.max_skip_frames = int(max_skip_frames)
+        # DWELL: require the ego to be actionable for this many CONSECUTIVE frames
+        # before returning, so control comes back PAST the recovery-settle rather
+        # than at the first frame the status byte flips actionable (the byte spans
+        # startup/settle/free sub-phases -- the imperfect-proxy tail). 1 = return
+        # on the first actionable frame (identical to no dwell).
+        self.dwell_frames = max(1, int(dwell_frames))
+        self._last_skip = 0
+        if self.decision_timing != "off" and not self.actionable_statuses:
+            raise ValueError(
+                "decision_timing needs actionable_statuses; derive them with "
+                "obs_attribution.py --by_status (statuses whose everything-distinct "
+                "is high) rather than guessing.")
         if (self.counterhit_kappa or self.trade_kappa or self.pressure_beta) and not self.attack_statuses:
             raise ValueError(
                 "counterhit_kappa/pressure_beta need attack_statuses; derive them "
@@ -319,6 +345,32 @@ class SFWrapper(gym.Wrapper):
             "all_channels": dig(sub, one_channel=False),    # channel fixed
             "everything":   dig(allf, half=False, one_channel=False),
         }
+
+    def lbr_probe_sample(self, ds=4):
+        """One probe row: the CURRENT (color-cycled) and ALL_CHANNELS (full RGB)
+        observations of this frame stack, plus RAM ground-truth targets.
+
+        `current` reproduces _get_obs exactly (frames[::step], o[::2,::2], channel
+        n%3 -> K=3). `all_channels` keeps ALL 3 RGB per sampled frame (-> 3*K), so
+        a probe on the two isolates what the colour reduction costs. Both are
+        further decimated by `ds` HERE so only a few KB cross the pipe (a full
+        stack is ~1.8 MB and blobs must never be piped). Targets are the raw retro
+        info vars the pixels are regressed onto (seat = which sprite is the agent;
+        enemy_character = character ID)."""
+        frames = [np.ascontiguousarray(f) for f in self.env.frames]
+        step = max(1, self.num_step_frames // 2)
+        sub = list(range(0, len(frames), step))
+        cur, allc = [], []
+        for n, i in enumerate(sub):
+            o = frames[i][::2, ::2][::ds, ::ds]     # _get_obs spatial, then probe ds
+            cur.append(o[:, :, n % 3])              # single cycled channel
+            allc.append(o)                          # full RGB
+        info = self.env.env.data.lookup_all()
+        keys = ("agent_x", "agent_y", "enemy_x", "enemy_y", "agent_status",
+                "enemy_status", "enemy_character", "agent_hp", "enemy_hp")
+        return {"current": np.stack(cur, axis=-1).astype(np.uint8),
+                "all_channels": np.concatenate(allc, axis=-1).astype(np.uint8),
+                "targets": {k: float(info[k]) for k in keys}}
 
     def lbr_ram(self):
         """Raw RAM as a uint8 array, for build_ram_mask.py.
@@ -565,6 +617,33 @@ class SFWrapper(gym.Wrapper):
                 self.env.render()
                 time.sleep(0.01)
 
+        # DECISION TIMING: hold NEUTRAL past the locked (non-actionable) frames
+        # so the observation the agent next sees is one where its action can
+        # actually change the render. Reward accrues over these frames (the
+        # opponent can punish during recovery), which is captured because the hp
+        # deltas below read the POST-skip hp. Round-ending frames stop the skip.
+        self._last_skip = 0
+        if self.decision_timing != "off":
+            neutral = np.zeros_like(action_seq[0])
+            consec = 0                       # consecutive actionable frames so far
+            while True:
+                a_act = int(info['agent_status']) in self.actionable_statuses
+                e_act = int(info['enemy_status']) in self.actionable_statuses
+                ready = a_act if self.decision_timing == "ego" else (a_act or e_act)
+                consec = consec + 1 if ready else 0
+                if consec >= self.dwell_frames or info['agent_hp'] < 0 \
+                        or info['enemy_hp'] < 0 or info['round_countdown'] <= 0 \
+                        or self._last_skip >= self.max_skip_frames:
+                    break
+                obs, _reward, _done, info = self.env.step(neutral)
+                if self.ram_tap is not None:
+                    self.ram_tap()
+                self.update_status(info)
+                if self.rendering:
+                    self.env.render()
+                    time.sleep(0.01)
+                self._last_skip += 1
+
         agent_hp = info['agent_hp']
         enemy_hp = info['enemy_hp']
         agent_victories = info['agent_victories']
@@ -572,7 +651,7 @@ class SFWrapper(gym.Wrapper):
         round_countdown = info['round_countdown']
         timesup = (round_countdown <= 0)
 
-        self.total_timesteps += self.num_step_frames
+        self.total_timesteps += self.num_step_frames + self._last_skip
         
         if self.during_transation and (self.match_status == END_STATUS or self.round_status == END_STATUS):
             # During transation between episodes, do nothing
