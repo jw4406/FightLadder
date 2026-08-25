@@ -67,10 +67,14 @@ for arm in cdctl nsf16_nsf16 cr64_close64 k2s1_stk2; do
          | grep -oE '^[0-9]+' | sort -n | tail -1)
     [ -z "${ck}" ] && { say "${arm}: no checkpoint, skipping"; continue; }
     say "--- ${arm} @ ${ck}  (num_step_frames=${NSF[$arm]}, ram_stride=${STRIDE[$arm]})"
+    # --bootstrap --horizon 0 --n_paths 1 pins the LEGACY r + gamma*V(s') leaf
+    # (head_quality.py scores the head against M). Same M, same speed as before
+    # the pure-MC default was added.
     FIGHTLADDER_RAM_STRIDE="${STRIDE[$arm]}" python -u bootstrap_delta.py \
         --ckpt "${dir}/spar_Ry_Sa_${ck}_steps.task" --ram_mask ram_mask.npy \
         --n_states "${N_STATES}" --stride 40 --n_envs 6 --save_obs \
         --num_step_frames "${NSF[$arm]}" \
+        --bootstrap --horizon 0 --n_paths 1 \
         --out "headroom/arm_${arm}_${ck}.json" 2>&1 | tail -3 | tee -a "${LOG}"
     FIGHTLADDER_RAM_STRIDE="${STRIDE[$arm]}" python -u head_quality.py \
         --run_dir "${dir}" --npz_glob "headroom/arm_${arm}_${ck}_raw.npz" \

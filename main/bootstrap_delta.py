@@ -44,6 +44,71 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 EXPAND_ROOT = "boot_root"
 
 
+def expand_root(venv, ops, na, n, gamma, n_paths, horizon, bootstrap, rng,
+                snapshot_key=EXPAND_ROOT):
+    """Enumerate all na*na joint deviations from the venv's CURRENT states and
+    score each by the mean of `n_paths` on-policy Monte-Carlo rollouts.
+
+    Single deviation at t=0 (the joint action (i,j)), then BOTH seats follow
+    their policies for up to `horizon` steps, restoring to the snapshot before
+    every path so the MC noise is averaged rather than inherited. Returns four
+    (na, na, n) arrays in the ego frame:
+
+      R   exact one-step deviation reward. The deviation is deterministic, so
+          this is bit-exact and R[0]==R[9] (actions 0 and 9 are byte-identical).
+      M   r0 + sum_t gamma^t r_t  averaged over n_paths, plus gamma^H*V(s_H) for
+          still-alive envs iff `bootstrap`. This is the leaf the one-shot
+          deviation gap consumes. With `bootstrap` and horizon==0 it collapses
+          to the old r + gamma*V(s')*(1-done) matrix, bit-for-bit.
+      SE  per-cell MC standard error of M across the n_paths (0 if n_paths==1).
+      DN  done flag at the deviation step.
+    """
+    import numpy as np
+    from local_best_response import splice_terminal
+
+    R = np.zeros((na, na, n)); M = np.zeros((na, na, n))
+    SE = np.zeros((na, na, n)); DN = np.zeros((na, na, n), bool)
+    venv.env_method("lbr_snapshot", snapshot_key)
+    try:
+        for i in range(na):
+            for j in range(na):
+                gp = np.zeros((n_paths, n))
+                r0 = d0 = None
+                for p in range(n_paths):
+                    venv.env_method("lbr_restore", snapshot_key)
+                    o1, r_l, r_r, d1, inf1 = venv.step(
+                        ops.joint(np.full(n, i), np.full(n, j)))     # the deviation
+                    d1 = np.asarray(d1, bool)
+                    rew0 = np.asarray(ops.lbr_reward(r_l, r_r), np.float64)
+                    if p == 0:
+                        r0, d0 = rew0.copy(), d1.copy()   # deterministic across paths
+                    ret = rew0.copy()                     # r0 at discount 1
+                    alive = ~d1
+                    disc = gamma
+                    o = splice_terminal(o1, d1, inf1)
+                    t = 0
+                    while alive.any() and t < horizon:     # on-policy tail
+                        a_e = ops.sample_ego(o, rng); a_a = ops.sample_adv(o, rng)
+                        o2, rl2, rr2, d2, inf2 = venv.step(ops.joint(a_e, a_a))
+                        d2 = np.asarray(d2, bool)
+                        ret += disc * ops.lbr_reward(rl2, rr2) * alive
+                        alive &= ~d2
+                        disc *= gamma
+                        o = splice_terminal(o2, d2, inf2)
+                        t += 1
+                    if bootstrap:                          # gamma^(t+1)*V(s_leaf)
+                        ret += disc * np.asarray(ops.values_ego(o), np.float64) * alive
+                    gp[p] = ret
+                R[i, j], DN[i, j] = r0, d0
+                M[i, j] = gp.mean(axis=0)
+                SE[i, j] = (gp.std(axis=0, ddof=1) / np.sqrt(n_paths)
+                            if n_paths > 1 else 0.0)
+        venv.env_method("lbr_restore", snapshot_key)
+    finally:
+        venv.env_method("lbr_drop", snapshot_key)
+    return R, M, SE, DN
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -70,6 +135,22 @@ def main(argv=None):
                          "-- without it the matrices can only be a diagnostic. Adds "
                          "roughly obs_width*4 bytes per state (~5 MB for 600 states "
                          "of masked RAM), so it is opt-in.")
+    # k-step gold standard: score each joint deviation by REALIZED discounted
+    # return, averaged over n_paths on-policy Monte-Carlo rollouts, instead of
+    # the one-step r + gamma*V(s') leaf. Default has NO critic anywhere.
+    ap.add_argument("--n_paths", type=int, default=8,
+                    help="K MC rollouts averaged per deviated action. Each is an "
+                         "independent on-policy tail; the mean is the leaf and the "
+                         "spread gives a per-cell MC standard error (saved as SE).")
+    ap.add_argument("--horizon", type=int, default=120,
+                    help="Max tail steps per path (~7x the gamma horizon, so "
+                         "truncation is negligible at gamma~0.94). Rolls to episode "
+                         "end or this cap, whichever first.")
+    ap.add_argument("--bootstrap", action="store_true",
+                    help="Add the gamma^t*V(s_t) leaf at truncation for still-alive "
+                         "envs. DEFAULT OFF: no critic in the leaf, M is the pure "
+                         "realized return. `--bootstrap --horizon 0` reproduces the "
+                         "old r + gamma*V(s') matrix bit-for-bit.")
     a = ap.parse_args(argv)
 
     import numpy as np
@@ -94,7 +175,8 @@ def main(argv=None):
         n, na = venv.num_envs, ops.n_actions
         rng = np.random.RandomState(0)
 
-        M_all, PE_all, PA_all, V0_all, R_all, OBS_all = [], [], [], [], [], []
+        M_all, PE_all, PA_all, V0_all, R_all, SE_all, OBS_all = (
+            [], [], [], [], [], [], [])
         obs = venv.reset()
         n_exp = int(np.ceil(a.n_states / n))
         for e in range(n_exp):
@@ -112,37 +194,51 @@ def main(argv=None):
             PA_all.append(ops.adv_probs(obs))
             V0_all.append(ops.values_ego(obs))
 
-            venv.env_method("lbr_snapshot", EXPAND_ROOT)
-            R = np.zeros((na, na, n)); V1 = np.zeros((na, na, n))
-            DN = np.zeros((na, na, n), bool)
-            for i in range(na):
-                succ = []
-                for j in range(na):
-                    venv.env_method("lbr_restore", EXPAND_ROOT)
-                    o1, r_l, r_r, d, infos = venv.step(
-                        ops.joint(np.full(n, i), np.full(n, j)))
-                    d = np.asarray(d, bool)
-                    R[i, j] = ops.lbr_reward(r_l, r_r)
-                    DN[i, j] = d
-                    succ.append(splice_terminal(o1, d, infos))
-                V1[i] = ops.values_ego(np.concatenate(succ, axis=0)).reshape(na, n)
-            venv.env_method("lbr_restore", EXPAND_ROOT)
-            venv.env_method("lbr_drop", EXPAND_ROOT)
-            M_all.append((R + gamma * V1 * (~DN)).transpose(2, 0, 1))
-            # R SAVED SEPARATELY. M mixes the exact emulator reward with
-            # gamma*V_scalar(s'), and V is a TRAINED critic -- so an interaction
-            # measured on M cannot be told apart from critic error that happens
-            # to vary across the 484 successors. R alone has NO critic in it, so
-            # its ANOVA is the part of the interaction that is unarguably real.
+            # k-step gold standard: each joint deviation scored by the mean of
+            # a.n_paths on-policy MC rollouts to a.horizon. Default leaf has NO
+            # critic -- M IS the realized return. R (exact one-step deviation
+            # reward) is kept separately: it has no critic, so its ANOVA is the
+            # part of the interaction that is unarguably real.
+            R, M_mc, SE, DN = expand_root(venv, ops, na, n, gamma,
+                                          a.n_paths, a.horizon, a.bootstrap, rng,
+                                          snapshot_key=EXPAND_ROOT)
+            M_all.append(M_mc.transpose(2, 0, 1))
             R_all.append(R.transpose(2, 0, 1))
-            print(f"   expansion {e+1}/{n_exp}", flush=True)
+            SE_all.append(SE.transpose(2, 0, 1))
+            print(f"   expansion {e+1}/{n_exp}  (paths={a.n_paths} "
+                  f"horizon={a.horizon} bootstrap={'on' if a.bootstrap else 'OFF'})",
+                  flush=True)
     finally:
         venv.close()
 
     M = np.concatenate(M_all)                       # (S, na, na) ego-frame payoff
     PE = np.concatenate(PE_all); PA = np.concatenate(PA_all)
     V0 = np.concatenate(V0_all)
+    R = np.concatenate(R_all); SE = np.concatenate(SE_all)
     S = M.shape[0]
+
+    # LOUD action-axis check. Actions 0 and 9 are byte-identical, so the
+    # DEVIATION REWARD R must match bit-for-bit on both axes; M is MC-stochastic
+    # and need only agree within the averaged noise. Either failing is a bug --
+    # a test that does not run is indistinguishable from one that passes.
+    if M.shape[1] > 9 and M.shape[2] > 9:
+        r_ax = float(max(np.abs(R[:, 0, :] - R[:, 9, :]).max(),
+                         np.abs(R[:, :, 0] - R[:, :, 9]).max()))
+        if r_ax != 0.0:
+            raise SystemExit(f"LOUD FAIL: deviation reward not action-exact "
+                             f"(R rows 0 vs 9 differ by {r_ax:.3e}) -- the joint "
+                             f"action axis is wrong, every M is suspect")
+        dM = np.abs(M[:, 0, :] - M[:, 9, :])
+        pooled = np.sqrt(SE[:, 0, :] ** 2 + SE[:, 9, :] ** 2) + 1e-12
+        zmed = float(np.median(dM / pooled))
+        if a.n_paths > 1 and zmed > 6.0:
+            raise SystemExit(f"LOUD FAIL: M rows 0 vs 9 disagree at median "
+                             f"{zmed:.1f}sigma of MC noise -- tail machinery bug")
+        print(f"  action-axis OK: R exact (0.0), M(0 vs 9) median {zmed:.2f} "
+              f"sigma of MC noise")
+    print(f"  M leaf: {'gamma^t*V bootstrap' if a.bootstrap else 'PURE MC (no critic)'}"
+          f"   paths={a.n_paths}  horizon={a.horizon}"
+          f"   mean MC SE {float(SE.mean()):.4e}")
 
     # V_pi: the on-policy expectation, what the bootstrap uses today.
     V_pi = np.einsum("si,sij,sj->s", PE, M, PA)
@@ -201,8 +297,7 @@ def main(argv=None):
 
     raw = os.path.join(REPO_ROOT, a.out.replace(".json", "_raw.npz"))
     _extra = {"OBS": np.concatenate(OBS_all)} if OBS_all else {}
-    np.savez_compressed(raw, M=M, PE=PE, PA=PA, V0=V0,
-                        R=np.concatenate(R_all), **_extra)
+    np.savez_compressed(raw, M=M, PE=PE, PA=PA, V0=V0, R=R, SE=SE, **_extra)
     print(f"\n  raw matrices -> {raw}")
 
     res = {"checkpoint": os.path.basename(a.ckpt), "n_states": S,

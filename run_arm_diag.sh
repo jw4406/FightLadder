@@ -55,8 +55,12 @@ say "-- FACTORED HEAD Q vs TRUE enumerated payoff (enumerating 300 states)..."
 # regex resolves the checkpoint. --reward_scale $RS matches the head's scale so
 # evW is meaningful on UNSCALED arms (else evW = -1e6 garbage; corrW survives).
 NPZ="$H/diag_${ARM}_${CK}_raw.npz"
+# --bootstrap --horizon 0 --n_paths 1 pins the LEGACY r + gamma*V(s') leaf:
+# head_quality.py scores the head against M, so this pipeline needs the
+# critic-bootstrap payoff (not the new pure-MC default). Same M, same speed.
 FIGHTLADDER_RAM_STRIDE=8 python3 bootstrap_delta.py --ckpt "$CKPT" --ram_mask ram_mask.npy \
   --n_states 300 --stride 40 --n_envs 6 --reward_scale "$RS" --save_obs \
+  --bootstrap --horizon 0 --n_paths 1 \
   --out "$H/diag_${ARM}_${CK}.json" 2>>"$H/diag_${ARM}_enum.err" | tail -1 | tee -a "$RES"
 [ -f "$NPZ" ] || say "  !! bootstrap_delta FAILED (see $H/diag_${ARM}_enum.err)"
 python3 head_quality.py --run_dir "$DIR" --npz_glob "$NPZ" \
