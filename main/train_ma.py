@@ -19,7 +19,7 @@ from common.league import PayoffManager, League, FSPLeague, PSROLeague, Learner
 
 # Default roster (can be overridden via CLI).
 DEFAULT_PLAYERS = ["Ryu"]
-DEFAULT_OPPONENTS = ["Guile", "Bison", "Dhalsim"]
+DEFAULT_OPPONENTS = ["Guile", "MBison", "Dhalsim"]
 
 # STATES is built from PLAYERS x OPPONENTS in main().
 # Key format: "<player>_<opponent>" (lowercase/sanitized).
@@ -166,6 +166,18 @@ def _resolve_state_name(
     for cand in expanded_candidates:
         if cand in STATES:
             return STATES[cand]
+
+    # Left generalist is a single global agent, so its opponent tokens are bare
+    # character names (e.g. "bison") while STATES keys are "<protagonist>_<opp>".
+    # Map by opponent suffix so the left env FOLLOWS the opponent's character
+    # instead of freezing on matchup-0. Require a unique match to stay safe under
+    # multi-protagonist rosters (fall through to the old bootstrap otherwise).
+    if side == "left":
+        for cand in candidates:
+            suffix = f"_{_sanitize_matchup_token(cand)}"
+            suffix_matches = [key for key in STATES if key.endswith(suffix)]
+            if len(suffix_matches) == 1:
+                return STATES[suffix_matches[0]]
 
     if side == "left" and STATES:
         # Left MA is global; any valid state bootstraps env construction.

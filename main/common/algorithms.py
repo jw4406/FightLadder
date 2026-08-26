@@ -1201,11 +1201,16 @@ class LeaguePPO(IPPO):
         self.current_opponent = opponent_character
         # Close current environment
         self.env.close()
+        # Left is a single global generalist: it must follow the opponent's
+        # character into the matching RyuVs<opp> state, so let the constructor
+        # resolve the state from opponent_character. Right players are pinned to
+        # their own matchup and keep their fixed state.
+        resolve_state_name = None if self.side == "left" else self.constructor_state_name
         # Recreate with new opponent
         new_agent = self.constructor_fn(
             self.constructor_args, self.side,
             opponent=opponent_character, single_env=False,
-            state_name=self.constructor_state_name,
+            state_name=resolve_state_name,
         )
         self.env = new_agent.env
         # Reset episode tracking
