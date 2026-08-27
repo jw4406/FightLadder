@@ -265,6 +265,16 @@ def constructor(args, side, log_name=None, single_env=False, opponent: str="ryu"
     - `opponent` is kept for backward compatibility with older call-sites.
     """
     num_env = 1 if single_env else args.num_env
+    # Spawned workers re-import this module WITHOUT running main(), so module-global
+    # STATES is empty there. Rebuild it from the roster on args so left-side opponent
+    # resolution works in workers, not just in-process.
+    global STATES
+    if not STATES:
+        STATES = _build_states_from_roster(
+            getattr(args, "player", None) or DEFAULT_PLAYERS,
+            getattr(args, "opponent_list", None) or DEFAULT_OPPONENTS,
+            getattr(args, "side", "left"),
+        )
     state_name = _resolve_state_name(
         side=side,
         opponent=opponent,
