@@ -987,6 +987,10 @@ class PSROPlayer(Player):
                 opponent = historical_agent.get_player_by_name(opponent_name)
                 coordinate_fn = partial(historical_agent.send_outcome, opponent.name)
                 if historical_agent.side == "left":
+                    # Evaluate this opponent in ITS matchup env (RyuVs<opp>), not the
+                    # left historical's frozen matchup-0 state, so cross-character
+                    # payoff cells are scored in the correct env.
+                    historical_agent.agent.set_opponent_character(opponent.character_name)
                     opponent_policy = None
                     opponent_policy_other = opponent.agent.policy_other
                 elif historical_agent.side == "right":
@@ -1084,6 +1088,10 @@ class PSROLeague(League):
             opponent = historical_agent.get_player_by_name(opponent_name)
             coordinate_fn = partial(historical_agent.send_outcome, opponent.name)
             if historical_agent.side == "left":
+                # Evaluate this opponent in ITS matchup env (RyuVs<opp>), not the
+                # left historical's frozen matchup-0 state, so cross-character
+                # payoff cells are scored in the correct env.
+                historical_agent.agent.set_opponent_character(opponent.character_name)
                 opponent_policy = None
                 opponent_policy_other = opponent.agent.policy_other
             elif historical_agent.side == "right":
