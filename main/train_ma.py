@@ -221,7 +221,7 @@ def _right_char_from_matchup_key(matchup_key: str) -> str:
     return parts[1] if len(parts) == 2 else _sanitize_matchup_token(matchup_key)
 
 
-def make_env(game, state_name: str, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, seed=0):
+def make_env(game, state_name: str, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, seed=0, reward_scale=0.001, sticky_prob=0.0):
     def _init():
         players = 2
         env = retro.make(
@@ -231,7 +231,7 @@ def make_env(game, state_name: str, side, reset_type, rendering, init_level=1, s
             obs_type=retro.Observations.IMAGE,
             players=players
         )
-        env = SFWrapper(env, side=side, rendering=rendering, reset_type=reset_type, init_level=init_level, state_dir=state_dir, verbose=verbose, enable_combo=enable_combo, null_combo=null_combo, transform_action=transform_action)
+        env = SFWrapper(env, side=side, rendering=rendering, reset_type=reset_type, init_level=init_level, state_dir=state_dir, verbose=verbose, enable_combo=enable_combo, null_combo=null_combo, transform_action=transform_action, reward_scale=reward_scale, sticky_prob=sticky_prob)
         env = Monitor2P(env)
         env.seed(seed)
         return env
@@ -256,7 +256,7 @@ def restore_worker(idx, learner, total_steps, rollout_opponent_num):
         learner.run(total_timesteps=total_steps, rollout_opponent_num=rollout_opponent_num, reset_num_timesteps=False) # NOTE: do not reset num_timesteps so that the timesteps are restored
 
 #Added the default opponent so the opponent can be added to the end to not change the order of varaibles.
-def constructor(args, side, log_name=None, single_env=False, opponent: str="ryu", state_name: str=None, matchup_key: str=None):
+def constructor(args, side, log_name=None, single_env=False, opponent: str="ryu", state_name: str=None, matchup_key: str=None, sticky_prob=None):
     """
     Agent constructor for league players.
 
@@ -285,7 +285,7 @@ def constructor(args, side, log_name=None, single_env=False, opponent: str="ryu"
     if matchup_key is None:
         _, _, right_char = _canonicalize_matchup_entry(opponent, state_name)
         matchup_key = f"left_vs_{right_char}"
-    env = [make_env(sf_game, state_name=state_name, side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=i) for i in range(num_env)]
+    env = [make_env(sf_game, state_name=state_name, side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=i, reward_scale=getattr(args, "reward_scale", 0.001), sticky_prob=(getattr(args, "sticky_prob", 0.0) if sticky_prob is None else sticky_prob)) for i in range(num_env)]
     env = VecTransposeImage2P(SubprocVecEnv2P(env))
     league_ppo = LeaguePPO(
         side,
@@ -329,6 +329,8 @@ def main():
     parser.add_argument('--enable-combo', action='store_true', help='Enable special move action space for environment')
     parser.add_argument('--null-combo', action='store_true', help='Null action space for special move')
     parser.add_argument('--transform-action', action='store_true', help='Transform action space to MultiDiscrete')
+    parser.add_argument('--reward-scale', type=float, default=0.001, help='Env reward scale applied in SFWrapper (default 0.001; use 1.0 to keep the value head in Adam\'s adaptive regime)')
+    parser.add_argument('--sticky-prob', type=float, default=0.0, help='Sticky-action exploration prob (per-player repeat-previous; 0=off). Training only; payoff-eval envs are forced to 0.')
     parser.add_argument('--seed', type=int, help='Seed', default=0)
     # parser.add_argument('--update-left', type=int, help='Update left policy', default=1)
     # parser.add_argument('--update-right', type=int, help='Update right policy', default=1)

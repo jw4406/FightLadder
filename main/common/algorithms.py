@@ -1211,6 +1211,7 @@ class LeaguePPO(IPPO):
             self.constructor_args, self.side,
             opponent=opponent_character, single_env=False,
             state_name=resolve_state_name,
+            sticky_prob=(0.0 if getattr(self, "_eval_only", False) else None),
         )
         self.env = new_agent.env
         # Reset episode tracking

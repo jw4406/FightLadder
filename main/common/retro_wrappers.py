@@ -39,7 +39,7 @@ LBR_SF_ATTRS = (
 
 class SFWrapper(gym.Wrapper):
 
-    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, trade_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reset_close_range=0.0, close_max_steps=40, reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1):
+    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, trade_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reset_close_range=0.0, close_max_steps=40, reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1, sticky_prob=0.0):
         super(SFWrapper, self).__init__(env)
         self.env = FrameStack(env, num_stack=num_stack)
 
@@ -160,25 +160,25 @@ class SFWrapper(gym.Wrapper):
         self.action_dim = 12 + 3 if (enable_combo or null_combo) else 12 # 3 bits for combos
         if transform_action:
             # self.action_space = MultiDiscrete([len(DIRECTIONS_BUTTONS) + len(ATTACKS_BUTTONS) + len(COMBOS) for _ in range(self.players)])
-            self.action_space = MultiDiscrete([len(DIRECTIONS_BUTTONS) + len(ATTACKS_BUTTONS) + len(self.sf_combos)]) if (enable_combo or null_combo) else MultiDiscrete([len(DIRECTIONS_BUTTONS) + len(ATTACKS_BUTTONS)])
+            # Factored (flat-encoded) action space: one scalar index over all (direction, attack)
+            # PAIRS so the agent can press a direction AND a button on the same frame -- required for
+            # charge-move releases (forward+punch), command normals, etc. -- plus n_combo scripted
+            # shoto-motion shortcuts appended after the pairs. A single scalar per player is preserved
+            # so the 2-player hstack assembly in algorithms.py stays unchanged.
+            n_dir, n_att, n_combo = len(DIRECTIONS_BUTTONS), len(ATTACKS_BUTTONS), len(self.sf_combos)
+            self.action_space = MultiDiscrete([n_dir * n_att + n_combo]) if (enable_combo or null_combo) else MultiDiscrete([n_dir * n_att])
             def action_transformer(action):
                 players_action = []
+                n_dir, n_att = len(DIRECTIONS_BUTTONS), len(ATTACKS_BUTTONS)
                 for player_action in action:
-                    if player_action >= len(DIRECTIONS_BUTTONS) + len(ATTACKS_BUTTONS):
-                        # if self.null_combo:
-                        #     print(f"player_action = {player_action}, invalid for null combo", flush=True)
+                    if player_action >= n_dir * n_att:                 # scripted shoto-motion combo
                         button_bits = [0 for _ in range(12)]
-                        combo_bits = [int(i) for i in np.binary_repr(player_action - len(DIRECTIONS_BUTTONS) - len(ATTACKS_BUTTONS)).zfill(3)]
-                    elif player_action >= len(DIRECTIONS_BUTTONS):
-                        direction_buttons = []
-                        attack_buttons = ATTACKS_BUTTONS[player_action - len(DIRECTIONS_BUTTONS)]
+                        combo_bits = [int(i) for i in np.binary_repr(player_action - n_dir * n_att).zfill(3)]
+                    else:                                              # direction + attack, SIMULTANEOUS
+                        direction_buttons = DIRECTIONS_BUTTONS[player_action // n_att]
+                        attack_buttons = ATTACKS_BUTTONS[player_action % n_att]
                         button_bits = [int(b in direction_buttons + attack_buttons) for b in BUTTONS]
-                        combo_bits = [1 for _ in range(3)]
-                    else:
-                        direction_buttons = DIRECTIONS_BUTTONS[player_action]
-                        attack_buttons = []
-                        button_bits = [int(b in direction_buttons + attack_buttons) for b in BUTTONS]
-                        combo_bits = [1 for _ in range(3)]
+                        combo_bits = [1 for _ in range(3)]             # 7 >= len(sf_combos) => "no combo"
                     players_action.append(np.array(button_bits + combo_bits))
                 return np.hstack(players_action)
             self.action_transformer = action_transformer
@@ -203,6 +203,10 @@ class SFWrapper(gym.Wrapper):
         self.enable_combo = enable_combo
         self.null_combo = null_combo
         self.reward_scale = float(reward_scale)
+        # Sticky-action exploration: per-player, repeat the previous executed action w.p. sticky_prob.
+        # 0.0 = off (default). Payoff-eval envs are forced to 0 (see league.construct_agent).
+        self.sticky_prob = float(sticky_prob)
+        self._prev_raw_action = None
 
     def save_state_to_file(self, name="test.state"):
         content = self.env.em.get_state()
@@ -439,6 +443,7 @@ class SFWrapper(gym.Wrapper):
 
     def reset(self):
         obs = self.env.reset()
+        self._prev_raw_action = None   # don't carry a sticky hold across episodes
 
         self.prev_agent_hp = self.full_hp
         self.prev_enemy_hp = self.full_hp
@@ -469,7 +474,7 @@ class SFWrapper(gym.Wrapper):
         if self.action_transformer is None:
             raise ValueError("reset_close_range needs --transform_action True "
                              "(it moves via DIRECTIONS_BUTTONS indices)")
-        LEFT, RIGHT = 3, 4          # DIRECTIONS_BUTTONS indices
+        LEFT, RIGHT = 3 * len(ATTACKS_BUTTONS), 4 * len(ATTACKS_BUTTONS)  # flat-encoded dir-only (attack=neutral); DIRECTIONS_BUTTONS 3=LEFT, 4=RIGHT
         for _ in range(self.close_max_steps):
             d = self.env.env.data.lookup_all()
             ax, ex = d['agent_x'], d['enemy_x']
@@ -544,7 +549,23 @@ class SFWrapper(gym.Wrapper):
             info['round'] = 'start' if self.round_status == START_STATUS else 'end'
             assert self.match_status == START_STATUS, info
 
+    def set_sticky_prob(self, sticky_prob):
+        """Runtime setter (kept for flexibility; eval gating is done at construction)."""
+        self.sticky_prob = float(sticky_prob)
+
     def step(self, action):
+        # Sticky-action exploration: with prob sticky_prob, per player, repeat the previously
+        # EXECUTED raw (pre-transform) action. The rollout buffer stores the SAMPLED action, so PPO
+        # sees this purely as environment stochasticity; correlated executed-action runs are what let
+        # charge moves (long down-back holds) be discovered.
+        if self.sticky_prob > 0.0 and self.action_transformer is not None:
+            if self._prev_raw_action is not None:
+                a = np.array(action, copy=True)
+                for i in range(len(a)):
+                    if np.random.random() < self.sticky_prob:
+                        a[i] = self._prev_raw_action[i]
+                action = a
+            self._prev_raw_action = np.array(action, copy=True)
         if self.action_transformer is not None:
             action = self.action_transformer(action)
         if self.side == 'both':

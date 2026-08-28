@@ -469,10 +469,14 @@ class Player(object):
     
     def construct_agent(self):
         print(f"Constructing agent for {self.name}") #TODO: DEBUG ONLY! Remove when done.
+        # Historical players only run payoff-eval rollouts -> keep sticky exploration OFF for them.
+        _eval_only = isinstance(self, Historical)
         self.agent = self.constructor(
             self.args, self.side, log_name=self.name,
             state_name=self.state_name, matchup_key=self.matchup_key,
+            sticky_prob=(0.0 if _eval_only else None),
         )
+        self.agent._eval_only = _eval_only
         self.agent.set_parameters(self._initial_weights)
         self.agent.set_steps(self._checkpoint_step)
         self.agent.constructor_fn = self.constructor #Need to assign a constructor function - do NOT delete!
