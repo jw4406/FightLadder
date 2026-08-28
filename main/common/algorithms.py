@@ -1212,6 +1212,7 @@ class LeaguePPO(IPPO):
             opponent=opponent_character, single_env=False,
             state_name=resolve_state_name,
             sticky_prob=(0.0 if getattr(self, "_eval_only", False) else None),
+            ego_char=getattr(self, "_ego_char", None),   # preserve ego macro-subset across opponent switches
         )
         self.env = new_agent.env
         # Reset episode tracking

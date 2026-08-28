@@ -64,8 +64,10 @@ class Harness:
         self.ego = ego
         key = f"{ego.lower()}_{opponent.lower()}"
         state = _build_states_from_roster([ego], [opponent], "both")[key]
+        # ego drives P1 (left seat of <ego>Vs<opponent>); build the per-ego / per-seat macro tables.
         self.env = make_env(sf_game, state_name=state, side="both", reset_type="round", rendering=False,
-                            enable_combo=True, null_combo=False, transform_action=True, seed=0, reward_scale=1.0)()
+                            enable_combo=True, null_combo=False, transform_action=True, seed=0, reward_scale=1.0,
+                            ego_char=ego, left_char=ego, right_char=opponent)()
         self.raw = self.env                       # underlying retro env, for RAM reads
         while hasattr(self.raw, "env"):
             self.raw = self.raw.env

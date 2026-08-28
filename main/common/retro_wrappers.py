@@ -39,7 +39,7 @@ LBR_SF_ATTRS = (
 
 class SFWrapper(gym.Wrapper):
 
-    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, trade_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reset_close_range=0.0, close_max_steps=40, reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1, sticky_prob=0.0):
+    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, trade_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reset_close_range=0.0, close_max_steps=40, reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1, sticky_prob=0.0, ego_char=None, left_char=None, right_char=None):
         super(SFWrapper, self).__init__(env)
         self.env = FrameStack(env, num_stack=num_stack)
 
@@ -50,7 +50,12 @@ class SFWrapper(gym.Wrapper):
         self.num_step_frames = num_step_frames
         # Motion inputs are rebuilt to fill exactly num_step_frames, so the
         # frame skip is adjustable without breaking the combo assert.
-        self.sf_combos = build_sf_combos(num_step_frames)
+        # Per-SEAT macro tables: P1 is decoded with the LEFT char's specials and P2 with the RIGHT
+        # char's, so an opponent's combos aren't mis-decoded with the learner's table. self.sf_combos
+        # (the ego/learner's table) sizes the action space. None -> legacy shoto motions.
+        self.sf_combos_p1 = build_sf_combos(num_step_frames, left_char if left_char is not None else ego_char)
+        self.sf_combos_p2 = build_sf_combos(num_step_frames, right_char if right_char is not None else ego_char)
+        self.sf_combos = build_sf_combos(num_step_frames, ego_char)
 
         # aggresive_coeff weights damage DEALT vs damage TAKEN in both the dense
         # and terminal rewards. 1.0 = the historical zero-sum game (default). The
@@ -613,16 +618,18 @@ class SFWrapper(gym.Wrapper):
         else:
             action[3] = 0 # Filter out the "START/PAUSE" button
             action[self.action_dim + 3] = 0
+            tables = [self.sf_combos_p1, self.sf_combos_p2]   # decode each seat with ITS char's macros
             if self.enable_combo:
                 combo_ids = [int(4 * action[self.action_dim - 3] + 2 * action[self.action_dim - 2] + action[self.action_dim - 1]), int(4 * action[-3] + 2 * action[-2] + action[-1])]
             else:
-                combo_ids = [len(self.sf_combos), len(self.sf_combos)]
+                combo_ids = [len(tables[0]), len(tables[1])]
             action_seqs = []
             for player_id, combo_id in enumerate(combo_ids):
-                if combo_id >= len(self.sf_combos):
+                table = tables[player_id]
+                if combo_id >= len(table):
                     action_seq = [action[player_id * self.action_dim : player_id * self.action_dim + 12] for _ in range(self.num_step_frames)]
                 else:
-                    combo = self.sf_combos[combo_id]
+                    combo = table[combo_id]
                     assert self.num_step_frames == len(combo)
                     action_seq = combo
                 action_seqs.append(action_seq)

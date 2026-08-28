@@ -471,12 +471,17 @@ class Player(object):
         print(f"Constructing agent for {self.name}") #TODO: DEBUG ONLY! Remove when done.
         # Historical players only run payoff-eval rollouts -> keep sticky exploration OFF for them.
         _eval_only = isinstance(self, Historical)
+        # ego char (this agent's own character) -> per-ego special-move macro subset. Left generalist
+        # controls the protagonist; right/other players control their matchup's right character.
+        _ego = (getattr(self.args, "player", None) or ["Ryu"])[0] if self.side == "left" else self.matchup_right
         self.agent = self.constructor(
             self.args, self.side, log_name=self.name,
             state_name=self.state_name, matchup_key=self.matchup_key,
             sticky_prob=(0.0 if _eval_only else None),
+            ego_char=_ego,
         )
         self.agent._eval_only = _eval_only
+        self.agent._ego_char = _ego
         self.agent.set_parameters(self._initial_weights)
         self.agent.set_steps(self._checkpoint_step)
         self.agent.constructor_fn = self.constructor #Need to assign a constructor function - do NOT delete!

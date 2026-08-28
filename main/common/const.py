@@ -27,37 +27,74 @@ SF_COMBOS_BUTTONS = [
     [['LEFT'], ['DOWN'], ['DOWN', 'LEFT'], ['X']], #'Shoryuken-L'
     [['DOWN'], ['DOWN', 'RIGHT'], ['RIGHT'], ['A']], # 'Tatsumaki-L'
 ]
-def build_sf_combos(num_step_frames=8):
-    """Motion inputs stretched to fill exactly num_step_frames emulator frames.
-
-    SFWrapper asserts num_step_frames == len(combo), so the historical hardcoded
-    `range(2)` pinned the frame skip at 8 (4 inputs x 2 frames). Deriving the
-    repeat count from the frame budget is what makes the skip adjustable, which
-    is the point: at 8 frames a whole exchange resolves inside ONE decision, so
-    the joint dependence is settled before the agent chooses again.
-
-    Fails loudly rather than silently truncating a motion input -- a Hadouken
-    missing its final frame is not a Hadouken, and the agent would just see an
-    action that never works.
-    """
-    n_inputs = len(SF_COMBOS_BUTTONS[0])
-    if any(len(c) != n_inputs for c in SF_COMBOS_BUTTONS):
-        raise ValueError("SF_COMBOS_BUTTONS entries differ in length")
-    if num_step_frames % n_inputs != 0:
-        raise ValueError(
-            f"num_step_frames={num_step_frames} is not divisible by the {n_inputs} "
-            f"inputs in a motion command; a combo cannot be stretched to fit it "
-            f"without dropping or duplicating an input unevenly.")
-    reps = num_step_frames // n_inputs
+def _stretch(seq, nsf):
+    """Stretch a k-input motion command to fill nsf frames (each input held nsf//k frames).
+    Fails loudly rather than truncating -- a Hadouken missing its last frame is not a Hadouken."""
+    if nsf % len(seq) != 0:
+        raise ValueError(f"num_step_frames={nsf} not divisible by motion length {len(seq)}")
+    reps = nsf // len(seq)
     out = []
-    for combo_buttons in SF_COMBOS_BUTTONS:
-        action_seq = []
-        for combo_button in combo_buttons:
-            button = [int(b in combo_button) for b in BUTTONS]
-            for _ in range(reps):
-                action_seq.append(np.array(button))
-        out.append(action_seq)
+    for grp in seq:
+        b = np.array([int(x in grp) for x in BUTTONS])
+        out += [b for _ in range(reps)]
     return out
+
+def _frames(frame_list, nsf):
+    """Build an exact nsf-frame program from a list of button-name groups."""
+    if len(frame_list) != nsf:
+        raise ValueError(f"macro program length {len(frame_list)} != num_step_frames {nsf}")
+    return [np.array([int(x in f) for x in BUTTONS]) for f in frame_list]
+
+# --- tuned macro programs (each verified to fire via the RAM special-flag; see harness). ---
+# Char-agnostic: the input PROGRAM; the character decides which special that input produces.
+def _motion(seq):            # QCF/DP/QCB motion, stretched to nsf
+    return lambda nsf: _stretch(seq, nsf)
+def _rel_fwd(fwd, btn):      # charge release: FORWARD 1-frame head-start, then forward+button (10/10)
+    return lambda nsf: _frames([[fwd]] + [[fwd, btn]] * (nsf - 1), nsf)
+def _rel_up(btn):            # down-charge release: up head-start, then up+button
+    return lambda nsf: _frames([['UP']] + [['UP', btn]] * (nsf - 1), nsf)
+def _mash(btn):              # tap every other frame; select repeatedly to sustain the mash
+    return lambda nsf: _frames([[btn] if i % 2 == 0 else [] for i in range(nsf)], nsf)
+def _hold(btns):             # multi-button held (Lariat)
+    return lambda nsf: _frames([list(btns)] * nsf, nsf)
+def _spd(btn):               # 360 grab: half-circle into up-forward+button (needs nsf==8)
+    return lambda nsf: _frames([['LEFT'], ['DOWN', 'LEFT'], ['DOWN'], ['DOWN', 'RIGHT'], ['RIGHT'],
+                                ['UP', 'RIGHT'], ['UP', 'RIGHT'], ['UP', 'RIGHT', btn]][:nsf], nsf)
+
+MACRO_DEFS = {
+    'hadouken_r':  _motion(SF_COMBOS_BUTTONS[0]), 'shoryuken_r': _motion(SF_COMBOS_BUTTONS[1]),
+    'tatsumaki_r': _motion(SF_COMBOS_BUTTONS[2]), 'hadouken_l':  _motion(SF_COMBOS_BUTTONS[3]),
+    'shoryuken_l': _motion(SF_COMBOS_BUTTONS[4]), 'tatsumaki_l': _motion(SF_COMBOS_BUTTONS[5]),
+    'chg_fwd_p_r': _rel_fwd('RIGHT', 'X'), 'chg_fwd_p_l': _rel_fwd('LEFT', 'X'),
+    'chg_fwd_k_r': _rel_fwd('RIGHT', 'A'), 'chg_fwd_k_l': _rel_fwd('LEFT', 'A'),
+    'chg_dwn_k': _rel_up('A'), 'chg_dwn_p': _rel_up('X'),
+    'mash_p': _mash('X'), 'mash_k': _mash('A'),
+    'spd_p': _spd('X'), 'spd_k': _spd('A'),
+    'lariat_p': _hold(['Y', 'X']), 'lariat_k': _hold(['B', 'A']),
+}
+
+# per-character moveset (SF2 Champion Edition): which macros that character actually has.
+_SHOTO = ['hadouken_r', 'hadouken_l', 'shoryuken_r', 'shoryuken_l', 'tatsumaki_r', 'tatsumaki_l']
+MOVESETS = {
+    'Ryu': _SHOTO, 'Ken': _SHOTO,
+    'Sagat': ['hadouken_r', 'hadouken_l', 'shoryuken_r', 'shoryuken_l'],   # Tiger Shot(QCF), Tiger Uppercut(DP)
+    'Dhalsim': ['hadouken_r', 'hadouken_l'],                               # Yoga Fire(QCF)
+    'Guile': ['chg_fwd_p_r', 'chg_fwd_p_l', 'chg_dwn_k'],                  # Sonic Boom, Flash Kick
+    'ChunLi': ['chg_dwn_k', 'mash_k'],                                     # Spinning Bird Kick, Lightning Kick
+    'Blanka': ['chg_fwd_p_r', 'chg_fwd_p_l', 'mash_p'],                    # Rolling Attack, Electricity
+    'EHonda': ['chg_fwd_p_r', 'chg_fwd_p_l', 'mash_p'],                    # Sumo Headbutt, Hundred Hand Slap
+    'Balrog': ['chg_fwd_p_r', 'chg_fwd_p_l', 'chg_fwd_k_r', 'chg_fwd_k_l'],# Dash Straight / Dash Low
+    'Vega': ['chg_fwd_p_r', 'chg_fwd_p_l'],                                # Rolling Crystal Flash
+    'MBison': ['chg_fwd_p_r', 'chg_fwd_p_l', 'chg_fwd_k_r', 'chg_fwd_k_l'],# Psycho Crusher, Scissor Kick
+    'Zangief': ['spd_p', 'spd_k', 'lariat_p', 'lariat_k'],                 # SPD, Lariat
+}
+_MOVESETS_LC = {k.lower(): v for k, v in MOVESETS.items()}
+
+def build_sf_combos(num_step_frames=8, ego_char=None):
+    """Return the ego character's tuned macro programs (each nsf frames). ego_char=None keeps the
+    legacy behaviour (the 6 shoto motions), so callers that don't pass an ego are unchanged."""
+    names = _SHOTO if ego_char is None else _MOVESETS_LC.get(str(ego_char).lower(), _SHOTO)
+    return [MACRO_DEFS[n](num_step_frames) for n in names]
 
 
 SF_COMBOS = build_sf_combos(8)
