@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ippo
 from common.retro_wrappers import SFWrapper
 
-EXPECTED_CHECKS = 13
+EXPECTED_CHECKS = 22
 NC = 0
 
 
@@ -43,10 +43,11 @@ def chk(name, cond):
 
 MASK = np.load("ram_mask.npy")
 ST = "Champion.Level1.RyuVsRyu.2Player"
+ST_RG = "Champion.Level1.RyuVsGuile"          # distinct chars: left=Ryu (6 macros), right=Guile (3)
 
 
-def build(**kw):
-    fn = ippo.make_env("StreetFighterIISpecialChampionEdition-Genesis", ST, "both",
+def build(state=ST, **kw):
+    fn = ippo.make_env("StreetFighterIISpecialChampionEdition-Genesis", state, "both",
                        "round", False, transform_action=True, obs_type="ram",
                        ram_mask=MASK, **kw)
     env = fn()
@@ -88,6 +89,43 @@ chk("actionable_statuses reaches SFWrapper",
     sf.actionable_statuses == frozenset({512, 514, 520}))
 chk("dwell_frames reaches SFWrapper", sf.dwell_frames == 4)
 chk("max_skip_frames reaches SFWrapper", sf.max_skip_frames == 120)
+env.close(); del env, sf
+
+# --- per-ego / per-seat special-move macros reach SFWrapper via ippo.make_env ---
+# distinct-char state -> P1 decoded with LEFT char's table, P2 with RIGHT char's (the 2-player fix).
+env, sf = build(state=ST_RG)                              # ego_is_left defaults True -> ego = left = Ryu
+chk("per-seat P1 table = left char Ryu (6 macros)", len(sf.sf_combos_p1) == 6)
+chk("per-seat P2 table = right char Guile (3 macros)", len(sf.sf_combos_p2) == 3)
+chk("ego table = left char when ego_is_left (Ryu, 6)", len(sf.sf_combos) == 6)
+chk("ego action space sized by ego char (63+6=69)", int(sf.action_space.nvec[0]) == 69)
+# functional: a Ryu special actually FIRES through the ippo path (deterministic one-shot motion).
+raw = env
+while not hasattr(raw, "get_ram"):
+    raw = raw.env
+env.reset()
+for _ in range(60):
+    env.step(np.array([0, 0]))                           # settle both seats neutral
+flag = 0
+env.step(np.array([63, 0]))                              # P1 = Ryu combo 63 (hadouken_r), P2 neutral
+flag = max(flag, int(raw.get_ram()[32773]))              # 0xFF8005 = P1 special flag
+for _ in range(20):
+    env.step(np.array([0, 0]))
+    flag = max(flag, int(raw.get_ram()[32773]))
+chk("Ryu P1 special FIRES via ippo per-ego path (flag != 0)", flag != 0)
+env.close(); del env, sf
+
+# ego on the RIGHT -> ego table follows the right char; action space subsets to it.
+env, sf = build(state=ST_RG, ego_is_left=False)          # ego = right = Guile
+chk("ego table follows ego_is_left=False (Guile, 3)", len(sf.sf_combos) == 3)
+chk("ego action space subsets for Guile (63+3=66)", int(sf.action_space.nvec[0]) == 66)
+chk("per-seat tables unchanged by ego side (P1=6, P2=3)",
+    len(sf.sf_combos_p1) == 6 and len(sf.sf_combos_p2) == 3)
+env.close(); del env, sf
+
+# same-char state -> both seats get the same (shoto) table; legacy-compatible size.
+env, sf = build()                                        # ST = RyuVsRyu
+chk("same-char state -> both tables shoto (6/6)",
+    len(sf.sf_combos_p1) == 6 and len(sf.sf_combos_p2) == 6)
 env.close(); del env, sf
 
 if NC != EXPECTED_CHECKS:

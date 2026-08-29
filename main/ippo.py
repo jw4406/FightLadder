@@ -173,6 +173,11 @@ def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=N
         # and the three reward variants were all accepted and ignored. The
         # close-range arm trained to weights BIT-IDENTICAL to its control before
         # this was caught. test_env_plumbing.py now asserts each one arrives.
+        # Per-ego / per-seat special-move macros (mirrors the train_ma path). Each seat is decoded
+        # with ITS char's macros; the ego (learner) char sizes the action space. In SPAR/IPPO the
+        # learner drives P1 normally and P2 in the mirrored half -> ego_is_left already tracks it.
+        _left_char, _right_char = chars_from_state_name(state)
+        _ego_char = _left_char if ego_is_left else _right_char
         env = SFWrapper(env, side=side, rendering=rendering, reset_type=reset_type, init_level=init_level,
                         state_dir=state_dir, verbose=verbose, enable_combo=enable_combo, null_combo=null_combo,
                         transform_action=transform_action,
@@ -186,7 +191,8 @@ def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=N
                         decision_timing=decision_timing,
                         actionable_statuses=actionable_statuses,
                         max_skip_frames=max_skip_frames,
-                        dwell_frames=dwell_frames)
+                        dwell_frames=dwell_frames,
+                        ego_char=_ego_char, left_char=_left_char, right_char=_right_char)
         # Observation wrapper. NOTE: the InfoObsWrapper branch used to be
         # commented out here, so --obs_type info silently did nothing.
         if obs_type == 'ram':
@@ -464,6 +470,20 @@ def env_generator(args, max_envs: int = 0, i_start: int = 0, j_start: int = 0, S
         return vec_env
 def main(args):
     PLAYER = args.player
+    # Per-ego special-move macros size the action space by the LEARNER's character (Ryu 69, Guile 66,
+    # ...). A single shared policy across >1 protagonist would then see heterogeneous action spaces
+    # across envs -> fail LOUDLY here rather than at a downstream vec-env shape mismatch. Single
+    # protagonist vs many opponents stays uniform (ego is constant, even across mirror halves); the
+    # union+char-obs path for true multi-protagonist policies is future work.
+    if (len(PLAYER) > 1 and getattr(args, "transform_action", False)
+            and (getattr(args, "enable_combo", False) or getattr(args, "null_combo", False))):
+        raise ValueError(
+            f"Per-ego special-move macros require a SINGLE protagonist for a shared policy, but got "
+            f"PLAYER={PLAYER} ({len(PLAYER)} chars) with --transform_action + combos enabled. Different "
+            f"ego characters size the action space differently (e.g. Ryu=69 vs Guile=66), which one "
+            f"shared policy / vec-env cannot mix. Run one protagonist at a time, or disable "
+            f"--transform_action / combos to fall back to the uniform space."
+        )
     # global REMOVAL
     # PLAYER = "Blanka"  # "Blanka
 

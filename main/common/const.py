@@ -1,5 +1,6 @@
 import retro
 import os
+import re
 import numpy as np
 
 
@@ -95,6 +96,17 @@ def build_sf_combos(num_step_frames=8, ego_char=None):
     legacy behaviour (the 6 shoto motions), so callers that don't pass an ego are unchanged."""
     names = _SHOTO if ego_char is None else _MOVESETS_LC.get(str(ego_char).lower(), _SHOTO)
     return [MACRO_DEFS[n](num_step_frames) for n in names]
+
+
+def chars_from_state_name(state):
+    """Parse (left_char, right_char), lowercased, from a retro state string or path.
+      'two_player/blanka_left/Champion.Level1.BlankaVsRyu.2Player.state' -> ('blanka', 'ryu')
+    Lowercase matches the _MOVESETS_LC keys (EHonda->ehonda, MBison->mbison, ChunLi->chunli).
+    Falls back to ('left', 'right') when no `XVsY` pattern is present."""
+    m = re.search(r"([A-Za-z]+)Vs([A-Za-z]+)", str(state))
+    if not m:
+        return "left", "right"
+    return m.group(1).lower(), m.group(2).lower()
 
 
 SF_COMBOS = build_sf_combos(8)
