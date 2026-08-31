@@ -229,6 +229,18 @@ class SFWrapper(gym.Wrapper):
         self._inject_program = injection_program(
             ego_char, "right" if _ego_is_right else "left",
             len(DIRECTIONS_BUTTONS), len(ATTACKS_BUTTONS)) if ego_char is not None else None
+        # Charge-hold reward (4th lever): credit the ego for HOLDING its charge direction (building a
+        # charge), capped at the charge threshold so it rewards a FULL charge, not holding forever. The
+        # charge direction + length come from the injection program's charge steps. Annealed to 0.
+        self.charge_bonus_coef = 0.0
+        self._charge_count = 0
+        self._charge_this_step = 0
+        if self._inject_program is not None:
+            self._charge_dir = int(self._inject_program[0]) // len(ATTACKS_BUTTONS)   # e.g. down-back / down
+            self._charge_threshold = len(self._inject_program) - 1                    # # of charge steps
+        else:
+            self._charge_dir = None
+            self._charge_threshold = 16
 
     def save_state_to_file(self, name="test.state"):
         content = self.env.em.get_state()
@@ -470,6 +482,8 @@ class SFWrapper(gym.Wrapper):
         self._prev_p2_special = False
         self._inject_pos = -1          # don't carry a half-finished injection across episodes
         self._injected_action = None
+        self._charge_count = 0         # reset charge-hold counter across episodes
+        self._charge_this_step = 0
 
         self.prev_agent_hp = self.full_hp
         self.prev_enemy_hp = self.full_hp
@@ -588,6 +602,10 @@ class SFWrapper(gym.Wrapper):
         """Runtime setter for the annealed charge->release injection probability (0 = off)."""
         self.inject_prob = float(prob)
 
+    def set_charge_bonus_coef(self, coef):
+        """Runtime setter for the annealed charge-hold reward (0 = off)."""
+        self.charge_bonus_coef = float(coef)
+
     def step(self, action):
         # Sticky-action exploration: with prob sticky_prob, per player, repeat the previously
         # EXECUTED raw (pre-transform) action. The rollout buffer stores the SAMPLED action, so PPO
@@ -601,6 +619,17 @@ class SFWrapper(gym.Wrapper):
                         a[i] = self._prev_raw_action[i]
                 action = a
             self._prev_raw_action = np.array(action, copy=True)
+        # Charge-hold tracking: is the ego holding its charge direction this step? (credited in the reward
+        # below, capped at a full charge). Uses the effective (post-sticky) action = the policy's choice.
+        self._charge_this_step = 0
+        if self._charge_dir is not None and self.charge_bonus_coef > 0.0:
+            _a1 = np.atleast_1d(action)
+            if len(_a1) > self._ego_seat_idx:
+                _ego_a = int(_a1[self._ego_seat_idx])
+                _holding = (_ego_a < len(DIRECTIONS_BUTTONS) * len(ATTACKS_BUTTONS)
+                            and _ego_a // len(ATTACKS_BUTTONS) == self._charge_dir)
+                self._charge_count = self._charge_count + 1 if _holding else 0
+                self._charge_this_step = self._charge_count
         # Demonstration injection (after sticky, before transform): override the EGO seat's raw factored
         # action with the current step of the scripted charge->release program. Reported via
         # info['injected_action'] so the algorithm stores the injected action (not the sampled one).
@@ -854,6 +883,14 @@ class SFWrapper(gym.Wrapper):
         else:
             self._prev_p1_special = False
             self._prev_p2_special = False
+
+        # Charge-hold reward: credit the ego for building a charge, CAPPED at a full charge (so it is not
+        # rewarded for holding forever). The larger fire bonus makes charge->fire beat charge-farming.
+        if self.charge_bonus_coef > 0.0 and 0 < self._charge_this_step <= self._charge_threshold:
+            if self._ego_seat_idx == 0:
+                custom_reward += self.charge_bonus_coef
+            else:
+                custom_reward_inverse += self.charge_bonus_coef
 
         rs = getattr(self, 'reward_scale', 0.001)
         if self.side == 'left':

@@ -108,6 +108,31 @@ class AnnealInjectCallback(BaseCallback):
         return True
 
 
+class AnnealChargeBonusCallback(BaseCallback):
+    """Charge-hold curriculum: reward the ego for BUILDING a charge (holding its charge direction),
+    annealed to 0 by global num_timesteps. Teaches the charge prerequisite that reward-on-fire alone
+    couldn't; pushed to the live env via env_method('set_charge_bonus_coef')."""
+
+    def __init__(self, init_coef: float, anneal_steps: int, verbose: int = 0):
+        super().__init__(verbose)
+        self.init_coef = float(init_coef)
+        self.anneal_steps = int(anneal_steps)
+
+    def _current_coef(self) -> float:
+        if self.anneal_steps <= 0:
+            return 0.0
+        return self.init_coef * max(0.0, 1.0 - self.model.num_timesteps / self.anneal_steps)
+
+    def _on_rollout_start(self) -> None:
+        try:
+            self.model.env.env_method("set_charge_bonus_coef", self._current_coef())
+        except Exception:
+            pass
+
+    def _on_step(self) -> bool:
+        return True
+
+
 class IPPO(PPO):
 
     def __init__(

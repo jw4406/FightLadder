@@ -12,7 +12,7 @@ from stable_baselines3.common.type_aliases import MaybeCallback
 from utils import find_character_name
 
 from .const import *
-from .algorithms import LeaguePPO, AnnealSpecialBonusCallback, AnnealInjectCallback
+from .algorithms import LeaguePPO, AnnealSpecialBonusCallback, AnnealInjectCallback, AnnealChargeBonusCallback
 from .nash import NashEquilibriumECOSSolver
 
 
@@ -1167,6 +1167,10 @@ class Learner:
             if _ip > 0.0:
                 _cbs.append(AnnealInjectCallback(
                     init_prob=_ip, anneal_steps=int(getattr(self.player.args, "inject_anneal_steps", 0) or 0)))
+            _cb = float(getattr(self.player.args, "charge_bonus", 0.0) or 0.0)
+            if _cb > 0.0:
+                _cbs.append(AnnealChargeBonusCallback(
+                    init_coef=_cb, anneal_steps=int(getattr(self.player.args, "charge_bonus_anneal_steps", 0) or 0)))
             if len(_cbs) == 1:
                 callback = _cbs[0]
             elif len(_cbs) > 1:

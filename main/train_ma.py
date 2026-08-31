@@ -340,6 +340,8 @@ def main():
     parser.add_argument('--special-bonus-anneal-steps', type=int, default=1500000, help='Global timesteps over which --special-bonus decays linearly to 0 (then off). Only active when --special-bonus>0.')
     parser.add_argument('--inject-prob', type=float, default=0.0, help='Demonstration injection: prob of forcing the charge ego through a scripted charge->release (teaches the charge prerequisite). 0=off. Annealed over --inject-anneal-steps.')
     parser.add_argument('--inject-anneal-steps', type=int, default=1500000, help='Global timesteps over which --inject-prob decays linearly to 0 (then off). Only active when --inject-prob>0.')
+    parser.add_argument('--charge-bonus', type=float, default=0.0, help='Charge-hold reward (pre-scale) per step the charge ego HOLDS its charge direction, capped at a full charge. Teaches the charge prerequisite. 0=off. Annealed over --charge-bonus-anneal-steps.')
+    parser.add_argument('--charge-bonus-anneal-steps', type=int, default=1500000, help='Global timesteps over which --charge-bonus decays linearly to 0 (then off). Only active when --charge-bonus>0.')
     parser.add_argument('--seed', type=int, help='Seed', default=0)
     # parser.add_argument('--update-left', type=int, help='Update left policy', default=1)
     # parser.add_argument('--update-right', type=int, help='Update right policy', default=1)
