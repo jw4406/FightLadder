@@ -24,6 +24,7 @@ import itertools
 from common.utils import linear_schedule, SubprocVecEnv2P, VecTransposeImage2P, reset_child_params
 from common.game import get_next_level
 from common.algorithms import IPPO, MAGICS_PPO, RARL_PPO, TSS_PPO, Specialized_Agent, Specialized_Agent_IPPO, eepy
+from common.algorithms import AnnealSpecialBonusCallback, AnnealInjectCallback
 from common.justin.spar import Single_SPAR
 from common.justin.Generalist_SPAR import Generalist_SPAR
 from common.justin.derivative_free_spar import Derivative_Free_SPAR
@@ -1157,6 +1158,23 @@ def main(args):
     )
     video_callback = CreateVideoCallback(save_path=args.save_dir, save_freq=checkpoint_interval)
 
+    # Special-move reward curriculum: applied in the shared SFWrapper, so it works for SPAR/IPPO too;
+    # the callback just anneals the coef from num_timesteps and pushes it via env_method.
+    special_callbacks = []
+    _sb = float(getattr(args, "special_bonus", 0.0) or 0.0)
+    if _sb > 0.0:
+        special_callbacks.append(AnnealSpecialBonusCallback(
+            init_coef=_sb, anneal_steps=int(getattr(args, "special_bonus_anneal_steps", 0) or 0)))
+    # LOUD GUARD: demonstration injection needs the buffer-storage inside SPAR's OWN collect_rollouts
+    # (CleanDerivativeFreeSPAR/SPARIPPO) which is NOT ported yet. Without it, injection would distort
+    # play without teaching (sticky-like). Refuse it here rather than silently no-op.
+    if float(getattr(args, "inject_prob", 0.0) or 0.0) > 0.0:
+        raise ValueError(
+            "--inject-prob is not yet functional for SPAR/IPPO: demonstration injection requires the "
+            "buffer-storage in CleanDerivativeFreeSPAR/SPARIPPO.collect_rollouts (Phase-2 port, pending "
+            "confirmation the approach works on the League). Use train_ma.py for injection, or set "
+            "--inject-prob 0. The reward curriculum (--special-bonus) DOES work here.")
+
     if (FINETUNE is True) or (EVAL is True):
         finetune_model = finetune_model_generator(args.model_file, reinit_adversary=(args.reinit_adversary == 'True'), lr_schedule=lr_schedule,
                                                   other_lr_schedule=other_lr_schedule,
@@ -1200,7 +1218,7 @@ def main(args):
         if args.async_update:
             model.async_learn(
                 total_timesteps=args.total_steps,
-                callback=[checkpoint_callback],
+                callback=[checkpoint_callback] + special_callbacks,
                 fsp=args.fsp,
                 fsp_threshold=args.fsp_threshold,
             )
@@ -1278,7 +1296,7 @@ def main(args):
             model.learn(
                 total_timesteps=args.total_timesteps,
                 num_perturbs = args.num_perturbs,
-                callback=[checkpoint_callback, file_queue_callback, video_callback], update_ego=update_ego, update_adversary=update_adversary, run_ego_forward=True, run_adv_forward=True,
+                callback=[checkpoint_callback, file_queue_callback, video_callback] + special_callbacks, update_ego=update_ego, update_adversary=update_adversary, run_ego_forward=True, run_adv_forward=True,
                 zero_ego_action=zero_ego_action, zero_adv_action=zero_adv_action, random_ego_action=random_ego_action, random_adv_action=random_adv_action
             )
             #model.learn(total_timesteps=args.total_steps, callback=None)
@@ -1569,6 +1587,10 @@ if __name__ == "__main__":
                         help="multiplier on every reward. 0.001 = historical (inert). "
                              "Sets the magnitude the value optimizer sees; 1.0 restores "
                              "Adam's adaptive regime for the value head (sqrt(v) >> eps).")
+    parser.add_argument('--special-bonus', type=float, default=0.0, help='Curriculum reward bonus (pre-scale) when a player fires a special (rising-edge). 0=off. Annealed over --special-bonus-anneal-steps. Works for SPAR/IPPO (shared wrapper).')
+    parser.add_argument('--special-bonus-anneal-steps', type=int, default=1500000, help='Global timesteps over which --special-bonus decays to 0 (then off).')
+    parser.add_argument('--inject-prob', type=float, default=0.0, help='Demonstration injection prob. NOT yet functional for SPAR/IPPO (needs the Phase-2 collect_rollouts port); raises if >0 here. Use train_ma.py for injection.')
+    parser.add_argument('--inject-anneal-steps', type=int, default=1500000, help='Anneal window for --inject-prob (unused until the SPAR/IPPO injection port).')
     parser.add_argument('--aggresive_coeff', type=float, default=1.0,
                         help="weight on damage DEALT vs TAKEN. 1.0 = zero-sum (default). "
                              "The paper uses 3 to incentivise combat, which makes the "

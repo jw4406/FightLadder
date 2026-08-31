@@ -338,6 +338,8 @@ def main():
     parser.add_argument('--sticky-prob', type=float, default=0.0, help='Sticky-action exploration prob (per-player repeat-previous; 0=off). Training only; payoff-eval envs are forced to 0.')
     parser.add_argument('--special-bonus', type=float, default=0.0, help='Curriculum reward bonus (pre-scale) added when a player fires a special (status hi-byte 0x0C), rising-edge. 0=off. Annealed to 0 over --special-bonus-anneal-steps.')
     parser.add_argument('--special-bonus-anneal-steps', type=int, default=1500000, help='Global timesteps over which --special-bonus decays linearly to 0 (then off). Only active when --special-bonus>0.')
+    parser.add_argument('--inject-prob', type=float, default=0.0, help='Demonstration injection: prob of forcing the charge ego through a scripted charge->release (teaches the charge prerequisite). 0=off. Annealed over --inject-anneal-steps.')
+    parser.add_argument('--inject-anneal-steps', type=int, default=1500000, help='Global timesteps over which --inject-prob decays linearly to 0 (then off). Only active when --inject-prob>0.')
     parser.add_argument('--seed', type=int, help='Seed', default=0)
     # parser.add_argument('--update-left', type=int, help='Update left policy', default=1)
     # parser.add_argument('--update-right', type=int, help='Update right policy', default=1)

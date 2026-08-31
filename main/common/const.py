@@ -98,6 +98,33 @@ def build_sf_combos(num_step_frames=8, ego_char=None):
     return [MACRO_DEFS[n](num_step_frames) for n in names]
 
 
+def injection_program(char, seat, n_dir, n_att, charge_steps=16):
+    """Scripted charge->release program (list of FACTORED action indices) that fires one of `char`'s
+    CHARGE specials from `seat` ('left' faces right, 'right' faces left). Used for demonstration-guided
+    exploration so a charge policy can EXPERIENCE a fire. Returns None if the char has no charge special
+    (motion/mash/grab chars don't need it). Charge dir + release variant are seat/facing-aware.
+      down-back = down-LEFT (dir 7) for a left seat, down-RIGHT (dir 8) for a right seat;
+      release uses the '_r' macro for a left seat, '_l' for a right seat (forward = toward opponent)."""
+    moveset = _MOVESETS_LC.get(str(char).lower())
+    if not moveset:
+        return None
+    def fac(d, a=0): return d * n_att + a
+    combo0 = n_dir * n_att
+    fwd = next((i for i, m in enumerate(moveset) if m.startswith("chg_fwd")), None)
+    dwn = next((i for i, m in enumerate(moveset) if m.startswith("chg_dwn")), None)
+    if fwd is not None:
+        base = moveset[fwd].rsplit("_", 1)[0]                 # e.g. 'chg_fwd_p'
+        want = base + ("_r" if seat == "left" else "_l")
+        rel_idx = moveset.index(want) if want in moveset else fwd
+        charge = fac(7 if seat == "left" else 8, 0)           # down-back
+    elif dwn is not None:
+        rel_idx = dwn
+        charge = fac(2, 0)                                    # down (vertical release, seat-agnostic)
+    else:
+        return None                                          # only mash/grab -> no charge injection
+    return [charge] * int(charge_steps) + [combo0 + rel_idx]
+
+
 def chars_from_state_name(state):
     """Parse (left_char, right_char), lowercased, from a retro state string or path.
       'two_player/blanka_left/Champion.Level1.BlankaVsRyu.2Player.state' -> ('blanka', 'ryu')

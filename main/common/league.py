@@ -12,7 +12,7 @@ from stable_baselines3.common.type_aliases import MaybeCallback
 from utils import find_character_name
 
 from .const import *
-from .algorithms import LeaguePPO, AnnealSpecialBonusCallback
+from .algorithms import LeaguePPO, AnnealSpecialBonusCallback, AnnealInjectCallback
 from .nash import NashEquilibriumECOSSolver
 
 
@@ -1155,12 +1155,22 @@ class Learner:
                             }
             return kwargs
 
-        # Curriculum special-move bonus: anneal special use in early, then off. Learners only
-        # (payoff eval uses win/loss outcomes, not the shaped reward, so balance stays clean).
+        # Curriculum special-move bonus + demonstration injection: anneal special use in early, then off.
+        # Learners only (payoff eval uses win/loss outcomes, not the shaped reward, so balance stays clean).
         if callback is None:
+            _cbs = []
             _sb = float(getattr(self.player.args, "special_bonus", 0.0) or 0.0)
             if _sb > 0.0:
-                _anneal = int(getattr(self.player.args, "special_bonus_anneal_steps", 0) or 0)
-                callback = AnnealSpecialBonusCallback(init_coef=_sb, anneal_steps=_anneal)
+                _cbs.append(AnnealSpecialBonusCallback(
+                    init_coef=_sb, anneal_steps=int(getattr(self.player.args, "special_bonus_anneal_steps", 0) or 0)))
+            _ip = float(getattr(self.player.args, "inject_prob", 0.0) or 0.0)
+            if _ip > 0.0:
+                _cbs.append(AnnealInjectCallback(
+                    init_prob=_ip, anneal_steps=int(getattr(self.player.args, "inject_anneal_steps", 0) or 0)))
+            if len(_cbs) == 1:
+                callback = _cbs[0]
+            elif len(_cbs) > 1:
+                from stable_baselines3.common.callbacks import CallbackList
+                callback = CallbackList(_cbs)
 
         self.player.agent.learn(total_timesteps, rollout_opponent_num, callback, log_interval, tb_log_name, reset_num_timesteps, progress_bar, get_kwargs)

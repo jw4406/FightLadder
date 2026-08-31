@@ -82,6 +82,32 @@ class AnnealSpecialBonusCallback(BaseCallback):
         return True
 
 
+class AnnealInjectCallback(BaseCallback):
+    """Demonstration-guided exploration: force the learner through a scripted charge->release with
+    probability init_prob early, annealed to 0 by global num_timesteps (coef = init*max(0,1-t/anneal)),
+    pushed to the live env via env_method('set_inject_prob'). Teaches the charge prerequisite the reward
+    curriculum can't; anneals to 0 to restore clean self-play."""
+
+    def __init__(self, init_prob: float, anneal_steps: int, verbose: int = 0):
+        super().__init__(verbose)
+        self.init_prob = float(init_prob)
+        self.anneal_steps = int(anneal_steps)
+
+    def _current_prob(self) -> float:
+        if self.anneal_steps <= 0:
+            return 0.0
+        return self.init_prob * max(0.0, 1.0 - self.model.num_timesteps / self.anneal_steps)
+
+    def _on_rollout_start(self) -> None:
+        try:
+            self.model.env.env_method("set_inject_prob", self._current_prob())
+        except Exception:
+            pass
+
+    def _on_step(self) -> bool:
+        return True
+
+
 class IPPO(PPO):
 
     def __init__(
@@ -382,6 +408,24 @@ class IPPO(PPO):
                                           self.action_space.high)
 
             new_obs, rewards, rewards_other, dones, infos = env.step(clipped_actions)
+
+            # Demonstration injection: where the wrapper forced a scripted charge->release on the LEARNER
+            # seat (info['injected_action']>=0), store THAT action (with its log-prob/value under the
+            # current policy) instead of the sampled one, so PPO imitates it. The reward curriculum gives
+            # the resulting fire positive advantage -> the policy learns to charge+fire. Inert when off.
+            _inj = np.array([info.get("injected_action", -1) for info in infos])
+            if (_inj >= 0).any():
+                _pol = rollout_policy if self.update_left else rollout_policy_other
+                _act = (actions if self.update_left else actions_other).copy()
+                _mask = _inj >= 0
+                _act[_mask, 0] = _inj[_mask]
+                with th.no_grad():
+                    _v, _lp, _ = _pol.evaluate_actions(obs_as_tensor(self._last_obs, self.device),
+                                                       th.as_tensor(_act, device=self.device))
+                if self.update_left:
+                    actions, values, log_probs = _act, _v, _lp
+                else:
+                    actions_other, values_other, log_probs_other = _act, _v, _lp
 
             self.num_timesteps += env.num_envs
 
@@ -846,6 +890,24 @@ class BRIPPO(IPPO):
                                           self.action_space.high)
 
             new_obs, rewards, rewards_other, dones, infos = env.step(clipped_actions)
+
+            # Demonstration injection: where the wrapper forced a scripted charge->release on the LEARNER
+            # seat (info['injected_action']>=0), store THAT action (with its log-prob/value under the
+            # current policy) instead of the sampled one, so PPO imitates it. The reward curriculum gives
+            # the resulting fire positive advantage -> the policy learns to charge+fire. Inert when off.
+            _inj = np.array([info.get("injected_action", -1) for info in infos])
+            if (_inj >= 0).any():
+                _pol = rollout_policy if self.update_left else rollout_policy_other
+                _act = (actions if self.update_left else actions_other).copy()
+                _mask = _inj >= 0
+                _act[_mask, 0] = _inj[_mask]
+                with th.no_grad():
+                    _v, _lp, _ = _pol.evaluate_actions(obs_as_tensor(self._last_obs, self.device),
+                                                       th.as_tensor(_act, device=self.device))
+                if self.update_left:
+                    actions, values, log_probs = _act, _v, _lp
+                else:
+                    actions_other, values_other, log_probs_other = _act, _v, _lp
 
             self.num_timesteps += env.num_envs
 

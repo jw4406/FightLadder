@@ -217,6 +217,18 @@ class SFWrapper(gym.Wrapper):
         self.special_bonus_coef = 0.0
         self._prev_p1_special = False
         self._prev_p2_special = False
+        # Demonstration-guided injection: with prob inject_prob, force the EGO seat through a scripted
+        # charge->release so a charge policy EXPERIENCES a fire; the executed action is reported via
+        # info['injected_action'] so the algorithm can store it in the buffer (imitation). Annealed to 0.
+        self.inject_prob = 0.0
+        self._inject_pos = -1                # -1 = not injecting; else index into the program
+        self._injected_action = None
+        _ego_is_right = (ego_char is not None and right_char is not None
+                         and str(ego_char).lower() == str(right_char).lower())
+        self._ego_seat_idx = 1 if _ego_is_right else 0
+        self._inject_program = injection_program(
+            ego_char, "right" if _ego_is_right else "left",
+            len(DIRECTIONS_BUTTONS), len(ATTACKS_BUTTONS)) if ego_char is not None else None
 
     def save_state_to_file(self, name="test.state"):
         content = self.env.em.get_state()
@@ -456,6 +468,8 @@ class SFWrapper(gym.Wrapper):
         self._prev_raw_action = None   # don't carry a sticky hold across episodes
         self._prev_p1_special = False  # reset special rising-edge tracking across episodes
         self._prev_p2_special = False
+        self._inject_pos = -1          # don't carry a half-finished injection across episodes
+        self._injected_action = None
 
         self.prev_agent_hp = self.full_hp
         self.prev_enemy_hp = self.full_hp
@@ -570,6 +584,10 @@ class SFWrapper(gym.Wrapper):
         AnnealSpecialBonusCallback from the agent's global num_timesteps."""
         self.special_bonus_coef = float(coef)
 
+    def set_inject_prob(self, prob):
+        """Runtime setter for the annealed charge->release injection probability (0 = off)."""
+        self.inject_prob = float(prob)
+
     def step(self, action):
         # Sticky-action exploration: with prob sticky_prob, per player, repeat the previously
         # EXECUTED raw (pre-transform) action. The rollout buffer stores the SAMPLED action, so PPO
@@ -583,6 +601,21 @@ class SFWrapper(gym.Wrapper):
                         a[i] = self._prev_raw_action[i]
                 action = a
             self._prev_raw_action = np.array(action, copy=True)
+        # Demonstration injection (after sticky, before transform): override the EGO seat's raw factored
+        # action with the current step of the scripted charge->release program. Reported via
+        # info['injected_action'] so the algorithm stores the injected action (not the sampled one).
+        self._injected_action = None
+        if (self._inject_program is not None and self.inject_prob > 0.0
+                and self.action_transformer is not None and len(np.atleast_1d(action)) > self._ego_seat_idx):
+            if self._inject_pos < 0 and np.random.random() < self.inject_prob:
+                self._inject_pos = 0                     # start a fresh charge->release
+            if self._inject_pos >= 0:
+                action = np.array(action, copy=True)
+                action[self._ego_seat_idx] = self._inject_program[self._inject_pos]
+                self._injected_action = int(self._inject_program[self._inject_pos])
+                self._inject_pos += 1
+                if self._inject_pos >= len(self._inject_program):
+                    self._inject_pos = -1                # program done
         if self.action_transformer is not None:
             action = self.action_transformer(action)
         if self.side == 'both':
@@ -790,6 +823,9 @@ class SFWrapper(gym.Wrapper):
         info['level'] = self.level
         info['match'] = 'start' if self.match_status == START_STATUS else 'end'
         info['round'] = 'start' if self.round_status == START_STATUS else 'end'
+        # -1 = no injection this step; else the FACTORED action the ego seat was forced to execute
+        # (the algorithm stores this in the buffer so the policy imitates the charge->release).
+        info['injected_action'] = -1 if self._injected_action is None else self._injected_action
         if custom_done:
             info['outcome'] = 'win' if (agent_hp > enemy_hp) else ('lose' if (agent_hp < enemy_hp) else 'draw')
 
