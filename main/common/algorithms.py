@@ -54,6 +54,34 @@ MAGICS_PPO = TypeVar("MAGICS_PPO", bound="MAGICS_PPO")
 SelfMultiHeadLeaguePPO = TypeVar("SelfMultiHeadLeaguePPO", bound="MultiHeadLeaguePPO")
 
 
+class AnnealSpecialBonusCallback(BaseCallback):
+    """Curriculum: encourage special-move use early, then anneal the encouragement away so the policy
+    decides for itself. At each rollout start, set every env's special-bonus coefficient from the
+    agent's GLOBAL num_timesteps (which survives opponent-switch env rebuilds, unlike an env-local
+    counter): coef = init_coef * max(0, 1 - num_timesteps / anneal_steps), linear to 0 then off."""
+
+    def __init__(self, init_coef: float, anneal_steps: int, verbose: int = 0):
+        super().__init__(verbose)
+        self.init_coef = float(init_coef)
+        self.anneal_steps = int(anneal_steps)
+
+    def _current_coef(self) -> float:
+        if self.anneal_steps <= 0:
+            return 0.0
+        frac = max(0.0, 1.0 - self.model.num_timesteps / self.anneal_steps)
+        return self.init_coef * frac
+
+    def _on_rollout_start(self) -> None:
+        # self.model.env is the LIVE env (set_opponent_character replaces it on switches).
+        try:
+            self.model.env.env_method("set_special_bonus_coef", self._current_coef())
+        except Exception:
+            pass
+
+    def _on_step(self) -> bool:
+        return True
+
+
 class IPPO(PPO):
 
     def __init__(

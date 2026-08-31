@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ippo
 from common.retro_wrappers import SFWrapper
 
-EXPECTED_CHECKS = 22
+EXPECTED_CHECKS = 25
 NC = 0
 
 
@@ -126,6 +126,33 @@ env.close(); del env, sf
 env, sf = build()                                        # ST = RyuVsRyu
 chk("same-char state -> both tables shoto (6/6)",
     len(sf.sf_combos_p1) == 6 and len(sf.sf_combos_p2) == 6)
+env.close(); del env, sf
+
+# --- curriculum special-move bonus: runtime setter + rising-edge reward on a real fire ---
+# reward_scale=1.0 so the pre-scale bonus lands 1:1 in the returned reward.
+env, sf = build(state=ST_RG, reward_scale=1.0)
+sf.set_special_bonus_coef(0.0)
+chk("set_special_bonus_coef reaches SFWrapper (0)", sf.special_bonus_coef == 0.0)
+sf.set_special_bonus_coef(100.0)
+chk("set_special_bonus_coef reaches SFWrapper (100)", sf.special_bonus_coef == 100.0)
+
+def ryu_hadouken_reward_sum(coef):
+    sf.set_special_bonus_coef(coef)
+    env.reset()
+    for _ in range(50):
+        env.step(np.array([0, 0]))                    # settle (deterministic given state+actions)
+    for _ in range(20):
+        env.step(np.array([28, 0]))                   # walk P1 right (A(RIGHT,0)=4*7) toward P2 so it connects
+    tot = 0.0
+    out = env.step(np.array([63, 0])); tot += float(out[1])   # P1=Ryu combo 63 (hadouken), P2 neutral
+    for _ in range(12):
+        out = env.step(np.array([0, 0])); tot += float(out[1])
+    return tot
+
+r0 = ryu_hadouken_reward_sum(0.0)
+r100 = ryu_hadouken_reward_sum(100.0)
+# identical actions/state -> damage rewards cancel; the only diff is the bonus. One fire = one edge = +100.
+chk("special fire adds exactly ONE rising-edge bonus (+100)", abs((r100 - r0) - 100.0) < 1e-6)
 env.close(); del env, sf
 
 if NC != EXPECTED_CHECKS:

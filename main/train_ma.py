@@ -336,6 +336,8 @@ def main():
     parser.add_argument('--transform-action', action='store_true', help='Transform action space to MultiDiscrete')
     parser.add_argument('--reward-scale', type=float, default=0.001, help='Env reward scale applied in SFWrapper (default 0.001; use 1.0 to keep the value head in Adam\'s adaptive regime)')
     parser.add_argument('--sticky-prob', type=float, default=0.0, help='Sticky-action exploration prob (per-player repeat-previous; 0=off). Training only; payoff-eval envs are forced to 0.')
+    parser.add_argument('--special-bonus', type=float, default=0.0, help='Curriculum reward bonus (pre-scale) added when a player fires a special (status hi-byte 0x0C), rising-edge. 0=off. Annealed to 0 over --special-bonus-anneal-steps.')
+    parser.add_argument('--special-bonus-anneal-steps', type=int, default=1500000, help='Global timesteps over which --special-bonus decays linearly to 0 (then off). Only active when --special-bonus>0.')
     parser.add_argument('--seed', type=int, help='Seed', default=0)
     # parser.add_argument('--update-left', type=int, help='Update left policy', default=1)
     # parser.add_argument('--update-right', type=int, help='Update right policy', default=1)

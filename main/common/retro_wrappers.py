@@ -212,6 +212,11 @@ class SFWrapper(gym.Wrapper):
         # 0.0 = off (default). Payoff-eval envs are forced to 0 (see league.construct_agent).
         self.sticky_prob = float(sticky_prob)
         self._prev_raw_action = None
+        # Curriculum special-move reward bonus: added to the firing seat's reward on the RISING EDGE of a
+        # special (status high byte 0x0C). 0.0 = off (default); the training callback anneals it to 0.
+        self.special_bonus_coef = 0.0
+        self._prev_p1_special = False
+        self._prev_p2_special = False
 
     def save_state_to_file(self, name="test.state"):
         content = self.env.em.get_state()
@@ -449,6 +454,8 @@ class SFWrapper(gym.Wrapper):
     def reset(self):
         obs = self.env.reset()
         self._prev_raw_action = None   # don't carry a sticky hold across episodes
+        self._prev_p1_special = False  # reset special rising-edge tracking across episodes
+        self._prev_p2_special = False
 
         self.prev_agent_hp = self.full_hp
         self.prev_enemy_hp = self.full_hp
@@ -558,6 +565,11 @@ class SFWrapper(gym.Wrapper):
         """Runtime setter (kept for flexibility; eval gating is done at construction)."""
         self.sticky_prob = float(sticky_prob)
 
+    def set_special_bonus_coef(self, coef):
+        """Runtime setter for the annealed special-move reward bonus (0 = off). Driven by
+        AnnealSpecialBonusCallback from the agent's global num_timesteps."""
+        self.special_bonus_coef = float(coef)
+
     def step(self, action):
         # Sticky-action exploration: with prob sticky_prob, per player, repeat the previously
         # EXECUTED raw (pre-transform) action. The rollout buffer stores the SAMPLED action, so PPO
@@ -635,7 +647,7 @@ class SFWrapper(gym.Wrapper):
                 action_seqs.append(action_seq)
             action_seq = [np.hstack([action_1, action_2]) for action_1, action_2 in zip(action_seqs[0], action_seqs[1])]
         
-        for i in range(self.num_step_frames):            
+        for i in range(self.num_step_frames):
             # Keep the button pressed for (num_step_frames - 1) frames.
             obs, _reward, _done, info = self.env.step(action_seq[i])
             if self.ram_tap is not None:
@@ -786,6 +798,27 @@ class SFWrapper(gym.Wrapper):
         # except through eps, and at 0.001 the value grads' second moment sqrt(v)
         # falls to ~1e-9 (below eps=1e-8), knocking the value head out of Adam's
         # adaptive regime. Unscaling (1.0) restores it. Measured, not assumed.
+        # Curriculum special-move bonus: reward the RISING EDGE of a special once (not every animation
+        # frame), added pre-scale so it rides the same reward_scale as damage. Non-zero-sum by design;
+        # the training callback anneals special_bonus_coef to 0, restoring the true zero-sum game.
+        # Detection uses the VALIDATED raw-RAM special-active flag (see special_detection memory):
+        # get_ram()[32770]==12 (P1/agent), get_ram()[33410]==12 (P2/enemy). Sustained across the move,
+        # so a once-per-step read at reward time catches it. NOTE: info['agent_status'] is byte-swapped
+        # vs get_ram (the special byte is the LOW byte there) -- read get_ram to stay consistent.
+        if self.special_bonus_coef > 0.0:
+            _ram = self.unwrapped.get_ram()
+            p1_fire_step = int(_ram[32770]) == 12
+            p2_fire_step = int(_ram[33410]) == 12
+            if p1_fire_step and not self._prev_p1_special:
+                custom_reward += self.special_bonus_coef
+            if p2_fire_step and not self._prev_p2_special:
+                custom_reward_inverse += self.special_bonus_coef
+            self._prev_p1_special = p1_fire_step
+            self._prev_p2_special = p2_fire_step
+        else:
+            self._prev_p1_special = False
+            self._prev_p2_special = False
+
         rs = getattr(self, 'reward_scale', 0.001)
         if self.side == 'left':
             return self._get_obs(obs), rs * custom_reward, custom_done, info

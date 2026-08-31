@@ -12,7 +12,7 @@ from stable_baselines3.common.type_aliases import MaybeCallback
 from utils import find_character_name
 
 from .const import *
-from .algorithms import LeaguePPO
+from .algorithms import LeaguePPO, AnnealSpecialBonusCallback
 from .nash import NashEquilibriumECOSSolver
 
 
@@ -1153,6 +1153,14 @@ class Learner:
                             "coordinate_fn": partial(self.player.send_outcome, opponent.name),
                             "sync_fn": self.player.sync,
                             }
-            return kwargs        
-        
+            return kwargs
+
+        # Curriculum special-move bonus: anneal special use in early, then off. Learners only
+        # (payoff eval uses win/loss outcomes, not the shaped reward, so balance stays clean).
+        if callback is None:
+            _sb = float(getattr(self.player.args, "special_bonus", 0.0) or 0.0)
+            if _sb > 0.0:
+                _anneal = int(getattr(self.player.args, "special_bonus_anneal_steps", 0) or 0)
+                callback = AnnealSpecialBonusCallback(init_coef=_sb, anneal_steps=_anneal)
+
         self.player.agent.learn(total_timesteps, rollout_opponent_num, callback, log_interval, tb_log_name, reset_num_timesteps, progress_bar, get_kwargs)
