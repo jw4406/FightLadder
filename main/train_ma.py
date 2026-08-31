@@ -221,7 +221,7 @@ def _right_char_from_matchup_key(matchup_key: str) -> str:
     return parts[1] if len(parts) == 2 else _sanitize_matchup_token(matchup_key)
 
 
-def make_env(game, state_name: str, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, seed=0, reward_scale=0.001, sticky_prob=0.0, ego_char=None, left_char=None, right_char=None):
+def make_env(game, state_name: str, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, seed=0, reward_scale=0.001, sticky_prob=0.0, ego_char=None, left_char=None, right_char=None, charge_obs=False):
     def _init():
         players = 2
         env = retro.make(
@@ -231,7 +231,7 @@ def make_env(game, state_name: str, side, reset_type, rendering, init_level=1, s
             obs_type=retro.Observations.IMAGE,
             players=players
         )
-        env = SFWrapper(env, side=side, rendering=rendering, reset_type=reset_type, init_level=init_level, state_dir=state_dir, verbose=verbose, enable_combo=enable_combo, null_combo=null_combo, transform_action=transform_action, reward_scale=reward_scale, sticky_prob=sticky_prob, ego_char=ego_char, left_char=left_char, right_char=right_char)
+        env = SFWrapper(env, side=side, rendering=rendering, reset_type=reset_type, init_level=init_level, state_dir=state_dir, verbose=verbose, enable_combo=enable_combo, null_combo=null_combo, transform_action=transform_action, reward_scale=reward_scale, sticky_prob=sticky_prob, ego_char=ego_char, left_char=left_char, right_char=right_char, charge_obs=charge_obs)
         env = Monitor2P(env)
         env.seed(seed)
         return env
@@ -290,7 +290,7 @@ def constructor(args, side, log_name=None, single_env=False, opponent: str="ryu"
     _left_char, _right_char = _extract_chars_from_state_name(state_name) if state_name else ("left", "right")
     if ego_char is None:
         ego_char = _left_char if side == "left" else _right_char
-    env = [make_env(sf_game, state_name=state_name, side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=i, reward_scale=getattr(args, "reward_scale", 0.001), sticky_prob=(getattr(args, "sticky_prob", 0.0) if sticky_prob is None else sticky_prob), ego_char=ego_char, left_char=_left_char, right_char=_right_char) for i in range(num_env)]
+    env = [make_env(sf_game, state_name=state_name, side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=i, reward_scale=getattr(args, "reward_scale", 0.001), sticky_prob=(getattr(args, "sticky_prob", 0.0) if sticky_prob is None else sticky_prob), ego_char=ego_char, left_char=_left_char, right_char=_right_char, charge_obs=getattr(args, "charge_obs", False)) for i in range(num_env)]
     env = VecTransposeImage2P(SubprocVecEnv2P(env))
     league_ppo = LeaguePPO(
         side,
@@ -342,6 +342,7 @@ def main():
     parser.add_argument('--inject-anneal-steps', type=int, default=1500000, help='Global timesteps over which --inject-prob decays linearly to 0 (then off). Only active when --inject-prob>0.')
     parser.add_argument('--charge-bonus', type=float, default=0.0, help='Charge-hold reward (pre-scale) per step the charge ego HOLDS its charge direction, capped at a full charge. Teaches the charge prerequisite. 0=off. Annealed over --charge-bonus-anneal-steps.')
     parser.add_argument('--charge-bonus-anneal-steps', type=int, default=1500000, help='Global timesteps over which --charge-bonus decays linearly to 0 (then off). Only active when --charge-bonus>0.')
+    parser.add_argument('--charge-obs', action='store_true', help='OBSERVABILITY fix: paint a charge-progress bar into the image obs so the (near-memoryless) policy can SEE its charge level and time releases. NOT annealed (permanent feature). Off by default.')
     parser.add_argument('--seed', type=int, help='Seed', default=0)
     # parser.add_argument('--update-left', type=int, help='Update left policy', default=1)
     # parser.add_argument('--update-right', type=int, help='Update right policy', default=1)

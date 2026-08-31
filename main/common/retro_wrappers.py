@@ -39,7 +39,7 @@ LBR_SF_ATTRS = (
 
 class SFWrapper(gym.Wrapper):
 
-    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, trade_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reset_close_range=0.0, close_max_steps=40, reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1, sticky_prob=0.0, ego_char=None, left_char=None, right_char=None):
+    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, trade_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reset_close_range=0.0, close_max_steps=40, reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1, sticky_prob=0.0, ego_char=None, left_char=None, right_char=None, charge_obs=False):
         super(SFWrapper, self).__init__(env)
         self.env = FrameStack(env, num_stack=num_stack)
 
@@ -235,6 +235,10 @@ class SFWrapper(gym.Wrapper):
         self.charge_bonus_coef = 0.0
         self._charge_count = 0
         self._charge_this_step = 0
+        # Charge-in-observation (the OBSERVABILITY fix): paint a charge-progress bar into the image so the
+        # near-memoryless vision policy can SEE how long it has charged (obs window ~1.5 steps << 16-step
+        # charge). Opt-in; the charge counter is then tracked every step (not just when the reward is on).
+        self.charge_obs = bool(charge_obs)
         if self._inject_program is not None:
             self._charge_dir = int(self._inject_program[0]) // len(ATTACKS_BUTTONS)   # e.g. down-back / down
             self._charge_threshold = len(self._inject_program) - 1                    # # of charge steps
@@ -461,6 +465,18 @@ class SFWrapper(gym.Wrapper):
             "enable_combo": self.enable_combo,
         }
 
+    def _paint_charge(self, img):
+        """Paint a charge-progress bar (left edge, grows bottom->up) into the image so the near-memoryless
+        vision policy can SEE its charge level. Charge egos only, opt-in via charge_obs. Off -> untouched."""
+        if not self.charge_obs or self._charge_dir is None:
+            return img
+        prog = min(1.0, self._charge_count / max(1, self._charge_threshold))
+        h = int(round(prog * img.shape[0]))
+        img[:, 0:4, :] = 0                                  # clear the 4-px left strip
+        if h > 0:
+            img[img.shape[0] - h:, 0:4, :] = 255            # white bar proportional to charge
+        return img
+
     def _get_obs(self, obs):
         # return np.concatenate([o[::2, ::2, :] for o in obs], axis=-1)
         if isinstance(obs, dict):
@@ -473,7 +489,8 @@ class SFWrapper(gym.Wrapper):
                 'actions': np.squeeze(obs['actions'][::(self.num_step_frames // 2)], axis=-1),
             }
         else:
-            return np.stack([o[::2, ::2, i % 3] for (i, o) in enumerate(obs[::(self.num_step_frames // 2)])], axis=-1)
+            img = np.stack([o[::2, ::2, i % 3] for (i, o) in enumerate(obs[::(self.num_step_frames // 2)])], axis=-1)
+            return self._paint_charge(img)
 
     def reset(self):
         obs = self.env.reset()
@@ -622,7 +639,7 @@ class SFWrapper(gym.Wrapper):
         # Charge-hold tracking: is the ego holding its charge direction this step? (credited in the reward
         # below, capped at a full charge). Uses the effective (post-sticky) action = the policy's choice.
         self._charge_this_step = 0
-        if self._charge_dir is not None and self.charge_bonus_coef > 0.0:
+        if self._charge_dir is not None and (self.charge_bonus_coef > 0.0 or self.charge_obs):
             _a1 = np.atleast_1d(action)
             if len(_a1) > self._ego_seat_idx:
                 _ego_a = int(_a1[self._ego_seat_idx])
