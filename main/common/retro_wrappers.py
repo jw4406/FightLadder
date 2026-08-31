@@ -466,15 +466,18 @@ class SFWrapper(gym.Wrapper):
         }
 
     def _paint_charge(self, img):
-        """Paint a charge-progress bar (left edge, grows bottom->up) into the image so the near-memoryless
-        vision policy can SEE its charge level. Charge egos only, opt-in via charge_obs. Off -> untouched."""
+        """Paint a charge-progress bar into the image so the near-memoryless vision policy can SEE its
+        charge level. WIDE + high-contrast (bottom 10 rows, full-width fill L->R = charge; whole strip
+        white when fully charged) so the CNN can actually read it. Charge egos only, opt-in via charge_obs.
+        Off -> untouched."""
         if not self.charge_obs or self._charge_dir is None:
             return img
         prog = min(1.0, self._charge_count / max(1, self._charge_threshold))
-        h = int(round(prog * img.shape[0]))
-        img[:, 0:4, :] = 0                                  # clear the 4-px left strip
-        if h > 0:
-            img[img.shape[0] - h:, 0:4, :] = 255            # white bar proportional to charge
+        H, W = img.shape[0], img.shape[1]
+        img[H - 10:H, :, :] = 0                             # clear the bottom 10-row strip (black)
+        w = int(round(prog * W))
+        if w > 0:
+            img[H - 10:H, 0:w, :] = 255                     # white fill proportional to charge
         return img
 
     def _get_obs(self, obs):
