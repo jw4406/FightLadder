@@ -1,0 +1,255 @@
+================================================================================
+FIGHTLADDER / SPAR -- CONFOUND-FREE FINDINGS
+Compiled 2026-08-17. Scope: joint-action minimax-Q critic and the scalar value
+function in Street Fighter II self-play (masked Genesis RAM observation).
+
+INCLUSION RULE: a result appears here ONLY if it is policy-free (measured under
+uniform-random play or from enumeration, so no self-play regime can confound it)
+OR it was measured against an explicit control that was itself checked. Results
+that are policy-conditional are labelled with their scope. Anything with a known
+confound, still running, or retracted is in the EXCLUDED list at the bottom.
+
+Notation: EV = explained variance (held-out). gamma_ij(s) = the two-way-ANOVA
+interaction term of the 22x22 joint-action payoff at state s. "policy-free" =
+uniform-random actions, no checkpoint, so self-play dynamics cannot enter.
+================================================================================
+
+
+TIER A -- POLICY-FREE, CONTROLLED, SELF-CHECKED
+--------------------------------------------------------------------------------
+
+A1. THE MASKED RAM OBSERVATION IS ESSENTIALLY MARKOV.
+  Method: one uniform-random rollout; at each of 60 root states, enumerate all
+    484 joint actions via emulator snapshot/restore and hash the successor. 3
+    roots cross-checked against a full recomputation. Policy-free.
+  Result: a single masked RAM frame distinguishes 414.18 of 414.38 achievable
+    distinct successors (99.95%) out of a 441 ceiling (441 = 21^2; actions 0 and
+    9 are byte-identical, an independent correctness check the measurement hit
+    exactly). The image/pixel path distinguishes 0.67% (median 1). Predicting the
+    next masked RAM frame from a 12-frame stack beats a single frame by +0.002 EV
+    (linear, held-out episodes, shuffled control).
+  Why confound-free: policy-free; controlled against full recomputation and a
+    shuffled baseline; the 441 self-check is independent of the claim.
+  Caveat kept: a shallow (k=2-4) stride-1 stack shows a NONLINEAR-only gain
+    (+0.069 EV, MLP, beats its own capacity-matched shuffle) -- real but inside a
+    weak model class. It is sub-step (velocity/animation phase), not history
+    across decisions; stride-8 stacking is provably inert.
+
+A2. THE DENSE REWARD, NOT THE GAME, MAKES gamma ZERO ON ~94% OF STATES.
+  Method: enumerate 1600 policy-free root states x 484 branches, recording raw hp
+    deltas so every reward variant is recomputed offline from the same branches.
+    Offline reconstruction of the shipped reward verified bitwise (err 0.0).
+  Result: the in-fight reward is dense*(D_e - D_a), identically zero when no
+    damage lands -- so on a no-contact state the 484-cell payoff is constant and
+    mu, alpha, beta, gamma are all exactly zero. Healthy self-play makes contact
+    on ~6-8% of states; hence gamma is structurally absent on the rest. This is a
+    property of the reward function, not of Street Fighter.
+  Why confound-free: policy-free enumeration; reconstruction self-checked to 0.
+
+A3. gamma_share IS NOISE-GAMEABLE; NO STATUS-BASED REWARD SHAPING RAISES IT.
+  Method: on the same 1600-state enumeration, sweep three antisymmetric
+    (zero-sum-preserving) reward variants -- counter-hit weight, pressure bonus,
+    "trade" (both-attacking) weight -- and a fitted + a RANDOM double-centred
+    status matrix. Score gamma_share = gamma energy / within-state energy.
+  Result: all three engineered variants REDUCE gamma_share (10.98% baseline ->
+    5.4-9.7%). A RANDOM double-centred antisymmetric matrix (zero information)
+    RAISES it 10.98% -> 35.13%. Held-out R^2 of the true gamma predicted from the
+    (agent_status, enemy_status) pair is -0.0096 (worse than predicting zero).
+  Consequence: gamma_share is not a valid optimisation target -- interaction-
+    shaped noise inflates it. Use HEADROOM (head vs a CONST-matrix baseline) or
+    held-out EV instead. Status-based reward shaping is closed.
+  Why confound-free: policy-free; the random-matrix control is the whole point.
+
+A4. FRAME SKIP SCALES CONTACT AND gamma, BUT NOT gamma STRUCTURE.
+  Method: policy-free enumeration at num_step_frames in {4,8,12,16}, matched
+    seeds and states (Ryu-Ryu + Ryu-Sagat).
+  Result: contact rate is monotone -- 3.5% / 8.5% / 12.2% / 17.0% -- and |gamma|
+    spans 7.4x (0.0054 -> 0.0400). BUT the mean pairwise correlation between
+    different states' gamma matrices stays pinned at ~0.005 across the whole
+    sweep. More interaction ENERGY, no more shared STRUCTURE across states.
+  Mechanism: a step must be long enough to contain a full exchange
+    (startup->active->hit); below ~8 frames a hit rarely lands, so nsf=4 has LESS
+    contact, not more (this reversed the naive prediction).
+  Why confound-free: policy-free, matched seeds/states.
+
+A5. THE COMA COUNTERFACTUAL BASELINE CANNOT HELP (ceiling 1.43%).
+  Method: the counterfactual (COMA) advantage baseline removes the opponent's
+    ANOVA main effect: ego drops beta, adversary drops alpha. Head-free bound
+    from the true beta of the 1600 enumerated matrices vs the measured on-policy
+    advantage std.
+  Result: std(beta) = 0.00169 vs advantage std 0.0141, so the MAX ego variance
+    reduction is (0.00169/0.0141)^2 = 1.43% (adv 1.69%), against a 5% pre-
+    registered gate. Confirmed by fresh-init and 9.6M-warm-start in-training
+    diagnostics, both indistinguishable from a shuffled control, and the trained
+    head's beta estimate does not exceed the one-step value.
+  Interpretation: beta is 41% of WITHIN-STATE action-dependent energy, but
+    within-state action structure is only ~1.4% of total ADVANTAGE variance; the
+    rest is across-state value error and temporal/bootstrap noise.
+  Why confound-free: the head-free bound uses enumerated ground truth, no network.
+
+A6. ADAM epsilon THROTTLES THE VALUE OPTIMISER, VALUE-SPECIFICALLY, AND IT IS NOT
+    A ONE-SIDEDNESS CONFOUND.
+  Method: read the ACTUAL Adam second moment sqrt(v_hat) per parameter directly
+    from the saved value_optimizer state, across 6 checkpoints spanning regimes
+    (balanced, one-sided/collapsed, seat-asymmetric, early, late). Suppression =
+    eps/(sqrt(v_hat)+eps). Baseline = the two POLICY optimisers on the same
+    checkpoint.
+  Result: value-param sqrt(v_hat) is 1e-9 to 1e-7 (straddling eps=1e-8), so the
+    median value update is suppressed 70-90% in trained regimes; the policy
+    optimisers sit at sqrt(v_hat) ~ 2-4e-5 (1000x higher, unaffected). Present in
+    BALANCED play (cdctl 85% of params suppressed >20%) as strongly as one-sided
+    (stk2 97%), and it GROWS with convergence (early 12% -> late 85%+). Mechanism:
+    the x0.001 reward scale shrinks value gradients below eps, knocking the value
+    head out of Adam's scale-invariant regime into SGD-like behaviour.
+  Why confound-free: ground-truth optimiser state, not a gradient proxy;
+    regime-swept (rules out one-sidedness); baselined against the policy heads
+    (rules out "all heads do this").
+  NOT CLAIMED: that this COSTS value EV. Suppression near convergence may be
+    benign. That is unmeasured -- see the reward-scale arms (running).
+
+
+TIER B -- MEASURED WITH CONTROLS, BUT POLICY-CONDITIONAL (scope noted)
+--------------------------------------------------------------------------------
+
+B1. THE INTRINSIC VALUE CEILING IS ~0.59 EV AT gamma 0.94 (not ~0.05).
+  Method: the emulator is deterministic, so all return variance is the two
+    policies' own action sampling. Snapshot each of 640 root states, replay it
+    K=16 times with fresh action draws, and decompose:
+        EV_max = 1 - E_s[Var(G|s)] / Var(G)
+    Self-check: within-root variance (9.66e-5) < between-root variance (1.49e-4),
+    confirming replays return to the same state but sample fresh futures.
+  Result: EV_max = 0.84 (gamma 0.75), 0.69 (0.90), 0.59 (0.94), 0.35 (0.99).
+    ~41% of return variance is within-state at gamma 0.94. A PERFECT value
+    function scores 0.59; the trained head scores ~0.19-0.25 -- a real ~0.34 gap,
+    so the critic IS underperforming (this corrects an earlier "ceiling ~0.05,
+    nothing to fix" reading, which came from a between-vs-within-state bug).
+  Scope: measured on the cdctl 9.6M policy/state-distribution. The METHOD and the
+    self-check are sound; the exact number is that policy's.
+
+B2. RETURN PREDICTABILITY IS AN INVERTED-U IN gamma, PEAKING AT 0.75-0.9.
+  Method (two independent): (i) a ridge on the frozen critic features vs realised
+    returns, gamma sweep, episode-level splits; (ii) the EV_max ceiling of B1.
+  Result: both agree on the shape -- predictability peaks around gamma 0.75-0.9
+    and falls toward 0.99 (ridge EV ~0.074 at 0.9 vs ~0.023 at 0.99; ceiling 0.69
+    at 0.9 vs 0.35 at 0.99). The run's gamma of 0.94 sits just past the peak.
+  Scope: ~30% measurement noise on the ridge absolute values; the SHAPE is
+    corroborated by two methods, the exact peak location is not pinned (re-measure
+    at >=500 episodes before committing a value).
+
+B3. VALUE-HEAD CAPACITY AND ARCHITECTURE DO NOT HELP (joint head).
+  Method: fit the joint head's per-state interaction map W(s) at varying capacity.
+  Result: Linear (8,208 params) 57.99%; MLP-512 (270,864 params) 57.15%; trunk
+    unfrozen 60.72%; free per-state matrix proxy 70.19%. 33x the parameters buys
+    nothing; unfreezing the trunk buys +2.7 points at the cost of the Phase-0
+    isolation. The residual is a generalisation gap, not a capacity bottleneck.
+  Scope: this is the JOINT head's W(s) map. The SCALAR value head's capacity is
+    untested (do not cite this against that).
+
+
+================================================================================
+DELIBERATELY EXCLUDED (known confound, unresolved, or in flight) -- do NOT cite
+================================================================================
+ - Huber value loss: no detectable effect, but n=1 seed and the loss-vs-regime
+   2x2 cross-eval never ran. Inconclusive.
+ - Cross-arm HEADROOM (nsf16 / close64 / stk2): stk2 collapsed one-sided
+   (adv entropy -0.074); cross-regime HEADROOM is confounded. Not run to
+   completion.
+ - gamma-learnability ceiling ("nothing learnable"): underpowered (66 train
+   states) and implausibly reports alpha/beta unlearnable too. Void.
+ - "ridge beats the trained value head": RETRACTED -- compared across mismatched
+   rollouts/splits/targets. On matched states the head wins (0.25 vs 0.17).
+ - gamma / lambda(0.80) / PopArt / seed-1 / reward-scale training arms: RUNNING,
+   no results yet. PopArt is drifting one-sided (regime-confound risk).
+ - "eps HURTS value EV": UNMEASURED (A6 proves eps acts, not that it costs).
+ - Exploitability / LBR "does a better leaf change realised play": greedy-only
+   sweep, so lbr_return == greedy_return exactly; never measured for the real
+   question.
+ - OPEN ANOMALY, unreconciled: the trained critic CNN never beat a random
+   projection over 81.9M steps, yet the head beats a linear read of raw RAM by
+   +0.08. Both cannot be the whole story; do not build encoder work on either
+   until reconciled.
+================================================================================
+
+================================================================================
+THE (scale x aggressive_coeff) 2x2  [added 2026-08-18]
+================================================================================
+Four Phase-0 arms, MINIMAX_BOOTSTRAP_KAPPA=0 (head INERT -> cannot change the
+policy), factored head, vtoff, 12M steps each, identical seed/config apart from
+two knobs. "scaled" = reward x0.001 (range +/-0.176); "unscaled" = raw hp units
+(reward_scale=1.0). ac = aggresive_coeff (paper uses 3; breaks zero-sum:
+r_ego+r_adv = (ac-1)(D_e+D_a), positive-sum combat at ac>1).
+
+Diagnostics: value_gap (head_EV vs MC returns, SCALE-MATCHED via --reward_scale;
+ridge_EV = linear refit of returns on V = recoverable signal), value_ceiling
+(per-policy EV_max), outcome_balance (who wins), q_decompose + head_quality
+(gamma / joint structure, correlation-based so scale-invariant).
+
+                    regime         raw     r^2*   EV_max slope std_v/ |mean bias| gamma
+  cell              (who wins)   head_EV  (recov)        (V)   ret   /ret_std  HEADROOM contact
+  scaled  ac1(vctl) ADV +48.4%   +0.136   0.205  0.628  0.61  0.74    ~0       -0.018   8.0%
+  unscal. ac1(rs1)  EGO +32.1%   +0.659   0.664  0.841  0.92  0.88    ~0       undef^   0.8%
+  scaled  ac3(scl)  ADV +45.2%   -3.651   0.266  0.760  0.49  1.04    1.91     -0.012   5.2%
+  unscal. ac3(unsc) ADV +77.6%   -6.398   0.435  0.828  0.33  2.02    2.23     -0.001  11.2%
+  * r^2 = (slope*std_v/ret_std)^2 = squared return-V correlation = the EV an
+    AFFINE recalibration (fix mean+scale) of V would reach. Computed from slope
+    and std (reliable), NOT from value_gap's ridge arm (see RETRACTION below).
+  ^ undef: <3 of 300 enumerated states have any non-degenerate gamma matrix
+    (near-zero-contact regime), so the CONST baseline is undefined -- itself a
+    finding, not a gap.
+
+FINDING 1 (confound-robust, strongest): gamma -- the joint action structure the
+minimax head exists to supply -- is NOISE in ALL FOUR cells. gamma share 0.11-
+0.20%; antisymmetric share <= the isotropic null (0.476) everywhere; head_quality
+HEADROOM (corrW - best-fixed-matrix) <= 0 everywhere. Neither scale nor
+aggressive_coeff creates learnable joint structure. head_quality/q_decompose are
+correlation-based -> scale-invariant -> not a scale artifact.
+
+FINDING 2 (AUDITED; corrected after a retraction, below): the ac=3 raw head_EV of
+-3.65 / -6.40 does NOT mean "ac=3 breaks the value head." head_EV is UNCENTERED
+MSE (value_gap.py:217), so mean-bias and magnitude blow-up crater it while the
+REPRESENTATION keeps return signal. Proof is arithmetic on slope/std, not ridge:
+  - sclAC3: variance matched (std_v~ret_std) BUT |mean bias| = 1.91x ret_std ->
+    raw head_EV = pure MEAN-BIAS; affine recalibration recovers r^2 = 0.27.
+  - unscAC3: |mean bias| = 2.23x ret_std AND std_v = 2x ret_std (magnitude blow-
+    up, matches fx_w_norm 22.7 vs 0.07); recovers r^2 = 0.44.
+  => ac=3 wrecks value-head CALIBRATION at BOTH scales (huge mean bias); the
+     underlying representation still carries return-correlated signal. Do NOT
+     headline the raw negative head_EV.
+
+  Two axes in r^2 (recoverable signal): UNSCALING RAISES IT at both ac levels
+  (0.66 vs 0.21 at ac1; 0.44 vs 0.27 at ac3) -- consistent with eps-unbinding
+  giving the value optimizer a better representation. ac itself is not monotone.
+
+FINDING 3 (regime, policy-conditional): unscaling FLIPS ac=1 from adversary-
+dominant (+48.4% adv) to ego-dominant (+32.1% ego); consistent with un-binding
+the ego-perspective value head (eps mechanism, value sqrt(v) 3.6e-9 -> 1.06e-5),
+but the causal step is NOT isolated. The flip does NOT survive to ac=3: the
+positive-sum combat reward returns both ac=3 cells to adversary-dominant
+(unscaled worst, +77.6%). Ego dominance also means LESS contact (0.8% vs 8%),
+i.e. even less gamma to learn.
+
+FINDING 4 (measured, confound-robust; mechanism is hypothesis): at ac=1 the
+reward scale flips the GAME MODE, not just the winner (round_end_mode.py, clean
+splits, ko_thresh=0):
+  vctl SCALED   : 100% KO,  0% timeout ; ego win 22 / lose 74 ; wins KO enemy to -1
+  rs1  UNSCALED :   1% KO, 99% timeout ; ego win 70 / lose 27 ; wins hold 135 vs 89
+Scaled = decisive KO combat, adversary (Sagat) out-KOs the ego (Ryu) 74.5%.
+Unscaled = timeout stalling, nobody KO'd, ego holds a modest lead to the clock.
+The policy sees scale ONLY through value-function quality (advantages are
+normalized), so the mode flip is downstream of V quality (rs1 slope 0.92 vs vctl
+0.61). HYPOTHESIS: good long-horizon V -> risk-aware stalling; eps-bound V ->
+myopic KO-chasing. OPEN CRUX: a KO win pays more than a timeout win yet the
+unscaled ego stalls anyway (likely risk aversion). Ego entropy collapses to
+-0.072 (near-deterministic, not absorbing); adversary stays stochastic (-0.567).
+
+RETRACTION (same day): an earlier draft of FINDING 2 cited value_gap's ridge_EV
+arm (+0.19 / +0.25) as the "recoverable signal." That arm is UNDERPOWERED at
+these episode counts: rs1's trained head scores head_EV 0.659 while a kernel
+ridge on the head's OWN trunk features scores 0.048 on the same test split -- a
+deep head cannot beat a well-powered linear readout of its own features by 0.61,
+so the ridge is shrinking to the mean (few effective samples, episode-correlated
+returns, lambda picked high). Replaced ridge_EV with r^2 from slope/std. The
+CONCLUSION is unchanged (ac=3 heads carry more recoverable signal than scaled
+ac1), but now rests on a reliable estimator. [do-not-reuse value_gap ridge arm
+below ~300 decorrelated episodes.]
+================================================================================

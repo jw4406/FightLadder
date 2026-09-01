@@ -439,6 +439,17 @@ def env_generator(args, max_envs: int = 0, i_start: int = 0, j_start: int = 0, S
         obs_type = getattr(args, 'obs_type', 'image')
         ram_mask = _load_ram_mask(args)
         _envkw = _reward_env_kwargs(args)
+        # Provenance: log the EFFECTIVE env config on every env_generator call so
+        # both training AND BR logs record exactly what env was built (reward_scale,
+        # decision_timing, dwell_frames, actionable_statuses, ...). Silent-default
+        # bugs (e.g. reward_scale defaulting to 0.001 in BR) are then greppable.
+        from pprint import pformat as _pf_env
+        print("========== EFFECTIVE ENV CONFIG (env_generator) ==========", flush=True)
+        print(f"obs_type   : {obs_type}", flush=True)
+        print(f"use_mirror : {getattr(args, 'use_mirror', False)}", flush=True)
+        for _ek in sorted(_envkw):
+            print(f"{_ek} : {_pf_env(_envkw[_ek], compact=True)}", flush=True)
+        print("==========================================================", flush=True)
         halfway = len(STATE) // 2
         use_mirror = getattr(args, 'use_mirror', False)
         for i in range(i_start, len(STATE)):
@@ -660,6 +671,13 @@ def main(args):
         obs_type = getattr(args, 'obs_type', 'image')
         ram_mask = _load_ram_mask(args)
         _envkw = _reward_env_kwargs(args)
+        from pprint import pformat as _pf_env
+        print("========== EFFECTIVE ENV CONFIG (many_char_env_generator) ==========", flush=True)
+        print(f"obs_type   : {obs_type}", flush=True)
+        print(f"use_mirror : {getattr(args, 'use_mirror', False)}", flush=True)
+        for _ek in sorted(_envkw):
+            print(f"{_ek} : {_pf_env(_envkw[_ek], compact=True)}", flush=True)
+        print("====================================================================", flush=True)
         halfway = len(STATE) // 2
         env = [make_env(sf_game, state=STATE[i], side=args.side, reset_type=args.reset, rendering=args.render,
                         enable_combo=args.enable_combo, null_combo=args.null_combo,

@@ -1407,7 +1407,12 @@ def train_best_response(
                 else getattr(ftm, "_worker_cds_arch", "spar")
             ),
         )
-        _callbacks.append(periodic_eval_callback)
+        # DISABLED: the periodic eval's freq gate is broken (fires ~every step
+        # regardless of periodic_eval_freq) and its subprocess used bare "python"
+        # (not on the worker's PATH) -> hundreds of thousands of failed spawns and
+        # zero br_rewards written. The end-of-job local_br_eval below (now using
+        # sys.executable) is the reliable br_rewards / exploitability-gap source.
+        # _callbacks.append(periodic_eval_callback)
     train_callback = CallbackList(_callbacks)
     print(
         f"Manual per-job stop configured: key={stop_key}, stop_file={stop_file_path}",
@@ -1561,6 +1566,12 @@ def train_best_response(
             ftm.entropy_ratio_only_cfg = bool(entropy_ratio_only)
             if hasattr(ftm, "stagnation_tracker") and ftm.stagnation_tracker is not None:
                 tracker = ftm.stagnation_tracker
+                # The exploiter auto-enables entropy+reward plots during learn()
+                # (training_br), but leaves local_plot_dir unset -> it stringifies
+                # to "None" and dumps into main/None/. Route it to a named dir so
+                # the convergence curves land somewhere sane.
+                if not local_plot_dir or str(local_plot_dir) == "None":
+                    tracker.local_plot_dir = "logs/local_entropy_plots"
                 tracker.patience = int(stagnation_patience)
                 tracker.tolerance = float(stagnation_tolerance)
                 tracker.rel_tolerance = float(stagnation_rel_tolerance)
@@ -1576,7 +1587,7 @@ def train_best_response(
                 tracker.slope_tolerance = float(stagnation_slope_tolerance)
                 tracker.min_slope_checks = max(1, int(stagnation_min_slope_checks))
                 tracker.entropy_ratio_only = bool(entropy_ratio_only)
-                if local_plot_dir is not None:
+                if local_plot_dir is not None and str(local_plot_dir) != "None":
                     tracker.local_plot_dir = local_plot_dir
             ftm.use_wandb = use_wandb
             ftm.br_manual_stop_key = stop_key
@@ -1618,7 +1629,7 @@ def train_best_response(
         #br_model_path = os.path.join(BR_MODEL_DIR, f"{br_model_name}_{br_interval_num}000_steps.zip")
         br_model_path = exploiter_callback.model_path
         if launch_local_br_eval:
-            subprocess.run(["python", local_plot_and_eval_file,
+            subprocess.run([sys.executable, local_plot_and_eval_file,
             "--eval_prot", str(eval_prot),
             "--main_checkpoint_model_path", checkpoint_path,
             "--done_model_checkpoint_path", done_model_checkpoint_path,
@@ -1710,6 +1721,9 @@ def run_br_for_task_in_subprocess(
     entropy_ratio_only: bool = False,
     local_plot_dir: str = None,
     enable_local_kl_plot: bool = True,
+    br_kl_ref_coef: float = 0.0,
+    br_kl_ref_direction: str = "reverse",
+    br_kl_ref_drop_entropy: bool = True,
     *,
     # Keyword-only required: total .learn() timesteps for this BR job.
     # Plumbed from the launcher via --br_training_steps; absent value
@@ -1827,6 +1841,11 @@ def run_br_for_task_in_subprocess(
         loaded_model.policy.value_optimizer.param_groups[0]['lr'] = 2e-4
         loaded_model.use_lr_annealing = False
         loaded_model.use_wandb = use_wandb
+        # RLHF-style KL-to-reference locality penalty (default 0.0 = off; the
+        # train loop reads these via getattr so unset is byte-identical).
+        loaded_model.br_kl_ref_coef = br_kl_ref_coef
+        loaded_model.br_kl_ref_direction = br_kl_ref_direction
+        loaded_model.br_kl_ref_drop_entropy = br_kl_ref_drop_entropy
     else:
         raise NotImplementedError("Non-SPAR multiprocessing BR training is not implemented.")
 
@@ -1942,6 +1961,9 @@ if __name__ == "__main__":
     parser.add_argument("--entropy_window_size", type=int, default=50, help="Number of stagnation checks to average entropy over for the stop-ratio test.")
     parser.add_argument("--entropy_warmup_checks", type=int, default=100, help="Stagnation checks that must elapse before the entropy-window stop can trigger.")
     parser.add_argument("--entropy_ratio_only", choices=['True', 'False'], default='False', help="When True, ONLY the entropy-window ratio check triggers early stopping (EMA plateau and rating stagnation are ignored). Manual stop files still work.")
+    parser.add_argument("--br_kl_ref_coef", type=float, default=0.0, help="RLHF-style locality dial: coefficient beta on KL(pi_theta || pi_ref) to the frozen co-trained policy of the trained seat. 0.0 = off (default, unchanged behavior); larger = tighter local ball.")
+    parser.add_argument("--br_kl_ref_direction", choices=['reverse', 'forward'], default='reverse', help="KL direction for the locality penalty: 'reverse'=KL(pi_theta||pi_ref) (RLHF-standard, mode-seeking, default); 'forward'=KL(pi_ref||pi_theta).")
+    parser.add_argument("--br_kl_ref_drop_entropy", choices=['True', 'False'], default='True', help="When the KL locality penalty is active (coef>0), drop the entropy bonus (default True) since proximity to the interior reference preserves entropy.")
     parser.add_argument("--use_stagnation_early_stop", choices=['True', 'False'], default='False', help="Use stagnation tracker for CDS early stopping (continue exploiters).")
     parser.add_argument("--use_stagnation_velocity_signal", choices=['True', 'False'], default='False', help="Use rating-movement velocity in CDS stagnation tracker (continue exploiters).")
     parser.add_argument("--use_stagnation_entropy_signal", choices=['True', 'False'], default='True', help="Use entropy signal in CDS stagnation tracker (continue exploiters).")
@@ -1974,6 +1996,15 @@ if __name__ == "__main__":
     parser.add_argument('--ram_mask', type=str, default='', help='Path to RAM byte-index .npy (matches a ram-masked checkpoint).')
     parser.add_argument('--reward_scale', type=float, default=0.001, help='1.0 = unscaled. Match the target checkpoint.')
     parser.add_argument('--aggresive_coeff', type=float, default=1.0, help='1.0 = zero-sum. Match the target checkpoint.')
+    # Decision-timing: MUST match the target checkpoint or the exploiter trains
+    # (and the target is evaluated) out-of-distribution. Threaded into game_args
+    # below, so it flows to env_generator on both the direct dedicated run and the
+    # orchestrated (shared_config_json -> br_single_matchup) path.
+    parser.add_argument('--decision_timing', type=str, default='off', choices=['off', 'ego', 'joint'],
+                        help="Match the target checkpoint (e.g. 'joint' for dt-trained arms).")
+    parser.add_argument('--dwell_frames', type=int, default=1, help='Match the target (e.g. 4 for dt-joint arms).')
+    parser.add_argument('--actionable_statuses', type=str, default='512,514,520', help='Actionable ego statuses for dt gating.')
+    parser.add_argument('--max_skip_frames', type=int, default=90, help='Max frames held per decision-timing skip.')
     parser.add_argument('--launch_local_br_eval', choices=['True', 'False'], help='Launch local br eval', default='False')
     parser.add_argument('--use_wandb', choices=['True', 'False'], help='Enable Weights & Biases logging', default='False')
     parser.add_argument(
@@ -2023,6 +2054,10 @@ if __name__ == "__main__":
         "ram_mask": args.ram_mask,
         "reward_scale": args.reward_scale,
         "aggresive_coeff": args.aggresive_coeff,
+        "decision_timing": args.decision_timing,
+        "dwell_frames": args.dwell_frames,
+        "actionable_statuses": args.actionable_statuses,
+        "max_skip_frames": args.max_skip_frames,
     }
     args.DEBUG = args.DEBUG == 'True'
     args.dedicated_exploiter = args.dedicated_exploiter == 'True'
@@ -2247,6 +2282,9 @@ if __name__ == "__main__":
                         "entropy_window_size": args.entropy_window_size,
                         "entropy_warmup_checks": args.entropy_warmup_checks,
                         "entropy_ratio_only": args.entropy_ratio_only == 'True',
+                        "br_kl_ref_coef": args.br_kl_ref_coef,
+                        "br_kl_ref_direction": args.br_kl_ref_direction,
+                        "br_kl_ref_drop_entropy": args.br_kl_ref_drop_entropy == 'True',
                         # Keyword-only required on run_br_for_task_in_subprocess
                         "br_training_steps": args.br_training_steps,
                     }
@@ -2547,6 +2585,9 @@ if __name__ == "__main__":
                         "entropy_window_size": args.entropy_window_size,
                         "entropy_warmup_checks": args.entropy_warmup_checks,
                         "entropy_ratio_only": args.entropy_ratio_only == 'True',
+                        "br_kl_ref_coef": args.br_kl_ref_coef,
+                        "br_kl_ref_direction": args.br_kl_ref_direction,
+                        "br_kl_ref_drop_entropy": args.br_kl_ref_drop_entropy == 'True',
                         # Keyword-only required on run_br_for_task_in_subprocess
                         "br_training_steps": args.br_training_steps,
                     }

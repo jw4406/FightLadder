@@ -217,9 +217,18 @@
                 "--null_combo", "False",
                 "--transform_action", "False",
                 "--seed", "0",
+                // Decision-timing: match the TARGET checkpoint. Set "joint"/"4" for
+                // the decision-timing image arms (default "off" = fixed clock).
+                "--decision_timing", "off",
+                "--dwell_frames", "1",
+                "--actionable_statuses", "512,514,520",
+                "--max_skip_frames", "90",
                 "--device", "cuda",
                 "--launch_local_br_eval", "True",
                 "--use_wandb", "False",
+                "--br_kl_ref_coef", "0.0",
+                "--br_kl_ref_direction", "reverse",
+                "--br_kl_ref_drop_entropy", "True",
                 "--br_training_steps", "100000"
 
             ]

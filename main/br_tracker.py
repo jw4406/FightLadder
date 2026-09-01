@@ -58,7 +58,11 @@ class RatingStagnationTracker:
         self.entropy_window_size = max(2, int(entropy_window_size))
         self.entropy_stop_ratio = float(entropy_stop_ratio)
         self.enable_local_entropy_plot = bool(enable_local_entropy_plot)
-        self.local_plot_dir = str(local_plot_dir)
+        # Guard against callers passing None or the string "None" (which would
+        # dump plots into a literal ./None/ dir): fall back to a named default.
+        self.local_plot_dir = (str(local_plot_dir)
+                               if local_plot_dir and str(local_plot_dir) != "None"
+                               else "logs/local_entropy_plots")
         self.local_plot_prefix = str(local_plot_prefix)
         self.local_plot_every_checks = max(1, int(local_plot_every_checks))
         self.entropy_warmup_checks = max(0, int(entropy_warmup_checks))

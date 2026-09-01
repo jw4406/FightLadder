@@ -649,6 +649,10 @@ def build_shared_config(args: argparse.Namespace, manual_stop_file: Optional[str
         "enable_combo": args.enable_combo,
         "null_combo": args.null_combo,
         "transform_action": args.transform_action,
+        "reward_scale": args.reward_scale,
+        "decision_timing": args.decision_timing,
+        "actionable_statuses": args.actionable_statuses,
+        "dwell_frames": args.dwell_frames,
         "seed": args.seed,
     }
     return {
@@ -877,6 +881,18 @@ def add_shared_arguments(parser: argparse.ArgumentParser, *, default_processing_
     parser.add_argument("--enable_combo", choices=["True", "False"], default="True")
     parser.add_argument("--null_combo", choices=["True", "False"], default="False")
     parser.add_argument("--transform_action", choices=["True", "False"], default="False")
+    parser.add_argument("--reward_scale", type=float, default=0.001,
+                        help="Env reward scale for the BR eval env; MUST match the "
+                             "target checkpoint's training reward_scale (1.0 = unscaled). "
+                             "Default 0.001 preserves prior BR behavior for other sweeps.")
+    parser.add_argument("--decision_timing", type=str, default="off",
+                        help="BR eval decision timing (off/ego/joint). Default off "
+                             "preserves prior BR behavior for other sweeps.")
+    parser.add_argument("--actionable_statuses", type=str, default="",
+                        help="Comma-separated actionable statuses for ego/joint timing. "
+                             "Default empty (unused in off mode).")
+    parser.add_argument("--dwell_frames", type=int, default=1,
+                        help="Dwell frames for ego/joint decision timing. Default 1.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--launch_local_br_eval", choices=["True", "False"], default="True")

@@ -43,7 +43,14 @@ def main():
                          "differ by that ratio and EV(V,G) blows up (e.g. -6e5 when a "
                          "reward_scale=1.0 checkpoint is probed at the 0.001 default). "
                          "reward_scale is NOT stored in the checkpoint, so pass it.")
+    ap.add_argument("--actionable_statuses", type=str, default="512,514,520",
+                    help="split held-out EV by whether the ego was ACTIONABLE at the "
+                         "state -- CONTROLS the decision-timing confound: if a "
+                         "fixed-clock critic already scores much higher on actionable "
+                         "states, decision-timing's EV lead is partly the easier eval "
+                         "distribution, not a better critic.")
     a = ap.parse_args()
+    _ACT = frozenset(int(x) for x in a.actionable_statuses.split(",") if x.strip())
     d = load_from_zip_file(a.ckpt, device="cpu")[0]
     T = a.T if a.T else int(d.get("vtrace_seq_len") or 64)
     hi, lab, state = resolve_matchups(d, "all")[0]
@@ -54,12 +61,16 @@ def main():
         g = ops.gamma
         rng = np.random.RandomState(0); V, R, D = [], [], []
         obs = venv.reset()
+        St = []; cur_stat = None            # ego agent_status ALIGNED with V[t]
         for _ in range(a.steps):
             V.append(ops.values_ego(obs) * ops.sgn)
+            St.append(cur_stat if cur_stat is not None
+                      else np.full(obs.shape[0], -1))
             ae = (np.zeros(obs.shape[0], dtype=np.int64) if a.ego_zero
                   else ops.sample_ego(obs, rng))
             ad = ops.sample_adv(obs, rng)
-            obs, rl, rr, dn, _ = venv.step(ops.joint(ad, ae))
+            obs, rl, rr, dn, infos = venv.step(ops.joint(ad, ae))
+            cur_stat = np.array([int(i.get('agent_status', -1)) for i in infos])
             R.append(ops.lbr_reward(rl, rr)); D.append(np.asarray(dn, bool))
     finally:
         venv.close()
@@ -83,10 +94,13 @@ def main():
         rew[t] = s
         boot[t] = (g ** T) * V[t + T] * alive
         ok[t] = True
+    St = np.array(St)                                    # (S, n)
     msk = (valid & ok).reshape(-1)
     Vf, Gf = V.reshape(-1)[msk], G.reshape(-1)[msk]
     rf, bf = rew.reshape(-1)[msk], boot.reshape(-1)[msk]
     tgt = rf + bf
+    Sf = St.reshape(-1)[msk]
+    act = np.array([int(s) in _ACT for s in Sf])         # actionable at the state
 
     print(f"\n  {lab}  steps={d.get('num_timesteps')}  T={T}  gamma={g}  gamma^T={g**T:.3f}  n={msk.sum()}")
     print(f"\n  {'quantity':28s} {'EV vs realized G':>17s} {'std':>9s}")
@@ -101,6 +115,17 @@ def main():
     print(f"\n  EV(V, v_target) on FRESH states = {ev(Vf, tgt):.3f}   <- vs in-batch from log")
     print(f"  EV(V, G)        on FRESH states = {ev(Vf, Gf):.3f}")
     print(f"  bootstrap share of target variance: {bf.var()/max(tgt.var(),1e-30):.2f}")
+    # CONFOUND CONTROL: same critic, same return def, split by actionability.
+    na_, a_ = (~act).sum(), act.sum()
+    print(f"\n  --- EV(V,G) split by actionability (controls the DT confound) ---")
+    print(f"  ACTIONABLE  states: n={a_:>6}  EV={ev(Vf[act], Gf[act]) if a_>10 else float('nan'):+.3f}"
+          f"  Gstd={Gf[act].std() if a_>0 else float('nan'):.2f}")
+    print(f"  NON-action  states: n={na_:>6}  EV={ev(Vf[~act], Gf[~act]) if na_>10 else float('nan'):+.3f}"
+          f"  Gstd={Gf[~act].std() if na_>0 else float('nan'):.2f}")
+    print(f"  ALL         states: n={len(act):>6}  EV={ev(Vf, Gf):+.3f}")
+    print(f"MACHINE_SPLIT act_n={int(a_)} act_ev={ev(Vf[act],Gf[act]) if a_>10 else float('nan'):.4f} "
+          f"nonact_n={int(na_)} nonact_ev={ev(Vf[~act],Gf[~act]) if na_>10 else float('nan'):.4f} "
+          f"all_ev={ev(Vf,Gf):.4f}")
     print(f"MACHINE {'egozero' if a.ego_zero else 'egosample'} {d.get('num_timesteps')} {ev(Vf,tgt):.4f} {ev(Vf,Gf):.4f} {ev(tgt,Gf):.4f} {int(msk.sum())}")
 
 

@@ -63,3 +63,34 @@ main/minimax*
 # existed -- a NEW minimax_*.py would be silently invisible.
 !main/minimax*.py
 main/*json
+
+# =====================================================================
+# Data files + run-output folders (ignore ALL generated research data).
+# Source stays tracked: these rules only match data extensions and result
+# dirs, never *.py / *.sh / *.md launchers and code.
+# =====================================================================
+# Binary / data artifacts anywhere in the tree
+*.task
+*.npz
+*.mp4
+*.zip
+*.csv
+*.json
+*.jsonl
+*.err
+*.pid
+
+# Research run-output / diagnostic directories (data, not source)
+main/br_exploit/
+main/br_todo*/
+main/br_test*/
+main/contact_density*/
+main/spar_img_*/
+main/popart_*/
+main/headroom/
+main/visitation/
+main/diag/
+main/probe_sites/
+main/neu_sweep*/
+main/vtrace_*/
+slurm_launch_files/generated_lr_sweep/

@@ -33,6 +33,12 @@ FILENAME_RE = re.compile(
     # running). For periodic fallbacks, the latest snapshot (highest
     # br_step) wins.
     r"(?:_brstep(?P<br_step>\d+)_(?P<periodic_ts>\d{8}T\d{6}))?"
+    # Tolerate a stray trailing suffix token (e.g. "_unknown") emitted by
+    # some in-flight worker builds as a --filename_suffix. It carries no
+    # aggregation meaning; capturing it here keeps such files parseable
+    # instead of silently dropping the whole bucket ("No parseable reward
+    # files"). Canonical (no suffix) and periodic (_brstep..) both still match.
+    r"(?:_(?P<misc_suffix>[A-Za-z0-9]+))?"
     r"_\.txt$"
 )
 

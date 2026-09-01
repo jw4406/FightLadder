@@ -172,6 +172,21 @@ COMA_DIAG="${COMA_DIAG:-False}"
 PRESSURE_BETA="${PRESSURE_BETA:-0.0}"
 PRESSURE_RANGE="${PRESSURE_RANGE:-0.0}"
 ATTACK_STATUSES="${ATTACK_STATUSES:-}"
+# Matchup (default Ryu vs Sagat). ippo builds the state as PLAYERVsOPPONENTS.
+PLAYER="${PLAYER:-Ryu}"
+OPPONENTS="${OPPONENTS:-Sagat}"
+# Compute/memory knobs (defaults = the standard arm; lower them for a LEAN run
+# that fits alongside another on one GPU -- NOT config-matched to the full arm).
+ENV_BATCH_SIZE="${ENV_BATCH_SIZE:-24}"
+ENVS_PER_MATCHUP="${ENVS_PER_MATCHUP:-24}"
+NUM_PERTURBS="${NUM_PERTURBS:-10}"
+TRAINING_BATCH_SIZE="${TRAINING_BATCH_SIZE:-1024}"
+NUM_ENV_STEPS="${NUM_ENV_STEPS:-512}"
+# Decision-timing env gate (default off = inert). See obs_attribution --by_status.
+DECISION_TIMING="${DECISION_TIMING:-off}"
+ACTIONABLE_STATUSES="${ACTIONABLE_STATUSES:-512,514,520}"
+MAX_SKIP_FRAMES="${MAX_SKIP_FRAMES:-90}"
+DWELL_FRAMES="${DWELL_FRAMES:-1}"
 POPART="${POPART:-False}"
 case "${POPART}" in True|False) ;; *) echo "POPART must be True|False" >&2; exit 1 ;; esac
 # What the joint-action head regresses onto. 'returns' (default) is option A --
@@ -293,8 +308,23 @@ V_LR="${V_LR:-4e-4}"
 # length (ExponentialLR per update; 0.9994 -> ~9% of initial over 50M/~4070 upd).
 USE_LR_ANNEALING="${USE_LR_ANNEALING:-False}"
 LR_ANNEAL_COEFF="${LR_ANNEAL_COEFF:-.995}"
+# Model architecture: spar (default, minimax-Q head) | ippo | 2timescale. ippo
+# ignores the minimax_* flags (minimax_q is read only inside ippo.py's spar
+# branch) and uses c_lr for all three optimizers. Non-spar archs get the arch in
+# the TAG so they land in a SEPARATE task dir (checkpoint prefix differs too, but
+# the collision guard refuses a shared todo).
+MODEL_ARCH="${MODEL_ARCH:-spar}"
+case "${MODEL_ARCH}" in spar|ippo|2timescale) ;;
+    *) echo "MODEL_ARCH must be spar|ippo|2timescale" >&2; exit 1 ;; esac
+# Ego value-head LR: ippo/2timescale build a dedicated ego value optimizer and
+# REQUIRE this; spar ignores it. Default to C_LR for non-spar so ALL ippo LRs
+# (ctrl/dstb/value all use c_lr in ippo.py, plus this ego value head) are uniform;
+# left empty for spar so its command stays bit-identical (argparse default None).
+EGO_VALUE_HEAD_LR="${EGO_VALUE_HEAD_LR:-}"
+[ "${MODEL_ARCH}" != "spar" ] && [ -z "${EGO_VALUE_HEAD_LR}" ] && EGO_VALUE_HEAD_LR="${C_LR}"
 TAG="${ARM}"; [ "${POPART}" = "True" ] && TAG="${ARM}_popart"
 TAG="${TAG}_${OBS_TYPE}"
+[ "${MODEL_ARCH}" != "spar" ] && TAG="${TAG}_${MODEL_ARCH}"
 [ -n "${RAM_MASK}" ] && TAG="${TAG}masked"
 # RUN_SUFFIX isolates a run that shares every other setting with an existing
 # arm. RUN_ROOT (and therefore FIGHTLADDER_TASK_DIR) derives from TAG, and two
@@ -322,6 +352,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 IPPO_PATH="${SCRIPT_DIR}/main/ippo.py"
 
 source ~/anaconda3/etc/profile.d/conda.sh
+source /home/jw4406/anaconda3/etc/profile.d/conda.sh 2>/dev/null || true
 conda activate fightladder
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
@@ -361,14 +392,15 @@ fi
 
 CMD=(
     python -u "${IPPO_PATH}"
-    --player Ryu --opponents Sagat
-    --num_env_to_load 1 --env_batch_size 24 --envs_per_matchup 24
+    --player "${PLAYER}" --opponents "${OPPONENTS}"
+    --num_env_to_load 1 --env_batch_size "${ENV_BATCH_SIZE}" --envs_per_matchup "${ENVS_PER_MATCHUP}"
     --c_lr "${C_LR}" --d_lr "${D_LR}" --v_lr "${V_LR}"
-    --num_perturbs 10 --use_mirror False --ego_side left --side both
-    --transform_action True --model_arch_type spar
+    --num_perturbs "${NUM_PERTURBS}" --use_mirror False --ego_side left --side both
+    --transform_action True --model_arch_type "${MODEL_ARCH}"
+    ${EGO_VALUE_HEAD_LR:+--ego_value_head_lr "${EGO_VALUE_HEAD_LR}"}
     --save_dir "${FIGHTLADDER_TASK_DIR}/todo"
     --use_lr_annealing "${USE_LR_ANNEALING}" --lr_anneal_coeff "${LR_ANNEAL_COEFF}"
-    --num_env_steps 512 --training_batch_size 1024
+    --num_env_steps "${NUM_ENV_STEPS}" --training_batch_size "${TRAINING_BATCH_SIZE}"
     --checkpoint_interval "${CHECKPOINT_INTERVAL}"
     --total_timesteps "${TOTAL_TIMESTEPS:-150000000}"
     --ego_style learning --adv_style learning
@@ -392,6 +424,10 @@ CMD=(
     --pressure_beta "${PRESSURE_BETA}"
     --pressure_range "${PRESSURE_RANGE}"
     --attack_statuses "${ATTACK_STATUSES}"
+    --decision_timing "${DECISION_TIMING}"
+    --actionable_statuses "${ACTIONABLE_STATUSES}"
+    --max_skip_frames "${MAX_SKIP_FRAMES}"
+    --dwell_frames "${DWELL_FRAMES}"
     --gamma "${GAMMA}"
     --vtrace_enabled "${VTRACE_ENABLED}" --vtrace_seq_len 64
     --vtrace_c_bar 1.0 --vtrace_rho_bar 5.0 --vtrace_replay_capacity 15000
@@ -449,5 +485,13 @@ echo "  frames/step: ${NUM_STEP_FRAMES}   close_range: ${RESET_CLOSE_RANGE}px
   reward var : counterhit=${COUNTERHIT_KAPPA} trade=${TRADE_KAPPA} pressure=${PRESSURE_BETA} atk_status=[${ATTACK_STATUSES}]
   ckpt every : ${CHECKPOINT_INTERVAL} PER-ENV steps (x24 envs = $(( CHECKPOINT_INTERVAL * 24 )) total)
   watch      : train/minimax_coverage, train/minimax_q_branch_std"
+# FOREGROUND=1: run python in the foreground (exec) so it can be the Main PID of
+# a systemd unit -- the unit then lives exactly as long as the training run,
+# instead of the script self-backgrounding and exiting (which makes systemd stop
+# the unit and kill the run). Default keeps the historical nohup-and-return.
+if [ "${FOREGROUND:-0}" = "1" ]; then
+    echo "  (foreground: python is this process; log -> ${LOG})"
+    exec "${CMD[@]}" > "${LOG}" 2>&1
+fi
 nohup "${CMD[@]}" > "${LOG}" 2>&1 &
 echo "  PID        : $!"
