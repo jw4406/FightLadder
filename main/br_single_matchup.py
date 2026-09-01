@@ -131,6 +131,26 @@ def main() -> None:
     is_league = _bool(args.is_league)
     cfg = json.loads(args.shared_config_json)
 
+    # Provenance: dump the FULL BR shared config (incl. game_args: reward_scale,
+    # decision_timing, dwell_frames, actionable_statuses, ...) plus the argparse
+    # args, so a BR run's exact config is always recoverable from its own log.
+    from pprint import pformat as _pf_cfg
+    print("========== BR SHARED CONFIG (br_single_matchup) ==========", flush=True)
+    for _k in sorted(cfg):
+        _v = cfg[_k]
+        if _k == "game_args" and isinstance(_v, dict):
+            print("game_args:", flush=True)
+            for _gk in sorted(_v):
+                print(f"    {_gk} : {_v[_gk]}", flush=True)
+        else:
+            print(f"{_k} : {_pf_cfg(_v, compact=True)}", flush=True)
+    print("---------- br_single_matchup argparse args ----------", flush=True)
+    for _k in sorted(vars(args)):
+        if _k == "shared_config_json":
+            continue  # already expanded above
+        print(f"{_k} : {getattr(args, _k)!r}", flush=True)
+    print("==========================================================", flush=True)
+
     # state_subset is a list because run_br_for_task_in_subprocess will
     # repeat it n_envs times to build the env's STATE list. For dedicated
     # mode this is a single state per job — one matchup, isolated.

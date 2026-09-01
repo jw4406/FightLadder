@@ -1872,7 +1872,61 @@ class CleanDerivativeFreeSPAR(PPO):
                 self.logger.record(f"train/minimax_{_k}", _v)
         self._log_leader_metrics(False, entropy_losses, pg_losses, approx_kl_divs, explained_var, clip_range)
 
+    def _kl_seat_dist(self, policy, obs, update_ego, i, side_flag):
+        """SB3 action distribution for the seat being trained, off `policy`
+        (live self.policy for the grad path, or the frozen reference). Mirrors
+        the pi_ctrl/pi_dstb -> mlp_extractor -> _get_*_action_dist_from_latent
+        path used by evaluate_*_actions (which return only log_prob/entropy)."""
+        from stable_baselines3.common.preprocessing import preprocess_obs
+        x = preprocess_obs(obs, policy.observation_space,
+                           normalize_images=policy.normalize_images)
+        if update_ego:
+            f = policy.pi_ctrl_features_extractor(x)
+            latent = policy.mlp_extractor.ego_forward(f)
+            return policy._get_ego_action_dist_from_latent(latent)
+        f = policy.pi_dstb_features_extractor(x)
+        latent = policy.mlp_extractor.adv_forward(f, side_flag=side_flag)
+        return policy._get_adv_action_dist_from_latent(latent, buf_num=[i], evaluate=True)[0]
+
+    @staticmethod
+    def _stable_cat_kl(p, q):
+        """KL(p || q) for two Categoricals, numerically robust. torch's
+        kl_divergence blows up to +inf when q assigns a probability that
+        underflows to 0 (log q -> -inf) where p has mass -- common for a
+        SHARP reference policy (the ego at ~0.17 nat hit this; the softer adv
+        did not). Compute from log-probs, floor log q at -30, and zero the
+        0*(-inf) terms so masked/zero-support actions contribute 0."""
+        lp, lq = p.logits, q.logits            # log-softmax: finite for finite logits
+        pp = lp.exp()
+        term = pp * (lp - lq.clamp_min(-30.0))
+        term = th.where(pp > 0, term, th.zeros_like(term))
+        return term.sum(-1)
+
+    def _maybe_snapshot_kl_reference(self):
+        """Freeze a copy of the current policy as the KL locality reference, once,
+        at the first update after load (the co-trained point). Only when the
+        RLHF-style locality penalty is active (br_kl_ref_coef > 0). Default off =
+        no snapshot, byte-identical to prior behavior."""
+        if getattr(self, "br_kl_ref_coef", 0.0) <= 0:
+            return
+        if getattr(self, "_kl_ref_policy", None) is not None:
+            return
+        import copy
+        self._kl_ref_policy = copy.deepcopy(self.policy)
+        for _p in self._kl_ref_policy.parameters():
+            _p.requires_grad_(False)
+        try:
+            self._kl_ref_policy.set_training_mode(False)
+        except Exception:
+            pass
+        print(f"[kl_ref] frozen reference snapshotted "
+              f"(coef={self.br_kl_ref_coef}, dir={getattr(self,'br_kl_ref_direction','reverse')}, "
+              f"drop_entropy={getattr(self,'br_kl_ref_drop_entropy',True)})", flush=True)
+
     def train_standard(self, update_ego: bool = True, update_adversary: bool = True) -> None:
+        # RLHF-style locality: freeze the co-trained policy as the KL reference
+        # once, before the first gradient step (no-op unless br_kl_ref_coef > 0).
+        self._maybe_snapshot_kl_reference()
         self.ego_grads_autograd_order = []
         self.adv_grads_autograd_order = []
         self.policy.adv_grads_autograd_order = []
@@ -2073,6 +2127,8 @@ class CleanDerivativeFreeSPAR(PPO):
 
                     entropy_losses.append(entropy_loss.item())
                     coef = self.ent_coef if update_ego else self.dstb_ent_coef
+                    if getattr(self, "br_kl_ref_coef", 0.0) > 0 and getattr(self, "br_kl_ref_drop_entropy", True):
+                        coef = 0.0  # KL-to-reference locality replaces the entropy bonus
                     pl = policy_loss#_ego if update_ego else policy_loss_adv
                     self.ego_params = self.policy.ctrl_optimizer.param_groups[0]['params']
                     # On-policy value update runs here unless V-trace is in pure-offload mode.
@@ -2084,6 +2140,25 @@ class CleanDerivativeFreeSPAR(PPO):
                     else:
                         # Value head is owned exclusively by the async V-trace worker.
                         loss = pl + coef * entropy_loss
+
+                    # RLHF-style locality: + beta * KL(pi_theta || pi_ref) on the trained
+                    # seat's action distribution vs the frozen co-trained reference. SAME
+                    # sign for both seats (locality is a per-optimizer regularizer, not a
+                    # zero-sum payoff). Default off (br_kl_ref_coef = 0 -> byte-identical).
+                    _klc = getattr(self, "br_kl_ref_coef", 0.0)
+                    if _klc and _klc > 0 and getattr(self, "_kl_ref_policy", None) is not None:
+                        _live = self._kl_seat_dist(self.policy, rollout_data.observations, update_ego, i, side_flag)
+                        with th.no_grad():
+                            _ref = self._kl_seat_dist(self._kl_ref_policy, rollout_data.observations, update_ego, i, side_flag)
+                        _fwd = getattr(self, "br_kl_ref_direction", "reverse") == "forward"
+                        _kl = None
+                        for _lc, _rc in zip(_live.distribution, _ref.distribution):
+                            _k = self._stable_cat_kl(_rc, _lc) if _fwd else self._stable_cat_kl(_lc, _rc)
+                            _kl = _k if _kl is None else (_kl + _k)
+                        _kl = _kl.mean()
+                        loss = loss + _klc * _kl
+                        self._kl_ref_last = float(_kl.detach().cpu())
+                        self.logger.record(f"train/{'ego' if update_ego else 'adv'}_kl_ref", self._kl_ref_last)
 
                     # Calculate approximate form of reverse KL Divergence for early stopping
                     # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417

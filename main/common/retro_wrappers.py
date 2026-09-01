@@ -199,6 +199,14 @@ class SFWrapper(gym.Wrapper):
         # needs sub-step resolution. None => zero cost, the historical path.
         self.ram_tap = None
 
+        # RENDER CAPTURE (duel/eval video ONLY; off by default => zero training
+        # cost, no effect on obs/reward/done). When on, step() records every
+        # emulator frame's rgb so decision-timing skips render smoothly instead
+        # of teleporting between decision points. Frames are pulled out-of-band
+        # via pop_render_frames() (SubprocVecEnv.env_method), not through obs.
+        self._render_capture = False
+        self._render_frames = []
+
         self.reset_type = reset_type
         self.rendering = rendering
 
@@ -626,6 +634,17 @@ class SFWrapper(gym.Wrapper):
         """Runtime setter for the annealed charge-hold reward (0 = off)."""
         self.charge_bonus_coef = float(coef)
 
+    def set_render_capture(self, on=True):
+        """Enable/disable per-emulator-frame rgb capture for smooth video."""
+        self._render_capture = bool(on)
+        self._render_frames = []
+
+    def pop_render_frames(self):
+        """Return and clear the rgb frames captured since the last call."""
+        frames = self._render_frames
+        self._render_frames = []
+        return frames
+
     def step(self, action):
         # Sticky-action exploration: with prob sticky_prob, per player, repeat the previously
         # EXECUTED raw (pre-transform) action. The rollout buffer stores the SAMPLED action, so PPO
@@ -735,6 +754,8 @@ class SFWrapper(gym.Wrapper):
             if self.ram_tap is not None:
                 self.ram_tap()          # AFTER the frame, so it sees post-frame RAM
             self.update_status(info)
+            if self._render_capture:
+                self._render_frames.append(self.env.render(mode='rgb_array'))
             if self.rendering:
                 self.env.render()
                 time.sleep(0.01)
@@ -761,6 +782,8 @@ class SFWrapper(gym.Wrapper):
                 if self.ram_tap is not None:
                     self.ram_tap()
                 self.update_status(info)
+                if self._render_capture:
+                    self._render_frames.append(self.env.render(mode='rgb_array'))
                 if self.rendering:
                     self.env.render()
                     time.sleep(0.01)

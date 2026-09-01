@@ -62,6 +62,14 @@ def main(argv=None):
     ap.add_argument("--stride", type=int, default=20)
     ap.add_argument("--device", type=str, default="cuda")
     ap.add_argument("--out", type=str, default="")
+    ap.add_argument("--decision_timing", choices=["off", "ego", "joint"], default="off",
+                    help="gate the rollout on actionability -- decompose the head on "
+                         "ACTIONABLE states (where the true gamma is non-zero) rather "
+                         "than the fixed-clock distribution, 81%% of which is "
+                         "non-actionable and suppresses gamma to ~0.")
+    ap.add_argument("--actionable_statuses", type=str, default="512,514,520")
+    ap.add_argument("--dwell_frames", type=int, default=4)
+    ap.add_argument("--max_skip_frames", type=int, default=90)
     a = ap.parse_args(argv)
 
     import numpy as np
@@ -86,7 +94,13 @@ def main(argv=None):
         raise SystemExit("need --ckpt or --npz")
     data = load_from_zip_file(a.ckpt, device="cpu")[0]
     head_idx, label, state = resolve_matchups(data, "all")[0]
-    venv = build_lbr_venv(state, a.n_envs,
+    _dt_kw = {}
+    if a.decision_timing != "off":
+        _dt_kw = dict(decision_timing=a.decision_timing,
+                      actionable_statuses=tuple(int(x) for x in
+                          a.actionable_statuses.split(",") if x.strip()),
+                      dwell_frames=a.dwell_frames, max_skip_frames=a.max_skip_frames)
+    venv = build_lbr_venv(state, a.n_envs, **_dt_kw,
                           **infer_obs_kwargs(data, a.ram_mask or None))
     Ms, comps = [], []
     try:

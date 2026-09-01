@@ -44,15 +44,35 @@ CHARACTERS = [
 SPAR_FAMILY = {"spar", "ippo", "2timescale"}
 
 
+# Observation/action config for the duel env, set once from CLI in main(). The
+# two internal env_args() call sites (model-load env + play env) read this so a
+# RAM-obs checkpoint gets a RAM-obs env instead of the image default, which would
+# otherwise fail check_for_correct_spaces at load. Defaults preserve prior
+# (image, transform_action=False) behavior when the flags are not passed.
+_OBS_CFG = {"obs_type": "image", "ram_mask": "", "transform_action": False,
+            "decision_timing": "off", "dwell_frames": 1,
+            "actionable_statuses": "512,514,520"}
+
+
 def env_args():
-    """Namespace shaped for ippo.env_generator (no rendering, no combos, side='both')."""
+    """Namespace shaped for ippo.env_generator (no rendering, no combos, side='both').
+
+    obs_type/ram_mask/transform_action come from _OBS_CFG so the env matches the
+    checkpoint. ram_stack/ram_stride/num_step_frames are left to env_generator's
+    getattr defaults (1/8/8), which match the current RAM arms.
+    """
     return _ap.Namespace(
         side="both",
         reset="round",
         render=False,
         enable_combo=True,
         null_combo=False,
-        transform_action=False,
+        transform_action=_OBS_CFG["transform_action"],
+        obs_type=_OBS_CFG["obs_type"],
+        ram_mask=_OBS_CFG["ram_mask"],
+        decision_timing=_OBS_CFG["decision_timing"],
+        dwell_frames=_OBS_CFG["dwell_frames"],
+        actionable_statuses=_OBS_CFG["actionable_statuses"],
     )
 
 
@@ -207,6 +227,29 @@ def parse_args():
     p.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--deterministic", default="False", choices=["True", "False"])
+    p.add_argument("--save_video", default="",
+                   help="If set, capture env.render(rgb_array) each step and write "
+                        "an mp4 to this path. Default off (no rendering, unchanged behavior).")
+    p.add_argument("--video_fps", type=int, default=10,
+                   help="Frame rate for --save_video (default 10, matching training videos).")
+    p.add_argument("--obs_type", default="image", choices=["image", "ram", "info"],
+                   help="Observation type the checkpoints were trained with. RAM-obs "
+                        "checkpoints REQUIRE --obs_type ram (default image is unchanged "
+                        "behavior for the older image-obs duels).")
+    p.add_argument("--ram_mask", default="",
+                   help="Path to ram_mask.npy when --obs_type ram is masked RAM. "
+                        "Empty = full RAM.")
+    p.add_argument("--transform_action", default="False", choices=["True", "False"],
+                   help="Must MATCH training or the policy's actions are mismapped. Both "
+                        "current RAM arms trained with --transform_action True.")
+    p.add_argument("--decision_timing", default="off",
+                   help="MUST match training. decision-timing checkpoints (e.g. 'joint') "
+                        "REQUIRE this or the policy is run out-of-distribution (no dwell "
+                        "gating), giving degenerate/passive behavior.")
+    p.add_argument("--dwell_frames", type=int, default=1,
+                   help="MUST match training (e.g. 4 for the dt-joint arms).")
+    p.add_argument("--actionable_statuses", default="512,514,520",
+                   help="Actionable ego statuses for decision-timing gating (match training).")
     return p.parse_args()
 
 
@@ -218,6 +261,13 @@ def resolve_device(spec):
 
 def main():
     args = parse_args()
+    # Route obs/action config to the two internal env_args() call sites.
+    _OBS_CFG["obs_type"] = args.obs_type
+    _OBS_CFG["ram_mask"] = args.ram_mask
+    _OBS_CFG["transform_action"] = (args.transform_action == "True")
+    _OBS_CFG["decision_timing"] = args.decision_timing
+    _OBS_CFG["dwell_frames"] = args.dwell_frames
+    _OBS_CFG["actionable_statuses"] = args.actionable_statuses
     if args.ego_side != "left":
         raise ValueError("Ego must be on the left side. --ego_side right is not allowed.")
     for path, label in [(args.ego_model_file, "ego"), (args.adv_model_file, "adv")]:
@@ -318,6 +368,11 @@ def main():
     adv_device = (adv_model.device if hasattr(adv_model, "device") else device)
 
     wins = 0
+    video_log = []  # populated only when --save_video is set
+    if args.save_video:
+        # Capture EVERY emulator frame (including decision-timing skips) so the
+        # video is smooth instead of teleporting between decision points.
+        duel_env.env_method("set_render_capture", True)
     for r in range(1, args.num_rounds + 1):
         obs = duel_env.reset()
         #obs = np.expand_dims(obs, 0)
@@ -331,6 +386,10 @@ def main():
             obs, _reward, _reward_other, done, info = duel_env.step(
                 np.hstack([left_action, right_action])
             )
+            if args.save_video:
+                # Pull every emulator frame this step advanced (8 action frames +
+                # any decision-timing skip frames) so nothing teleports.
+                video_log.extend(duel_env.env_method("pop_render_frames")[0])
         info = info[0]
         ego_won = bool(agent_win(info))
         wins += int(ego_won)
@@ -340,6 +399,23 @@ def main():
         )
 
     duel_env.close()
+
+    if args.save_video and video_log:
+        import av
+        from PIL import Image
+        os.makedirs(os.path.dirname(os.path.abspath(args.save_video)) or ".", exist_ok=True)
+        imgs = [Image.fromarray(np.asarray(f)) for f in video_log]
+        w, h = imgs[0].size
+        container = av.open(args.save_video, mode="w")
+        stream = container.add_stream("h264", rate=args.video_fps)
+        stream.width, stream.height, stream.pix_fmt = w, h, "yuv420p"
+        for img in imgs:
+            for packet in stream.encode(av.VideoFrame.from_image(img)):
+                container.mux(packet)
+        for packet in stream.encode(None):
+            container.mux(packet)
+        container.close()
+        print(f"  saved video: {args.save_video}  ({len(imgs)} frames @ {args.video_fps}fps)")
 
     win_rate = wins / args.num_rounds
     print(

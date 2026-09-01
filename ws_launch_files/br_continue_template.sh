@@ -62,6 +62,10 @@ ENTROPY_STOP_RATIO="0.05"
 ENTROPY_WINDOW_SIZE="75"
 ENTROPY_WARMUP_CHECKS="100"
 ENTROPY_RATIO_ONLY="True"
+# --- RLHF-style KL-to-reference locality (parity with new_br_worker; default off) ---
+BR_KL_REF_COEF="0.0"
+BR_KL_REF_DIRECTION="reverse"
+BR_KL_REF_DROP_ENTROPY="True"
 
 # --- CDS continue-mode stagnation ---
 USE_STAGNATION_EARLY_STOP="False"

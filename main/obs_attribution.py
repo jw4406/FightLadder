@@ -67,6 +67,9 @@ def main(argv=None):
     ap.add_argument("--actionable_statuses", type=str, default="512,514,520",
                     help="ego agent_status values that are actionable (from "
                          "--by_status). Default is the empirical high-distinctness set.")
+    ap.add_argument("--state", type=str, default="",
+                    help="override the matchup state (probe a different character "
+                         "than the checkpoint's, e.g. two_player/Vega_left/...).")
     ap.add_argument("--max_skip_frames", type=int, default=90)
     ap.add_argument("--dwell_frames", type=int, default=1,
                     help="require the ego to be actionable for this many CONSECUTIVE "
@@ -99,6 +102,9 @@ def main(argv=None):
 
     data = load_from_zip_file(a.ckpt, device="cpu")[0]
     head_idx, label, state = resolve_matchups(data, "all")[0]
+    if a.state:                     # override the matchup state (e.g. probe a
+        state = a.state             # different character than the checkpoint's)
+        label = a.state.split("/")[-1].replace(".2Player.state", "")
     _dt_kw = {}
     if a.decision_timing != "off":
         _dt_kw = dict(decision_timing=a.decision_timing,
