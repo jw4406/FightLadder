@@ -49,6 +49,7 @@ from br_slurm_common import (
     have_sbatch,
     load_template_config,
     normalize_bool_args,
+    print_dt_warning,
     render_template_sbatch,
     submit_sbatch,
     sweep_completed_tasks,
@@ -129,9 +130,11 @@ def _process_task(
         stop_file_dir, f"STOP_{_sanitize_for_filename(task_stem)}"
     )
 
-    shared_config_json = __import__("json").dumps(
-        build_shared_config(args, manual_stop_file=manual_stop_file)
-    )
+    _shared_config = build_shared_config(
+        args, manual_stop_file=manual_stop_file,
+        is_league=is_league, model_type=model_type, model_path=processing_path)
+    print_dt_warning(_shared_config.get("dt_provenance"), tag="orch-continue")
+    shared_config_json = __import__("json").dumps(_shared_config)
 
     repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     runner_script = os.path.abspath(

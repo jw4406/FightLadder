@@ -632,8 +632,139 @@ def copy_aux_files(src_dir: str, dst_dir: str) -> None:
         shutil.copy2(src, dst)
 
 
+# ----------------------------- decision-timing resolution -----------------------------
+# Checkpoints do NOT persist the env's decision_timing: it is an SFWrapper construction
+# kwarg, not saved into SB3 zips or league torch-saves. So for a BR run the value is GUESSED
+# from the target checkpoint's detected ARCHITECTURE unless the operator sets it explicitly:
+#   spar / ippo / 2timescale (is_league False) -> "joint"
+#   league / psro            (is_league True)  -> "off"
+# When it is guessed (no metadata), a full-screen warning is logged (impossible to miss) and
+# training proceeds. If the guess disagrees with the real training-time decision_timing the
+# BR env dynamics differ and the exploiter is INVALID -- hence the loud warning.
+_DT_ARCH_DEFAULT_SPARLIKE = "joint"
+_DT_ARCH_DEFAULT_LEAGUE = "off"
+
+
+def _read_dt_metadata(model_path: Optional[str], model_type: Optional[str]) -> Optional[str]:
+    """Best-effort read of a decision_timing value persisted in the checkpoint.
+
+    Returns the stored value if the checkpoint ships one, else None. Today NO checkpoint
+    persists decision_timing (SB3 zips and league torch-saves alike), so this returns None
+    in every real case -- it exists so that if a future training run DOES stamp
+    decision_timing into its checkpoint, BR picks it up automatically instead of guessing.
+    Never raises: any failure is treated as 'no metadata'.
+    """
+    if not model_path:
+        return None
+    try:
+        if model_type == "league":
+            saved = _load_league_checkpoint(model_path, device="cpu")
+            saved_args = saved.get("kwargs", {}).get("args") if isinstance(saved, dict) else None
+            if saved_args is not None:
+                dt = saved_args.get("decision_timing") if isinstance(saved_args, dict) \
+                    else getattr(saved_args, "decision_timing", None)
+                if dt in ("off", "ego", "joint"):
+                    return dt
+        else:
+            data, _, _ = load_from_zip_file(model_path, device="cpu")
+            if isinstance(data, dict):
+                dt = data.get("decision_timing")
+                if dt is None:
+                    _a = data.get("args")
+                    if _a is not None:
+                        dt = _a.get("decision_timing") if isinstance(_a, dict) \
+                            else getattr(_a, "decision_timing", None)
+                if dt in ("off", "ego", "joint"):
+                    return dt
+    except Exception:
+        return None
+    return None
+
+
+def resolve_decision_timing(args_decision_timing: str, is_league: bool,
+                            model_path: Optional[str] = None,
+                            model_type: Optional[str] = None) -> Dict[str, Any]:
+    """Resolve the sentinel 'auto' into a concrete decision_timing and record its provenance.
+
+    Returns {resolved, source, arch, is_league, metadata_present, explicit} where source is:
+      'explicit'            -> operator passed off/ego/joint; no warning.
+      'checkpoint_metadata' -> read from the checkpoint (future-proof); no warning.
+      'arch_default'        -> GUESSED from arch; a loud warning must be logged.
+    """
+    arch_default = _DT_ARCH_DEFAULT_LEAGUE if is_league else _DT_ARCH_DEFAULT_SPARLIKE
+    if args_decision_timing != "auto":
+        return {"resolved": args_decision_timing, "source": "explicit",
+                "arch": model_type, "is_league": is_league,
+                "metadata_present": False, "explicit": True}
+    meta = _read_dt_metadata(model_path, model_type)
+    if meta is not None:
+        return {"resolved": meta, "source": "checkpoint_metadata",
+                "arch": model_type, "is_league": is_league,
+                "metadata_present": True, "explicit": False}
+    return {"resolved": arch_default, "source": "arch_default",
+            "arch": model_type, "is_league": is_league,
+            "metadata_present": False, "explicit": False}
+
+
+def format_dt_warning_banner(prov: Dict[str, Any]) -> str:
+    """One full-screen banner warning that decision_timing was GUESSED, not read from the
+    checkpoint. Returned as a string so callers can print it (repeated) to any log."""
+    arch = prov.get("arch")
+    resolved = prov.get("resolved")
+    is_league = prov.get("is_league")
+    W = 100
+    bar = "#" * W
+
+    def row(s: str = "") -> str:
+        return "#" + (" " + s).ljust(W - 2)[:W - 2] + "#"
+
+    lines = [
+        bar, bar,
+        row(),
+        row("!!!  DECISION TIMING WAS **GUESSED** -- NOT READ FROM THE CHECKPOINT  !!!"),
+        row(),
+        row("This checkpoint does NOT ship decision_timing metadata. decision_timing is an"),
+        row("SFWrapper env construction kwarg; it is NOT persisted in SB3 zips or league"),
+        row("torch-saves. So the BR env's decision_timing has been GUESSED from the target"),
+        row("checkpoint's detected ARCHITECTURE:"),
+        row(),
+        row(f"        detected arch         : {arch}"),
+        row(f"        is_league             : {is_league}"),
+        row(f"        decision_timing USED  : {resolved}   <-- GUESSED (arch default)"),
+        row(),
+        row("Rule:  spar / ippo / 2timescale -> joint     ;     league / psro -> off"),
+        row(),
+        row(">>> RISK <<<"),
+        row("If the target agent was TRAINED with a DIFFERENT decision_timing than the value"),
+        row("above, this BR run trains in MISMATCHED env dynamics and the resulting exploiter"),
+        row("is INVALID -- it best-responds to a different game than the one the agent learned."),
+        row(),
+        row("To silence this and set it yourself, pass an explicit value to the orchestrator:"),
+        row("        --decision_timing off|ego|joint"),
+        row(),
+        row("PROCEEDING TO TRAINING ANYWAY."),
+        row(),
+        bar, bar,
+    ]
+    return "\n".join(lines)
+
+
+def print_dt_warning(prov: Optional[Dict[str, Any]], *, repeat: int = 3, tag: str = "") -> None:
+    """Print the full-screen decision_timing warning `repeat` times so it cannot be missed
+    in a scrolled log. No-op unless the value was guessed (source == 'arch_default')."""
+    if not prov or prov.get("source") != "arch_default":
+        return
+    banner = format_dt_warning_banner(prov)
+    for _i in range(max(1, repeat)):
+        if tag:
+            print(f"[{tag}] decision_timing GUESSED -- warning copy {_i + 1}/{repeat}:", flush=True)
+        print(banner, flush=True)
+
+
 # ----------------------------- shared config builder -----------------------------
-def build_shared_config(args: argparse.Namespace, manual_stop_file: Optional[str]) -> Dict[str, Any]:
+def build_shared_config(args: argparse.Namespace, manual_stop_file: Optional[str], *,
+                        is_league: bool, model_type: Optional[str] = None,
+                        model_path: Optional[str] = None) -> Dict[str, Any]:
     """
     Pack everything that's identical across this task's per-spec jobs into
     one dict that gets JSON-encoded and passed via --shared_config_json.
@@ -641,7 +772,14 @@ def build_shared_config(args: argparse.Namespace, manual_stop_file: Optional[str
     The runner scripts (br_single_matchup.py / br_single_continue.py)
     each read this dict and forward its contents to
     run_br_for_task_in_subprocess as kwargs.
+
+    decision_timing is resolved here (the single chokepoint both orchestrators call):
+    the sentinel 'auto' becomes a concrete off/ego/joint via resolve_decision_timing,
+    and its provenance is attached as dt_provenance so a guess can be warned about
+    loudly by both the orchestrator and the per-job worker.
     """
+    dt_prov = resolve_decision_timing(
+        args.decision_timing, is_league, model_path=model_path, model_type=model_type)
     game_args = {
         "reset": args.reset,
         "side": args.side,
@@ -650,13 +788,14 @@ def build_shared_config(args: argparse.Namespace, manual_stop_file: Optional[str
         "null_combo": args.null_combo,
         "transform_action": args.transform_action,
         "reward_scale": args.reward_scale,
-        "decision_timing": args.decision_timing,
+        "decision_timing": dt_prov["resolved"],
         "actionable_statuses": args.actionable_statuses,
         "dwell_frames": args.dwell_frames,
         "seed": args.seed,
     }
     return {
         "game_args": game_args,
+        "dt_provenance": dt_prov,
         "use_mirror": args.use_mirror,
         "eval_only": args.eval_only,
         "proj_name": args.proj_name,
@@ -885,9 +1024,14 @@ def add_shared_arguments(parser: argparse.ArgumentParser, *, default_processing_
                         help="Env reward scale for the BR eval env; MUST match the "
                              "target checkpoint's training reward_scale (1.0 = unscaled). "
                              "Default 0.001 preserves prior BR behavior for other sweeps.")
-    parser.add_argument("--decision_timing", type=str, default="off",
-                        help="BR eval decision timing (off/ego/joint). Default off "
-                             "preserves prior BR behavior for other sweeps.")
+    parser.add_argument("--decision_timing", type=str, default="auto",
+                        choices=["auto", "off", "ego", "joint"],
+                        help="BR eval decision timing. 'auto' (default) resolves by the "
+                             "target checkpoint's detected architecture -- JOINT for "
+                             "spar/ippo/2timescale, OFF for league/psro -- because no "
+                             "checkpoint ships decision_timing metadata, so it is GUESSED "
+                             "(a full-screen warning is logged and training proceeds). Pass "
+                             "off/ego/joint to set it explicitly (no warning).")
     parser.add_argument("--actionable_statuses", type=str, default="",
                         help="Comma-separated actionable statuses for ego/joint timing. "
                              "Default empty (unused in off mode).")

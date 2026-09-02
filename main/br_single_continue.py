@@ -94,6 +94,12 @@ def main() -> None:
         flush=True,
     )
 
+    # If decision_timing was GUESSED from the target arch (no checkpoint metadata),
+    # scream about it in THIS training log too -- repeated so it survives a scrolled log.
+    # No-op unless the guess actually happened (source == 'arch_default').
+    from br_slurm_common import print_dt_warning as _print_dt_warning
+    _print_dt_warning(cfg.get("dt_provenance"), tag="br_single_continue")
+
     run_br_for_task_in_subprocess(
         game_args=cfg["game_args"],
         task_file_path=args.task_file,

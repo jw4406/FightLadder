@@ -112,6 +112,9 @@ class CleanDerivativeFreeSPAR(PPO):
             v_learning_rate_decay: Union[float, Schedule] = 7e-4,
             use_lr_annealing: bool = False,
             lr_anneal_coeff: float = 0.995,
+            ego_lr_anneal_coeff: float = None,  # None -> use lr_anneal_coeff (unchanged). Set < lr_anneal_coeff
+                                                # to decay the EGO (ctrl) LR faster than adv/value, so the
+                                                # d_lr/c_lr timescale separation GROWS over the run.
             n_steps: int = 2048,
             batch_size: int = 64,
             n_epochs: int = 1,
@@ -290,6 +293,8 @@ class CleanDerivativeFreeSPAR(PPO):
         self.learning_rate_decay_phase = [c_learning_rate_decay, d_learning_rate_decay, v_learning_rate_decay]
         self.use_lr_annealing = use_lr_annealing
         self.lr_anneal_coeff = lr_anneal_coeff
+        # Per-optimizer ego decay: fall back to lr_anneal_coeff when unset (bitwise-unchanged behavior).
+        self.ego_lr_anneal_coeff = ego_lr_anneal_coeff if (ego_lr_anneal_coeff is not None and ego_lr_anneal_coeff > 0.0) else lr_anneal_coeff
         # Sanity check, otherwise it will lead to noisy gradient and NaN
         # because of the advantage normalization
         if normalize_advantage:
@@ -719,7 +724,7 @@ class CleanDerivativeFreeSPAR(PPO):
         #self.ctrl_scheduler = ReduceLROnPlateau(self.policy.ctrl_optimizer, factor=0.5, patience=10)
         #self.dstb_scheduler = ReduceLROnPlateau(self.policy.dstb_optimizer, factor=0.5, patience=10)
         #self.value_scheduler = ReduceLROnPlateau(self.policy.value_optimizer, factor=0.5, patience=10)
-        self.ctrl_scheduler = ExponentialLR(self.policy.ctrl_optimizer, gamma=self.lr_anneal_coeff)
+        self.ctrl_scheduler = ExponentialLR(self.policy.ctrl_optimizer, gamma=self.ego_lr_anneal_coeff)
         self.dstb_scheduler = ExponentialLR(self.policy.dstb_optimizer, gamma=self.lr_anneal_coeff)
         self.value_scheduler = ExponentialLR(self.policy.value_optimizer, gamma=self.lr_anneal_coeff)
     

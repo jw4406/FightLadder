@@ -841,6 +841,7 @@ def main(args):
                 ego_side=args.ego_side,
                 use_lr_annealing=args.use_lr_annealing,
                 lr_anneal_coeff=args.lr_anneal_coeff,
+                ego_lr_anneal_coeff=getattr(args, 'ego_lr_anneal_coeff', None),
                 # Stagnation tracker disabled (the stagnation CLI was removed).
                 # These three False's reproduce the old master_use_stag=False
                 # path: use_elo_tracker is False in learn(), so the stagnation
@@ -1496,6 +1497,10 @@ if __name__ == "__main__":
     parser.add_argument("--envs_per_matchup", type=int, help="Number of envs per matchup", default=1, required=True)
     parser.add_argument("--use_lr_annealing", choices=['True', 'False'], help='Use lr annealing', default=True, required=True)
     parser.add_argument("--lr_anneal_coeff", type=float, help="Learning rate anneal coefficient", default=0.995, required=True)
+    parser.add_argument("--ego_lr_anneal_coeff", type=float, default=None, required=False,
+                        help="Separate ExponentialLR gamma for the EGO (ctrl) optimizer only (spar arch). "
+                             "None -> use --lr_anneal_coeff (unchanged). Set < lr_anneal_coeff to decay the ego "
+                             "LR faster than adv/value, so the d_lr/c_lr timescale separation grows over the run.")
     parser.add_argument('--reset', choices=['round', 'match', 'game'],help='Reset stats for a round, a match, or the whole game', default='round')
     parser.add_argument("--side", type=str, help="Side", default="left", required=True, choices=["left", "right", "both"])
     parser.add_argument('--render', choices=['True', 'False'], help='Whether to render the game screen', default='False')

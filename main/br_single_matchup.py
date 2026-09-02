@@ -151,6 +151,12 @@ def main() -> None:
         print(f"{_k} : {getattr(args, _k)!r}", flush=True)
     print("==========================================================", flush=True)
 
+    # If decision_timing was GUESSED from the target arch (no checkpoint metadata),
+    # scream about it in THIS training log too -- repeated so it survives a scrolled log.
+    # No-op unless the guess actually happened (source == 'arch_default').
+    from br_slurm_common import print_dt_warning as _print_dt_warning
+    _print_dt_warning(cfg.get("dt_provenance"), tag="br_single_matchup")
+
     # state_subset is a list because run_br_for_task_in_subprocess will
     # repeat it n_envs times to build the env's STATE list. For dedicated
     # mode this is a single state per job — one matchup, isolated.

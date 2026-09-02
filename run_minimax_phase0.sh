@@ -198,6 +198,14 @@ case "${POPART}" in True|False) ;; *) echo "POPART must be True|False" >&2; exit
 # -- drifting TOGETHER is divergence. Note minimax_ev and minimax_target_corr
 # are MEANINGLESS under 'minimax' (they score agreement with on-policy returns,
 # which this target abandons); the gate is the only valid comparison.
+# minimax_q master switch. Default True preserves the phase0 experiment. Set False
+# for PLAIN spar/ippo TRAINING: the 22-action / 484-cell minimax head is INCOMPATIBLE
+# with the current 65-action space and CUDA-device-side-asserts if built (the solver
+# indexes 22 actions into a 65-action policy). ippo already ignores minimax_q; this
+# lets a spar training run skip the head too, and keeps minimax_net out of the
+# checkpoints (so they load cleanly for BR later).
+MINIMAX_Q="${MINIMAX_Q:-True}"
+case "${MINIMAX_Q}" in True|False) ;; *) echo "MINIMAX_Q must be True|False" >&2; exit 1 ;; esac
 MINIMAX_TARGET="${MINIMAX_TARGET:-returns}"
 case "${MINIMAX_TARGET}" in returns|minimax) ;;
     *) echo "MINIMAX_TARGET must be returns|minimax" >&2; exit 1 ;; esac
@@ -308,6 +316,10 @@ V_LR="${V_LR:-4e-4}"
 # length (ExponentialLR per update; 0.9994 -> ~9% of initial over 50M/~4070 upd).
 USE_LR_ANNEALING="${USE_LR_ANNEALING:-False}"
 LR_ANNEAL_COEFF="${LR_ANNEAL_COEFF:-.995}"
+# Separate ego (ctrl) decay gamma. Empty -> ippo.py falls back to LR_ANNEAL_COEFF (bitwise-unchanged).
+# Set < LR_ANNEAL_COEFF to decay the ego LR faster than adv/value, growing the d_lr/c_lr timescale
+# separation over the run (spar arch only; ippo/2timescale ignore it).
+EGO_LR_ANNEAL_COEFF="${EGO_LR_ANNEAL_COEFF:-}"
 # Model architecture: spar (default, minimax-Q head) | ippo | 2timescale. ippo
 # ignores the minimax_* flags (minimax_q is read only inside ippo.py's spar
 # branch) and uses c_lr for all three optimizers. Non-spar archs get the arch in
@@ -351,8 +363,9 @@ TAG="${TAG}_${OBS_TYPE}"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 IPPO_PATH="${SCRIPT_DIR}/main/ippo.py"
 
-source ~/anaconda3/etc/profile.d/conda.sh
+source ~/anaconda3/etc/profile.d/conda.sh 2>/dev/null || true
 source /home/jw4406/anaconda3/etc/profile.d/conda.sh 2>/dev/null || true
+source /usr/local/anaconda3/2024.02/etc/profile.d/conda.sh 2>/dev/null || true   # neuronic
 conda activate fightladder
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
@@ -392,7 +405,12 @@ fi
 
 CMD=(
     python -u "${IPPO_PATH}"
-    --player "${PLAYER}" --opponents "${OPPONENTS}"
+    --player "${PLAYER}"
+    --opponents ${OPPONENTS}
+    # ^ OPPONENTS is INTENTIONALLY unquoted so a space-separated pool
+    #   (e.g. "Guile Blanka") word-splits into multiple --opponents args
+    #   (ippo.py --opponents is nargs='+'). A single opponent is one word, so
+    #   existing single-opponent callers are unaffected.
     --num_env_to_load 1 --env_batch_size "${ENV_BATCH_SIZE}" --envs_per_matchup "${ENVS_PER_MATCHUP}"
     --c_lr "${C_LR}" --d_lr "${D_LR}" --v_lr "${V_LR}"
     --num_perturbs "${NUM_PERTURBS}" --use_mirror False --ego_side left --side both
@@ -400,6 +418,7 @@ CMD=(
     ${EGO_VALUE_HEAD_LR:+--ego_value_head_lr "${EGO_VALUE_HEAD_LR}"}
     --save_dir "${FIGHTLADDER_TASK_DIR}/todo"
     --use_lr_annealing "${USE_LR_ANNEALING}" --lr_anneal_coeff "${LR_ANNEAL_COEFF}"
+    ${EGO_LR_ANNEAL_COEFF:+--ego_lr_anneal_coeff "${EGO_LR_ANNEAL_COEFF}"}
     --num_env_steps "${NUM_ENV_STEPS}" --training_batch_size "${TRAINING_BATCH_SIZE}"
     --checkpoint_interval "${CHECKPOINT_INTERVAL}"
     --total_timesteps "${TOTAL_TIMESTEPS:-150000000}"
@@ -432,7 +451,7 @@ CMD=(
     --vtrace_enabled "${VTRACE_ENABLED}" --vtrace_seq_len 64
     --vtrace_c_bar 1.0 --vtrace_rho_bar 5.0 --vtrace_replay_capacity 15000
     --popart "${POPART}"
-    --minimax_q True --minimax_stop_grad True
+    --minimax_q "${MINIMAX_Q}" --minimax_stop_grad True
     --minimax_target "${MINIMAX_TARGET}"
     --minimax_head "${MINIMAX_HEAD}" --minimax_rank "${MINIMAX_RANK}"
     --minimax_w_init "${MINIMAX_W_INIT}"

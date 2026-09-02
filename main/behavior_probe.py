@@ -15,7 +15,8 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stable_baselines3.common.save_util import load_from_zip_file
 from local_best_response import (build_lbr_venv, load_checkpoint, preflight,
-                                 PolicyOps, resolve_matchups, REPO_ROOT)
+                                 PolicyOps, resolve_matchups, REPO_ROOT,
+                                 _extract_left_right_names_from_state)
 
 
 def _lax_load(ckpt, venv, device):
@@ -64,7 +65,12 @@ def main():
                       actionable_statuses=tuple(int(x) for x in
                           a.actionable_statuses.split(",") if x.strip()),
                       dwell_frames=a.dwell_frames, max_skip_frames=a.max_skip_frames)
-    venv = build_lbr_venv(state, a.n_envs, **_dt_kw)
+    # Build the env with the CHECKPOINT's characters so the combo table (hence the
+    # action space) matches. Without this a charge char like Vega (63+2=65) gets the
+    # default motion-char table (63+6=69) and the checkpoint fails to load. ego is the
+    # left/protagonist char in these matchup states.
+    _lc, _rc = _extract_left_right_names_from_state(state)
+    venv = build_lbr_venv(state, a.n_envs, ego_char=_lc, left_char=_lc, right_char=_rc, **_dt_kw)
     try:
         m, _ = _lax_load(a.ckpt, venv, "cuda"); preflight(venv, m)
         ops = PolicyOps(m, head_idx=hi, lbr_is_adv=True)

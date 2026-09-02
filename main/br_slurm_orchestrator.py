@@ -57,6 +57,7 @@ from br_slurm_common import (
     load_template_config,
     normalize_bool_args,
     peek_league_side_and_matchup,
+    print_dt_warning,
     read_registry,
     render_template_sbatch,
     submit_sbatch,
@@ -271,9 +272,11 @@ def _process_task(
         stop_file_dir, f"STOP_{_sanitize_for_filename(task_stem)}"
     )
 
-    shared_config_json = __import__("json").dumps(
-        build_shared_config(args, manual_stop_file=manual_stop_file)
-    )
+    _shared_config = build_shared_config(
+        args, manual_stop_file=manual_stop_file,
+        is_league=is_league, model_type=model_type, model_path=processing_path)
+    print_dt_warning(_shared_config.get("dt_provenance"), tag="orch-dedicated")
+    shared_config_json = __import__("json").dumps(_shared_config)
 
     repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     runner_script = os.path.abspath(
@@ -432,8 +435,11 @@ def _prepare_task_for_pack(args, task_filename, processing_path, processing_fold
     stop_file_dir = os.path.join(TASK_DIR, "stop")
     os.makedirs(stop_file_dir, exist_ok=True)
     manual_stop_file = os.path.join(stop_file_dir, f"STOP_{_sanitize_for_filename(task_stem)}")
-    shared_config_json = __import__("json").dumps(
-        build_shared_config(args, manual_stop_file=manual_stop_file))
+    _shared_config = build_shared_config(
+        args, manual_stop_file=manual_stop_file,
+        is_league=is_league, model_type=model_type, model_path=processing_path)
+    print_dt_warning(_shared_config.get("dt_provenance"), tag="orch-dedicated")
+    shared_config_json = __import__("json").dumps(_shared_config)
     task_ctx = {
         "task_file": processing_path,
         "processing_folder": processing_folder,
