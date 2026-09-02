@@ -9,7 +9,7 @@
 # logs/results_done/ prevent re-evaluating a stage.
 set -uo pipefail
 SD="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"; cd "${SD}/main"
-source ~/anaconda3/etc/profile.d/conda.sh; conda activate fightladder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh; conda activate fightladder_della
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 RES="${SD}/RESULTS_LIVE.md"; MK="${SD}/logs/results_done"; mkdir -p "$MK"
 M=minimax_phase0_vtoff; T=trained_models/tasks/todo

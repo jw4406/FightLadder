@@ -2,7 +2,7 @@
 than a RANDOM one of identical shape? Without this, d12<0 may be nothing but the
 cost of halving the dimension."""
 import sys, argparse, numpy as np, torch as th
-sys.path.insert(0, "/home/jw4406/codebase/FightLadder/main")
+sys.path.insert(0, "/home/jw4406/FightLadder/main")
 from stable_baselines3.common.save_util import load_from_zip_file
 from stable_baselines3.common.preprocessing import preprocess_obs
 from local_best_response import (build_lbr_venv, load_checkpoint, preflight,

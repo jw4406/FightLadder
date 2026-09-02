@@ -363,10 +363,11 @@ TAG="${TAG}_${OBS_TYPE}"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 IPPO_PATH="${SCRIPT_DIR}/main/ippo.py"
 
-source ~/anaconda3/etc/profile.d/conda.sh 2>/dev/null || true
-source /home/jw4406/anaconda3/etc/profile.d/conda.sh 2>/dev/null || true
-source /usr/local/anaconda3/2024.02/etc/profile.d/conda.sh 2>/dev/null || true   # neuronic
-conda activate fightladder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh 2>/dev/null || true   # della-fisac
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh 2>/dev/null || true
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh 2>/dev/null || true
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh 2>/dev/null || true   # neuronic
+conda activate "${CONDA_ENV:-fightladder_della}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # CRITICAL -- .task checkpoints go to ippo.py's TASK_DIR, which derives from the

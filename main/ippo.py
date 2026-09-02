@@ -291,7 +291,7 @@ def evaluate_sa(curr_state, args, model, env_index, greedy=0, record=True):
 
                 data, params, pytorch_variables = load_from_zip_file(
 
-                    "/home/jw4406/codebase/FightLadder/main/trained_models/ippo_mirror_pre_%s/ppo_%s_27894000_steps.zip" % (
+                    "/home/jw4406/FightLadder/main/trained_models/ippo_mirror_pre_%s/ppo_%s_27894000_steps.zip" % (
 
                         PLAYER, PLAYER))
                 del params['policy.ctrl_optimizer']
@@ -1200,32 +1200,32 @@ def main(args):
                                                   clip_range_schedule=clip_range_schedule)
 
         # finetune_model.warmstart_setup(finetune_model.lr_schedule)
-        # finetune_model = Specialized_Agent.load("/home/jw4406/codebase/FightLadder/main/trained_models/ma/ppo_ryu_4545792_steps.zip", env=env_generator())
+        # finetune_model = Specialized_Agent.load("/home/jw4406/FightLadder/main/trained_models/ma/ppo_ryu_4545792_steps.zip", env=env_generator())
 
         from stable_baselines3.common.save_util import load_from_zip_file
         # data, params, pytorch_variables = load_from_zip_file(
-        #    "/home/jw4406/codebase/FightLadder/main/trained_models/ws3_8/ppo_ryu_1668096_steps.zip")
+        #    "/home/jw4406/FightLadder/main/trained_models/ws3_8/ppo_ryu_1668096_steps.zip")
         # if FINETUNE is True:
         # finetune_model.warmstarted_cont_MAGICS = True
         # finetune_model.warmstart_setup(finetune_model.lr_schedule)
         data, params, pytorch_variables = load_from_zip_file(
-            "/home/jw4406/codebase/FightLadder/main/trained_models/tasks/first_9mil/ppo_Guile_9880000_steps.task")
+            "/home/jw4406/FightLadder/main/trained_models/tasks/first_9mil/ppo_Guile_9880000_steps.task")
         '''
         data, params, pytorch_variables = load_from_zip_file(
 
-            "/home/jw4406/codebase/FightLadder/main/trained_models/ppo_%s_8064000_steps.zip" % (
+            "/home/jw4406/FightLadder/main/trained_models/ppo_%s_8064000_steps.zip" % (
 
             PLAYER))
         '''
 
         #data, params, pytorch_variables = load_from_zip_file(
 
-        #    "/home/jw4406/codebase/FightLadder/main/trained_models/sa_mirror_ft_2_174000cont_%s/ppo_%s_84000_steps.zip" % (
+        #    "/home/jw4406/FightLadder/main/trained_models/sa_mirror_ft_2_174000cont_%s/ppo_%s_84000_steps.zip" % (
 
         #        PLAYER, PLAYER))
 
         # data, params, pytorch_variables = load_from_zip_file(
-        #        "/home/jw4406/codebase/FightLadder/main/trained_models/guile_tss_test/ppo_%s_1728000_steps.zip" % (PLAYER))
+        #        "/home/jw4406/FightLadder/main/trained_models/guile_tss_test/ppo_%s_1728000_steps.zip" % (PLAYER))
         if EVAL is True or FINETUNE is True:
             del params['policy.ctrl_optimizer']
             del params['policy.value_optimizer']
@@ -1250,7 +1250,7 @@ def main(args):
                            entity='jw4406',
                            config={"eval_rew": 0,
                                    "epochs": 0})
-            #test = CleanDerivativeFreeSPAR.load("/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/ppo_Guile_32000_steps.task")
+            #test = CleanDerivativeFreeSPAR.load("/home/jw4406/FightLadder/main/trained_models/tasks/todo/ppo_Guile_32000_steps.task")
             model.policy.to(model.device)
 
             if args.ego_style == 'learning':

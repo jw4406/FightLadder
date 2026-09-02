@@ -7,7 +7,7 @@
 # (it CUDA-device-side-asserts), and it isn't needed for plain training -- so we skip
 # it. Keeps minimax_net out of the checkpoints too.
 set -u
-PZ=/home/jw4406/codebase/FightLadder/run_minimax_phase0.sh
+PZ=/home/jw4406/FightLadder/run_minimax_phase0.sh
 
 export MINIMAX_Q=False
 export PLAYER=Vega OPPONENTS="Guile Blanka"

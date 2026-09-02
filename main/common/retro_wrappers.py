@@ -37,9 +37,37 @@ LBR_SF_ATTRS = (
 )
 
 
+class _RetroGymCompat(gym.Wrapper):
+    """Adapt a stable-retro (gymnasium) env to the classic gym-0.21 contract that the rest of
+    this codebase (wrappers, vec envs, vendored SB3) is written against: reset() -> obs (not
+    (obs, info)), step() -> 4-tuple (obs, reward, done, info) instead of the gymnasium 5-tuple,
+    and a working .seed(). Insert this directly around the raw retro env, before FrameStack."""
+    def reset(self, **kwargs):
+        out = self.env.reset(**kwargs)
+        return out[0] if isinstance(out, tuple) else out
+
+    def step(self, action):
+        out = self.env.step(action)
+        if len(out) == 5:
+            obs, reward, terminated, truncated, info = out
+            if truncated:
+                info = dict(info)
+                info.setdefault("TimeLimit.truncated", not terminated)
+            return obs, reward, bool(terminated or truncated), info
+        return out  # already a 4-tuple
+
+    def seed(self, seed=None):
+        try:
+            self.env.reset(seed=seed)
+        except TypeError:
+            pass
+        return [seed]
+
+
 class SFWrapper(gym.Wrapper):
 
     def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, trade_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reset_close_range=0.0, close_max_steps=40, reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1, sticky_prob=0.0, ego_char=None, left_char=None, right_char=None, charge_obs=False):
+        env = _RetroGymCompat(env)  # gymnasium (stable-retro) -> gym 0.21 contract
         super(SFWrapper, self).__init__(env)
         self.env = FrameStack(env, num_stack=num_stack)
 

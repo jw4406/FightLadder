@@ -23,11 +23,11 @@
 # MIN_STEPS exists because the head needs training before the gate means
 # anything -- a null result from an untrained Q is uninformative.
 set -u
-REPO=/home/jw4406/codebase/FightLadder
+REPO=/home/jw4406/FightLadder
 cd "${REPO}"
 # The probes import torch. nohup does not inherit an activated env.
-source ~/anaconda3/etc/profile.d/conda.sh
-conda activate fightladder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh
+conda activate fightladder_della
 python -c "import torch" 2>/dev/null || { echo "[watch] FATAL: no torch"; exit 3; }
 LOG="${REPO}/logs/minimax_phase0_vton.log"
 CKDIR="${REPO}/main/minimax_phase0_vton/trained_models/tasks/todo"

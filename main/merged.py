@@ -184,8 +184,8 @@ def run_evaluation_loop(args, sf_game, PLAYER):
     """
     OPPONENT_LIST = ["Guile"]
     SIDE = "left"
-    ego_folder = '/home/jw4406/codebase/FightLadder/main/trained_models/ego_models/'
-    exploiter_folder = "/home/jw4406/codebase/FightLadder/main/trained_models/br_models/"
+    ego_folder = '/home/jw4406/FightLadder/main/trained_models/ego_models/'
+    exploiter_folder = "/home/jw4406/FightLadder/main/trained_models/br_models/"
 
     for dir_path in [args.save_dir, args.log_dir, args.video_dir, args.finetune_dir]:
         os.makedirs(dir_path, exist_ok=True)

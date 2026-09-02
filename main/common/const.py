@@ -4,6 +4,40 @@ import re
 import numpy as np
 
 
+# --- stable-retro (gymnasium) -> classic gym-retro (gym 0.21) compatibility -----------------
+# This codebase targets gym-retro 0.8 (gym 0.21 API) but runs on stable-retro 1.0 (a gymnasium
+# env). stable-retro (a) defaults render_mode="human", so RetroEnv.reset()/step() try to open an
+# X window and crash on headless GPU/SLURM nodes, and (b) exposes render() with NO `mode=` arg,
+# whereas this code calls env.render(mode="rgb_array"). Patch both, process-wide, exactly once.
+# (The gymnasium 5-tuple step / (obs,info) reset / missing .seed() are handled separately by the
+# _RetroGymCompat gym.Wrapper in retro_wrappers.py.)
+def _install_retro_gym_compat():
+    try:
+        from stable_retro.retro_env import RetroEnv as _RE
+    except Exception:
+        return
+    if getattr(_RE, "_fl_compat_installed", False):
+        return
+    _orig_make = retro.make
+    def _compat_make(*args, **kwargs):
+        kwargs.setdefault("render_mode", None)  # gym-retro never auto-rendered; None = headless-safe
+        return _orig_make(*args, **kwargs)
+    retro.make = _compat_make
+    def _compat_render(self, mode=None):
+        m = mode if mode is not None else self.render_mode
+        img = self.img if self.img is not None else self.get_screen(apply_rotation=True)
+        if m == "human":
+            if self.viewer is None:
+                from stable_retro.rendering import SimpleImageViewer
+                self.viewer = SimpleImageViewer()
+            self.viewer.imshow(img, rotation=0)
+            return self.viewer.isopen
+        return img  # "rgb_array" / None -> return the frame array (no window; headless-safe)
+    _RE.render = _compat_render
+    _RE._fl_compat_installed = True
+_install_retro_gym_compat()
+
+
 SF_BONUS_LEVEL = [4, 8, 12]
 
 SF_DEFAULT_STATE = "Champion.Level1.RyuVsGuile"

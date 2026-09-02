@@ -5,7 +5,7 @@
 # to processing/, so we feed it a hardlink and leave the run-dir original intact.
 # Also enqueues each run's FINAL checkpoint (off-stride) once its service exits.
 set -u
-REPO=/home/jw4406/codebase/FightLadder
+REPO=/home/jw4406/FightLadder
 QUEUE="$REPO/main/br_todo_cont2/todo"
 STOP="$REPO/main/br_todo_cont2/STOP"
 STRIDE=19200000          # 19.2M step spacing

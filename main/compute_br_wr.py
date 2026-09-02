@@ -89,7 +89,7 @@ def evaluate_sa(curr_state, args, model, exploiter_model, env_index, greedy=0, r
                 if model.use_mirror is True:
                     data, params, pytorch_variables = load_from_zip_file(
 
-                        "/home/jw4406/codebase/FightLadder/main/trained_models/ippo_mirror_pre_%s/ppo_%s_27894000_steps.zip" % (
+                        "/home/jw4406/FightLadder/main/trained_models/ippo_mirror_pre_%s/ppo_%s_27894000_steps.zip" % (
 
                             PLAYER, PLAYER))
                     del params['policy.ctrl_optimizer']
@@ -284,8 +284,8 @@ def main(PLAYER):
 
     clip_range_schedule = 0.1  # if args.async_update else linear_schedule(0.15, 0.025)
 
-    ego_folder = '/home/jw4406/codebase/FightLadder/main/trained_models/ego_models/'
-    exploiter_folder = "/home/jw4406/codebase/FightLadder/main/trained_models/br_models/"
+    ego_folder = '/home/jw4406/FightLadder/main/trained_models/ego_models/'
+    exploiter_folder = "/home/jw4406/FightLadder/main/trained_models/br_models/"
 
     nums = []
     wrs = []
@@ -308,7 +308,7 @@ def main(PLAYER):
 
         _, ego_params, _ = load_from_zip_file(ego_model_path)
         _, br_params, _ = load_from_zip_file(exploiter_model_path)
-        #exploiter_path = "/home/jw4406/codebase/FightLadder/main/trained_models/br_models/"
+        #exploiter_path = "/home/jw4406/FightLadder/main/trained_models/br_models/"
         ego = Generalist_SPAR("AACCnnPolicy",
                 env_generator(),
                 device="cuda",
@@ -360,7 +360,7 @@ def main(PLAYER):
             results = evaluate_sa(state_list[j], args, ego, exploiter, j, record=True)
             wrs.append(results)
             #print(results)
-            with open("/home/jw4406/codebase/FightLadder/main/trained_models/_start_results.txt", 'w') as f:
+            with open("/home/jw4406/FightLadder/main/trained_models/_start_results.txt", 'w') as f:
                 f.write(str(results))
     print("hello")
 

@@ -11,7 +11,7 @@
 #SBATCH --mail-user=jw4406@princeton.edu
 echo $CUDA_VISIBLE_DEVICES
 JOBID=$SLURM_JOB_ID
-WORKDIR=/n/fs/magics/
+WORKDIR=/scratch/gpfs/FISAC/jw4406/
 mkdir -p $WORKDIR/$JOBID
 cd $WORKDIR/$JOBID
 echo "starting copy op"
@@ -19,22 +19,22 @@ cp -r $HOME/FightLadder/ ./
 echo "copy op successful"
 cd FightLadder/
 #module purge
-#module load anaconda3/2024.02
+#module load anaconda3/2024.2
 # >>> conda initialize >>>
 # !! Contents within this block are managed by 'conda init' !!
-__conda_setup="$('/usr/local/anaconda3/2024.02/bin/conda' 'shell.bash' 'hook' 2> /dev/null)"
+__conda_setup="$('/usr/licensed/anaconda3/2024.2/bin/conda' 'shell.bash' 'hook' 2> /dev/null)"
 if [ $? -eq 0 ]; then
     eval "$__conda_setup"
 else
-    if [ -f "/usr/local/anaconda3/2024.02/etc/profile.d/conda.sh" ]; then
-        . "/usr/local/anaconda3/2024.02/etc/profile.d/conda.sh"
+    if [ -f "/usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh" ]; then
+        . "/usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh"
     else
-        export PATH="/usr/local/anaconda3/2024.02/bin:$PATH"
+        export PATH="/usr/licensed/anaconda3/2024.2/bin:$PATH"
     fi
 fi
 unset __conda_setup
 # <<< conda initialize <<<
-conda activate fightladder
+conda activate fightladder_della
 echo "fightladder environment activated"
 
 # Number of parallel train_ma instances to run

@@ -21,7 +21,7 @@ ANALYSIS_UPLOAD_PROJ_NAME="br_analysis"
 LOAD_BR="False"
 WHICH_ENV="my_pendulum"
 IS_LEAGUE="False"
-LEAGUE_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/ma/"
+LEAGUE_DIR="/home/jw4406/FightLadder/main/trained_models/ma/"
 # League matchup states (required when IS_LEAGUE="True"). Space-separated retro state strings.
 # Example for Ryu vs {Guile, Sagat, EHonda}:
 # LEAGUE_MATCHUP_STATES=(

@@ -20,19 +20,19 @@ proj_name=guile_exploiter_1v6_noanneal
 analysis_upload_proj_name=guile_exploiter_1v6_noanneal_analysis
 
 mkdir -p $WORKDIR/$JOBID
-#cp -r /n/fs/magics/$MAIN_TRAINING_DIR/FightLadder ./
+#cp -r /scratch/gpfs/FISAC/jw4406/$MAIN_TRAINING_DIR/FightLadder ./
 cd $WORKDIR/$JOBID
 cp -r $HOME/FightLadder ./
 cd FightLadder
 cd main/trained_models/tasks/todo
 
-#cp -r /n/fs/magics/$MAIN_TRAINING_DIR/FightLadder/main/trained_models/tasks/todo/*.task ./
+#cp -r /scratch/gpfs/FISAC/jw4406/$MAIN_TRAINING_DIR/FightLadder/main/trained_models/tasks/todo/*.task ./
 
 cd $WORKDIR/$JOBID/FightLadder
 
 module purge
 module load anaconda3/2024.2
-conda activate fightladder
+conda activate fightladder_della
 cd main
 
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -64,7 +64,7 @@ ANALYSIS_UPLOAD_PROJ_NAME="br_analysis"
 LOAD_BR="False"
 WHICH_ENV="my_pendulum"
 IS_LEAGUE="False"
-LEAGUE_DIR="/home/jw4406/codebase/FightLadder/main/trained_models/ma/"
+LEAGUE_DIR="/home/jw4406/FightLadder/main/trained_models/ma/"
 # League matchup states (required when IS_LEAGUE="True"). Space-separated retro state strings.
 # Example for Ryu vs {Guile, Sagat, EHonda}:
 # LEAGUE_MATCHUP_STATES=(

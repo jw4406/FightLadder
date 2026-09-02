@@ -445,8 +445,8 @@ def main(PLAYER):
                                                                                                    "num_adversaries") else CheckpointCallback(
         save_freq=checkpoint_interval, save_path=args.save_dir, name_prefix=f"{args.model_name_prefix}")
 
-    model_folder = "/home/jw4406/codebase/FightLadder/main/trained_models/sa_mirror_ft_2_174000cont_%s" % PLAYER
-    #other_folder = "/home/jw4406/codebase/FightLadder/main/trained_models/ippo_mirror_pre_%s" % PLAYER
+    model_folder = "/home/jw4406/FightLadder/main/trained_models/sa_mirror_ft_2_174000cont_%s" % PLAYER
+    #other_folder = "/home/jw4406/FightLadder/main/trained_models/ippo_mirror_pre_%s" % PLAYER
     #other_fname = "ppo_EHonda_8280000_steps.zip"
     other_folder=model_folder
     state_list = ['two_player/%s_left/Champion.Level1.%sVs%s.2Player.state' % (PLAYER, PLAYER, PLAYER)]

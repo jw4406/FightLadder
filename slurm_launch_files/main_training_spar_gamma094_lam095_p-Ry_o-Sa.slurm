@@ -48,10 +48,10 @@
 set -u
 
 module purge
-module load anaconda3/2024.02
-conda activate fightladder
+module load anaconda3/2024.2
+conda activate fightladder_della
 
-WORKDIR="${WORKDIR:-/home/jw4406/codebase/FightLadder}"
+WORKDIR="${WORKDIR:-/home/jw4406/FightLadder}"
 cd "${WORKDIR}"
 mkdir -p slurm_logs
 

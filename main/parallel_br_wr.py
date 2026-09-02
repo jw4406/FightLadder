@@ -422,8 +422,8 @@ def main(PLAYER_MAIN):  # Renamed to avoid confusion with global PLAYER
     os.makedirs(args.video_dir, exist_ok=True)
     os.makedirs(args.finetune_dir, exist_ok=True)
 
-    ego_folder = '/home/jw4406/codebase/FightLadder/main/trained_models/ego_models/'
-    exploiter_folder = "/home/jw4406/codebase/FightLadder/main/trained_models/br_models/"
+    ego_folder = '/home/jw4406/FightLadder/main/trained_models/ego_models/'
+    exploiter_folder = "/home/jw4406/FightLadder/main/trained_models/br_models/"
 
     nums = []
     ego_beginning = "ppo_Guile_"

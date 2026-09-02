@@ -4,8 +4,8 @@
 # ONLY difference is decision-timing. If gamma_share grows in TREATMENT but not
 # CONTROL, decision-timing is what feeds the head real action-signal.
 set -u
-cd /home/jw4406/codebase/FightLadder
-BASIS=/home/jw4406/codebase/FightLadder/main/diag/basis_19680000_r4.npz
+cd /home/jw4406/FightLadder
+BASIS=/home/jw4406/FightLadder/main/diag/basis_19680000_r4.npz
 
 run_and_wait() {
     local suffix="$1"; shift

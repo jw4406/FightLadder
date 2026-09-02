@@ -127,8 +127,8 @@ def run_serial_evaluation(args, sf_game, PLAYER):
     # --- Configuration ---
     OPPONENT_LIST = ["Guile"]
     SIDE = "left"
-    ego_folder = '/home/jw4406/codebase/FightLadder/main/trained_models/ego_models/'
-    exploiter_folder = "/home/jw4406/codebase/FightLadder/main/trained_models/br_models/"
+    ego_folder = '/home/jw4406/FightLadder/main/trained_models/ego_models/'
+    exploiter_folder = "/home/jw4406/FightLadder/main/trained_models/br_models/"
 
     # --- Create directories ---
     for dir_path in [args.save_dir, args.log_dir, args.video_dir, args.finetune_dir]:
@@ -213,7 +213,7 @@ def run_serial_evaluation(args, sf_game, PLAYER):
         results = evaluate_sa(evaluation_env, eval_state, args, ego, exploiter, 0, record=True)
 
         wrs.append(results)
-        with open("/home/jw4406/codebase/FightLadder/main/trained_models/_start_results.txt", 'a') as f:
+        with open("/home/jw4406/FightLadder/main/trained_models/_start_results.txt", 'a') as f:
             f.write('\n')
             f.write(str(results))
 

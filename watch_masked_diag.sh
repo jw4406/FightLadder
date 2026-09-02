@@ -20,10 +20,10 @@
 # did (score_rollout -> 0 and stuck, KL early-stops returning), this reports that
 # and does NOT run diagnostics on a degenerate checkpoint.
 set -uo pipefail
-REPO=/home/jw4406/codebase/FightLadder
+REPO=/home/jw4406/FightLadder
 cd "${REPO}"
-source ~/anaconda3/etc/profile.d/conda.sh
-conda activate fightladder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh
+conda activate fightladder_della
 python -c "import torch" 2>/dev/null || { echo "[watch] FATAL: no torch"; exit 3; }
 
 TARGET="${TARGET:-2880000}"

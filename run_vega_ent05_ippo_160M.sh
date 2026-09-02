@@ -4,7 +4,7 @@
 # three optimizers; the driver auto-sets ego_value_head_lr=C_LR for non-spar). From
 # SCRATCH. Matched to run_vega_ent05_spar_160M.sh for a spar-vs-ippo comparison.
 set -u
-PZ=/home/jw4406/codebase/FightLadder/run_minimax_phase0.sh
+PZ=/home/jw4406/FightLadder/run_minimax_phase0.sh
 
 export MODEL_ARCH=ippo
 export PLAYER=Vega OPPONENTS="Guile Blanka"

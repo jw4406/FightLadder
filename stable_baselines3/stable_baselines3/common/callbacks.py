@@ -365,25 +365,14 @@ class FileQueueTriggerCallback(CheckpointCallback):
             python_command = " ".join(wrap)
 
             script_body = f"""#!/bin/bash
-WORKDIR=/n/fs/magics
+WORKDIR=${{FIGHTLADDER_WORKDIR:-/scratch/gpfs/FISAC/jw4406}}
 JOBID=$SLURM_JOB_ID
 mkdir -p $WORKDIR/$JOBID
 cd $WORKDIR/$JOBID
 cp -r $HOME/FightLadder ./
 cd FightLadder
-module purge
-__conda_setup="$('/usr/local/anaconda3/2024.02/bin/conda' 'shell.bash' 'hook' 2> /dev/null)"
-if [ $? -eq 0 ]; then
-    eval "$__conda_setup"
-else
-    if [ -f "/usr/local/anaconda3/2024.02/etc/profile.d/conda.sh" ]; then
-        . "/usr/local/anaconda3/2024.02/etc/profile.d/conda.sh"
-    else
-        export PATH="/usr/local/anaconda3/2024.02/bin:$PATH"
-    fi
-fi
-unset __conda_setup
-conda activate fightladder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh
+conda activate ${{CONDA_ENV:-fightladder_della}}
 cd main
 {python_command}
 """

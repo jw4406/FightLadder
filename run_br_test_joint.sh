@@ -4,12 +4,12 @@
 # used joint timing (would reproduce 19.2M br0=138.11). Separate queue + output
 # from Test A (off). Serialized, one BR at a time.
 set -euo pipefail
-source /home/jw4406/anaconda3/etc/profile.d/conda.sh
-conda activate fightladder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh
+conda activate fightladder_della
 
 WORKDIR=/home/jw4406
 MAIN_TRAINING_DIR=codebase
-REPO_DIR=/home/jw4406/codebase/FightLadder
+REPO_DIR=/home/jw4406/FightLadder
 BR_ROOT="$REPO_DIR/main/br_test_joint"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 

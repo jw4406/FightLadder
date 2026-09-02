@@ -2,7 +2,7 @@
 
 # Script to find the latest checkpoint (largest TRAINING_STEPS) for each unique BASE_STEPS value
 # Usage: ./find_latest_checkpoints.sh [directory]
-WORKDIR=/n/fs/magics
+WORKDIR=/scratch/gpfs/FISAC/jw4406
 TRAINING_DIR=2466337
 DIR="${1:-$WORKDIR/$TRAINING_DIR/FightLadder/main/trained_models/br_models}"
 

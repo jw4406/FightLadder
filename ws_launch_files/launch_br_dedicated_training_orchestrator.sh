@@ -11,7 +11,7 @@ set -euo pipefail
 # -----------------------------------------------------------------------------
 WORKDIR=/home/jw4406
 MAIN_TRAINING_DIR=codebase
-REPO_DIR=/home/jw4406/codebase/FightLadder
+REPO_DIR=/home/jw4406/FightLadder
 MAX_LOCAL_CONCURRENT=1   # how many local-bash jobs may run at once on this GPU
 BR_TRAINING_STEPS=100000   # total .learn() timesteps per BR job (set small for debug)
 

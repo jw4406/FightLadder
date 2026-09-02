@@ -30,8 +30,8 @@ cd "$REPO_DIR"
 # -----------------------------------------------------------------------------
 # Conda activation (Popen'd bash does not source ~/.bashrc).
 # -----------------------------------------------------------------------------
-source /home/jw4406/anaconda3/etc/profile.d/conda.sh
-conda activate fightladder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh
+conda activate fightladder_della
 
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 

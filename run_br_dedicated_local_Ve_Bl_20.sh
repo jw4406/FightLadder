@@ -18,7 +18,7 @@
 # ---------------------------------------------------------------------------
 set -u
 
-REPO_DIR=/home/jw4406/codebase/FightLadder
+REPO_DIR=/home/jw4406/FightLadder
 cd "$REPO_DIR"
 
 TASKS="$REPO_DIR/main/trained_models/tasks"
@@ -35,7 +35,7 @@ BR_TRAINING_STEPS=3000000       # 3M .learn() timesteps per BR job
 DRY_RUN="${DRY_RUN:-False}"
 
 # Activate the env inside each auto-generated per-job bash script.
-ENV_SETUP='source /home/jw4406/anaconda3/etc/profile.d/conda.sh && conda activate fightladder'
+ENV_SETUP='source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh && conda activate fightladder_della'
 
 CMD=(python -u "$REPO_DIR/main/br_slurm_orchestrator.py"
 	--todo_dir "$TODO_DIR"

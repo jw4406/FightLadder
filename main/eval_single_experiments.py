@@ -559,15 +559,15 @@ def main(PLAYER):
         print("load model from " + args.left_model_file + " and " + args.right_model_file)
         model.set_parameters_2p(args.left_model_file, args.right_model_file)
     '''
-    #model = IPPO.load("/home/jw4406/codebase/FightLadder/main/trained_models/single_ippo_Vega_Vega/ppo_Vega_18000000_steps.zip")
-    model = TSS_PPO.load("/home/jw4406/codebase/FightLadder/main/trained_models/single_tss_Guile_Vega/ppo_Guile_45500000_steps.zip")
+    #model = IPPO.load("/home/jw4406/FightLadder/main/trained_models/single_ippo_Vega_Vega/ppo_Vega_18000000_steps.zip")
+    model = TSS_PPO.load("/home/jw4406/FightLadder/main/trained_models/single_tss_Guile_Vega/ppo_Guile_45500000_steps.zip")
     model = TSS_PPO.load(
-        "/home/jw4406/codebase/FightLadder/main/trained_models/single_tss_Guile_Guile/ppo_Guile_51800000_steps.zip")
+        "/home/jw4406/FightLadder/main/trained_models/single_tss_Guile_Guile/ppo_Guile_51800000_steps.zip")
     other_model = IPPO.load(
-        "/home/jw4406/codebase/FightLadder/main/trained_models/single_ippo_Guile_Guile/ppo_Guile_17200000_steps.zip")
+        "/home/jw4406/FightLadder/main/trained_models/single_ippo_Guile_Guile/ppo_Guile_17200000_steps.zip")
     #other_model = IPPO.lo
-    #model = TSS_PPO.load("/home/jw4406/codebase/FightLadder/main/trained_models/single_tss_ft_magics_Guile_Guile/ppo_Guile_760000_steps.zip")
-    data, params, pytorch_variables = load_from_zip_file("/home/jw4406/codebase/FightLadder/main/trained_models/single_tss_ft_magics_Guile_Guile/ppo_Guile_760000_steps.zip")
+    #model = TSS_PPO.load("/home/jw4406/FightLadder/main/trained_models/single_tss_ft_magics_Guile_Guile/ppo_Guile_760000_steps.zip")
+    data, params, pytorch_variables = load_from_zip_file("/home/jw4406/FightLadder/main/trained_models/single_tss_ft_magics_Guile_Guile/ppo_Guile_760000_steps.zip")
     model = TSS_PPO(
             "AACCnnPolicy",
             env_generator(),
@@ -591,8 +591,8 @@ def main(PLAYER):
         )
     '''
     data, params, pytorch_variables = load_from_zip_file(
-        "/home/jw4406/codebase/FightLadder/main/trained_models/tasks/todo/ppo_Guile_78480000_steps.task")
-    #model = Generalist_SPAR.load("/home/jw4406/codebase/FightLadder/main/trained_models/sa_cont_league_question_Guile/ppo_Guile_236000_steps.zip", env=env_generator())
+        "/home/jw4406/FightLadder/main/trained_models/tasks/todo/ppo_Guile_78480000_steps.task")
+    #model = Generalist_SPAR.load("/home/jw4406/FightLadder/main/trained_models/sa_cont_league_question_Guile/ppo_Guile_236000_steps.zip", env=env_generator())
     model = Generalist_SPAR("AACCnnPolicy",
             env_generator(),
             device="cuda",
