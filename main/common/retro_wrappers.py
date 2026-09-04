@@ -39,7 +39,7 @@ LBR_SF_ATTRS = (
 
 class SFWrapper(gym.Wrapper):
 
-    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, trade_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reset_close_range=0.0, close_max_steps=40, reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1, sticky_prob=0.0, ego_char=None, left_char=None, right_char=None, charge_obs=False):
+    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, trade_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reset_close_range=0.0, close_max_steps=40, reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1, sticky_prob=0.0, ego_char=None, left_char=None, right_char=None, charge_obs=False, charge_preserving_skip=False):
         super(SFWrapper, self).__init__(env)
         self.env = FrameStack(env, num_stack=num_stack)
 
@@ -142,6 +142,12 @@ class SFWrapper(gym.Wrapper):
         # on the first actionable frame (identical to no dwell).
         self.dwell_frames = max(1, int(dwell_frames))
         self._last_skip = 0
+        # COUNTERFACTUAL (opt-in, default off -> bit-identical to before): during the
+        # decision-timing skip, hold each seat's last-commanded DIRECTION buttons (attacks
+        # masked out) instead of neutral, so a held charge survives the skip. Lets charge
+        # chars actually fire Flash Kick / Sonic Boom under decision timing. See memory
+        # decision-timing-disables-charge-specials.
+        self.charge_preserving_skip = bool(charge_preserving_skip)
         if self.decision_timing != "off" and not self.actionable_statuses:
             raise ValueError(
                 "decision_timing needs actionable_statuses; derive them with "
@@ -768,6 +774,15 @@ class SFWrapper(gym.Wrapper):
         self._last_skip = 0
         if self.decision_timing != "off":
             neutral = np.zeros_like(action_seq[0])
+            if self.charge_preserving_skip:
+                # hold each seat's last-commanded DIRECTION buttons (UP/DOWN/LEFT/RIGHT =
+                # per-player indices 4..7), attacks masked to 0, so a charge survives the skip.
+                _hold = np.array(action_seq[-1]).copy()
+                _keep = np.zeros(len(_hold), dtype=bool)
+                _nper = len(_hold) // 2
+                for _b in (0, _nper):
+                    _keep[_b + 4:_b + 8] = True
+                neutral = (np.array(action_seq[-1]) * _keep).astype(neutral.dtype)
             consec = 0                       # consecutive actionable frames so far
             while True:
                 a_act = int(info['agent_status']) in self.actionable_statuses
@@ -898,6 +913,8 @@ class SFWrapper(gym.Wrapper):
         # -1 = no injection this step; else the FACTORED action the ego seat was forced to execute
         # (the algorithm stores this in the buffer so the policy imitates the charge->release).
         info['injected_action'] = -1 if self._injected_action is None else self._injected_action
+        # frames the decision-timing loop held NEUTRAL past the action (lockdown duration proxy)
+        info['last_skip'] = int(self._last_skip)
         if custom_done:
             info['outcome'] = 'win' if (agent_hp > enemy_hp) else ('lose' if (agent_hp < enemy_hp) else 'draw')
 

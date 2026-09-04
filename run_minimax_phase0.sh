@@ -187,6 +187,11 @@ DECISION_TIMING="${DECISION_TIMING:-off}"
 ACTIONABLE_STATUSES="${ACTIONABLE_STATUSES:-512,514,520}"
 MAX_SKIP_FRAMES="${MAX_SKIP_FRAMES:-90}"
 DWELL_FRAMES="${DWELL_FRAMES:-1}"
+# Charge-preserving skip: hold each seat's last DIRECTION through the decision-timing skip
+# (attacks masked) so charge specials survive. Default True. See memory
+# decision-timing-disables-charge-specials. Inert when DECISION_TIMING=off.
+CHARGE_PRESERVING_SKIP="${CHARGE_PRESERVING_SKIP:-True}"
+case "${CHARGE_PRESERVING_SKIP}" in True|False) ;; *) echo "CHARGE_PRESERVING_SKIP must be True|False" >&2; exit 1 ;; esac
 POPART="${POPART:-False}"
 case "${POPART}" in True|False) ;; *) echo "POPART must be True|False" >&2; exit 1 ;; esac
 # What the joint-action head regresses onto. 'returns' (default) is option A --
@@ -447,6 +452,7 @@ CMD=(
     --actionable_statuses "${ACTIONABLE_STATUSES}"
     --max_skip_frames "${MAX_SKIP_FRAMES}"
     --dwell_frames "${DWELL_FRAMES}"
+    --charge_preserving_skip "${CHARGE_PRESERVING_SKIP}"
     --gamma "${GAMMA}"
     --vtrace_enabled "${VTRACE_ENABLED}" --vtrace_seq_len 64
     --vtrace_c_bar 1.0 --vtrace_rho_bar 5.0 --vtrace_replay_capacity 15000

@@ -153,12 +153,13 @@ def _reward_env_kwargs(args):
             if x.strip()),
         max_skip_frames=int(getattr(args, "max_skip_frames", 90)),
         dwell_frames=int(getattr(args, "dwell_frames", 1)),
+        charge_preserving_skip=(str(getattr(args, "charge_preserving_skip", "True")) == "True"),
     )
 
 
 def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True,
              null_combo=False, transform_action=False, seed=0, obs_type='image', ego_is_left=True,
-             ram_mask=None, ram_stack=1, ram_stride=8, num_step_frames=8, counterhit_kappa=0.0, trade_kappa=0.0, reset_close_range=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1):
+             ram_mask=None, ram_stack=1, ram_stride=8, num_step_frames=8, counterhit_kappa=0.0, trade_kappa=0.0, reset_close_range=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1, charge_preserving_skip=True):
     def _init():
         players = 2
         env = retro.make(
@@ -193,6 +194,7 @@ def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=N
                         actionable_statuses=actionable_statuses,
                         max_skip_frames=max_skip_frames,
                         dwell_frames=dwell_frames,
+                        charge_preserving_skip=charge_preserving_skip,
                         ego_char=_ego_char, left_char=_left_char, right_char=_right_char)
         # Observation wrapper. NOTE: the InfoObsWrapper branch used to be
         # commented out here, so --obs_type info silently did nothing.
@@ -1635,6 +1637,11 @@ if __name__ == "__main__":
     parser.add_argument('--dwell_frames', type=int, default=1,
                         help="require this many CONSECUTIVE actionable frames before "
                              "returning -- skips the recovery-settle; 4 saturates.")
+    parser.add_argument('--charge_preserving_skip', choices=['True', 'False'], default='True',
+                        help="during the decision-timing skip, hold each seat's last-commanded "
+                             "DIRECTION (attacks masked) instead of neutral, so a held charge "
+                             "survives the skip -> charge specials (Flash Kick, Sonic Boom, ...) "
+                             "can fire under decision timing. Default True.")
     parser.add_argument('--value_loss_fn', type=str, default='mse',
                         choices=['mse','huber'],
                         help="Value loss. Returns are spike-and-slab (zero on "

@@ -80,7 +80,10 @@ def main():
         obs = venv.reset()
         for _ in range(a.steps):
             ea = ops.sample_ego(obs, rng); aa = ops.sample_adv(obs, rng)
-            obs, rl, rr, dn, infos = venv.step(ops.joint(ea, aa))
+            # joint(lbr_actions, pol_actions): lbr=adv(Guile)=aa, pol=ego(Vega)=ea.
+            # Order MUST be (aa, ea) so ego lands on LEFT / adv on RIGHT (matches
+            # duel.py's [left=ego, right=adv]); (ea, aa) swaps seats -> off-distribution.
+            obs, rl, rr, dn, infos = venv.step(ops.joint(aa, ea))
             for i in infos:
                 ax, ex = i.get("agent_x"), i.get("enemy_x")
                 if ax is None or ex is None:

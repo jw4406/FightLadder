@@ -223,6 +223,9 @@
                 "--dwell_frames", "1",
                 "--actionable_statuses", "512,514,520",
                 "--max_skip_frames", "90",
+                // Charge-preserving skip: hold last direction through the skip so charge
+                // specials survive. Default "True" (inert when decision_timing="off").
+                "--charge_preserving_skip", "True",
                 "--device", "cuda",
                 "--launch_local_br_eval", "True",
                 "--use_wandb", "False",
