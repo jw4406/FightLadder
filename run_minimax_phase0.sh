@@ -192,6 +192,9 @@ DWELL_FRAMES="${DWELL_FRAMES:-1}"
 # decision-timing-disables-charge-specials. Inert when DECISION_TIMING=off.
 CHARGE_PRESERVING_SKIP="${CHARGE_PRESERVING_SKIP:-True}"
 case "${CHARGE_PRESERVING_SKIP}" in True|False) ;; *) echo "CHARGE_PRESERVING_SKIP must be True|False" >&2; exit 1 ;; esac
+# cps_no_up: with charge_preserving_skip, also mask UP in the skip so held UP can't chain jumps.
+CPS_NO_UP="${CPS_NO_UP:-False}"
+case "${CPS_NO_UP}" in True|False) ;; *) echo "CPS_NO_UP must be True|False" >&2; exit 1 ;; esac
 POPART="${POPART:-False}"
 case "${POPART}" in True|False) ;; *) echo "POPART must be True|False" >&2; exit 1 ;; esac
 # What the joint-action head regresses onto. 'returns' (default) is option A --
@@ -453,6 +456,7 @@ CMD=(
     --max_skip_frames "${MAX_SKIP_FRAMES}"
     --dwell_frames "${DWELL_FRAMES}"
     --charge_preserving_skip "${CHARGE_PRESERVING_SKIP}"
+    --cps_no_up "${CPS_NO_UP}"
     --gamma "${GAMMA}"
     --vtrace_enabled "${VTRACE_ENABLED}" --vtrace_seq_len 64
     --vtrace_c_bar 1.0 --vtrace_rho_bar 5.0 --vtrace_replay_capacity 15000

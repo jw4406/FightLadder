@@ -154,12 +154,13 @@ def _reward_env_kwargs(args):
         max_skip_frames=int(getattr(args, "max_skip_frames", 90)),
         dwell_frames=int(getattr(args, "dwell_frames", 1)),
         charge_preserving_skip=(str(getattr(args, "charge_preserving_skip", "True")) == "True"),
+        cps_no_up=(str(getattr(args, "cps_no_up", "False")) == "True"),
     )
 
 
 def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True,
              null_combo=False, transform_action=False, seed=0, obs_type='image', ego_is_left=True,
-             ram_mask=None, ram_stack=1, ram_stride=8, num_step_frames=8, counterhit_kappa=0.0, trade_kappa=0.0, reset_close_range=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1, charge_preserving_skip=True):
+             ram_mask=None, ram_stack=1, ram_stride=8, num_step_frames=8, counterhit_kappa=0.0, trade_kappa=0.0, reset_close_range=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1, charge_preserving_skip=True, cps_no_up=False):
     def _init():
         players = 2
         env = retro.make(
@@ -195,6 +196,7 @@ def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=N
                         max_skip_frames=max_skip_frames,
                         dwell_frames=dwell_frames,
                         charge_preserving_skip=charge_preserving_skip,
+                        cps_no_up=cps_no_up,
                         ego_char=_ego_char, left_char=_left_char, right_char=_right_char)
         # Observation wrapper. NOTE: the InfoObsWrapper branch used to be
         # commented out here, so --obs_type info silently did nothing.
@@ -1642,6 +1644,10 @@ if __name__ == "__main__":
                              "DIRECTION (attacks masked) instead of neutral, so a held charge "
                              "survives the skip -> charge specials (Flash Kick, Sonic Boom, ...) "
                              "can fire under decision timing. Default True.")
+    parser.add_argument('--cps_no_up', choices=['True', 'False'], default='False',
+                        help="with charge_preserving_skip, ALSO mask the UP button during the skip "
+                             "so a held UP can't chain jumps across it. Preserves down/back "
+                             "charge+guard, drops jump-holding. Default False.")
     parser.add_argument('--value_loss_fn', type=str, default='mse',
                         choices=['mse','huber'],
                         help="Value loss. Returns are spike-and-slab (zero on "

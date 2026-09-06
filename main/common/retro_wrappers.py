@@ -39,7 +39,7 @@ LBR_SF_ATTRS = (
 
 class SFWrapper(gym.Wrapper):
 
-    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, trade_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reset_close_range=0.0, close_max_steps=40, reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1, sticky_prob=0.0, ego_char=None, left_char=None, right_char=None, charge_obs=False, charge_preserving_skip=False):
+    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, trade_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reset_close_range=0.0, close_max_steps=40, reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1, sticky_prob=0.0, ego_char=None, left_char=None, right_char=None, charge_obs=False, charge_preserving_skip=False, cps_no_up=False):
         super(SFWrapper, self).__init__(env)
         self.env = FrameStack(env, num_stack=num_stack)
 
@@ -148,6 +148,10 @@ class SFWrapper(gym.Wrapper):
         # chars actually fire Flash Kick / Sonic Boom under decision timing. See memory
         # decision-timing-disables-charge-specials.
         self.charge_preserving_skip = bool(charge_preserving_skip)
+        # cps_no_up: when charge_preserving_skip holds the last-commanded direction through the
+        # decision skip, ALSO mask the UP button (index 4) so a held UP can't chain jumps across
+        # the skip. Preserves down/back charge+guard; drops jump-holding. (See jump_antiair_probe.)
+        self.cps_no_up = bool(cps_no_up)
         if self.decision_timing != "off" and not self.actionable_statuses:
             raise ValueError(
                 "decision_timing needs actionable_statuses; derive them with "
@@ -780,8 +784,9 @@ class SFWrapper(gym.Wrapper):
                 _hold = np.array(action_seq[-1]).copy()
                 _keep = np.zeros(len(_hold), dtype=bool)
                 _nper = len(_hold) // 2
+                _lo = 5 if self.cps_no_up else 4   # cps_no_up masks UP (index 4) -> no jump-chaining
                 for _b in (0, _nper):
-                    _keep[_b + 4:_b + 8] = True
+                    _keep[_b + _lo:_b + 8] = True
                 neutral = (np.array(action_seq[-1]) * _keep).astype(neutral.dtype)
             consec = 0                       # consecutive actionable frames so far
             while True:
@@ -930,19 +935,22 @@ class SFWrapper(gym.Wrapper):
         # get_ram()[32770]==12 (P1/agent), get_ram()[33410]==12 (P2/enemy). Sustained across the move,
         # so a once-per-step read at reward time catches it. NOTE: info['agent_status'] is byte-swapped
         # vs get_ram (the special byte is the LOW byte there) -- read get_ram to stay consistent.
+        # Compute the special-active flags UNCONDITIONALLY and expose in info so a
+        # policy-rollout probe can measure special-fire rate without the reward bonus.
+        # The bonus (special_bonus_coef>0) rides the same read; behaviour of the
+        # reward path is unchanged (flags/prev-state computed identically as before).
+        _ram = self.unwrapped.get_ram()
+        p1_fire_step = int(_ram[32770]) == 12
+        p2_fire_step = int(_ram[33410]) == 12
+        info['p1_special_active'] = int(p1_fire_step)
+        info['p2_special_active'] = int(p2_fire_step)
         if self.special_bonus_coef > 0.0:
-            _ram = self.unwrapped.get_ram()
-            p1_fire_step = int(_ram[32770]) == 12
-            p2_fire_step = int(_ram[33410]) == 12
             if p1_fire_step and not self._prev_p1_special:
                 custom_reward += self.special_bonus_coef
             if p2_fire_step and not self._prev_p2_special:
                 custom_reward_inverse += self.special_bonus_coef
-            self._prev_p1_special = p1_fire_step
-            self._prev_p2_special = p2_fire_step
-        else:
-            self._prev_p1_special = False
-            self._prev_p2_special = False
+        self._prev_p1_special = p1_fire_step
+        self._prev_p2_special = p2_fire_step
 
         # Charge-hold reward: credit the ego for building a charge, CAPPED at a full charge (so it is not
         # rewarded for holding forever). The larger fire bonus makes charge->fire beat charge-farming.
