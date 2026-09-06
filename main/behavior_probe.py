@@ -52,6 +52,9 @@ def main():
     ap.add_argument("--actionable_statuses", type=str, default="512,514,520")
     ap.add_argument("--dwell_frames", type=int, default=4)
     ap.add_argument("--max_skip_frames", type=int, default=90)
+    # cps default True to MATCH training (the runs train with charge_preserving_skip=True);
+    # without it the SFWrapper default is False -> eval crippled the defender's charge/guard.
+    ap.add_argument("--charge_preserving_skip", choices=["True", "False"], default="True")
     a = ap.parse_args()
 
     data = load_from_zip_file(a.ckpt, device="cpu")[0]
@@ -70,7 +73,8 @@ def main():
     # default motion-char table (63+6=69) and the checkpoint fails to load. ego is the
     # left/protagonist char in these matchup states.
     _lc, _rc = _extract_left_right_names_from_state(state)
-    venv = build_lbr_venv(state, a.n_envs, ego_char=_lc, left_char=_lc, right_char=_rc, **_dt_kw)
+    venv = build_lbr_venv(state, a.n_envs, ego_char=_lc, left_char=_lc, right_char=_rc,
+                          charge_preserving_skip=(a.charge_preserving_skip == "True"), **_dt_kw)
     try:
         m, _ = _lax_load(a.ckpt, venv, "cuda"); preflight(venv, m)
         ops = PolicyOps(m, head_idx=hi, lbr_is_adv=True)

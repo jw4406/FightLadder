@@ -56,12 +56,17 @@ def main(argv=None):
 
     import numpy as np
     from local_best_response import (build_lbr_venv, load_checkpoint, PolicyOps,
-                                     resolve_matchups, infer_obs_kwargs)
+                                     resolve_matchups, infer_obs_kwargs,
+                                     _extract_left_right_names_from_state)
     from stable_baselines3.common.save_util import load_from_zip_file
 
     data = load_from_zip_file(a.dist_ckpt, device="cpu")[0]
     head_idx, _lab, st = resolve_matchups(data, "all")[0]
-    venv = build_lbr_venv(st, a.n_envs, **infer_obs_kwargs(data, a.ram_mask or None))
+    # Build the env with the checkpoint's characters so a charge char like Vega
+    # (65 actions) doesn't get the default motion-char table (69) -> load failure.
+    _lc, _rc = _extract_left_right_names_from_state(st)
+    venv = build_lbr_venv(st, a.n_envs, ego_char=_lc, left_char=_lc, right_char=_rc,
+                          **infer_obs_kwargs(data, a.ram_mask or None))
 
     def _load(p):
         L = load_checkpoint(p, venv, a.device)
