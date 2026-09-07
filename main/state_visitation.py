@@ -62,17 +62,27 @@ def main(argv=None):
                     help="RAM byte-index .npy, required when the checkpoint was "
                          "trained with a MASKED ram observation: the checkpoint "
                          "records the WIDTH, not which bytes.")
+    # cps default True to MATCH training (see behavior_probe.py note).
+    ap.add_argument("--charge_preserving_skip", choices=["True", "False"], default="True")
     a = ap.parse_args(argv)
 
     import numpy as np
     from stable_baselines3.common.save_util import load_from_zip_file
     from local_best_response import (build_lbr_venv, load_checkpoint, preflight,
-                                     PolicyOps, resolve_matchups, infer_obs_kwargs)
+                                     PolicyOps, resolve_matchups, infer_obs_kwargs,
+                                     _extract_left_right_names_from_state)
 
     data = load_from_zip_file(a.ckpt, device="cpu")[0]
     head_idx, label, state = resolve_matchups(data, "all")[0]
 
-    venv = build_lbr_venv(state, a.n_envs, **infer_obs_kwargs(data, (getattr(a, 'ram_mask', '') or None)))
+    # Build the env with the CHECKPOINT's characters so the combo table (hence the
+    # action space) matches -- a charge char like Vega (63+2=65) otherwise gets the
+    # default motion-char table (63+6=69) and the checkpoint fails to load. Mirrors
+    # behavior_probe.py.
+    _lc, _rc = _extract_left_right_names_from_state(state)
+    venv = build_lbr_venv(state, a.n_envs, ego_char=_lc, left_char=_lc, right_char=_rc,
+                          charge_preserving_skip=(a.charge_preserving_skip == "True"),
+                          **infer_obs_kwargs(data, (getattr(a, 'ram_mask', '') or None)))
     try:
         model, _ = load_checkpoint(a.ckpt, venv, a.device)
         preflight(venv, model)

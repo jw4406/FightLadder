@@ -1508,6 +1508,15 @@ class CleanDerivativeFreeSPAR(PPO):
             #self.train_standard(update_ego, update_adversary)
             if USE_PERTURBED:
                 self.train_derivative_free(update_ego, update_adversary)
+            # LR ANNEALING: step schedulers ONCE per train() iteration. train_standard is
+            # called twice above (ego, then adv), each with step_val=True, so stepping inside
+            # it decays the VALUE lr at 2x -- that is why the call in train_standard (~line
+            # 2302) is commented out. Placed here, ctrl/dstb/value each step once per iter.
+            # When USE_PERTURBED is True, train_derivative_free's own _update_schedulers
+            # (~line 1659) is the single source, so this is skipped to avoid double-stepping.
+            if self.use_lr_annealing and not USE_PERTURBED:
+                self._update_schedulers(step_ego=update_ego, step_adv=update_adversary,
+                                        step_val=True, skip=False)
         finally:
             if _vt is not None:
                 _vt.resume()
