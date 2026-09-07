@@ -169,6 +169,20 @@ class Payoff:
 
     def _hardlink_task_to_continue(self, task_path: str) -> None:
         dst = os.path.join(self.continue_dir, os.path.basename(task_path))
+        # Idempotent: on resume, continue/ already carries the prior run's
+        # hardlink for this name. os.link would raise FileExistsError and the
+        # shutil.copy2 fallback would then raise SameFileError on the same
+        # inode. Skip if already the same file; otherwise replace.
+        if os.path.exists(dst):
+            try:
+                if os.path.samefile(task_path, dst):
+                    return
+            except OSError:
+                pass
+            try:
+                os.remove(dst)
+            except OSError:
+                pass
         try:
             os.link(task_path, dst)
         except OSError:
@@ -294,16 +308,28 @@ class Payoff:
         self._losses.update(load_payoff["losses"])
         self._games.update(load_payoff["games"])
         print(f"[Payoff] Loading payoff from {path}", flush=True)
+
+        def _load_hist(nm):
+            # Historicals are saved as `{name}_0.pt`, EXCEPT the MA-left main's
+            # historicals which add_player writes as `.task` (see add_player).
+            # Try both extensions so league resume doesn't crash on the .task ones.
+            for ext in ("pt", "task"):
+                p = f"{models_dir}/{nm}_0.{ext}"
+                if os.path.exists(p):
+                    return torch.load(p, map_location=torch.device('cpu'))
+            raise FileNotFoundError(
+                f"historical checkpoint for {nm} not found (.pt/.task) in {models_dir}")
+
         for name in set([name for name, _ in self._games.keys()]):
             if "historical" in name:
-                load_kwargs = torch.load(f"{models_dir}/{name}_0.pt", map_location=torch.device('cpu'))
+                load_kwargs = _load_hist(name)
                 cls_name, kwargs = load_kwargs["cls_name"], load_kwargs["kwargs"]
                 player = construct_player(cls_name, kwargs)
                 self._players.update({player.name: player})
         print(f"[Payoff] Loading payoff._players: {list(self._players.keys())}", flush=True)
         for name in set([name for _, name in self._games.keys()]):
             if "historical" in name:
-                load_kwargs = torch.load(f"{models_dir}/{name}_0.pt", map_location=torch.device('cpu'))
+                load_kwargs = _load_hist(name)
                 cls_name, kwargs = load_kwargs["cls_name"], load_kwargs["kwargs"]
                 player = construct_player(cls_name, kwargs)
                 self._players_other.update({player.name: player})
