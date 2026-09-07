@@ -109,6 +109,14 @@ def main() -> None:
     parser.add_argument("--output_subdir", type=str, default="",
                         help="Per-training-process subfolder for "
                              "br_rewards/ and selfplay_rewards/ outputs.")
+    parser.add_argument("--reeval_exploiter", type=str, default="",
+                        help="RE-EVAL mode: path to an already-trained exploiter "
+                             ".zip. When set, training is skipped and this "
+                             "exploiter is evaluated against the (frozen) main, "
+                             "writing to br_rewards/<output_subdir>/. Reuses the "
+                             "normal setup so state_list/full_state_list/game_args "
+                             "match the original run -- pass --output_subdir per "
+                             "checkpoint (e.g. historical_step_<N>) to segregate.")
     parser.add_argument("--training_style", type=str, default="",
                         help="Style label (spar|ippo|league|...) embedded "
                              "in the local_br_eval reward filenames.")
@@ -186,6 +194,7 @@ def main() -> None:
         # dedicated mode: from_scratch=True (BR PPO trained from scratch).
         from_scratch=True,
         exploiter_save_freq=cfg.get("exploiter_save_freq", 100000),
+        ent_coef=cfg.get("ent_coef", 0.0),
         # Required from the launcher; KeyError here means the orchestrator
         # was invoked without --br_training_steps (argparse should catch
         # that first; this is the second gate).
@@ -236,6 +245,7 @@ def main() -> None:
         is_league=is_league,
         league_matchup_states=args.league_matchup_states,
         output_subdir=args.output_subdir,
+        reeval_exploiter=args.reeval_exploiter,
         # entropy-window early-stop knobs (forwarded to Exploiter's tracker)
         entropy_stop_ratio=cfg.get("entropy_stop_ratio", 0.15),
         entropy_window_size=cfg.get("entropy_window_size", 50),

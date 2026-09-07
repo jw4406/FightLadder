@@ -5716,8 +5716,22 @@ class Exploiter(PPO):
         callback.on_rollout_end()
 
         mean_reward = None
+        # Score the EXPLOITER's own seat, matching the optimization objective
+        # (rollout_buffer.add gets `rew_other if exploited_on_left else rewards`,
+        # ~line 5695) and the per-seat Monitor returns ("r"=left/rewards,
+        # "ro"=right/rew_other; see SFMonitor in retro_wrappers.py:1011).
+        # BUG (fixed): this previously used ep_info["r"] unconditionally, so for
+        # a right-seated exploiter -- every eval_prot=True / ego-on-left run --
+        # the convergence tracker, the REWARD plot, AND the reward-stagnation
+        # early-stop all read the FROZEN MAIN's reward instead of the
+        # exploiter's. Mirror of the local_br_eval seat bug: it made a losing
+        # exploiter's plot read as a big "win" (the main's winning margin).
+        _exploited_on_left = (self.exploiting == "ego") == self.ego_is_left
+        _ekey = "ro" if _exploited_on_left else "r"
         if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-            mean_reward = safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])
+            mean_reward = safe_mean(
+                [ep_info.get(_ekey, ep_info["r"]) for ep_info in self.ep_info_buffer]
+            )
         tracker = self.br_convergence_tracker
         tracker.use_velocity_signal = bool(self.use_br_reward_stagnation)
         tracker.use_entropy_signal = bool(self.use_br_entropy_stagnation)
