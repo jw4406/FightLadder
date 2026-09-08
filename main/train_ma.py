@@ -368,6 +368,7 @@ def main():
     # parser.add_argument('--model-file', help='The model to continue to learn from')
     parser.add_argument('--save-dir', help='The directory to save the trained models', default="main/trained_models/ma")
     parser.add_argument('--resume', action='store_true', help='Resume from --save-dir: restore the payoff matrix + historical pool from the latest payoff_*.pt and continue each active learner from its latest checkpoint (weights loaded per-worker, step counter preserved).')
+    parser.add_argument('--exploit-snapshot-interval', type=int, default=0, help='If >0, periodically (every N agent-steps) dump the MA-left main to save-dir/left_exploit_snapshots/ as a step-labeled Historical (..._historical_step_N_0.task) for BR-dedicated exploitability curves. Decoupled from the league payoff/pool -- does NOT affect training. Works around MA-left rarely historical-izing (its win_rates.min()>0.7 gate is blocked by hard-counter matchups). 0 = off.')
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs/ma")
     # parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_ryu")
     # parser.add_argument('--state', help='The state file to load. By default Champion.Level1.RyuVsGuile', default=SF_DEFAULT_STATE)

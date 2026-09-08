@@ -16,7 +16,7 @@ from .algorithms import LeaguePPO, AnnealSpecialBonusCallback, AnnealInjectCallb
 from .nash import NashEquilibriumECOSSolver
 
 
-PER_HISTORICAL_STEPS = 1e7 # 5e3
+PER_HISTORICAL_STEPS = float(os.environ.get("PER_HISTORICAL_STEPS", 1e7))  # env-configurable for diagnostics; default 1e7 (fallback at 2x)
 
 
 def remove_monotonic_suffix(win_rates, players):
@@ -588,7 +588,52 @@ class Player(object):
             raise ValueError("side must be either 'left' or 'right'")
         if self.ready_to_checkpoint():
             self.add_player(self.checkpoint())
-    
+        self._maybe_exploit_snapshot()
+
+    def _maybe_exploit_snapshot(self):
+        """Periodic step-labeled snapshot of the MA-left main to a SEPARATE dir
+        (``left_exploit_snapshots/``) for exploitability analysis. Fully
+        decoupled from the league: does NOT call add_player (payoff/pool
+        unchanged) and does NOT mutate ``_checkpoint_step`` (the
+        ``ready_to_checkpoint`` gate is unaffected).
+
+        Motivation: MA-left almost never historical-izes on its own -- its
+        ``ready_to_checkpoint`` gate is ``win_rates.min() > 0.7`` against ALL
+        right historicals, which a hard-counter matchup (e.g. ChunLi vs Guile)
+        drags to ~0, so no step-labeled left historicals ever get written and no
+        ego-exploited BR curve can be built. This writes them out of band,
+        named like the right historicals (``{name}_historical_step_{step}_0.task``)
+        so the BR-dedicated pipeline consumes them directly.
+
+        Enabled by ``args.exploit_snapshot_interval`` (env-steps; 0 = off).
+        """
+        interval = int(getattr(self.args, "exploit_snapshot_interval", 0) or 0)
+        if interval <= 0 or self.agent is None:
+            return
+        if not ("MA" in self.name and self.side == "left"):
+            return
+        step = int(self.agent.get_steps())
+        last = getattr(self, "_last_exploit_snapshot_step", 0)
+        if step - last < interval:
+            return
+        self._last_exploit_snapshot_step = step
+        snap_dir = os.path.join(self.save_dir, "left_exploit_snapshots")
+        os.makedirs(snap_dir, exist_ok=True)
+        # Build a Historical named with the ACTUAL step, without permanently
+        # changing _checkpoint_step (temp-set + restore) so the league gate that
+        # reads `get_steps() - _checkpoint_step` is not perturbed.
+        _saved = self._checkpoint_step
+        self._checkpoint_step = step
+        try:
+            hist = self._create_checkpoint()
+        finally:
+            self._checkpoint_step = _saved
+        cls_name, kwargs = get_player_config(hist)
+        save_kwargs = {"cls_name": cls_name, "kwargs": kwargs}
+        path = os.path.join(snap_dir, f"{kwargs['name']}_{kwargs['checkpoint_step']}.task")
+        torch.save(save_kwargs, path)
+        print(f"[exploit_snapshot] MA-left {kwargs['name']} @step {step} -> {path}", flush=True)
+
     def sync(self):
         sync_interval = getattr(self.args, 'sync_save_interval', 0)
         if self.agent is not None and sync_interval > 0:
@@ -682,6 +727,10 @@ class MainPlayer(Player):
 
     def ready_to_checkpoint(self):
         steps_passed = self.agent.get_steps() - self._checkpoint_step
+        if os.environ.get("CKPT_DEBUG") and "MA" in self.name:
+            print(f"[ckpt_dbg] {self.name} side={self.side} agent_id={id(self.agent)} "
+                  f"get_steps={self.agent.get_steps()} ckpt_step={self._checkpoint_step} "
+                  f"steps_passed={steps_passed} PER={PER_HISTORICAL_STEPS} first_gate_pass={steps_passed >= PER_HISTORICAL_STEPS}", flush=True)
         if steps_passed < PER_HISTORICAL_STEPS:
             return False
 
@@ -728,6 +777,10 @@ class MainExploiter(Player):
 
     def ready_to_checkpoint(self):
         steps_passed = self.agent.get_steps() - self._checkpoint_step
+        if os.environ.get("CKPT_DEBUG") and "MA" in self.name:
+            print(f"[ckpt_dbg] {self.name} side={self.side} agent_id={id(self.agent)} "
+                  f"get_steps={self.agent.get_steps()} ckpt_step={self._checkpoint_step} "
+                  f"steps_passed={steps_passed} PER={PER_HISTORICAL_STEPS} first_gate_pass={steps_passed >= PER_HISTORICAL_STEPS}", flush=True)
         if steps_passed < PER_HISTORICAL_STEPS:
             return False
 
@@ -759,6 +812,10 @@ class LeagueExploiter(Player):
 
     def ready_to_checkpoint(self):
         steps_passed = self.agent.get_steps() - self._checkpoint_step
+        if os.environ.get("CKPT_DEBUG") and "MA" in self.name:
+            print(f"[ckpt_dbg] {self.name} side={self.side} agent_id={id(self.agent)} "
+                  f"get_steps={self.agent.get_steps()} ckpt_step={self._checkpoint_step} "
+                  f"steps_passed={steps_passed} PER={PER_HISTORICAL_STEPS} first_gate_pass={steps_passed >= PER_HISTORICAL_STEPS}", flush=True)
         if steps_passed < PER_HISTORICAL_STEPS:
             return False
         
@@ -942,6 +999,10 @@ class FSPPlayer(Player):
 
     def ready_to_checkpoint(self):
         steps_passed = self.agent.get_steps() - self._checkpoint_step
+        if os.environ.get("CKPT_DEBUG") and "MA" in self.name:
+            print(f"[ckpt_dbg] {self.name} side={self.side} agent_id={id(self.agent)} "
+                  f"get_steps={self.agent.get_steps()} ckpt_step={self._checkpoint_step} "
+                  f"steps_passed={steps_passed} PER={PER_HISTORICAL_STEPS} first_gate_pass={steps_passed >= PER_HISTORICAL_STEPS}", flush=True)
         if steps_passed < PER_HISTORICAL_STEPS:
             return False
 
@@ -991,6 +1052,10 @@ class PSROPlayer(Player):
 
     def ready_to_checkpoint(self):
         steps_passed = self.agent.get_steps() - self._checkpoint_step
+        if os.environ.get("CKPT_DEBUG") and "MA" in self.name:
+            print(f"[ckpt_dbg] {self.name} side={self.side} agent_id={id(self.agent)} "
+                  f"get_steps={self.agent.get_steps()} ckpt_step={self._checkpoint_step} "
+                  f"steps_passed={steps_passed} PER={PER_HISTORICAL_STEPS} first_gate_pass={steps_passed >= PER_HISTORICAL_STEPS}", flush=True)
         if steps_passed < PER_HISTORICAL_STEPS:
             return False
 
@@ -1011,6 +1076,7 @@ class PSROPlayer(Player):
             self._payoff.update(opponent_name, self.name, outcome)
         else:
             raise ValueError("side must be either 'left' or 'right'")
+        self._maybe_exploit_snapshot()
         if self.ready_to_checkpoint():
             historical_agent = self.checkpoint()
             self.add_player(historical_agent)
