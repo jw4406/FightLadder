@@ -617,22 +617,32 @@ class Player(object):
         if step - last < interval:
             return
         self._last_exploit_snapshot_step = step
-        snap_dir = os.path.join(self.save_dir, "left_exploit_snapshots")
-        os.makedirs(snap_dir, exist_ok=True)
-        # Build a Historical named with the ACTUAL step, without permanently
-        # changing _checkpoint_step (temp-set + restore) so the league gate that
-        # reads `get_steps() - _checkpoint_step` is not perturbed.
-        _saved = self._checkpoint_step
-        self._checkpoint_step = step
+        # This is a purely diagnostic, out-of-band dump. It must NEVER be able to
+        # stall or crash training, so the whole body is guarded.
         try:
-            hist = self._create_checkpoint()
-        finally:
-            self._checkpoint_step = _saved
-        cls_name, kwargs = get_player_config(hist)
-        save_kwargs = {"cls_name": cls_name, "kwargs": kwargs}
-        path = os.path.join(snap_dir, f"{kwargs['name']}_{kwargs['checkpoint_step']}.task")
-        torch.save(save_kwargs, path)
-        print(f"[exploit_snapshot] MA-left {kwargs['name']} @step {step} -> {path}", flush=True)
+            # The save dir lives on Payoff, not the Player; use the CLI save-dir
+            # (== the `todo/` dir where right historicals land).
+            base_dir = getattr(self.args, "save_dir", None) or "trained_models/ma"
+            snap_dir = os.path.join(base_dir, "left_exploit_snapshots")
+            os.makedirs(snap_dir, exist_ok=True)
+            # Build a Historical named with the ACTUAL step, without permanently
+            # changing _checkpoint_step (temp-set + restore) so the league gate that
+            # reads `get_steps() - _checkpoint_step` is not perturbed.
+            _saved = self._checkpoint_step
+            self._checkpoint_step = step
+            try:
+                hist = self._create_checkpoint()
+            finally:
+                self._checkpoint_step = _saved
+            cls_name, kwargs = get_player_config(hist)
+            save_kwargs = {"cls_name": cls_name, "kwargs": kwargs}
+            path = os.path.join(snap_dir, f"{kwargs['name']}_{kwargs['checkpoint_step']}.task")
+            torch.save(save_kwargs, path)
+            print(f"[exploit_snapshot] MA-left {kwargs['name']} @step {step} -> {path}", flush=True)
+        except Exception as e:
+            import traceback
+            print(f"[exploit_snapshot] WARN snapshot failed @step {step}: {e}", flush=True)
+            traceback.print_exc()
 
     def sync(self):
         sync_interval = getattr(self.args, 'sync_save_interval', 0)
