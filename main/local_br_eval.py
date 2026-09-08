@@ -633,10 +633,12 @@ def main() -> None:
             #         adv_side_flag=full_adv_sf,
             #     )
             else:
+                # env-sized flags: selfplay now runs on the single-matchup `env`
+                # (same as the exploiter), not full_env, so use exp_ego_sf/exp_adv_sf.
                 action, _, adv_action, _, _, _ = model.policy(
                     obs_tensor,
-                    ego_side_flag=full_ego_sf,
-                    adv_side_flag=full_adv_sf,
+                    ego_side_flag=exp_ego_sf,
+                    adv_side_flag=exp_adv_sf,
                     value_forward=False,
                     q_value_forward=False
                 )
@@ -644,20 +646,28 @@ def main() -> None:
         adv_action = adv_action.cpu().numpy()
         return np.hstack([action, adv_action])
 
-    # Which physical seat does the exploiter occupy? Mirrors the placement in
-    # exploiter_action_fn (exploited_on_left -> main left, exploiter right).
-    # We score the exploiter's OWN seat (Bug fix: the old code always summed the
-    # left/`rewards` stream, so any right-seated exploiter -- e.g. every
-    # eval_prot=True / ego-on-left run -- was silently scored on the main's
-    # stream instead, and since the rewards are not zero-sum that produced
-    # values uncorrelated with the exploiter's real performance). Selfplay uses
-    # the SAME seat so the baseline is directly comparable (what the main earns
-    # sitting where the exploiter would).
-    exploited_on_left = (args.eval_prot == ego_is_left)
-    exploiter_seat = "right" if exploited_on_left else "left"
-    exploiter_rewards = _collect_episode_returns(model, nr, exploiter_action_fn, reward_side=exploiter_seat)
-    model.env = full_env
-    selfplay_rewards = _collect_episode_returns(model, nr, selfplay_action_fn, reward_side=exploiter_seat)
+    # EGO-CENTRIC reward convention: every reported value is the EGO (left/P1)
+    # player's reward (`rewards` stream); `rew_other` (right/P2) is the adv's.
+    # All three curve series are the ego's reward under different opponents:
+    #   - adv exploited  (exploiter plays ego on the LEFT) -> drives ego UP   -> positive
+    #   - selfplay       (main vs main)                    -> baseline
+    #   - ego exploited  (exploiter plays adv on the RIGHT)-> drives ego DOWN -> negative
+    # so the series are ordered adv-exploited > selfplay > ego-exploited and
+    # never cross (for competent exploiters). We therefore score the LEFT/ego
+    # stream for both the exploiter run and the selfplay baseline -- NOT the
+    # exploiter's own seat (an earlier "fix" did that, which inverts the
+    # ego-exploited side).
+    ego_reward_side = "left"
+    exploiter_rewards = _collect_episode_returns(model, nr, exploiter_action_fn, reward_side=ego_reward_side)
+    # Selfplay baseline MUST run on the same single-matchup env (`model.env` is
+    # still `env` from the exploiter run) and the same seat, so it is
+    # main-vs-main on THIS matchup at the exploiter's seat -- directly
+    # comparable to the exploiter reward above. BUG (fixed): it previously
+    # switched to `full_env` (the main's ENTIRE state list), averaging
+    # main-vs-main across every matchup and mixing the seat's character
+    # (e.g. ChunLi in one state, Vega in another), so the per-matchup selfplay
+    # point was a global average, not this matchup's baseline.
+    selfplay_rewards = _collect_episode_returns(model, nr, selfplay_action_fn, reward_side=ego_reward_side)
 
     # TODO: write out to a file and then aggregate the results and plot
     # os.makedirs(rewards_folder, exist_ok=True)
