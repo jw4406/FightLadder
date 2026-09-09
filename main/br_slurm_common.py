@@ -791,6 +791,8 @@ def build_shared_config(args: argparse.Namespace, manual_stop_file: Optional[str
         "decision_timing": dt_prov["resolved"],
         "actionable_statuses": args.actionable_statuses,
         "dwell_frames": args.dwell_frames,
+        "charge_preserving_skip": args.charge_preserving_skip,
+        "cps_no_up": args.cps_no_up,
         "seed": args.seed,
     }
     return {
@@ -1037,6 +1039,12 @@ def add_shared_arguments(parser: argparse.ArgumentParser, *, default_processing_
                              "Default empty (unused in off mode).")
     parser.add_argument("--dwell_frames", type=int, default=1,
                         help="Dwell frames for ego/joint decision timing. Default 1.")
+    parser.add_argument("--charge_preserving_skip", choices=["True", "False"], default="True",
+                        help="BR eval env: hold last-commanded direction (charge/guard) through "
+                             "the decision-timing skip. Default True (matches make_env default).")
+    parser.add_argument("--cps_no_up", choices=["True", "False"], default="False",
+                        help="BR eval env: with charge_preserving_skip, ALSO mask the UP button "
+                             "during the skip so a held UP can't chain jumps. Default False.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--launch_local_br_eval", choices=["True", "False"], default="True")

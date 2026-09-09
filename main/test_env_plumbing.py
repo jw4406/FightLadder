@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ippo
 from common.retro_wrappers import SFWrapper
 
-EXPECTED_CHECKS = 25
+EXPECTED_CHECKS = 27
 NC = 0
 
 
@@ -89,6 +89,15 @@ chk("actionable_statuses reaches SFWrapper",
     sf.actionable_statuses == frozenset({512, 514, 520}))
 chk("dwell_frames reaches SFWrapper", sf.dwell_frames == 4)
 chk("max_skip_frames reaches SFWrapper", sf.max_skip_frames == 120)
+env.close(); del env, sf
+
+# charge_preserving_skip: NEW training default is True; must reach SFWrapper and be togglable
+env, sf = build()
+chk("default charge_preserving_skip is True", sf.charge_preserving_skip is True)
+env.close(); del env, sf
+
+env, sf = build(charge_preserving_skip=False)
+chk("charge_preserving_skip=False reaches SFWrapper", sf.charge_preserving_skip is False)
 env.close(); del env, sf
 
 # --- per-ego / per-seat special-move macros reach SFWrapper via ippo.make_env ---

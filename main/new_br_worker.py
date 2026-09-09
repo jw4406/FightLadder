@@ -446,9 +446,19 @@ class _FixedMatchupPolicyAdapter:
         return getattr(self._base_policy, name)
 
 
-def _is_ego_left_for_state(loaded_model, dedicated_state: str) -> bool:
-    """In mirror-mode models, the first half of unique states have ego on the left (P1)
-    and the second half have ego on the right (P2). Returns True if ego is P1/left."""
+def _is_ego_left_for_state(loaded_model, dedicated_state: str, use_mirror: bool = False) -> bool:
+    """Return True if the ego (protagonist) occupies the LEFT/P1 seat for this state.
+
+    Prefer the model's AUTHORITATIVE `ego_side` attribute (the CDS policy records
+    it, e.g. 'left'). The first-half/second-half split only encodes seat for
+    MIRROR-augmented models; for a NON-mirror model it is wrong -- a single-matchup
+    model has halfway=0, so `idx < halfway` returns False for a state whose ego is
+    plainly on the left, inverting the exploitability curve. Fall back to the split
+    only for mirror models (or legacy checkpoints with no ego_side)."""
+    model_mirror = bool(getattr(loaded_model, "use_mirror", use_mirror))
+    if not model_mirror:
+        # Non-mirror: ego is on the left unless the model explicitly records right.
+        return getattr(loaded_model, "ego_side", None) != "right"
     unique_states = getattr(loaded_model, "_worker_unique_states", None)
     if not isinstance(unique_states, list) or len(unique_states) == 0:
         return True
@@ -628,19 +638,39 @@ class _LeaguePolicyAdapter:
 # `.task` (renamed copies queued for the BR worker). The two extensions are
 # byte-identical torch.save dumps; only the suffix differs based on whether
 # the snapshot is at-rest or in the queue.
+# Right-side league/psro checkpoints. The role prefix is any `[A-Z]+\d+`
+# tag emitted by common.league._agent_name -- MA/LE (League main/exploiter),
+# PSRO (PSROLeague players), etc. Matching only MA/LE here silently dropped
+# PSRO0_right_* siblings, which made _infer_league_matchup_states_from_dir
+# raise FileNotFoundError for every PSRO left-main BR target. The broadened
+# prefix mirrors _LEAGUE_RIGHT_ANY_RE below.
 _LEAGUE_RIGHT_RE = re.compile(
-    r"^MA\d+_right_m_\d+_(?P<left_char>[a-z0-9]+)_vs_(?P<right_char>[a-z0-9]+)_\d+_\d{8}_\d{6}\.(?:pt|task)$"
+    r"^[A-Z]+\d+_right_m_\d+_(?P<left_char>[a-z0-9]+)_vs_(?P<right_char>[a-z0-9]+)_\d+_\d{8}_\d{6}\.(?:pt|task)$"
 )
-_BACKUP_LEAGUE_RIGHT_RE = re.compile(
-    r"^LE\d+_right_m_\d+_(?P<left_char>[a-z0-9]+)_vs_(?P<right_char>[a-z0-9]+)_\d+_\d{8}_\d{6}\.(?:pt|task)$"
-)
+
+# Canonical SF character spellings as they appear in retro state filenames
+# (two_player/<Char>_left/Champion.Level1.<Char>Vs<Char>.2Player.state). Most
+# are a plain .capitalize(), but three are camel-cased -- getting these wrong
+# builds a nonexistent .state path, so retro's get_file_path() returns None and
+# gzip.open(None) raises "filename must be a str or bytes object" deep in env
+# creation. Lowercase keys match _extract_chars_from_state_name / the filename
+# tokens (ehonda/mbison/chunli).
+_CANON_SF_CHAR = {
+    "ryu": "Ryu", "ehonda": "EHonda", "blanka": "Blanka", "guile": "Guile",
+    "balrog": "Balrog", "vega": "Vega", "ken": "Ken", "chunli": "ChunLi",
+    "zangief": "Zangief", "dhalsim": "Dhalsim", "sagat": "Sagat", "mbison": "MBison",
+}
+
+def _canon_sf_char(c: str) -> str:
+    return _CANON_SF_CHAR.get(str(c).lower(), str(c).capitalize())
 
 def _infer_league_matchup_states_from_dir(task_file_path: str) -> List[str]:
     """
-    Scan sibling MA*_right* .pt files to infer matchup states for a MA*_left task.
+    Scan sibling *_right_* .pt files to infer matchup states for a *_left task.
 
-    Right-model filenames follow the pattern produced by ``league._agent_name``:
-        ``MA0_right_m_00_<right_char>_vs_<left_char>_<step>.pt``
+    Right-model filenames follow the pattern produced by ``league._agent_name``,
+    with any ``[A-Z]+\\d+`` role prefix (MA/LE for League, PSRO for PSROLeague):
+        ``<ROLE>_right_m_00_<right_char>_vs_<left_char>_<step>.pt``
 
     We extract character pairs, build retro state strings in the same format
     used by ``train_ma._build_states_from_roster``, and return unique states
@@ -650,7 +680,7 @@ def _infer_league_matchup_states_from_dir(task_file_path: str) -> List[str]:
     seen = set()
     states: List[str] = []
     for fname in sorted(os.listdir(model_dir)):
-        m = _LEAGUE_RIGHT_RE.match(fname) or _BACKUP_LEAGUE_RIGHT_RE.match(fname)
+        m = _LEAGUE_RIGHT_RE.match(fname)
         if m is None:
             continue
         right_char = m.group("right_char")
@@ -659,8 +689,8 @@ def _infer_league_matchup_states_from_dir(task_file_path: str) -> List[str]:
         if key in seen:
             continue
         seen.add(key)
-        left_title = left_char.capitalize()
-        right_title = right_char.capitalize()
+        left_title = _canon_sf_char(left_char)
+        right_title = _canon_sf_char(right_char)
         state = (
             f"two_player/{left_title}_left/"
             f"Champion.Level1.{left_title}Vs{right_title}.2Player.state"
@@ -669,7 +699,7 @@ def _infer_league_matchup_states_from_dir(task_file_path: str) -> List[str]:
 
     if not states:
         raise FileNotFoundError(
-            f"Could not infer league matchup states: no MA*_right*.pt files "
+            f"Could not infer league matchup states: no *_right_*.pt files "
             f"found in {model_dir}"
         )
     return states
@@ -767,6 +797,20 @@ def load_league_model(
         constructor_args.log_dir = "logs/ma"
 
     first_state = league_matchup_states[0]
+    # Action-space sizing must match the CHECKPOINT, not the flipped `side`.
+    # The env action space is `build_sf_combos(ego_char)` (uniform across both
+    # seats), and characters differ in combo count (e.g. Guile=66 vs Vega=65).
+    # league_constructor defaults ego_char from `side`; because we flip `side`
+    # (left->right) for the train-side convention, that default sizes the head
+    # by the OPPONENT's char and set_parameters below fails with a 66-vs-65
+    # action_net size mismatch. Pin ego_char to the checkpoint's OWN-side char
+    # (loaded_side, pre-flip) so the reconstructed heads match the saved
+    # weights -- exactly the env config the checkpoint was trained under. The
+    # train-side (which seat learns) is set later from eval_prot, independent
+    # of this.
+    from train_ma import _extract_chars_from_state_name
+    _lc, _rc = _extract_chars_from_state_name(first_state)
+    ckpt_ego_char = _lc if loaded_side == "left" else _rc
     league_model = league_constructor(
         constructor_args,
         side,
@@ -774,6 +818,7 @@ def load_league_model(
         single_env=False,
         state_name=first_state,
         matchup_key="left_vs_all",
+        ego_char=ckpt_ego_char,
     )
     league_model.set_parameters(agent_dict)
 
@@ -1206,6 +1251,10 @@ def train_best_response(
     br_index: int = 0,
     from_scratch: bool = False,
     exploiter_save_freq: int = 100000,
+    # PPO exploration bonus for the dedicated Exploiter. Default 0.0 preserves
+    # legacy behavior; >0 (e.g. 0.01) keeps the from-scratch BR exploring so it
+    # doesn't collapse into a mediocre basin against a mature main.
+    ent_coef: float = 0.0,
     br_tracker_patience: int = 20,
     br_tracker_tolerance: float = 1e-4,
     br_tracker_window_size: int = 50,
@@ -1242,6 +1291,7 @@ def train_best_response(
     periodic_eval_freq: int = 5_000_000,
     use_wandb: bool = True,
     output_subdir: str = "",
+    reeval_exploiter: str = "",
     entropy_stop_ratio: float = 0.15,
     entropy_window_size: int = 50,
     entropy_warmup_checks: int = 100,
@@ -1316,7 +1366,7 @@ def train_best_response(
 
     # 3. Create a new agent to be the best response
     dedicated_state = dedicated_state_subset[0] if dedicated_state_subset else None
-    ego_is_left = _is_ego_left_for_state(ftm, dedicated_state) if dedicated_state else True
+    ego_is_left = _is_ego_left_for_state(ftm, dedicated_state, use_mirror) if dedicated_state else True
     br_agent = Exploiter(
         'CnnPolicy' if is_image_space(env.observation_space) else 'MlpPolicy',
         env,
@@ -1325,6 +1375,7 @@ def train_best_response(
         n_steps=1024,
         batch_size=512,
         n_epochs=4,
+        ent_coef=ent_coef,
         exploiting='ego' if eval_prot is True else 'adv',
         ego_is_left=ego_is_left,
         br_tracker_patience=br_tracker_patience,
@@ -1384,7 +1435,7 @@ def train_best_response(
     # still leaves usable artifacts on disk. Only attach when the
     # final-eval gate is on — `launch_local_br_eval=False` means the
     # user doesn't want ANY eval invocations from this worker.
-    if launch_local_br_eval:
+    if launch_local_br_eval and not reeval_exploiter:
         periodic_eval_callback = PeriodicLocalBREvalCallback(
             freq=periodic_eval_freq,
             script_path=os.path.join(current_dir, "local_br_eval.py"),
@@ -1421,7 +1472,16 @@ def train_best_response(
      
     if eval_only == False:
         print("eval_only was passed as False. Training the BR agent.")
-        if from_scratch == True:
+        if reeval_exploiter:
+            # Re-eval mode: skip ALL training (both from-scratch and continue
+            # paths) but STAY inside this block so the final local_br_eval
+            # below still runs. Every eval input (checkpoint_path,
+            # done_model_checkpoint_path, ftm.state_list, effective_state_list,
+            # game_args) is already set up above, so the eval matches the
+            # original run exactly -- only output_subdir is set per-checkpoint
+            # by the caller. br_model_path picks up reeval_exploiter below.
+            print(f"[reeval] skipping training; evaluating {os.path.basename(reeval_exploiter)}", flush=True)
+        elif from_scratch == True:
             if hasattr(br_agent, "br_convergence_tracker") and br_agent.br_convergence_tracker is not None:
                 matchup_tag = f"_{_sanitize_for_filename(matchup_label)}" if matchup_label is not None else ""
                 br_agent.br_convergence_tracker.local_plot_prefix = f"dedicated_exploiter_{stop_key}{matchup_tag}_{checkpoint_basename}"
@@ -1592,7 +1652,14 @@ def train_best_response(
             ftm.use_wandb = use_wandb
             ftm.br_manual_stop_key = stop_key
             ftm._checkpoint_basename = checkpoint_basename
-            if is_spar_like:
+            if reeval_exploiter:
+                # Re-eval mode: skip training entirely and just evaluate the
+                # already-trained exploiter passed in. All the setup above
+                # (env, state_list, full_state_list=ftm.state_list, done_model,
+                # game_args) is reused so the eval matches the original run --
+                # only output_subdir is set per-checkpoint by the caller.
+                print(f"[reeval] skipping training; evaluating {os.path.basename(reeval_exploiter)}", flush=True)
+            elif is_spar_like:
 
                 ftm.learn(total_timesteps=br_training_steps, callback=train_callback, update_ego=not eval_prot, update_adversary=eval_prot)
             elif isinstance(ftm, LeaguePPO):
@@ -1624,10 +1691,21 @@ def train_best_response(
         #br_agent.learn(total_timesteps=br_training_steps, callback=exploiter_callback)
 
         local_plot_and_eval_file = os.path.join(current_dir, "local_br_eval.py")
-        
+
+        # Main-checkpoint step for the reward filename's leading number (the
+        # aggregator x-axis). League/PSRO mains load with num_timesteps==0, so
+        # parse the step out of the checkpoint name (e.g.
+        # "..._historical_step_20000712_0"); -1 lets local_br_eval fall back to
+        # model.num_timesteps for SPAR/IPPO mains that restore it correctly.
+        _main_step_match = re.search(r"historical_step_(\d+)", checkpoint_basename)
+        if not _main_step_match and output_subdir:
+            _main_step_match = re.search(r"historical_step_(\d+)", output_subdir)
+        main_step_for_eval = int(_main_step_match.group(1)) if _main_step_match else -1
+
         br_interval_num = exploiter_callback.n_calls * env.num_envs // exploiter_callback.save_freq
         #br_model_path = os.path.join(BR_MODEL_DIR, f"{br_model_name}_{br_interval_num}000_steps.zip")
-        br_model_path = exploiter_callback.model_path
+        # In re-eval mode use the supplied exploiter; otherwise the one this run trained.
+        br_model_path = reeval_exploiter if reeval_exploiter else exploiter_callback.model_path
         if launch_local_br_eval:
             subprocess.run([sys.executable, local_plot_and_eval_file,
             "--eval_prot", str(eval_prot),
@@ -1651,6 +1729,9 @@ def train_best_response(
             # unsegregated layout. Computed by the launcher from the source
             # dir (league) or the .task filename prefix (SPAR).
             "--output_subdir", output_subdir,
+            # Explicit main checkpoint step for the filename leading number
+            # (x-axis). -1 => local_br_eval uses model.num_timesteps.
+            "--main_step", str(main_step_for_eval),
             # Training style label embedded in the .txt filenames so the
             # downstream aggregator can include it in plot filenames.
             # "league" for LeaguePPO; otherwise the CDS arch ("ippo" or
@@ -1677,6 +1758,7 @@ def run_br_for_task_in_subprocess(
     br_index: int,
     from_scratch: bool = False,
     exploiter_save_freq: int = 100000,
+    ent_coef: float = 0.0,
     br_tracker_patience: int = 10,
     br_tracker_tolerance: float = 1e-4,
     br_tracker_window_size: int = 50,
@@ -1715,6 +1797,7 @@ def run_br_for_task_in_subprocess(
     is_league: bool = False,
     league_matchup_states: Optional[List[str]] = None,
     output_subdir: str = "",
+    reeval_exploiter: str = "",
     entropy_stop_ratio: float = 0.15,
     entropy_window_size: int = 50,
     entropy_warmup_checks: int = 100,
@@ -1871,6 +1954,7 @@ def run_br_for_task_in_subprocess(
         br_index=br_index,
         from_scratch = from_scratch,
         exploiter_save_freq=exploiter_save_freq,
+        ent_coef=ent_coef,
         br_tracker_patience=br_tracker_patience,
         br_tracker_tolerance=br_tracker_tolerance,
         br_tracker_window_size=br_tracker_window_size,
@@ -1907,6 +1991,7 @@ def run_br_for_task_in_subprocess(
         periodic_eval_freq=periodic_eval_freq,
         use_wandb=use_wandb,
         output_subdir=output_subdir,
+        reeval_exploiter=reeval_exploiter,
         entropy_stop_ratio=entropy_stop_ratio,
         entropy_window_size=entropy_window_size,
         entropy_warmup_checks=entropy_warmup_checks,

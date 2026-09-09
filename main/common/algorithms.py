@@ -5715,6 +5715,12 @@ class Exploiter(PPO):
         callback.on_rollout_end()
 
         mean_reward = None
+        # EGO-CENTRIC: ep_info["r"] is the ego (left/P1) reward. The tracker /
+        # REWARD plot / reward-stagnation early-stop all report the ego reward,
+        # consistent with the ego-centric convention used everywhere. (An
+        # earlier change scored the exploiter's own seat here; reverted -- the
+        # exploiter still OPTIMIZES its seat via rollout_buffer, this is only the
+        # monitoring signal.)
         if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
             mean_reward = safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer])
         tracker = self.br_convergence_tracker

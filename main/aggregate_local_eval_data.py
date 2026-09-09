@@ -884,6 +884,68 @@ def _process_run(input_dir, output_dir, label, selfplay_dir=None,
     }
 
 
+def _auto_merge_family(family):
+    """Merge every ``/n/fs/magics/br_<family>_*`` workspace's BR + selfplay
+    eval files into one tree and return its ``br_rewards`` path.
+
+    The mains/curve are split across many workspaces (matchup-sibling
+    isolation), so each writes its own ``br_rewards/<output_subdir>/*.txt``.
+    Eval filenames encode ``{num_timesteps}_main_{side}_{main_name}_...`` and
+    are globally unique, so a symlink merge that preserves the output_subdir
+    bucket reconstructs the full exploitability curve with no data copy. Rebuilt
+    fresh each call so removed/renamed workspaces don't leave stale links.
+    """
+    import glob
+    import shutil
+
+    magics = "/n/fs/magics"
+    root = os.path.join(magics, "br_eval_merged", family)
+    br_out = os.path.join(root, "br_rewards")
+    sp_out = os.path.join(root, "selfplay_rewards")
+    shutil.rmtree(root, ignore_errors=True)
+    os.makedirs(br_out, exist_ok=True)
+    os.makedirs(sp_out, exist_ok=True)
+
+    nws = nbr = nsp = 0
+    for ws in sorted(glob.glob(os.path.join(magics, "br_%s_*" % family))):
+        base = os.path.join(ws, "FightLadder", "main")
+        if not os.path.isdir(os.path.join(base, "br_rewards")):
+            continue
+        nws += 1
+        for kind, dst in (("br_rewards", br_out), ("selfplay_rewards", sp_out)):
+            src = os.path.join(base, kind)
+            if not os.path.isdir(src):
+                continue
+            # FLATTEN the per-checkpoint historical_step_<N>/ buckets (across
+            # all workspaces) into a single dir. Safe because the reward
+            # filename now carries the main checkpoint step as its leading
+            # number (see local_br_eval.py --main_step):
+            # {style}_{step}_main_{side}_{name}_exploiter_... is unique per
+            # (checkpoint, side, matchup, br_idx) within a family, so collapsing
+            # the subfolders lets aggregate parse every timestep into ONE curve
+            # instead of a separate single-point plot per bucket.
+            #
+            # ONLY historical_step_*/ is included -- deliberately excluding:
+            #   * todo/        -- stale COLLIDED originals (all mislabeled step 0,
+            #                     same filenames as the real step-0 reeval files;
+            #                     including them would clobber the step-0 point);
+            #   * loose top-level *.txt -- unrelated older BR eval data seeded
+            #                     into these workspaces (different matchups).
+            # The reeval pass writes the canonical curve exclusively under
+            # historical_step_<N>/, so that glob is exactly the recovered curve.
+            for f in glob.glob(os.path.join(src, "historical_step_*", "*.txt")):
+                link = os.path.join(dst, os.path.basename(f))
+                if not os.path.lexists(link):
+                    os.symlink(f, link)
+                    if kind == "br_rewards":
+                        nbr += 1
+                    else:
+                        nsp += 1
+    print("[--family %s] merged %d workspace(s): %d br + %d selfplay files -> %s"
+          % (family, nws, nbr, nsp, br_out))
+    return br_out
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -928,7 +990,21 @@ def main():
              "stored) and reproduces the pre-2026-08-05 plots. trained_br is "
              "never touched -- that family is not stored as negations.",
     )
+    parser.add_argument(
+        "--family",
+        choices=["psro", "league"],
+        default=None,
+        help="Convenience: auto-merge ALL /n/fs/magics/br_<family>_* workspaces' "
+             "br_rewards (+ selfplay) into one temp tree and plot the full curve, "
+             "so you never have to remember to run merge_br_rewards_for_plot.sh "
+             "first. Overrides --br_rewards_dir when given.",
+    )
     args = parser.parse_args()
+
+    # --family: fold the fragmented per-workspace br_rewards into one merged
+    # tree (symlinks; filenames are globally unique) and point everything at it.
+    if args.family:
+        args.br_rewards_dir = _auto_merge_family(args.family)
 
     # Default selfplay dir = sibling of br_rewards_dir. local_br_eval.py
     # writes to "selfplay_rewards" in the same parent as "br_rewards", so

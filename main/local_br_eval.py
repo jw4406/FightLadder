@@ -165,6 +165,13 @@ def build_parser() -> argparse.ArgumentParser:
     # can surface it in plot filenames. Empty string preserves the legacy
     # unprefixed filename format.
     parser.add_argument("--training_style", type=str, default="")
+    # Explicit main-checkpoint step to use as the leading number in the reward
+    # filename (the aggregator's x-axis, parsed by FILENAME_RE as
+    # `<timestep>_main_...`). Needed because league/PSRO mains load with
+    # model.num_timesteps == 0, so without this every checkpoint collides at
+    # timestep 0. When < 0 (default) we fall back to model.num_timesteps,
+    # preserving legacy behavior for SPAR/IPPO mains that restore it correctly.
+    parser.add_argument("--main_step", type=int, default=-1)
     parser.add_argument(
         "--filename_suffix",
         type=str,
@@ -189,18 +196,37 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _extract_step_outputs(step_output):
-    """Handle both 2-player VecEnv step signatures and standard Gym-style signatures."""
+    """Handle both 2-player VecEnv step signatures and standard Gym-style signatures.
+
+    The 2-player env returns (obs, rewards, rew_other, dones, infos): `rewards`
+    is the LEFT/P1 stream, `rew_other` the RIGHT/P2 stream (the two are NOT
+    negatives of each other -- the zero-sum assert in Exploiter.collect_rollouts
+    is disabled). We return BOTH so the caller can score whichever seat the
+    exploiter actually occupies (see _collect_episode_returns.reward_side); the
+    old code always took `rewards` (left), which mis-scored any run where the
+    exploiter sits on the right. Single-stream (4-tuple) envs mirror the one
+    reward to both seats so seat selection is a no-op there.
+    """
     if len(step_output) == 5:
-        obs, reward, _, done, info = step_output
+        obs, reward_left, reward_right, done, info = step_output
     else:
-        obs, reward, done, info = step_output
-    reward = np.asarray(reward).reshape(-1)
+        obs, reward_left, done, info = step_output
+        reward_right = reward_left
+    reward_left = np.asarray(reward_left).reshape(-1)
+    reward_right = np.asarray(reward_right).reshape(-1)
     done = np.asarray(done).reshape(-1).astype(bool)
-    return obs, reward, done, info
+    return obs, reward_left, reward_right, done, info
 
 
-def _collect_episode_returns(model, target_episodes, action_fn):
-    """Collect per-episode returns from vectorized envs that finish asynchronously."""
+def _collect_episode_returns(model, target_episodes, action_fn, reward_side="left"):
+    """Collect per-episode returns from vectorized envs that finish asynchronously.
+
+    reward_side selects which player's reward stream to accumulate: "left"
+    (P1, `rewards`) or "right" (P2, `rew_other`). Must match the seat the
+    exploiter occupies so the eval scores the exploiter's own return -- the
+    same selection Exploiter.collect_rollouts makes via
+    `rew_other if exploited_on_left else rewards`.
+    """
     obs = model.env.reset()
     n_envs = model.env.num_envs
     running_returns = np.zeros(n_envs, dtype=np.float32)
@@ -208,7 +234,8 @@ def _collect_episode_returns(model, target_episodes, action_fn):
 
     while len(finished_returns) < target_episodes:
         clipped_action = action_fn(obs)
-        obs, reward, done, info = _extract_step_outputs(model.env.step(clipped_action))
+        obs, reward_left, reward_right, done, info = _extract_step_outputs(model.env.step(clipped_action))
+        reward = reward_right if reward_side == "right" else reward_left
         running_returns += reward
 
         done_indices = np.where(done)[0]
@@ -462,7 +489,10 @@ def main() -> None:
             "detection_path": "dedicated Exploiter (Exploiter.load)",
         }
 
-    nr = 50
+    # Episodes averaged per eval point. Overridable via env var so callers can
+    # trade eval cost for lower-variance estimates without re-plumbing args
+    # (50 games is very noisy for SF2's +/-300 per-episode returns).
+    nr = int(os.environ.get("BR_EVAL_EPISODES", "50"))
     exploiter_rewards, selfplay_rewards = [], []
     model_policy_for_eval = model.policy
     use_fixed_matchup_adapter = False
@@ -484,7 +514,19 @@ def main() -> None:
                 )
                 use_fixed_matchup_adapter = True
                 halfway = len(model_unique_states) // 2
-                ego_is_left = fixed_matchup_idx < halfway
+                # ego_is_left is the ego's PHYSICAL seat for this state. Read it
+                # from the model's AUTHORITATIVE `ego_side` (the CDS policy records
+                # it). The old `fixed_matchup_idx < halfway` heuristic only holds
+                # for MIRROR-augmented models (first half ego-left, second half
+                # ego-right); for a non-mirror / single-matchup model halfway=0 so
+                # it always returned False, inverting the whole exploitability
+                # curve. (NB `args.use_mirror` is a *string* here, so `if
+                # args.use_mirror` is truthy even for "False" -- use the model's
+                # real bool instead.)
+                if bool(getattr(model, "use_mirror", False)):
+                    ego_is_left = fixed_matchup_idx < halfway
+                else:
+                    ego_is_left = getattr(model, "ego_side", None) != "right"
                 print(
                     "Configured fixed-matchup eval adapter: "
                     f"state={dedicated_state}, fixed_matchup_idx={fixed_matchup_idx}, "
@@ -497,7 +539,13 @@ def main() -> None:
     def _build_side_flags(n_envs, reduced_state_list, full_state_list, use_mirror):
         if len(set(reduced_state_list)) ==1:
             index = full_state_list.index(reduced_state_list[0])
-            ego_is_left = index < len(full_state_list) // 2
+            # Authoritative ego seat from the model; half-split only for mirror
+            # models (see ego_is_left resolution above). `use_mirror` arg is a
+            # string, so use the model's real bool.
+            if bool(getattr(model, "use_mirror", False)):
+                ego_is_left = index < len(full_state_list) // 2
+            else:
+                ego_is_left = getattr(model, "ego_side", None) != "right"
             vals = np.zeros(n_envs, dtype=np.float32) if ego_is_left else np.ones(n_envs, dtype=np.float32)
             return th.tensor(vals, device=model.device).unsqueeze(1), 1.0 - th.tensor(vals, device=model.device).unsqueeze(1)
         if use_mirror:
@@ -603,10 +651,12 @@ def main() -> None:
             #         adv_side_flag=full_adv_sf,
             #     )
             else:
+                # env-sized flags: selfplay now runs on the single-matchup `env`
+                # (same as the exploiter), not full_env, so use exp_ego_sf/exp_adv_sf.
                 action, _, adv_action, _, _, _ = model.policy(
                     obs_tensor,
-                    ego_side_flag=full_ego_sf,
-                    adv_side_flag=full_adv_sf,
+                    ego_side_flag=exp_ego_sf,
+                    adv_side_flag=exp_adv_sf,
                     value_forward=False,
                     q_value_forward=False
                 )
@@ -614,9 +664,28 @@ def main() -> None:
         adv_action = adv_action.cpu().numpy()
         return np.hstack([action, adv_action])
 
-    exploiter_rewards = _collect_episode_returns(model, nr, exploiter_action_fn)
-    model.env = full_env
-    selfplay_rewards = _collect_episode_returns(model, nr, selfplay_action_fn)
+    # EGO-CENTRIC reward convention: every reported value is the EGO (left/P1)
+    # player's reward (`rewards` stream); `rew_other` (right/P2) is the adv's.
+    # All three curve series are the ego's reward under different opponents:
+    #   - adv exploited  (exploiter plays ego on the LEFT) -> drives ego UP   -> positive
+    #   - selfplay       (main vs main)                    -> baseline
+    #   - ego exploited  (exploiter plays adv on the RIGHT)-> drives ego DOWN -> negative
+    # so the series are ordered adv-exploited > selfplay > ego-exploited and
+    # never cross (for competent exploiters). We therefore score the LEFT/ego
+    # stream for both the exploiter run and the selfplay baseline -- NOT the
+    # exploiter's own seat (an earlier "fix" did that, which inverts the
+    # ego-exploited side).
+    ego_reward_side = "left"
+    exploiter_rewards = _collect_episode_returns(model, nr, exploiter_action_fn, reward_side=ego_reward_side)
+    # Selfplay baseline MUST run on the same single-matchup env (`model.env` is
+    # still `env` from the exploiter run) and the same seat, so it is
+    # main-vs-main on THIS matchup at the exploiter's seat -- directly
+    # comparable to the exploiter reward above. BUG (fixed): it previously
+    # switched to `full_env` (the main's ENTIRE state list), averaging
+    # main-vs-main across every matchup and mixing the seat's character
+    # (e.g. ChunLi in one state, Vega in another), so the per-matchup selfplay
+    # point was a global average, not this matchup's baseline.
+    selfplay_rewards = _collect_episode_returns(model, nr, selfplay_action_fn, reward_side=ego_reward_side)
 
     # TODO: write out to a file and then aggregate the results and plot
     # os.makedirs(rewards_folder, exist_ok=True)
@@ -644,8 +713,12 @@ def main() -> None:
     # so canonical filenames remain unchanged (and the aggregator
     # regex keeps matching).
     suffix_part = f"{args.filename_suffix}_" if args.filename_suffix else ""
+    # Leading number = the aggregator's x-axis (main checkpoint step). Prefer
+    # the explicit --main_step override (league/PSRO mains load with
+    # num_timesteps==0); fall back to model.num_timesteps for SPAR/IPPO.
+    main_step_for_name = args.main_step if args.main_step >= 0 else model.num_timesteps
     filename = (
-        f"{style_prefix}{model.num_timesteps}_main_{main_side}_{main_name}_"
+        f"{style_prefix}{main_step_for_name}_main_{main_side}_{main_name}_"
         f"exploiter_{exploiter_side}_{exploiter_name}_"
         f"{exp_type}_br{args.br_index}_{suffix_part}.txt"
     )

@@ -1,4 +1,5 @@
 import os, sys
+import glob
 import torch
 import argparse
 import multiprocessing
@@ -255,6 +256,54 @@ def restore_worker(idx, learner, total_steps, rollout_opponent_num):
         learner.player._initial_weights = learner.player._initial_weights_restore # restore the initial weights to the reset weights
         learner.run(total_timesteps=total_steps, rollout_opponent_num=rollout_opponent_num, reset_num_timesteps=False) # NOTE: do not reset num_timesteps so that the timesteps are restored
 
+
+def _latest_active_ckpt(save_dir, name, allowed=None):
+    """Latest NON-historical checkpoint file for an active player, or None.
+
+    Active players are saved by Payoff.add_player as `{name}_{step}_{ts}.pt`
+    (or `.task` for the MA-left main). Historical pool snapshots share the
+    parent's name prefix but carry `historical` in the basename -- excluded here.
+
+    `allowed`, when given, restricts candidates to that set of pre-existing
+    paths. This is REQUIRED for resume: league construction writes fresh
+    step-0 checkpoints of the active players at startup, and those would
+    otherwise win the latest-mtime pick over the real trained checkpoint.
+    """
+    cands = []
+    for ext in ("pt", "task"):
+        for f in glob.glob(os.path.join(save_dir, f"{name}_*.{ext}")):
+            if "historical" in os.path.basename(f):
+                continue
+            if allowed is not None and f not in allowed:
+                continue
+            cands.append(f)
+    return max(cands, key=os.path.getmtime) if cands else None
+
+
+def resume_worker(idx, learner, total_steps, rollout_opponent_num, ckpt_path):
+    """Like worker(), but continues an active learner from its saved weights.
+
+    The load happens HERE (in the child, post-fork) -- setting `_initial_weights`
+    / `_checkpoint_step` before construct_agent() picks them up via
+    set_parameters()/set_steps(). Loading in the child (vs the parent) is what
+    makes the parallel path work: no torch model is pickled across the Process
+    boundary (only the ckpt path string is). reset_num_timesteps=False so the
+    step counter continues from the checkpoint.
+    """
+    player = learner.player
+    if ckpt_path and os.path.exists(ckpt_path):
+        load_kwargs = torch.load(ckpt_path, map_location="cpu")["kwargs"]
+        player._initial_weights = load_kwargs["agent_dict"]
+        player._checkpoint_step = load_kwargs.get("checkpoint_step", 0)
+        print(f"[resume] {player.name} loaded step {player._checkpoint_step} "
+              f"from {os.path.basename(ckpt_path)}", flush=True)
+    else:
+        print(f"[resume] {player.name}: no active checkpoint found -> fresh init", flush=True)
+    print(f"resume_worker {player.name} start", flush=True)
+    with torch.cuda.device(idx % torch.cuda.device_count()):
+        player.construct_agent()
+        learner.run(total_timesteps=total_steps, rollout_opponent_num=rollout_opponent_num, reset_num_timesteps=False)
+
 #Added the default opponent so the opponent can be added to the end to not change the order of varaibles.
 def constructor(args, side, log_name=None, single_env=False, opponent: str="ryu", state_name: str=None, matchup_key: str=None, sticky_prob=None, ego_char=None):
     """
@@ -318,6 +367,7 @@ def main():
     parser.add_argument('--reset', choices=['round', 'match', 'game'], help='Reset stats for a round, a match, or the whole game', default='round')
     # parser.add_argument('--model-file', help='The model to continue to learn from')
     parser.add_argument('--save-dir', help='The directory to save the trained models', default="main/trained_models/ma")
+    parser.add_argument('--resume', action='store_true', help='Resume from --save-dir: restore the payoff matrix + historical pool from the latest payoff_*.pt and continue each active learner from its latest checkpoint (weights loaded per-worker, step counter preserved).')
     parser.add_argument('--log-dir', help='The directory to save logs', default="logs/ma")
     # parser.add_argument('--model-name-prefix', help='The prefix of the model names to save', default="ppo_ryu")
     # parser.add_argument('--state', help='The state file to load. By default Champion.Level1.RyuVsGuile', default=SF_DEFAULT_STATE)
@@ -420,6 +470,14 @@ def main():
     
     with PayoffManager() as manager:
         shared_payoff = manager.Payoff(args.save_dir)
+        # Snapshot checkpoints that exist BEFORE league construction -- the
+        # league writes fresh step-0 checkpoints of the active players at init,
+        # which must not be mistaken for the trained ones during resume.
+        _resume_preexisting = None
+        if getattr(args, "resume", False):
+            _resume_preexisting = set(
+                glob.glob(os.path.join(args.save_dir, "*.pt"))
+                + glob.glob(os.path.join(args.save_dir, "*.task")))
         if args.fsp_league:
             league = FSPLeague(args=args, initial_agents=initial_agents, constructor=constructor, payoff=shared_payoff, main_agents=1)
         elif args.psro_league:
@@ -434,14 +492,38 @@ def main():
         #     learner = Learner(player)
         #     worker(idx, learner, args.total_steps, args.rollout_opponent_num)
         
-        # TODO: This is the parallel version that doesn't work for some reason. Uncomment this block when done debugging the serial version.
+        # --- Resume: restore payoff matrix + historical pool, then continue
+        #     each active learner from its latest checkpoint. Weights are loaded
+        #     inside each worker (see resume_worker) to avoid pickling models
+        #     across the Process boundary. ---
+        resume_ckpts = {}
+        if getattr(args, "resume", False):
+            # Select the payoff from the PRE-EXISTING snapshot -- league
+            # construction above already wrote a fresh payoff_*.pt (with only
+            # the initial step-0 historicals), which would otherwise win the
+            # sorted()[-1] pick and wipe the trained win/loss history + pool.
+            payoff_files = sorted(
+                f for f in _resume_preexisting
+                if os.path.basename(f).startswith("payoff_") and f.endswith(".pt"))
+            if not payoff_files:
+                raise FileNotFoundError(
+                    f"--resume set but no pre-existing payoff_*.pt found in {args.save_dir}")
+            print(f"[resume] restoring payoff from {os.path.basename(payoff_files[-1])}", flush=True)
+            shared_payoff.load(payoff_files[-1])
+            for idx in range(league.size()):
+                nm = league.get_player(idx).name
+                resume_ckpts[nm] = _latest_active_ckpt(args.save_dir, nm, allowed=_resume_preexisting)
+            print(f"[resume] {league.size()} active learners; "
+                  f"{sum(v is not None for v in resume_ckpts.values())} have checkpoints", flush=True)
+
         processes = []
         for idx in range(league.size()):
             player = league.get_player(idx)
-            # player.constructor_fn = constructor #TODO: Delete when done
             learner = Learner(player)
-            process = Process(target=worker, args=(idx, learner, args.total_steps, args.rollout_opponent_num))
-            # process.daemon=True  # all processes closed when the main stops
+            if getattr(args, "resume", False):
+                process = Process(target=resume_worker, args=(idx, learner, args.total_steps, args.rollout_opponent_num, resume_ckpts.get(player.name)))
+            else:
+                process = Process(target=worker, args=(idx, learner, args.total_steps, args.rollout_opponent_num))
             processes.append(process)
         for p in processes:
             p.start()
