@@ -219,18 +219,27 @@ def _extract_step_outputs(step_output):
 
 
 def _collect_episode_returns(model, target_episodes, action_fn, reward_side="left"):
-    """Collect per-episode returns from vectorized envs that finish asynchronously.
+    """Collect per-episode returns (and win flags) from vectorized envs that
+    finish asynchronously.
 
     reward_side selects which player's reward stream to accumulate: "left"
     (P1, `rewards`) or "right" (P2, `rew_other`). Must match the seat the
     exploiter occupies so the eval scores the exploiter's own return -- the
     same selection Exploiter.collect_rollouts makes via
     `rew_other if exploited_on_left else rewards`.
+
+    Returns ``(finished_returns, finished_wins)``. ``finished_wins[i]`` is the
+    win flag for the scored seat (the one `reward_side` picks) in episode i,
+    in {1.0 win, 0.0 loss, 0.5 draw}. It is derived from the sign of that
+    seat's net episode return (net HP swing over the episode: >0 won, <0 lost,
+    ==0 draw) -- a referee-proof per-episode outcome that needs no info
+    parsing. Win-rate == mean(finished_wins).
     """
     obs = model.env.reset()
     n_envs = model.env.num_envs
     running_returns = np.zeros(n_envs, dtype=np.float32)
     finished_returns = []
+    finished_wins = []
 
     while len(finished_returns) < target_episodes:
         clipped_action = action_fn(obs)
@@ -240,13 +249,15 @@ def _collect_episode_returns(model, target_episodes, action_fn, reward_side="lef
 
         done_indices = np.where(done)[0]
         for idx in done_indices:
-            finished_returns.append(float(running_returns[idx]))
+            ret = float(running_returns[idx])
+            finished_returns.append(ret)
+            finished_wins.append(1.0 if ret > 0 else (0.0 if ret < 0 else 0.5))
             running_returns[idx] = 0.0
             print(f"Episode {len(finished_returns)} completed", flush=True)
             if len(finished_returns) >= target_episodes:
                 break
 
-    return finished_returns
+    return finished_returns, finished_wins
 
 
 def _extract_left_right_names_from_state(state):
@@ -295,6 +306,13 @@ def main() -> None:
         selfplay_rewards_folder = os.path.join(selfplay_rewards_folder, args.output_subdir)
     os.makedirs(br_rewards_folder, exist_ok=True)
     os.makedirs(selfplay_rewards_folder, exist_ok=True)
+    # Win-rate outputs live in SIBLING folders so they stay out of the reward
+    # aggregator's `br_rewards/**/*.txt` glob (which would otherwise ingest them
+    # as bogus reward points).
+    br_winrates_folder = br_rewards_folder.replace("br_rewards", "br_winrates", 1)
+    selfplay_winrates_folder = selfplay_rewards_folder.replace("selfplay_rewards", "selfplay_winrates", 1)
+    os.makedirs(br_winrates_folder, exist_ok=True)
+    os.makedirs(selfplay_winrates_folder, exist_ok=True)
 
     env = env_generator(args.game_args, STATE=args.state_list)
     full_env = env_generator(args.game_args, STATE=args.full_state_list)
@@ -658,7 +676,7 @@ def main() -> None:
     # exploiter's own seat (an earlier "fix" did that, which inverts the
     # ego-exploited side).
     ego_reward_side = "left"
-    exploiter_rewards = _collect_episode_returns(model, nr, exploiter_action_fn, reward_side=ego_reward_side)
+    exploiter_rewards, exploiter_wins = _collect_episode_returns(model, nr, exploiter_action_fn, reward_side=ego_reward_side)
     # Selfplay baseline MUST run on the same single-matchup env (`model.env` is
     # still `env` from the exploiter run) and the same seat, so it is
     # main-vs-main on THIS matchup at the exploiter's seat -- directly
@@ -667,7 +685,7 @@ def main() -> None:
     # main-vs-main across every matchup and mixing the seat's character
     # (e.g. ChunLi in one state, Vega in another), so the per-matchup selfplay
     # point was a global average, not this matchup's baseline.
-    selfplay_rewards = _collect_episode_returns(model, nr, selfplay_action_fn, reward_side=ego_reward_side)
+    selfplay_rewards, selfplay_wins = _collect_episode_returns(model, nr, selfplay_action_fn, reward_side=ego_reward_side)
 
     # TODO: write out to a file and then aggregate the results and plot
     # os.makedirs(rewards_folder, exist_ok=True)
@@ -708,6 +726,22 @@ def main() -> None:
         f.write(str(np.mean(exploiter_rewards)))
     with open(os.path.join(selfplay_rewards_folder, filename), "w") as f:
         f.write(str(np.mean(selfplay_rewards)))
+    # Win-rate = fraction of episodes the EGO/main (left seat, scored stream)
+    # ended net-positive. Against the exploiter this is the main's win-rate;
+    # the exploiter's win-rate is its complement (minus draws). Selfplay is the
+    # main-vs-main ~0.5 sanity baseline.
+    exploiter_winrate = float(np.mean(exploiter_wins)) if exploiter_wins else float("nan")
+    selfplay_winrate = float(np.mean(selfplay_wins)) if selfplay_wins else float("nan")
+    with open(os.path.join(br_winrates_folder, filename), "w") as f:
+        f.write(str(exploiter_winrate))
+    with open(os.path.join(selfplay_winrates_folder, filename), "w") as f:
+        f.write(str(selfplay_winrate))
+    print(
+        f"[local_br_eval] MAIN win-rate vs exploiter={exploiter_winrate:.3f} "
+        f"(exploiter wins {1.0 - exploiter_winrate:.3f}) | selfplay main win-rate={selfplay_winrate:.3f} "
+        f"| n={len(exploiter_wins)}",
+        flush=True,
+    )
 
     eval_target = "ego" if args.eval_prot else "adv"
     tested_state_for_print = tested_state if len(tested_states) == 1 else tested_states
