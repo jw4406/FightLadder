@@ -446,9 +446,19 @@ class _FixedMatchupPolicyAdapter:
         return getattr(self._base_policy, name)
 
 
-def _is_ego_left_for_state(loaded_model, dedicated_state: str) -> bool:
-    """In mirror-mode models, the first half of unique states have ego on the left (P1)
-    and the second half have ego on the right (P2). Returns True if ego is P1/left."""
+def _is_ego_left_for_state(loaded_model, dedicated_state: str, use_mirror: bool = False) -> bool:
+    """Return True if the ego (protagonist) occupies the LEFT/P1 seat for this state.
+
+    Prefer the model's AUTHORITATIVE `ego_side` attribute (the CDS policy records
+    it, e.g. 'left'). The first-half/second-half split only encodes seat for
+    MIRROR-augmented models; for a NON-mirror model it is wrong -- a single-matchup
+    model has halfway=0, so `idx < halfway` returns False for a state whose ego is
+    plainly on the left, inverting the exploitability curve. Fall back to the split
+    only for mirror models (or legacy checkpoints with no ego_side)."""
+    model_mirror = bool(getattr(loaded_model, "use_mirror", use_mirror))
+    if not model_mirror:
+        # Non-mirror: ego is on the left unless the model explicitly records right.
+        return getattr(loaded_model, "ego_side", None) != "right"
     unique_states = getattr(loaded_model, "_worker_unique_states", None)
     if not isinstance(unique_states, list) or len(unique_states) == 0:
         return True
@@ -1356,7 +1366,7 @@ def train_best_response(
 
     # 3. Create a new agent to be the best response
     dedicated_state = dedicated_state_subset[0] if dedicated_state_subset else None
-    ego_is_left = _is_ego_left_for_state(ftm, dedicated_state) if dedicated_state else True
+    ego_is_left = _is_ego_left_for_state(ftm, dedicated_state, use_mirror) if dedicated_state else True
     br_agent = Exploiter(
         'CnnPolicy' if is_image_space(env.observation_space) else 'MlpPolicy',
         env,

@@ -514,7 +514,19 @@ def main() -> None:
                 )
                 use_fixed_matchup_adapter = True
                 halfway = len(model_unique_states) // 2
-                ego_is_left = fixed_matchup_idx < halfway
+                # ego_is_left is the ego's PHYSICAL seat for this state. Read it
+                # from the model's AUTHORITATIVE `ego_side` (the CDS policy records
+                # it). The old `fixed_matchup_idx < halfway` heuristic only holds
+                # for MIRROR-augmented models (first half ego-left, second half
+                # ego-right); for a non-mirror / single-matchup model halfway=0 so
+                # it always returned False, inverting the whole exploitability
+                # curve. (NB `args.use_mirror` is a *string* here, so `if
+                # args.use_mirror` is truthy even for "False" -- use the model's
+                # real bool instead.)
+                if bool(getattr(model, "use_mirror", False)):
+                    ego_is_left = fixed_matchup_idx < halfway
+                else:
+                    ego_is_left = getattr(model, "ego_side", None) != "right"
                 print(
                     "Configured fixed-matchup eval adapter: "
                     f"state={dedicated_state}, fixed_matchup_idx={fixed_matchup_idx}, "
@@ -527,7 +539,13 @@ def main() -> None:
     def _build_side_flags(n_envs, reduced_state_list, full_state_list, use_mirror):
         if len(set(reduced_state_list)) ==1:
             index = full_state_list.index(reduced_state_list[0])
-            ego_is_left = index < len(full_state_list) // 2
+            # Authoritative ego seat from the model; half-split only for mirror
+            # models (see ego_is_left resolution above). `use_mirror` arg is a
+            # string, so use the model's real bool.
+            if bool(getattr(model, "use_mirror", False)):
+                ego_is_left = index < len(full_state_list) // 2
+            else:
+                ego_is_left = getattr(model, "ego_side", None) != "right"
             vals = np.zeros(n_envs, dtype=np.float32) if ego_is_left else np.ones(n_envs, dtype=np.float32)
             return th.tensor(vals, device=model.device).unsqueeze(1), 1.0 - th.tensor(vals, device=model.device).unsqueeze(1)
         if use_mirror:
