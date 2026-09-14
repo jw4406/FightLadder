@@ -218,41 +218,52 @@ def _extract_step_outputs(step_output):
     return obs, reward_left, reward_right, done, info
 
 
-def _collect_episode_returns(model, target_episodes, action_fn, reward_side="left"):
+def _collect_episode_returns(model, target_episodes, action_fn, reward_side="left", win_side=None):
     """Collect per-episode returns (and win flags) from vectorized envs that
     finish asynchronously.
 
-    reward_side selects which player's reward stream to accumulate: "left"
-    (P1, `rewards`) or "right" (P2, `rew_other`). Must match the seat the
-    exploiter occupies so the eval scores the exploiter's own return -- the
-    same selection Exploiter.collect_rollouts makes via
-    `rew_other if exploited_on_left else rewards`.
+    reward_side selects which player's reward stream to accumulate for the
+    REPORTED return: "left" (P1, `rewards`) or "right" (P2, `rew_other`). The
+    reward is kept ego-centric ("left") by callers so the reward-plot series
+    order consistently.
 
-    Returns ``(finished_returns, finished_wins)``. ``finished_wins[i]`` is the
-    win flag for the scored seat (the one `reward_side` picks) in episode i,
-    in {1.0 win, 0.0 loss, 0.5 draw}. It is derived from the sign of that
-    seat's net episode return (net HP swing over the episode: >0 won, <0 lost,
-    ==0 draw) -- a referee-proof per-episode outcome that needs no info
-    parsing. Win-rate == mean(finished_wins).
+    win_side (default = reward_side) selects the seat whose net-return SIGN
+    defines the win flag. This is decoupled from reward_side on purpose: the
+    reported reward stays ego-centric, but the win-rate must be scored on the
+    MAIN's seat so the written value is the MAIN's win-rate in BOTH exploit
+    directions (the exploiter's seat flips with exploiting/ego_is_left, so a
+    hardcoded seat silently measured the exploiter's own win-rate in the
+    adv-exploit case). NOTE: rewards here are the SHAPED env reward (not raw HP),
+    so left and right returns are NOT negatives -- the two seats' win flags are
+    independent and cannot be derived from one another.
+
+    Returns ``(finished_returns, finished_wins)``: finished_returns[i] is the
+    reward_side net return; finished_wins[i] is the win flag {1.0/0.0/0.5} for
+    the win_side seat's net-return sign.
     """
+    if win_side is None:
+        win_side = reward_side
     obs = model.env.reset()
     n_envs = model.env.num_envs
-    running_returns = np.zeros(n_envs, dtype=np.float32)
+    running_returns = np.zeros(n_envs, dtype=np.float32)  # reward_side (reported return)
+    running_win = np.zeros(n_envs, dtype=np.float32)      # win_side (win flag)
     finished_returns = []
     finished_wins = []
 
     while len(finished_returns) < target_episodes:
         clipped_action = action_fn(obs)
         obs, reward_left, reward_right, done, info = _extract_step_outputs(model.env.step(clipped_action))
-        reward = reward_right if reward_side == "right" else reward_left
-        running_returns += reward
+        running_returns += (reward_right if reward_side == "right" else reward_left)
+        running_win += (reward_right if win_side == "right" else reward_left)
 
         done_indices = np.where(done)[0]
         for idx in done_indices:
             ret = float(running_returns[idx])
+            wret = float(running_win[idx])
             finished_returns.append(ret)
-            finished_wins.append(1.0 if ret > 0 else (0.0 if ret < 0 else 0.5))
+            finished_wins.append(1.0 if wret > 0 else (0.0 if wret < 0 else 0.5))
             running_returns[idx] = 0.0
+            running_win[idx] = 0.0
             print(f"Episode {len(finished_returns)} completed", flush=True)
             if len(finished_returns) >= target_episodes:
                 break
@@ -694,7 +705,11 @@ def main() -> None:
     # exploiter's own seat (an earlier "fix" did that, which inverts the
     # ego-exploited side).
     ego_reward_side = "left"
-    exploiter_rewards, exploiter_wins = _collect_episode_returns(model, nr, exploiter_action_fn, reward_side=ego_reward_side)
+    # Win-rate is scored on the MAIN's seat (main on left for ego-exploit, right for
+    # adv-exploit) so the written value is consistently the MAIN's win-rate in both
+    # directions; reward stays ego-centric ("left"). eval_prot True == ego-exploit.
+    main_side = "left" if args.eval_prot else "right"
+    exploiter_rewards, exploiter_wins = _collect_episode_returns(model, nr, exploiter_action_fn, reward_side=ego_reward_side, win_side=main_side)
     # Selfplay baseline MUST run on the same single-matchup env (`model.env` is
     # still `env` from the exploiter run) and the same seat, so it is
     # main-vs-main on THIS matchup at the exploiter's seat -- directly
@@ -703,7 +718,7 @@ def main() -> None:
     # main-vs-main across every matchup and mixing the seat's character
     # (e.g. ChunLi in one state, Vega in another), so the per-matchup selfplay
     # point was a global average, not this matchup's baseline.
-    selfplay_rewards, selfplay_wins = _collect_episode_returns(model, nr, selfplay_action_fn, reward_side=ego_reward_side)
+    selfplay_rewards, selfplay_wins = _collect_episode_returns(model, nr, selfplay_action_fn, reward_side=ego_reward_side, win_side=main_side)
 
     # TODO: write out to a file and then aggregate the results and plot
     # os.makedirs(rewards_folder, exist_ok=True)
