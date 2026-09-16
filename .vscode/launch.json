@@ -279,7 +279,15 @@
                 "--slurm_gres", "gpu:1",
                 "--slurm_cpus_per_task", "4",
                 "--python_bin", "python",
-                "--dry_run", "False"
+                "--dry_run", "False",
+                // ADAPTIVE exploiter mode (default ON): per-checkpoint portfolio+halving+kill.
+                // Concurrency + envs/worker auto-tune to the machine at startup.
+                "--use_adaptive", "True",
+                "--max_concurrent_adaptives", "auto",
+                "--adaptive_n_envs", "auto",
+                "--adaptive_reserve_cores", "2"
+                // For non-standard-named LEAGUE members (e.g. PSRO '*_historical_*'),
+                // add: "--adaptive_league_states", "<state1>,<state2>,..."
             ]
         },
         {

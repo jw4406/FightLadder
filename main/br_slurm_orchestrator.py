@@ -28,10 +28,14 @@ import argparse
 import os
 import re
 import shlex
+import shutil
 import socket
 import subprocess
+import sys
 import time
 from typing import List
+
+_REPO_MAIN = os.path.dirname(os.path.abspath(__file__))   # repo's main/ (adaptive_exploiter.py lives here)
 
 socket.setdefaulttimeout(None)
 
@@ -583,6 +587,183 @@ def _run_crosspack_loop(args, template_text: str) -> None:
     print(f"[orch-xpack] Stop file {args.stop_file} detected; exiting.")
 
 
+# ----------------------------- ADAPTIVE mode -----------------------------
+# Per checkpoint we spawn ONE adaptive_exploiter.py controller (env-driven). It
+# manages its own portfolio internally, so to the orchestrator it is a single
+# local job: registered as `local-<pid>`, counted by the concurrency gate, and
+# swept todo->done when the controller exits. No template, no per-spec sbatch.
+_ADAPT_INIT_CONFIGS_PER_SEAT = 3   # mirrors adaptive_exploiter.py's initial portfolio (main())
+_ADAPT_MEM_PER_WORKER_MB = 1600    # ~GPU footprint of one br_single_matchup exploiter
+
+
+def _probe_machine():
+    """Return (ncpu, load1, [(gpu_index, free_mb), ...]) for on-the-spot tuning.
+    Honors CUDA_VISIBLE_DEVICES; falls back to one assumed 24GB GPU if nvidia-smi
+    is absent so the tuner still produces a plan on a CPU-only/opaque host."""
+    ncpu = os.cpu_count() or 8
+    try:
+        load1 = os.getloadavg()[0]
+    except (OSError, AttributeError):
+        load1 = 0.0
+    gpus = []
+    smi = shutil.which("nvidia-smi")
+    if smi:
+        try:
+            out = subprocess.check_output(
+                [smi, "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"],
+                text=True, timeout=15)
+            for line in out.strip().splitlines():
+                idx, free = [x.strip() for x in line.split(",")]
+                gpus.append((idx, int(free)))
+        except (subprocess.SubprocessError, ValueError, OSError):
+            pass
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    if cvd and gpus:
+        vis = [c.strip() for c in cvd.split(",") if c.strip() != ""]
+        gpus = [(g, m) for (g, m) in gpus if g in vis] or gpus
+    if not gpus:
+        gpus = [("0", 24000)]
+    return ncpu, load1, gpus
+
+
+def _autotune_adaptive(args) -> dict:
+    """Probe the machine and freeze (concurrent adaptives C, envs/worker E, GPU map).
+    C and the GPU map are pure throughput (no effect on any single exploiter); E is
+    set ONCE per run (mildly affects rollout-batch dynamics, so it must not vary
+    point-to-point). Search budget (MAX_CONFIGS/CAP_STEPS) is NOT tuned here."""
+    ncpu, load1, gpus = _probe_machine()
+    peak_workers = 2 * _ADAPT_INIT_CONFIGS_PER_SEAT   # both seats x initial portfolio
+    total_free = sum(m for _, m in gpus)
+    c_gpu = max(1, total_free // (peak_workers * _ADAPT_MEM_PER_WORKER_MB))
+    if str(args.max_concurrent_adaptives).lower() == "auto":
+        C = int(c_gpu)
+    else:
+        C = max(1, int(args.max_concurrent_adaptives))
+    C = min(C, len(gpus))   # never run more concurrent adaptives than GPUs (they'd fight over one card)
+    if str(args.adaptive_n_envs).lower() == "auto":
+        E = int(max(2, min(8, (ncpu - int(args.adaptive_reserve_cores)) // max(1, C * peak_workers))))
+    else:
+        E = max(1, int(args.adaptive_n_envs))
+    peak_env = C * peak_workers * E
+    tune = dict(C=C, E=E, gpus=[g for g, _ in gpus], ncpu=ncpu, load1=load1,
+                peak_workers=peak_workers, peak_env=peak_env, total_free_gpu_mb=total_free)
+    print(f"[orch-adaptive] AUTOTUNE: ncpu={ncpu} load1={load1:.1f} gpus={tune['gpus']} "
+          f"free_gpu={total_free}MB -> concurrent_adaptives={C} n_envs={E} "
+          f"(~{peak_workers} workers/adaptive, peak ~{peak_env} env-procs vs {ncpu} cores)")
+    if peak_env > ncpu:
+        print(f"[orch-adaptive] WARN: peak env-procs {peak_env} > {ncpu} cores -> CPU "
+              f"oversubscription (emulators are CPU-bound; throughput will be sub-linear). "
+              f"Lower --max_concurrent_adaptives / --adaptive_n_envs to relieve it.")
+    return tune
+
+
+def _launch_adaptive(args, task_filename, processing_path, processing_folder, gpu, tune) -> List[str]:
+    """Build the ADAPT_* env for one checkpoint and Popen a single adaptive
+    controller. Returns [f"local-{pid}"] (or [] on dry_run). Self-play spar/ippo
+    checkpoints run BOTH seats (ego+adv) against the same file; league runs the
+    single seat implied by the loaded side."""
+    model_type = detect_model_type(processing_path, device="cpu")
+    is_league = (model_type == "league")
+    task_stem = os.path.splitext(task_filename)[0]
+    out_base = args.adaptive_out_dir or os.path.join(args.workdir, args.main_training_dir, "adaptive_out")
+    workdir = os.path.join(out_base, _sanitize_for_filename(task_stem))   # per-checkpoint subtree (no br_index collisions across adaptives)
+
+    env = dict(os.environ)
+    env["WORKDIR"] = workdir
+    env["ADAPT_MTD"] = "br_adaptive"
+    env["ADAPT_N_ENVS"] = str(tune["E"])
+    env["ADAPT_LEFT_GPU"] = env["ADAPT_RIGHT_GPU"] = str(gpu)
+    env["FL_REPO"] = _REPO_MAIN
+
+    if is_league:
+        copy_aux_files(args.todo_dir, processing_folder)   # bring the population .pt members alongside the .task
+        loaded_side, _mk = peek_league_side_and_matchup(processing_path)
+        if loaded_side not in ("left", "right"):
+            raise ValueError(f"League task {task_filename!r} invalid side={loaded_side!r}")
+        # Operator override first (non-standard member names defeat the inference
+        # regex, e.g. PSRO '*_historical_*' snapshots); else infer from filenames.
+        _override = [s.strip() for s in args.adaptive_league_states.split(",") if s.strip()]
+        league_states = _override or _infer_league_matchup_states_from_dir(processing_path)
+        seat = "left" if loaded_side == "left" else "right"   # left=ego-exploit, right=adv-exploit
+        env["ADAPT_SEATS"] = seat
+        S = str(seat).upper()
+        env[f"ADAPT_{S}_TASK"] = processing_path
+        env[f"ADAPT_{S}_STATE"] = league_states[0]
+        env[f"ADAPT_{S}_LMS"] = ",".join(league_states)
+        seat_desc = f"league seat={seat} states={len(league_states)}"
+    else:
+        states = _extract_unique_states_from_task(processing_path, device="cpu")
+        if len(states) > 1:
+            print(f"[orch-adaptive] WARN: {task_filename} has {len(states)} matchup states; "
+                  f"adaptive uses the first ({states[0]}). Multi-matchup adaptive not yet wired.")
+        state = states[0]
+        env["ADAPT_SEATS"] = "left,right"                      # self-play: exploit BOTH ego and adv
+        env["ADAPT_LEFT_TASK"] = env["ADAPT_RIGHT_TASK"] = processing_path
+        env["ADAPT_LEFT_STATE"] = env["ADAPT_RIGHT_STATE"] = state
+        seat_desc = f"self-play seats=left,right state={state}"
+
+    slurm_log_dir = os.path.join(os.path.abspath(args.slurm_log_dir), task_stem)
+    os.makedirs(slurm_log_dir, exist_ok=True)
+    log_path = os.path.join(slurm_log_dir, f"adaptive_{task_stem}.log")
+
+    print(f"[orch-adaptive] {task_filename}: model={model_type} {seat_desc} "
+          f"gpu={gpu} n_envs={tune['E']} out={workdir}")
+    if args.dry_run:
+        print(f"[dry_run] would Popen adaptive_exploiter.py (log={log_path})")
+        return []
+
+    os.makedirs(workdir, exist_ok=True)
+    f = open(log_path, "w")
+    proc = subprocess.Popen(
+        [args.python_bin, "-u", os.path.join(_REPO_MAIN, "adaptive_exploiter.py")],
+        env=env, stdout=f, stderr=subprocess.STDOUT, cwd=_REPO_MAIN, start_new_session=True)
+    print(f"[orch-adaptive] launched controller pid={proc.pid} (log={log_path})")
+    return [f"local-{proc.pid}"]
+
+
+def _run_adaptive_loop(args, tune: dict) -> None:
+    """Watch todo/, and per claimed checkpoint spawn ONE adaptive controller (up to
+    C concurrent, GPU round-robin). Registry + gate + sweep are the shared local-job
+    machinery, so lifecycle (todo->processing->done) is unchanged."""
+    C = tune["C"]
+    launch_idx = 0
+    print(f"[orch-adaptive] adaptive mode: {C} concurrent controller(s), "
+          f"n_envs={tune['E']}, GPU round-robin over {tune['gpus']}")
+    while not os.path.exists(args.stop_file):
+        try:
+            sweep_completed_tasks(args.processing_dir, args.done_dir)
+        except Exception as exc:
+            print(f"[orch-adaptive] sweeper error (non-fatal): {exc}")
+
+        if count_active_local_jobs(args.processing_dir) >= C:
+            time.sleep(POLL_INTERVAL)
+            continue
+
+        claim = claim_task(args.todo_dir, args.processing_dir, step_stride=args.step_stride)
+        if claim is None:
+            time.sleep(POLL_INTERVAL)
+            continue
+        task_filename, processing_path, processing_folder = claim
+        try:
+            gpu = tune["gpus"][launch_idx % len(tune["gpus"])]
+            launch_idx += 1
+            job_ids = _launch_adaptive(args, task_filename, processing_path, processing_folder, gpu, tune)
+            write_registry(processing_folder, {
+                "task_filename": task_filename,
+                "submitted_at": time.time(),
+                "job_ids": job_ids,
+                "dry_run": args.dry_run,
+                "mode": "adaptive",
+            })
+        except Exception as exc:
+            err_path = os.path.join(processing_folder, "_dispatch_error.txt")
+            with open(err_path, "w") as f:
+                f.write(f"{type(exc).__name__}: {exc}\n")
+            print(f"[orch-adaptive] dispatch error for {task_filename}: {exc}; see {err_path}")
+
+    print(f"[orch-adaptive] Stop file detected at {args.stop_file}; exiting.")
+
+
 # ----------------------------- CLI -----------------------------
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -626,6 +807,34 @@ def build_parser() -> argparse.ArgumentParser:
                              "(cpu only; --mem still scales by the co-located exploiter count). "
                              "Default 1 = template base cpus. Set independently of "
                              "--exploiters_per_job, e.g. --resource_scale 6.")
+    # --- ADAPTIVE exploiter mode (default ON) -----------------------------------
+    # Per checkpoint, run the adaptive controller (diverse portfolio + successive
+    # halving + kill bar + escalation ladder) instead of one blind BR per
+    # (matchup, side, replicate). The portfolio's best-of-N is a tighter lower
+    # bound on the true best response, so the exploitability curve is MORE
+    # faithful, not less. Concurrency + envs/worker are auto-tuned to the machine
+    # at startup (frozen for the run); search budget (MAX_CONFIGS/CAP_STEPS, inside
+    # adaptive_exploiter.py) stays fixed so points stay comparable.
+    parser.add_argument("--use_adaptive", choices=["True", "False"], default="True",
+                        help="Run the ADAPTIVE exploiter per checkpoint (default True). "
+                             "False = legacy per-(matchup,side,replicate) dedicated path.")
+    parser.add_argument("--max_concurrent_adaptives", default="auto",
+                        help="Max adaptive controllers at once. 'auto' = one per visible GPU "
+                             "(GPU-mem gated). Integer overrides the cap.")
+    parser.add_argument("--adaptive_n_envs", default="auto",
+                        help="Envs per exploiter worker. 'auto' = fill cores given the chosen "
+                             "concurrency, clamped [2,8]. Integer PINS it (strict cross-machine "
+                             "comparability). Frozen once per run.")
+    parser.add_argument("--adaptive_reserve_cores", type=int, default=2,
+                        help="Cores held back from the n_envs auto-fill for controller(s)+system.")
+    parser.add_argument("--adaptive_out_dir", default="",
+                        help="Base dir for adaptive outputs (a per-checkpoint subtree is made "
+                             "under it). Default <workdir>/<main_training_dir>/adaptive_out.")
+    parser.add_argument("--adaptive_league_states", default="",
+                        help="Comma-separated retro state paths for LEAGUE/PSRO checkpoints. "
+                             "Overrides filename inference (needed for non-standard member "
+                             "names like PSRO '*_historical_*' snapshots, which the inference "
+                             "regex cannot parse). Ignored for self-play spar/ippo checkpoints.")
     return parser
 
 
@@ -664,6 +873,19 @@ def main() -> None:
     print(f"[orch-dedicated] SLURM: "
           f"time={args.slurm_time} mem={args.slurm_mem} "
           f"gres={args.slurm_gres} cpus={args.slurm_cpus_per_task}")
+
+    # ADAPTIVE mode (DEFAULT ON). Per checkpoint, run the adaptive controller
+    # instead of per-spec BR jobs. Auto-tunes concurrency + envs/worker to this
+    # machine, then runs its own watch loop. Set --use_adaptive False for the
+    # legacy per-spec dedicated path below.
+    if str(getattr(args, "use_adaptive", "True")) == "True":
+        if have_sbatch():
+            print("[orch-adaptive] NOTE: sbatch is on PATH, but adaptive mode runs LOCAL "
+                  "controllers on THIS node (it does not submit per-spec sbatch jobs). "
+                  "Pass --use_adaptive False for the SLURM per-spec path.")
+        tune = _autotune_adaptive(args)
+        _run_adaptive_loop(args, tune)
+        return
 
     # Cross-checkpoint packing mode (opt-in). Otherwise fall through to the
     # unchanged one-task-at-a-time loop below.
