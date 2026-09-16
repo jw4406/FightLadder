@@ -793,6 +793,8 @@ def build_shared_config(args: argparse.Namespace, manual_stop_file: Optional[str
         "dwell_frames": args.dwell_frames,
         "charge_preserving_skip": args.charge_preserving_skip,
         "cps_no_up": args.cps_no_up,
+        "obs_type": getattr(args, "obs_type", "image"),
+        "ram_mask": getattr(args, "ram_mask", ""),
         "seed": args.seed,
     }
     return {
