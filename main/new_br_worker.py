@@ -726,7 +726,10 @@ def _load_league_checkpoint(path: str, device: str):
     for mod in patched_modules:
         mod.constructor = league_constructor
     try:
-        return torch.load(path, map_location=device)
+        # weights_only=False: torch>=2.6 defaults to True, which rejects the pickled
+        # `constructor` global (injected just above) and breaks league/PSRO loading.
+        # The checkpoint is a trusted first-party file, so full unpickling is fine.
+        return torch.load(path, map_location=device, weights_only=False)
     finally:
         for mod, orig in originals:
             if orig is None:
@@ -1367,14 +1370,39 @@ def train_best_response(
     # 3. Create a new agent to be the best response
     dedicated_state = dedicated_state_subset[0] if dedicated_state_subset else None
     ego_is_left = _is_ego_left_for_state(ftm, dedicated_state, use_mirror) if dedicated_state else True
+    # --- Sweepable exploiter HPs via env vars (defaults == prior hardcoded values). ---
+    import os as _os
+    _br_lr = float(_os.environ["BR_LR"]) if _os.environ.get("BR_LR") else 3e-4
+    _br_nsteps = int(_os.environ.get("BR_NSTEPS", 1024))
+    _br_batch = int(_os.environ.get("BR_BATCH", 512))
+    _br_nepochs = int(_os.environ.get("BR_NEPOCHS", 4))
+    _br_pk = None
+    _net = _os.environ.get("BR_NET_ARCH")          # e.g. "256,256" -> pi & vf MLP head
+    _feat = _os.environ.get("BR_FEATURES_DIM")     # CNN feature width
+    if _net or _feat:
+        _br_pk = {}
+        if _net:
+            _l = [int(x) for x in _net.split(",")]
+            _br_pk["net_arch"] = dict(pi=_l, vf=list(_l))
+        if _feat:
+            _br_pk["features_extractor_kwargs"] = dict(features_dim=int(_feat))
+    print(f"[br HP] lr={_br_lr} n_steps={_br_nsteps} batch={_br_batch} "
+          f"n_epochs={_br_nepochs} policy_kwargs={_br_pk}", flush=True)
     br_agent = Exploiter(
         'CnnPolicy' if is_image_space(env.observation_space) else 'MlpPolicy',
         env,
         device=device,
         exploited=ftm,
-        n_steps=1024,
-        batch_size=512,
-        n_epochs=4,
+        learning_rate=_br_lr,
+        policy_kwargs=_br_pk,
+        # Per-replicate seed so the N dedicated replicates are genuinely
+        # independent. Without this the exploiter is unseeded and inherits the
+        # process-global RNG that the frozen-main load pins deterministically
+        # (see seed=0 at model construction), making all replicates identical.
+        seed=1000 + (replicate_idx or 0),
+        n_steps=_br_nsteps,
+        batch_size=_br_batch,
+        n_epochs=_br_nepochs,
         ent_coef=ent_coef,
         exploiting='ego' if eval_prot is True else 'adv',
         ego_is_left=ego_is_left,

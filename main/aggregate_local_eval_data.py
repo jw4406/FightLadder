@@ -946,6 +946,61 @@ def _auto_merge_family(family):
     return br_out
 
 
+def _plot_winrates_for_run(winrate_dir, output_dir, label):
+    """Plot referee-proof MAIN win-rate vs main-checkpoint step for one dedicated
+    BR run. Reads br_winrates/<run>/*.txt (identical filename schema to
+    br_rewards; value is MAIN win-rate vs the exploiter in [0,1], written by
+    local_br_eval). direction main_left == ego-exploit (frozen main plays the
+    ego seat), main_right == adv-exploit (main plays the adversary seat).
+    Exploiter win-rate is 1 - MAIN win-rate. Returns the PNG path or None."""
+    if not winrate_dir or not os.path.isdir(winrate_dir):
+        return None
+    recs = _parse_records(winrate_dir, ego_centric=False)  # winrate: never negate
+    if not recs:
+        return None
+    recs = _select_canonical_or_latest_periodic(recs)  # prefer final over periodic
+    DIR_LABEL = {"main_left": "ego-exploit (main-ego WR)",
+                 "main_right": "adv-exploit (main-adv WR)"}
+    DIR_COLOR = {"main_left": "tab:red", "main_right": "tab:blue"}
+    MARK = {"main_left": "o", "main_right": "^"}
+    by_dir = defaultdict(lambda: defaultdict(list))  # direction -> step -> [values]
+    for r in recs:
+        by_dir[r["direction"]][r["timestep"]].append(r["value"])
+    fig, ax = plt.subplots(figsize=(11, 7))
+    csv_rows = ["direction,main_step,mean_main_wr,mean_exploiter_wr,n_reps,reps"]
+    for d in ("main_left", "main_right"):
+        tm = by_dir.get(d)
+        if not tm:
+            continue
+        steps = sorted(tm)
+        means = [sum(tm[s]) / len(tm[s]) for s in steps]
+        for s in steps:
+            ax.scatter([s] * len(tm[s]), tm[s], color=DIR_COLOR[d], marker=MARK[d],
+                       alpha=0.45, s=34, zorder=2)
+            mw = sum(tm[s]) / len(tm[s])
+            csv_rows.append(f"{d},{s},{mw:.4f},{1 - mw:.4f},{len(tm[s])},"
+                            f"{'|'.join(f'{v:.3f}' for v in sorted(tm[s]))}")
+        ax.plot(steps, means, color=DIR_COLOR[d], marker=MARK[d],
+                label=DIR_LABEL[d], linewidth=2, zorder=3)
+    ax.axhline(0.5, color="gray", linestyle="--", linewidth=1, alpha=0.7)
+    ax.set_ylim(-0.03, 1.03)
+    ax.set_xlabel("main checkpoint step")
+    ax.set_ylabel("MAIN win-rate vs exploiter   (exploiter WR = 1 - this)")
+    ax.set_title(f"{label}: referee-proof win-rate vs checkpoint")
+    ax.legend(loc="best")
+    ax.grid(True, alpha=0.3)
+    os.makedirs(output_dir, exist_ok=True)
+    png = os.path.join(output_dir, "winrate_vs_checkpoint.png")
+    fig.tight_layout()
+    fig.savefig(png, dpi=120)
+    plt.close(fig)
+    with open(os.path.join(output_dir, "winrate_vs_checkpoint.csv"), "w") as f:
+        f.write("\n".join(csv_rows) + "\n")
+    print(f"  Saved winrate plot: {png}  ({len(recs)} records, "
+          f"{sum(len(t) for t in by_dir.values())} step-buckets)")
+    return png
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -977,6 +1032,16 @@ def main():
              "layout mirrors --br_rewards_dir. Defaults to the sibling of "
              "--br_rewards_dir with 'br_rewards' replaced by "
              "'selfplay_rewards'.",
+    )
+    parser.add_argument(
+        "--winrates_dir",
+        type=str,
+        default="",
+        help="Folder containing referee-proof win-rate txt files (br_winrates/, "
+             "same subfolder layout as --br_rewards_dir). Defaults to the sibling "
+             "of --br_rewards_dir with 'br_rewards' replaced by 'br_winrates'. "
+             "When present, an extra winrate_vs_checkpoint.png/.csv is emitted "
+             "per run alongside the reward plots.",
     )
     parser.add_argument(
         "--sign_convention",
@@ -1018,6 +1083,14 @@ def main():
         else:
             args.selfplay_rewards_dir = ""  # unable to derive; skip overlay
 
+    # Default winrates dir = sibling of br_rewards_dir (br_rewards -> br_winrates),
+    # mirroring the selfplay derivation. local_br_eval writes both trees.
+    if not args.winrates_dir:
+        if "br_rewards" in args.br_rewards_dir:
+            args.winrates_dir = args.br_rewards_dir.replace("br_rewards", "br_winrates")
+        else:
+            args.winrates_dir = ""
+
     os.makedirs(args.output_dir, exist_ok=True)
     runs = _discover_training_processes(args.br_rewards_dir)
     if not runs:
@@ -1055,6 +1128,10 @@ def main():
             sp_dir = args.selfplay_rewards_dir or None
         summaries.append(_process_run(path, sub_out, label, selfplay_dir=sp_dir,
                                       ego_centric=(args.sign_convention == 'ego')))
+        # Extra: referee-proof win-rate vs checkpoint (reads br_winrates/<name>).
+        if args.winrates_dir:
+            wr_dir = os.path.join(args.winrates_dir, name) if name else args.winrates_dir
+            _plot_winrates_for_run(wr_dir, sub_out, label)
 
     print("=== Aggregate summary ===")
     for s in summaries:
