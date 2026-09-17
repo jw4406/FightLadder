@@ -4,8 +4,8 @@
 # itself a unit; when it exits the run units keep going (they're separate).
 export PATH=/usr/local/bin:/usr/bin:/bin:$PATH
 export XDG_RUNTIME_DIR=/run/user/1004
-MAIN=/home/jw4406/codebase/FightLadder/main
-WD=/home/jw4406/codebase/FightLadder
+MAIN=/home/jw4406/FightLadder/main
+WD=/home/jw4406/FightLadder
 BASIS=$MAIN/diag/basis_19680000_r4.npz
 PZ=$WD/run_minimax_phase0.sh
 TOTAL=24564; MARGIN=2500; NEED=9500

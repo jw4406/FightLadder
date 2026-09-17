@@ -4,8 +4,8 @@
 # collapse INTO fireball-zoning, the "easy damage" attractor) -- melee chars have
 # no dominant strategy, so ent=0 may hold entropy on its own.
 set -u
-cd /home/jw4406/codebase/FightLadder
-BASIS=/home/jw4406/codebase/FightLadder/main/diag/basis_19680000_r4.npz
+cd /home/jw4406/FightLadder
+BASIS=/home/jw4406/FightLadder/main/diag/basis_19680000_r4.npz
 run_and_wait() {
     local suffix="$1" ent="$2"
     echo "########## launching ${suffix} (ent_coef=${ent}) ##########  $(date '+%H:%M:%S')"

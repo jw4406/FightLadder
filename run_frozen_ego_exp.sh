@@ -21,8 +21,8 @@ IPPO_PATH="${SCRIPT_DIR}/main/ippo.py"
 
 # Self-contained: run_ippo_workers.sh assumes the caller already activated the
 # env, which silently fails (ModuleNotFoundError: av) when launched detached.
-source ~/anaconda3/etc/profile.d/conda.sh
-conda activate fightladder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh
+conda activate fightladder_della
 
 PLAYER=("Ryu")
 OPPONENTS=("Guile")

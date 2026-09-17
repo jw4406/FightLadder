@@ -5,12 +5,12 @@
 # (max_local_concurrent=1) so exactly ONE BR job shares the GPU with the 2 live
 # trainings. 2M .learn() steps/seat to match the earlier matched sweep.
 set -euo pipefail
-source /home/jw4406/anaconda3/etc/profile.d/conda.sh
-conda activate fightladder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh
+conda activate fightladder_della
 
 WORKDIR=/home/jw4406
 MAIN_TRAINING_DIR=codebase
-REPO_DIR=/home/jw4406/codebase/FightLadder
+REPO_DIR=/home/jw4406/FightLadder
 BR_ROOT="$REPO_DIR/main/br_todo_cont2"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 

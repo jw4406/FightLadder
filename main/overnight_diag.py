@@ -199,7 +199,7 @@ def main():
     ap.add_argument("--steps", type=int, default=200)
     ap.add_argument("--n_envs", type=int, default=6)
     ap.add_argument("--ram_mask", type=str,
-                    default="/home/jw4406/codebase/FightLadder/main/ram_mask.npy",
+                    default="/home/jw4406/FightLadder/main/ram_mask.npy",
                     help="the mask the arm was TRAINED with; checkpoints record "
                          "the width, not which bytes")
     ap.add_argument("--out", type=str, default="logs/overnight_diag.log")

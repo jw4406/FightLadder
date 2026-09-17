@@ -28,7 +28,7 @@ BR_TRAINING_STEPS=250000  # total .learn() timesteps per BR job (set small for d
 
 WORKDIR=/home/jw4406/
 MAIN_TRAINING_DIR=codebase
-REPO_DIR=/home/jw4406/codebase/FightLadder
+REPO_DIR=/home/jw4406/FightLadder
 
 TASK_BASE="$WORKDIR/$MAIN_TRAINING_DIR/FightLadder/main/trained_models/tasks"
 LOGS_DIR="$WORKDIR/$MAIN_TRAINING_DIR/logs"

@@ -6,7 +6,7 @@
 # value_gap is scale-matched via --reward_scale.
 set -uo pipefail
 SD="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"; cd "${SD}/main"
-source ~/anaconda3/etc/profile.d/conda.sh; conda activate fightladder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh; conda activate fightladder_della
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ARM="$1"; CK="$2"; RS="${3:-0.001}"; LBL="${4:-$ARM}"
 DIR="minimax_phase0_vtoff_rammasked_${ARM}/trained_models/tasks/todo"

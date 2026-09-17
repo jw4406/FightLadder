@@ -27,8 +27,8 @@
 # not exactly zero-sum and negating the other side's reward would be wrong.
 set -uo pipefail
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-source ~/anaconda3/etc/profile.d/conda.sh
-conda activate fightladder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh
+conda activate fightladder_della
 python -c "import torch" 2>/dev/null || { echo "FATAL: no torch"; exit 3; }
 
 ARM="${ARM:-minimax_phase0_vtoff_rammasked}"

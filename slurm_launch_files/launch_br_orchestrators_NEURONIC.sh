@@ -22,6 +22,23 @@ PACK_ACROSS_CHECKPOINTS='True'   # 'True' packs exploiters from DIFFERENT checkp
 PACK_FLUSH_TIMEOUT=300            # partial-pack timeout in seconds (cross-checkpoint mode only)
 RESOURCE_SCALE=1                  # absolute cpu multiplier for PACKED jobs (cpu only; mem still scales by N); 1 = template base
 
+# ---- ADAPTIVE exploiter mode (default ON). Supersedes the per-spec + packing path
+# above: per checkpoint runs adaptive_exploiter.py (portfolio+halving+kill), auto-tuned
+# to the node. NOTE: runs LOCAL controllers on the allocated node, not per-spec sbatch.
+# Set USE_ADAPTIVE=False to restore the sbatch/packing fan-out. ----
+USE_ADAPTIVE=True
+ADAPTIVE_LAUNCH=sbatch            # neuronic = SLURM: submit ONE sized-down sbatch per checkpoint
+MAX_CONCURRENT_ADAPTIVES=8        # sbatch: max in-flight adaptive jobs the orchestrator keeps queued
+ADAPTIVE_N_ENVS=auto             # (sbatch: ignored here; the controller self-tunes n_envs to its --cpus-per-task cgroup)
+ADAPTIVE_RESERVE_CORES=2
+ADAPTIVE_OUT_DIR=""               # default <WORKDIR>/<MAIN_TRAINING_DIR>/adaptive_out
+ADAPTIVE_LEAGUE_STATES=""         # CSV state override for non-standard league members (PSRO *_historical_*)
+# Per-adaptive sbatch sizing (SIZED DOWN so SLURM packs several per 8-GPU/52-core node;
+# a full portfolio is light). The controller self-tunes n_envs to ADAPTIVE_SLURM_CPUS.
+ADAPTIVE_SLURM_CPUS=18            # --cpus-per-task per adaptive (binding constraint: 52/node -> ~2-3 pack)
+ADAPTIVE_SLURM_GRES=gpu:1         # one L40S per adaptive (portfolio ~6-10 workers x ~1.6GB fits easily)
+ADAPTIVE_SLURM_MEM=16G
+
 WORKDIR=/n/fs/magics
 MAIN_TRAINING_DIR=10852202
 # The repo is rsync'd into scratch alongside MAIN_TRAINING_DIR; orchestrators,
@@ -57,6 +74,17 @@ DEDICATED_CMD=(
     --launch_local_br_eval "$LAUNCH_LOCAL_BR_EVAL"
     --periodic_eval_freq "$PERIODIC_EVAL_FREQ"
     --dry_run True
+    --use_adaptive "$USE_ADAPTIVE"
+    --adaptive_launch "$ADAPTIVE_LAUNCH"
+    --adaptive_sbatch_template "$REPO_DIR/slurm_launch_files/br_adaptive_template_NEURONIC.slurm"
+    --slurm_cpus_per_task "$ADAPTIVE_SLURM_CPUS"
+    --slurm_gres "$ADAPTIVE_SLURM_GRES"
+    --slurm_mem "$ADAPTIVE_SLURM_MEM"
+    --max_concurrent_adaptives "$MAX_CONCURRENT_ADAPTIVES"
+    --adaptive_n_envs "$ADAPTIVE_N_ENVS"
+    --adaptive_reserve_cores "$ADAPTIVE_RESERVE_CORES"
+    --adaptive_out_dir "$ADAPTIVE_OUT_DIR"
+    --adaptive_league_states "$ADAPTIVE_LEAGUE_STATES"
 )
 
 if [ "$LAUNCH_DEDICATED" = 'True' ]; then

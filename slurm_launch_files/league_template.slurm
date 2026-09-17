@@ -13,7 +13,7 @@ echo $CUDA_VISIBLE_DEVICES
 JOBID=$SLURM_JOB_ID
 WORKDIR=/scratch/gpfs/FISAC/jw4406/
 mkdir -p $WORKDIR/$JOBID
-#cd /n/fs/magics/2415498/FightLadder
+#cd /scratch/gpfs/FISAC/jw4406/2415498/FightLadder
 cd $WORKDIR/$JOBID
 echo "starting copy op"
 cp -r $HOME/FightLadder/ ./
@@ -21,7 +21,7 @@ echo "copy op successful"
 cd FightLadder/
 module purge
 module load anaconda3/2024.2
-conda activate fightladder
+conda activate fightladder_della
 echo "fightladder environment activated"
 # options: my_pendulum, my_half_cheetah, my_hopper, my_ant
 #!/bin/bash

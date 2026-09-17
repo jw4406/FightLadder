@@ -3,7 +3,7 @@
 # vtoff_vega as its own unit with expandable_segments to avoid the buffer-prep OOM.
 export PATH=/usr/local/bin:/usr/bin:/bin:$PATH
 export XDG_RUNTIME_DIR=/run/user/1004
-WD=/home/jw4406/codebase/FightLadder; PZ=$WD/run_minimax_phase0.sh; BASIS=$WD/main/diag/basis_19680000_r4.npz
+WD=/home/jw4406/FightLadder; PZ=$WD/run_minimax_phase0.sh; BASIS=$WD/main/diag/basis_19680000_r4.npz
 TOTAL=24564; NEED=9000
 freem(){ echo $((TOTAL - $(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits))); }
 while [ "$(freem)" -lt "$NEED" ]; do

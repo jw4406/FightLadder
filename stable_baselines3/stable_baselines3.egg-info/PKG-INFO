@@ -1,5 +1,5 @@
-Metadata-Version: 2.1
-Name: stable-baselines3
+Metadata-Version: 2.4
+Name: stable_baselines3
 Version: 1.7.0
 Summary: Pytorch version of Stable Baselines, implementations of reinforcement learning algorithms.
 Home-page: https://github.com/DLR-RM/stable-baselines3
@@ -14,9 +14,54 @@ Classifier: Programming Language :: Python :: 3.9
 Classifier: Programming Language :: Python :: 3.10
 Requires-Python: >=3.7
 Description-Content-Type: text/markdown
+Requires-Dist: gym==0.21
+Requires-Dist: numpy
+Requires-Dist: torch>=1.11
+Requires-Dist: typing_extensions<5,>=4.0; python_version < "3.8.0"
+Requires-Dist: cloudpickle
+Requires-Dist: pandas
+Requires-Dist: matplotlib
+Requires-Dist: importlib-metadata~=4.13
 Provides-Extra: tests
+Requires-Dist: pytest; extra == "tests"
+Requires-Dist: pytest-cov; extra == "tests"
+Requires-Dist: pytest-env; extra == "tests"
+Requires-Dist: pytest-xdist; extra == "tests"
+Requires-Dist: pytype; extra == "tests"
+Requires-Dist: mypy; extra == "tests"
+Requires-Dist: flake8>=3.8; extra == "tests"
+Requires-Dist: flake8-bugbear; extra == "tests"
+Requires-Dist: isort>=5.0; extra == "tests"
+Requires-Dist: black; extra == "tests"
+Requires-Dist: scipy>=1.4.1; extra == "tests"
 Provides-Extra: docs
+Requires-Dist: sphinx; extra == "docs"
+Requires-Dist: sphinx-autobuild; extra == "docs"
+Requires-Dist: sphinx-rtd-theme; extra == "docs"
+Requires-Dist: sphinxcontrib.spelling; extra == "docs"
+Requires-Dist: sphinx-autodoc-typehints; extra == "docs"
+Requires-Dist: sphinx_copybutton; extra == "docs"
 Provides-Extra: extra
+Requires-Dist: opencv-python; extra == "extra"
+Requires-Dist: ale-py==0.7.4; extra == "extra"
+Requires-Dist: autorom[accept-rom-license]~=0.4.2; extra == "extra"
+Requires-Dist: pillow; extra == "extra"
+Requires-Dist: tensorboard>=2.9.1; extra == "extra"
+Requires-Dist: psutil; extra == "extra"
+Requires-Dist: tqdm; extra == "extra"
+Requires-Dist: rich; extra == "extra"
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: keywords
+Dynamic: license
+Dynamic: provides-extra
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
 
 
 

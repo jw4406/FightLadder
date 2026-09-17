@@ -3,12 +3,12 @@ export PATH=/usr/local/bin:/usr/bin:/bin:$PATH
 # Launch all five image+unscaled runs as VTOFF, packing as many onto the GPU as
 # fit (memory-gated: launch next only when footprint+margin is free).
 set -u
-cd /home/jw4406/codebase/FightLadder
-BASIS=/home/jw4406/codebase/FightLadder/main/diag/basis_19680000_r4.npz
+cd /home/jw4406/FightLadder
+BASIS=/home/jw4406/FightLadder/main/diag/basis_19680000_r4.npz
 TOTAL=24564; MARGIN=2500
 used(){ nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits; }
 freem(){ echo $((TOTAL - $(used))); }
-PZ=/home/jw4406/codebase/FightLadder/run_minimax_phase0.sh
+PZ=/home/jw4406/FightLadder/run_minimax_phase0.sh
 COM="OBS_TYPE=image REWARD_SCALE=1.0 MINIMAX_HEAD=factored MINIMAX_EMBED=$BASIS MINIMAX_FREEZE_EMBED=True ACTIONABLE_STATUSES=512,514,520 TOTAL_TIMESTEPS=3000000 CHECKPOINT_INTERVAL=25000"
 
 # name|command  (standalone runs redirect to their own train.log; phase0 script self-logs)

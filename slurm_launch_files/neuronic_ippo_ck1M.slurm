@@ -22,16 +22,16 @@
 # ---------------------------------------------------------------------------
 echo "$CUDA_VISIBLE_DEVICES"
 JOBID=$SLURM_JOB_ID
-WORKDIR=/n/fs/magics/
+WORKDIR=/scratch/gpfs/FISAC/jw4406/
 mkdir -p "$WORKDIR/$JOBID"
 cd "$WORKDIR/$JOBID"
 echo "copying repo..."
 cp -r "$HOME/FightLadder/" ./
 cd FightLadder/
 module purge
-module load anaconda3/2024.02
-source /usr/local/anaconda3/2024.02/etc/profile.d/conda.sh 2>/dev/null || true
-conda activate fightladder
+module load anaconda3/2024.2
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh 2>/dev/null || true
+conda activate fightladder_della
 echo "env activated; launching driver"
 
 # --- run config (matches run_vega_ent05_ippo_160M_ck1M.sh) ---

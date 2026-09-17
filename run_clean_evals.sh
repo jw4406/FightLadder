@@ -7,7 +7,7 @@
 # that band. GPU is free (all arms done) so nothing serialises/OOMs.
 set -uo pipefail
 SD="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"; cd "${SD}/main"
-source ~/anaconda3/etc/profile.d/conda.sh; conda activate fightladder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh; conda activate fightladder_della
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 RES="${SD}/RESULTS_LIVE.md"; D=minimax_phase0_vtoff; T=trained_models/tasks/todo
 say() { echo "$*" | tee -a "$RES"; }

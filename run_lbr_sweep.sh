@@ -21,8 +21,8 @@ set -u
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 LBR_PATH="${SCRIPT_DIR}/main/local_best_response.py"
 
-source ~/anaconda3/etc/profile.d/conda.sh
-conda activate fightladder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh
+conda activate fightladder_della
 
 # --- what to sweep ----------------------------------------------------------
 # All four of these are env-overridable so a second sweep can run without

@@ -4,8 +4,8 @@
 # [[iterate-averaging-mixture-plan]] its mixture should NOT reduce exploitability
 # (every iterate is the same dead mode). Same config, LRs uniform 3e-5, NO annealing.
 set -u
-PZ=/home/jw4406/codebase/FightLadder/run_minimax_phase0.sh
-CKPT=/home/jw4406/codebase/FightLadder/main/minimax_phase0_vtoff_image_ippo_rs1.0_VegaBlanka_dtj_ent05_cont/trained_models/tasks/todo/ippo_Ve_Bl_78720000_steps.task
+PZ=/home/jw4406/FightLadder/run_minimax_phase0.sh
+CKPT=/home/jw4406/FightLadder/main/minimax_phase0_vtoff_image_ippo_rs1.0_VegaBlanka_dtj_ent05_cont/trained_models/tasks/todo/ippo_Ve_Bl_78720000_steps.task
 
 export MODEL_ARCH=ippo
 export PLAYER=Vega OPPONENTS=Blanka

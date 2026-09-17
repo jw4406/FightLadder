@@ -8,7 +8,7 @@ Usage:
     python main/sbatch_to_launch.py --sbatch path/to/job.sbatch
     python main/sbatch_to_launch.py --sbatch path/to/job.sbatch --name "my debug"
     python main/sbatch_to_launch.py --sbatch path/to/job.sbatch \
-        --workspace_folder /home/jw4406/codebase/FightLadder
+        --workspace_folder /home/jw4406/FightLadder
 
 The generated entry is printed to stdout — paste it into the
 ``configurations`` array in ``.vscode/launch.json``. We deliberately do

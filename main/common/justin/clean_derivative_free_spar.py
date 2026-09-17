@@ -38,7 +38,6 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import StepLR  #TODO: This can be changed to another scheduler.
 from torch.optim.lr_scheduler import ExponentialLR
 DEBUG_VIDEO = False
-from anyio import value
 from gymnasium import spaces
 # Also import gym.spaces for backwards compatibility with FightLadder environments
 try:

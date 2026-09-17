@@ -53,8 +53,8 @@ if [ "${VTRACE_C_BAR}" = "1.0" ]; then TAG="${ARM}"; else TAG="${ARM}_c${VTRACE_
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 IPPO_PATH="${SCRIPT_DIR}/main/ippo.py"
 
-source ~/anaconda3/etc/profile.d/conda.sh
-conda activate fightladder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh
+conda activate fightladder_della
 
 # Reduce allocator fragmentation so two concurrent runs have a chance of
 # coexisting on one 24 GiB card. The baseline run alone held 20.77 GiB, which is

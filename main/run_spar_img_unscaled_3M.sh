@@ -1,7 +1,7 @@
 #!/bin/bash
 set -u
-PY=/home/jw4406/anaconda3/envs/fightladder/bin/python
-WORKDIR=/home/jw4406/codebase/FightLadder
+PY=/home/jw4406/.conda/envs/fightladder_della/bin/python
+WORKDIR=/home/jw4406/FightLadder
 cd "$WORKDIR"
 RUNDIR="$WORKDIR/main/spar_img_unscaled_3M"
 export FIGHTLADDER_TASK_DIR="$RUNDIR/trained_models/tasks"

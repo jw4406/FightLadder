@@ -33,7 +33,7 @@
 set -uo pipefail
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "${SCRIPT_DIR}/main"
-source ~/anaconda3/etc/profile.d/conda.sh; conda activate fightladder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh; conda activate fightladder_della
 
 TREAT_DIR="${TREAT_DIR:-minimax_phase0_vtoff_rammasked_huber1.0_huber}"
 CTRL_DIR="${CTRL_DIR:-minimax_phase0_vtoff_rammasked_cdctl}"

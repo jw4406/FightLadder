@@ -28,10 +28,15 @@ import argparse
 import os
 import re
 import shlex
+import shutil
 import socket
 import subprocess
+import sys
 import time
 from typing import List
+
+_REPO_MAIN = os.path.dirname(os.path.abspath(__file__))   # repo's main/ (adaptive_exploiter.py lives here)
+_REPO_DIR = os.path.dirname(_REPO_MAIN)                    # repo root (parent of main/)
 
 socket.setdefaulttimeout(None)
 
@@ -583,6 +588,277 @@ def _run_crosspack_loop(args, template_text: str) -> None:
     print(f"[orch-xpack] Stop file {args.stop_file} detected; exiting.")
 
 
+# ----------------------------- ADAPTIVE mode -----------------------------
+# Per checkpoint we spawn ONE adaptive_exploiter.py controller (env-driven). It
+# manages its own portfolio internally, so to the orchestrator it is a single
+# local job: registered as `local-<pid>`, counted by the concurrency gate, and
+# swept todo->done when the controller exits. No template, no per-spec sbatch.
+_ADAPT_INIT_CONFIGS_PER_SEAT = 3   # mirrors adaptive_exploiter.py's initial portfolio (main())
+_ADAPT_MEM_PER_WORKER_MB = 1600    # ~GPU footprint of one br_single_matchup exploiter
+
+
+def _cores():
+    """Cgroup/affinity-aware core count: sees a SLURM --cpus-per-task cgroup or a
+    taskset, not the whole node. Falls back to os.cpu_count()."""
+    try:
+        return len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        return os.cpu_count() or 8
+
+
+def _probe_machine():
+    """Return (ncpu, load1, [(gpu_index, free_mb), ...]) for on-the-spot tuning.
+    Honors CUDA_VISIBLE_DEVICES; falls back to one assumed 24GB GPU if nvidia-smi
+    is absent so the tuner still produces a plan on a CPU-only/opaque host."""
+    ncpu = _cores()
+    try:
+        load1 = os.getloadavg()[0]
+    except (OSError, AttributeError):
+        load1 = 0.0
+    gpus = []
+    smi = shutil.which("nvidia-smi")
+    if smi:
+        try:
+            out = subprocess.check_output(
+                [smi, "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"],
+                text=True, timeout=15)
+            for line in out.strip().splitlines():
+                idx, free = [x.strip() for x in line.split(",")]
+                gpus.append((idx, int(free)))
+        except (subprocess.SubprocessError, ValueError, OSError):
+            pass
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    if cvd and gpus:
+        vis = [c.strip() for c in cvd.split(",") if c.strip() != ""]
+        gpus = [(g, m) for (g, m) in gpus if g in vis] or gpus
+    if not gpus:
+        gpus = [("0", 24000)]
+    return ncpu, load1, gpus
+
+
+def _autotune_adaptive(args) -> dict:
+    """Probe the machine and freeze (concurrent adaptives C, envs/worker E, GPU map).
+    C and the GPU map are pure throughput (no effect on any single exploiter); E is
+    set ONCE per run (mildly affects rollout-batch dynamics, so it must not vary
+    point-to-point). Search budget (MAX_CONFIGS/CAP_STEPS) is NOT tuned here."""
+    ncpu, load1, gpus = _probe_machine()
+    peak_workers = 2 * _ADAPT_INIT_CONFIGS_PER_SEAT   # both seats x initial portfolio
+    total_free = sum(m for _, m in gpus)
+    c_gpu = max(1, total_free // (peak_workers * _ADAPT_MEM_PER_WORKER_MB))
+    if str(args.max_concurrent_adaptives).lower() == "auto":
+        C = int(c_gpu)
+    else:
+        C = max(1, int(args.max_concurrent_adaptives))
+    C = min(C, len(gpus))   # never run more concurrent adaptives than GPUs (they'd fight over one card)
+    if str(args.adaptive_n_envs).lower() == "auto":
+        E = int(max(2, min(8, (ncpu - int(args.adaptive_reserve_cores)) // max(1, C * peak_workers))))
+    else:
+        E = max(1, int(args.adaptive_n_envs))
+    peak_env = C * peak_workers * E
+    tune = dict(C=C, E=E, gpus=[g for g, _ in gpus], ncpu=ncpu, load1=load1,
+                peak_workers=peak_workers, peak_env=peak_env, total_free_gpu_mb=total_free)
+    print(f"[orch-adaptive] AUTOTUNE: ncpu={ncpu} load1={load1:.1f} gpus={tune['gpus']} "
+          f"free_gpu={total_free}MB -> concurrent_adaptives={C} n_envs={E} "
+          f"(~{peak_workers} workers/adaptive, peak ~{peak_env} env-procs vs {ncpu} cores)")
+    if peak_env > ncpu:
+        print(f"[orch-adaptive] WARN: peak env-procs {peak_env} > {ncpu} cores -> CPU "
+              f"oversubscription (emulators are CPU-bound; throughput will be sub-linear). "
+              f"Lower --max_concurrent_adaptives / --adaptive_n_envs to relieve it.")
+    return tune
+
+
+def _build_adapt_env(args, task_filename, processing_path, processing_folder):
+    """Shared, mode-agnostic ADAPT_* env delta for one checkpoint (seat mapping +
+    output routing; NO n_envs/GPU -- those are mode-specific). Returns
+    (delta, seat_desc, workdir, task_stem, log_path, model_type)."""
+    model_type = detect_model_type(processing_path, device="cpu")
+    is_league = (model_type == "league")
+    task_stem = os.path.splitext(task_filename)[0]
+    out_base = args.adaptive_out_dir or os.path.join(args.workdir, args.main_training_dir, "adaptive_out")
+    workdir = os.path.join(out_base, _sanitize_for_filename(task_stem))   # per-checkpoint subtree (no br_index collisions)
+
+    delta = {"WORKDIR": workdir, "ADAPT_MTD": "br_adaptive", "FL_REPO": _REPO_MAIN}
+    if is_league:
+        copy_aux_files(args.todo_dir, processing_folder)   # bring the population .pt members alongside the .task
+        loaded_side, _mk = peek_league_side_and_matchup(processing_path)
+        if loaded_side not in ("left", "right"):
+            raise ValueError(f"League task {task_filename!r} invalid side={loaded_side!r}")
+        # Operator override first (non-standard member names defeat the inference
+        # regex, e.g. PSRO '*_historical_*' snapshots); else infer from filenames.
+        _override = [s.strip() for s in args.adaptive_league_states.split(",") if s.strip()]
+        league_states = _override or _infer_league_matchup_states_from_dir(processing_path)
+        seat = "left" if loaded_side == "left" else "right"   # left=ego-exploit, right=adv-exploit
+        S = str(seat).upper()
+        delta["ADAPT_SEATS"] = seat
+        delta[f"ADAPT_{S}_TASK"] = processing_path
+        delta[f"ADAPT_{S}_STATE"] = league_states[0]
+        delta[f"ADAPT_{S}_LMS"] = ",".join(league_states)
+        seat_desc = f"league seat={seat} states={len(league_states)}"
+    else:
+        states = _extract_unique_states_from_task(processing_path, device="cpu")
+        if len(states) > 1:
+            print(f"[orch-adaptive] WARN: {task_filename} has {len(states)} matchup states; "
+                  f"adaptive uses the first ({states[0]}). Multi-matchup adaptive not yet wired.")
+        state = states[0]
+        delta["ADAPT_SEATS"] = "left,right"                   # self-play: exploit BOTH ego and adv
+        delta["ADAPT_LEFT_TASK"] = delta["ADAPT_RIGHT_TASK"] = processing_path
+        delta["ADAPT_LEFT_STATE"] = delta["ADAPT_RIGHT_STATE"] = state
+        seat_desc = f"self-play seats=left,right state={state}"
+
+    slurm_log_dir = os.path.join(os.path.abspath(args.slurm_log_dir), task_stem)
+    os.makedirs(slurm_log_dir, exist_ok=True)
+    log_path = os.path.join(slurm_log_dir, f"adaptive_{task_stem}.log")
+    return delta, seat_desc, workdir, task_stem, log_path, model_type
+
+
+def _launch_adaptive_local(args, task_filename, processing_path, processing_folder, gpu, tune) -> List[str]:
+    """LOCAL mode (della head node): Popen ONE controller pinned to `gpu`, with an
+    orchestrator-computed n_envs (the shared node's cores are already divided across
+    the C concurrent adaptives). Returns [f"local-{pid}"] (or [] on dry_run)."""
+    delta, seat_desc, workdir, task_stem, log_path, model_type = _build_adapt_env(
+        args, task_filename, processing_path, processing_folder)
+    env = dict(os.environ); env.update(delta)
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu)      # whole adaptive on one GPU; workers inherit it
+    env["ADAPT_N_ENVS"] = str(tune["E"])        # orchestrator-computed (node shared across C adaptives)
+    env["ADAPT_RESERVE_CORES"] = str(args.adaptive_reserve_cores)
+    print(f"[orch-adaptive:local] {task_filename}: model={model_type} {seat_desc} "
+          f"gpu={gpu} n_envs={tune['E']} out={workdir}")
+    if args.dry_run:
+        print(f"[dry_run] would Popen adaptive_exploiter.py (log={log_path})")
+        return []
+    os.makedirs(workdir, exist_ok=True)
+    f = open(log_path, "w")
+    proc = subprocess.Popen(
+        [args.python_bin, "-u", os.path.join(_REPO_MAIN, "adaptive_exploiter.py")],
+        env=env, stdout=f, stderr=subprocess.STDOUT, cwd=_REPO_MAIN, start_new_session=True)
+    print(f"[orch-adaptive:local] launched controller pid={proc.pid} (log={log_path})")
+    return [f"local-{proc.pid}"]
+
+
+def _launch_adaptive_sbatch(args, task_filename, processing_path, processing_folder,
+                            template_text) -> List[str]:
+    """SLURM mode (neuronic): submit ONE sbatch per checkpoint that runs the controller
+    on an allocated (sized-down) node slice. ADAPT_N_ENVS=auto so the controller
+    self-tunes to its --cpus-per-task cgroup; SLURM sets CUDA_VISIBLE_DEVICES via --gres.
+    Returns [job_id] (numeric on SLURM, local-<pid> under the bash fallback)."""
+    delta, seat_desc, workdir, task_stem, log_path, model_type = _build_adapt_env(
+        args, task_filename, processing_path, processing_folder)
+    slurm_log_dir = os.path.dirname(log_path)
+    job_name = f"adapt_{_sanitize_for_filename(task_stem)}"
+    out_log = os.path.join(slurm_log_dir, f"{job_name}.out")
+    err_log = os.path.join(slurm_log_dir, f"{job_name}.err")
+    sbatch_path = os.path.join(slurm_log_dir, f"{job_name}.sbatch")
+
+    # PYTHON_CMD block: export the ADAPT_* delta + self-tune knobs, then run the controller.
+    exports = [f"export {k}={shlex.quote(str(v))}" for k, v in delta.items()]
+    exports.append("export ADAPT_N_ENVS=auto")   # self-tune to the cgroup slice
+    exports.append(f"export ADAPT_RESERVE_CORES={int(args.adaptive_reserve_cores)}")
+    exports.append(f"mkdir -p {shlex.quote(workdir)}")
+    exports.append(f"{shlex.quote(args.python_bin)} -u "
+                   f"{shlex.quote(os.path.join(_REPO_MAIN, 'adaptive_exploiter.py'))}")
+    python_cmd = "\n".join(exports)
+
+    extra_sbatch_lines = f"#SBATCH --account={args.slurm_account}\n" if args.slurm_account else ""
+    print(f"[orch-adaptive:sbatch] {task_filename}: model={model_type} {seat_desc} "
+          f"gres={args.slurm_gres} cpus={args.slurm_cpus_per_task} out={workdir}")
+    if template_text:
+        render_template_sbatch(
+            template_text=template_text, sbatch_path=sbatch_path, job_name=job_name,
+            out_log=out_log, err_log=err_log, python_cmd=python_cmd,
+            extra_sbatch_lines=extra_sbatch_lines,
+            extra_placeholders={"SBATCH_TIME": args.slurm_time, "WS_WORKDIR": args.workdir,
+                                "MAIN_TRAINING_DIR": args.main_training_dir, "WS_REPO_DIR": _REPO_DIR,
+                                "SBATCH_CPUS": str(args.slurm_cpus_per_task),
+                                "SBATCH_GRES": args.slurm_gres, "SBATCH_MEM": args.slurm_mem})
+    else:
+        write_sbatch_script(
+            sbatch_path=sbatch_path, job_name=job_name, time_limit=args.slurm_time,
+            mem=args.slurm_mem, gres=args.slurm_gres, cpus_per_task=args.slurm_cpus_per_task,
+            out_log=out_log, err_log=err_log, repo_dir=_REPO_DIR, env_setup=args.env_setup,
+            python_cmd=python_cmd, extra_sbatch_lines=extra_sbatch_lines,
+            workdir=args.workdir, main_training_dir=args.main_training_dir)
+    try:
+        job_id = submit_sbatch(sbatch_path, dry_run=args.dry_run,
+                               local_out_log=out_log, local_err_log=err_log)
+    except subprocess.CalledProcessError as exc:
+        print(f"[orch-adaptive:sbatch] sbatch FAILED for {sbatch_path}: {exc}")
+        return []
+    if job_id:
+        print(f"[orch-adaptive:sbatch] submitted {job_name} job_id={job_id}")
+        return [job_id]
+    return []
+
+
+def _count_inflight_adaptives(processing_dir: str) -> int:
+    """In-flight adaptive count = processing folders with a non-empty registry (the
+    sweep removes them to done/ once their jobs clear). Works for numeric SLURM ids
+    and local-<pid> alike (the sweep already resolves both)."""
+    if not os.path.isdir(processing_dir):
+        return 0
+    n = 0
+    for entry in os.listdir(processing_dir):
+        folder = os.path.join(processing_dir, entry)
+        if os.path.isdir(folder):
+            reg = read_registry(folder)
+            if reg and reg.get("job_ids"):
+                n += 1
+    return n
+
+
+def _run_adaptive_loop(args, tune: dict, template_text: str = "") -> None:
+    """Watch todo/, and per claimed checkpoint launch ONE adaptive controller.
+    LOCAL: Popen on this node, GPU round-robin, gated by live local PIDs.
+    SBATCH: submit one sbatch per checkpoint, gated by in-flight registries.
+    Registry + sweep are the shared machinery, so lifecycle is unchanged either way."""
+    mode = args.adaptive_launch
+    C = tune["C"]
+    launch_idx = 0
+    if mode == "local":
+        print(f"[orch-adaptive] LOCAL mode: {C} concurrent controller(s), "
+              f"n_envs={tune['E']}, GPU round-robin over {tune['gpus']}")
+    else:
+        print(f"[orch-adaptive] SBATCH mode: <= {C} in-flight controller job(s), "
+              f"each sized to gres={args.slurm_gres} cpus={args.slurm_cpus_per_task} "
+              f"(controller self-tunes n_envs to its cgroup)")
+    while not os.path.exists(args.stop_file):
+        try:
+            sweep_completed_tasks(args.processing_dir, args.done_dir)
+        except Exception as exc:
+            print(f"[orch-adaptive] sweeper error (non-fatal): {exc}")
+
+        inflight = (count_active_local_jobs(args.processing_dir) if mode == "local"
+                    else _count_inflight_adaptives(args.processing_dir))
+        if inflight >= C:
+            time.sleep(POLL_INTERVAL)
+            continue
+
+        claim = claim_task(args.todo_dir, args.processing_dir, step_stride=args.step_stride)
+        if claim is None:
+            time.sleep(POLL_INTERVAL)
+            continue
+        task_filename, processing_path, processing_folder = claim
+        try:
+            if mode == "local":
+                gpu = tune["gpus"][launch_idx % len(tune["gpus"])]
+                launch_idx += 1
+                job_ids = _launch_adaptive_local(args, task_filename, processing_path,
+                                                 processing_folder, gpu, tune)
+            else:
+                job_ids = _launch_adaptive_sbatch(args, task_filename, processing_path,
+                                                  processing_folder, template_text)
+            write_registry(processing_folder, {
+                "task_filename": task_filename, "submitted_at": time.time(),
+                "job_ids": job_ids, "dry_run": args.dry_run, "mode": f"adaptive_{mode}",
+            })
+        except Exception as exc:
+            err_path = os.path.join(processing_folder, "_dispatch_error.txt")
+            with open(err_path, "w") as f:
+                f.write(f"{type(exc).__name__}: {exc}\n")
+            print(f"[orch-adaptive] dispatch error for {task_filename}: {exc}; see {err_path}")
+
+    print(f"[orch-adaptive] Stop file detected at {args.stop_file}; exiting.")
+
+
 # ----------------------------- CLI -----------------------------
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -626,6 +902,44 @@ def build_parser() -> argparse.ArgumentParser:
                              "(cpu only; --mem still scales by the co-located exploiter count). "
                              "Default 1 = template base cpus. Set independently of "
                              "--exploiters_per_job, e.g. --resource_scale 6.")
+    # --- ADAPTIVE exploiter mode (default ON) -----------------------------------
+    # Per checkpoint, run the adaptive controller (diverse portfolio + successive
+    # halving + kill bar + escalation ladder) instead of one blind BR per
+    # (matchup, side, replicate). The portfolio's best-of-N is a tighter lower
+    # bound on the true best response, so the exploitability curve is MORE
+    # faithful, not less. Concurrency + envs/worker are auto-tuned to the machine
+    # at startup (frozen for the run); search budget (MAX_CONFIGS/CAP_STEPS, inside
+    # adaptive_exploiter.py) stays fixed so points stay comparable.
+    parser.add_argument("--use_adaptive", choices=["True", "False"], default="True",
+                        help="Run the ADAPTIVE exploiter per checkpoint (default True). "
+                             "False = legacy per-(matchup,side,replicate) dedicated path.")
+    parser.add_argument("--adaptive_launch", choices=["local", "sbatch"], default="local",
+                        help="How to run each adaptive controller. 'local' = Popen on THIS node "
+                             "(della head node / workstation; orchestrator divides the shared "
+                             "node's cores). 'sbatch' = submit one sbatch per checkpoint sized to "
+                             "--slurm_gres/--slurm_cpus_per_task (neuronic; controller self-tunes "
+                             "n_envs to its cgroup).")
+    parser.add_argument("--adaptive_sbatch_template", type=str, default="",
+                        help="(sbatch mode) Path to a .slurm template for the adaptive job "
+                             "(#SBATCH directives + module/conda + {{PYTHON_CMD}}). Empty = "
+                             "generate directives from --slurm_* args.")
+    parser.add_argument("--max_concurrent_adaptives", default="auto",
+                        help="Max adaptive controllers at once. local: 'auto' = one per visible "
+                             "GPU (GPU-mem gated). sbatch: 'auto' -> 8 in-flight; integer overrides.")
+    parser.add_argument("--adaptive_n_envs", default="auto",
+                        help="Envs per exploiter worker. 'auto' = fill cores given the chosen "
+                             "concurrency, clamped [2,8]. Integer PINS it (strict cross-machine "
+                             "comparability). Frozen once per run.")
+    parser.add_argument("--adaptive_reserve_cores", type=int, default=2,
+                        help="Cores held back from the n_envs auto-fill for controller(s)+system.")
+    parser.add_argument("--adaptive_out_dir", default="",
+                        help="Base dir for adaptive outputs (a per-checkpoint subtree is made "
+                             "under it). Default <workdir>/<main_training_dir>/adaptive_out.")
+    parser.add_argument("--adaptive_league_states", default="",
+                        help="Comma-separated retro state paths for LEAGUE/PSRO checkpoints. "
+                             "Overrides filename inference (needed for non-standard member "
+                             "names like PSRO '*_historical_*' snapshots, which the inference "
+                             "regex cannot parse). Ignored for self-play spar/ippo checkpoints.")
     return parser
 
 
@@ -664,6 +978,28 @@ def main() -> None:
     print(f"[orch-dedicated] SLURM: "
           f"time={args.slurm_time} mem={args.slurm_mem} "
           f"gres={args.slurm_gres} cpus={args.slurm_cpus_per_task}")
+
+    # ADAPTIVE mode (DEFAULT ON). Per checkpoint, run the adaptive controller
+    # instead of per-spec BR jobs. Auto-tunes concurrency + envs/worker to this
+    # machine, then runs its own watch loop. Set --use_adaptive False for the
+    # legacy per-spec dedicated path below.
+    if str(getattr(args, "use_adaptive", "True")) == "True":
+        if args.adaptive_launch == "local":
+            if have_sbatch():
+                print("[orch-adaptive] NOTE: sbatch is on PATH but --adaptive_launch=local, so "
+                      "controllers run LOCALLY on THIS node (no sbatch). Use --adaptive_launch "
+                      "sbatch to submit per-checkpoint SLURM jobs.")
+            tune = _autotune_adaptive(args)          # probes THIS node (head node), sets C/E/gpus
+            _run_adaptive_loop(args, tune)
+        else:  # sbatch: controller self-tunes on its allocated node; here we only cap in-flight
+            adapt_template = ""
+            if args.adaptive_sbatch_template:
+                adapt_template = open(os.path.abspath(args.adaptive_sbatch_template)).read()
+                print(f"[orch-adaptive] adaptive sbatch template={args.adaptive_sbatch_template}")
+            _cap = args.max_concurrent_adaptives
+            C = 8 if str(_cap).lower() == "auto" else max(1, int(_cap))
+            _run_adaptive_loop(args, {"C": C}, template_text=adapt_template)
+        return
 
     # Cross-checkpoint packing mode (opt-in). Otherwise fall through to the
     # unchanged one-task-at-a-time loop below.

@@ -226,7 +226,7 @@ def evaluate_sa(curr_state, args, model, exploiter_model, env_index, greedy=0, r
                 if model.use_mirror is True:
                     data, params, pytorch_variables = load_from_zip_file(
 
-                        "/home/jw4406/codebase/FightLadder/main/trained_models/ippo_mirror_pre_%s/ppo_%s_27894000_steps.zip" % (
+                        "/home/jw4406/FightLadder/main/trained_models/ippo_mirror_pre_%s/ppo_%s_27894000_steps.zip" % (
 
                             PLAYER, PLAYER))
                     del params['policy.ctrl_optimizer']
@@ -571,7 +571,7 @@ def main(PLAYER):
         print("load model from " + args.left_model_file + " and " + args.right_model_file)
         model.set_parameters_2p(args.left_model_file, args.right_model_file)
 
-    # ippo = TSS_PPO.load('/home/jw4406/codebase/FightLadder/main/trained_models/tss_entropy/ppo_ryu_final_steps.zip', env=env_generator())
+    # ippo = TSS_PPO.load('/home/jw4406/FightLadder/main/trained_models/tss_entropy/ppo_ryu_final_steps.zip', env=env_generator())
     # args.video_dir = 'videos/tss_ppo_entropy_vid_dir'
     # results = evaluate(args, ippo, record=True)
     # assert False
@@ -583,26 +583,26 @@ def main(PLAYER):
                                               clip_range_schedule=clip_range_schedule)
 
     # finetune_model.warmstart_setup(finetune_model.lr_schedule)
-    # finetune_model = Specialized_Agent.load("/home/jw4406/codebase/FightLadder/main/trained_models/ma/ppo_ryu_4545792_steps.zip", env=env_generator())
+    # finetune_model = Specialized_Agent.load("/home/jw4406/FightLadder/main/trained_models/ma/ppo_ryu_4545792_steps.zip", env=env_generator())
 
     from stable_baselines3.common.save_util import load_from_zip_file
     # data, params, pytorch_variables = load_from_zip_file(
-    #    "/home/jw4406/codebase/FightLadder/main/trained_models/ws3_8/ppo_ryu_1668096_steps.zip")
+    #    "/home/jw4406/FightLadder/main/trained_models/ws3_8/ppo_ryu_1668096_steps.zip")
     # if FINETUNE is True:
     # finetune_model.warmstarted_cont_MAGICS = True
     # finetune_model.warmstart_setup(finetune_model.lr_schedule)
 
     data, params, pytorch_variables = load_from_zip_file(
 
-        "/home/jw4406/codebase/FightLadder/main/benchmark_models/right/ippo.zip")
+        "/home/jw4406/FightLadder/main/benchmark_models/right/ippo.zip")
     # data, params, pytorch_variables = load_from_zip_file(
 
-    #    "/home/jw4406/codebase/FightLadder/main/trained_models/ippo_%s_12_cont/ppo_%s_10536000_steps.zip" %
+    #    "/home/jw4406/FightLadder/main/trained_models/ippo_%s_12_cont/ppo_%s_10536000_steps.zip" %
 
     #    (PLAYER, PLAYER))
 
     # data, params, pytorch_variables = load_from_zip_file(
-    #        "/home/jw4406/codebase/FightLadder/main/trained_models/guile_tss_test/ppo_%s_1728000_steps.zip" % (PLAYER))
+    #        "/home/jw4406/FightLadder/main/trained_models/guile_tss_test/ppo_%s_1728000_steps.zip" % (PLAYER))
     #if EVAL is True or FINETUNE is True:
     #    del params['policy.ctrl_optimizer']
     #    del params['policy.value_optimizer']
@@ -610,7 +610,7 @@ def main(PLAYER):
     # finetune_model.warmstarted_cont_MAGICS = True
     # finetune_model.warmstart_setup(finetune_model.lr_schedule)
     #finetune_model.set_parameters(params, exact_match=False, device=finetune_model.device)
-    finetune_model = IPPO.load("/home/jw4406/codebase/FightLadder/main/benchmark_models/right/ippo.zip")
+    finetune_model = IPPO.load("/home/jw4406/FightLadder/main/benchmark_models/right/ippo.zip")
     '''
     x = LeaguePPO(
         "left",
@@ -628,7 +628,7 @@ def main(PLAYER):
         # seed=args.seed,
         other_learning_rate=1e-4, # other_lr_schedule,
     )
-    finetune_model = x.set_parameters_2p(load_path_or_dict="/home/jw4406/codebase/FightLadder/main/benchmark_models/left/LEAGUE.pt", load_path_or_dict_other="/home/jw4406/codebase/FightLadder/main/benchmark_models/right/LEAGUE.pt")'''
+    finetune_model = x.set_parameters_2p(load_path_or_dict="/home/jw4406/FightLadder/main/benchmark_models/left/LEAGUE.pt", load_path_or_dict_other="/home/jw4406/FightLadder/main/benchmark_models/right/LEAGUE.pt")'''
     right_benchmark = finetune_model
 
     left_agent = Specialized_Agent(
@@ -659,7 +659,7 @@ def main(PLAYER):
         )
     data, params, pytorch_variables = load_from_zip_file(
 
-        "/home/jw4406/codebase/FightLadder/main/trained_models/ippo_Guile_12_cont/ppo_Guile_10536000_steps.zip")
+        "/home/jw4406/FightLadder/main/trained_models/ippo_Guile_12_cont/ppo_Guile_10536000_steps.zip")
 
     left_agent.set_parameters(params, exact_match=False, device=finetune_model.device)
 
@@ -671,12 +671,12 @@ def main(PLAYER):
     # need to fix env generator
     exploiter = Exploiter('CnnPolicy', exploiter_env_generator(), device='cuda', exploited=finetune_model, n_steps=1024,
                           batch_size=512, n_epochs=1)
-    # exploiter_path = "/home/jw4406/codebase/FightLadder/main/trained_models/exploiting_%s/ppo_%s_15480000_steps.zip" % (PLAYER, PLAYER)
-    exploiter_path = "/home/jw4406/codebase/FightLadder/main/trained_models/exploiting_%s/ppo_%s_34680000_steps.zip" % (
+    # exploiter_path = "/home/jw4406/FightLadder/main/trained_models/exploiting_%s/ppo_%s_15480000_steps.zip" % (PLAYER, PLAYER)
+    exploiter_path = "/home/jw4406/FightLadder/main/trained_models/exploiting_%s/ppo_%s_34680000_steps.zip" % (
         PLAYER, PLAYER)
-    exploiter_path = "/home/jw4406/codebase/FightLadder/main/trained_models/exploiting_%s_12_ippo_match/ppo_%s_13600000_steps.zip" % (
+    exploiter_path = "/home/jw4406/FightLadder/main/trained_models/exploiting_%s_12_ippo_match/ppo_%s_13600000_steps.zip" % (
         PLAYER, PLAYER)
-    exploiter_path = "/home/jw4406/codebase/FightLadder/main/trained_models/exploiting_%s_sa/ppo_%s_30440000_steps.zip" % (
+    exploiter_path = "/home/jw4406/FightLadder/main/trained_models/exploiting_%s_sa/ppo_%s_30440000_steps.zip" % (
     PLAYER, PLAYER)
     #exploiter = Exploiter.load(exploiter_path)
     # model = exploiter

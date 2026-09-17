@@ -13,7 +13,7 @@
 set -uo pipefail
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "${SCRIPT_DIR}/main"
-source ~/anaconda3/etc/profile.d/conda.sh; conda activate fightladder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh; conda activate fightladder_della
 LOG="${SCRIPT_DIR}/logs/value_cross.log"
 say() { echo "[xval $(date +%H:%M:%S)] $*" | tee -a "${LOG}"; }
 

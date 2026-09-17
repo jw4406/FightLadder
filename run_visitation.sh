@@ -25,8 +25,8 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # conda activate is NOT optional -- three separate bugs in this project came from
 # a probe running without it, crashing on `No module named torch`, and a caller
 # reporting the resulting empty output as a real (reassuring) result.
-source ~/anaconda3/etc/profile.d/conda.sh
-conda activate fightladder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh
+conda activate fightladder_della
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 OUT="${SCRIPT_DIR}/main/visitation"

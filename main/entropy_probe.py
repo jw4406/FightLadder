@@ -7,7 +7,7 @@ Fails LOUDLY: asserts the dist has >=1 categorical component and prints the coun
 and cross-checks .entropy() against a manual -sum p log p on component 0.
 """
 import os, sys, argparse, json
-_MAIN = "/home/jw4406/codebase/FightLadder/main"
+_MAIN = "/home/jw4406/FightLadder/main"
 sys.path.insert(0, _MAIN); os.chdir(_MAIN)
 import numpy as np, torch as th
 from stable_baselines3.common.utils import obs_as_tensor

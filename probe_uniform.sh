@@ -1,7 +1,7 @@
 #!/bin/bash
 set -u
-cd /home/jw4406/codebase/FightLadder
-source ~/anaconda3/etc/profile.d/conda.sh; conda activate fightladder
+cd /home/jw4406/FightLadder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh; conda activate fightladder_della
 python -c "import torch" 2>/dev/null || { echo "FATAL: no torch"; exit 3; }
 CK=main/minimax_phase0_vton/trained_models/tasks/todo
 for T in reward return; do

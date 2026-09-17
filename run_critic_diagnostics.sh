@@ -18,8 +18,8 @@
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 DIAG_PATH="${SCRIPT_DIR}/main/critic_diagnostics.py"
 
-source ~/anaconda3/etc/profile.d/conda.sh
-conda activate fightladder
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh
+conda activate fightladder_della
 
 # Exactly one of CKPT / SERIES. SERIES accepts a glob and also emits series.png.
 CKPT=""
