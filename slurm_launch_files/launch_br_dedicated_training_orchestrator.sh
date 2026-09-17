@@ -9,7 +9,8 @@ BR_TRAINING_STEPS=10000000   # total .learn() timesteps per BR job
 # it does NOT submit per-spec sbatch jobs. On a real multi-node SLURM allocation set
 # USE_ADAPTIVE=False to keep the sbatch fan-out. Concurrency+envs auto-tune to the node.
 USE_ADAPTIVE=True
-MAX_CONCURRENT_ADAPTIVES=auto     # 'auto' = one per visible GPU (GPU-mem gated); or an integer
+ADAPTIVE_LAUNCH=local             # 'local' = Popen on this node; 'sbatch' = one sized-down SLURM job per checkpoint
+MAX_CONCURRENT_ADAPTIVES=auto     # local: 'auto' = one per visible GPU (GPU-mem gated); or an integer
 ADAPTIVE_N_ENVS=auto              # 'auto' = fill cores given the concurrency, clamped [2,8]; or pin an integer
 ADAPTIVE_RESERVE_CORES=2
 ADAPTIVE_OUT_DIR=""               # default <WORKDIR>/<MAIN_TRAINING_DIR>/adaptive_out
@@ -38,6 +39,7 @@ CMD=(python -u "$REPO_DIR/main/br_slurm_orchestrator.py"
 	--slurm_log_dir /home/jw4406
 	--br_training_steps "$BR_TRAINING_STEPS"
 	--use_adaptive "$USE_ADAPTIVE"
+	--adaptive_launch "$ADAPTIVE_LAUNCH"
 	--max_concurrent_adaptives "$MAX_CONCURRENT_ADAPTIVES"
 	--adaptive_n_envs "$ADAPTIVE_N_ENVS"
 	--adaptive_reserve_cores "$ADAPTIVE_RESERVE_CORES"

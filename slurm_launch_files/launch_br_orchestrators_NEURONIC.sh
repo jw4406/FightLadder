@@ -27,11 +27,17 @@ RESOURCE_SCALE=1                  # absolute cpu multiplier for PACKED jobs (cpu
 # to the node. NOTE: runs LOCAL controllers on the allocated node, not per-spec sbatch.
 # Set USE_ADAPTIVE=False to restore the sbatch/packing fan-out. ----
 USE_ADAPTIVE=True
-MAX_CONCURRENT_ADAPTIVES=auto     # 'auto' = one per visible GPU (GPU-mem gated); or an integer
-ADAPTIVE_N_ENVS=auto              # 'auto' = fill cores given the concurrency, clamped [2,8]; or pin an integer
+ADAPTIVE_LAUNCH=sbatch            # neuronic = SLURM: submit ONE sized-down sbatch per checkpoint
+MAX_CONCURRENT_ADAPTIVES=8        # sbatch: max in-flight adaptive jobs the orchestrator keeps queued
+ADAPTIVE_N_ENVS=auto             # (sbatch: ignored here; the controller self-tunes n_envs to its --cpus-per-task cgroup)
 ADAPTIVE_RESERVE_CORES=2
 ADAPTIVE_OUT_DIR=""               # default <WORKDIR>/<MAIN_TRAINING_DIR>/adaptive_out
 ADAPTIVE_LEAGUE_STATES=""         # CSV state override for non-standard league members (PSRO *_historical_*)
+# Per-adaptive sbatch sizing (SIZED DOWN so SLURM packs several per 8-GPU/52-core node;
+# a full portfolio is light). The controller self-tunes n_envs to ADAPTIVE_SLURM_CPUS.
+ADAPTIVE_SLURM_CPUS=18            # --cpus-per-task per adaptive (binding constraint: 52/node -> ~2-3 pack)
+ADAPTIVE_SLURM_GRES=gpu:1         # one L40S per adaptive (portfolio ~6-10 workers x ~1.6GB fits easily)
+ADAPTIVE_SLURM_MEM=16G
 
 WORKDIR=/n/fs/magics
 MAIN_TRAINING_DIR=10852202
@@ -69,6 +75,11 @@ DEDICATED_CMD=(
     --periodic_eval_freq "$PERIODIC_EVAL_FREQ"
     --dry_run True
     --use_adaptive "$USE_ADAPTIVE"
+    --adaptive_launch "$ADAPTIVE_LAUNCH"
+    --adaptive_sbatch_template "$REPO_DIR/slurm_launch_files/br_adaptive_template_NEURONIC.slurm"
+    --slurm_cpus_per_task "$ADAPTIVE_SLURM_CPUS"
+    --slurm_gres "$ADAPTIVE_SLURM_GRES"
+    --slurm_mem "$ADAPTIVE_SLURM_MEM"
     --max_concurrent_adaptives "$MAX_CONCURRENT_ADAPTIVES"
     --adaptive_n_envs "$ADAPTIVE_N_ENVS"
     --adaptive_reserve_cores "$ADAPTIVE_RESERVE_CORES"

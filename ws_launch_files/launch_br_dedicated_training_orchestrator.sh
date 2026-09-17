@@ -22,7 +22,8 @@ BR_TRAINING_STEPS=100000   # total .learn() timesteps per BR job (set small for 
 # for the run; search budget (MAX_CONFIGS/CAP_STEPS in adaptive_exploiter.py) stays
 # fixed so exploitability curve points stay comparable.
 USE_ADAPTIVE=True                 # False = legacy per-spec dedicated path
-MAX_CONCURRENT_ADAPTIVES=auto     # 'auto' = one per visible GPU (GPU-mem gated); or an integer
+ADAPTIVE_LAUNCH=local             # workstation: run controllers LOCALLY (Popen). 'sbatch' = submit per-checkpoint SLURM jobs
+MAX_CONCURRENT_ADAPTIVES=auto     # local: 'auto' = one per visible GPU (GPU-mem gated); or an integer
 ADAPTIVE_N_ENVS=auto              # 'auto' = fill cores given the concurrency, clamped [2,8]; or pin an integer
 ADAPTIVE_RESERVE_CORES=2          # cores held back for controller(s)+system
 ADAPTIVE_OUT_DIR=""               # default <WORKDIR>/<MAIN_TRAINING_DIR>/adaptive_out
@@ -51,6 +52,7 @@ CMD=(python -u "$REPO_DIR/main/br_slurm_orchestrator.py"
     --max_local_concurrent "$MAX_LOCAL_CONCURRENT"
     --br_training_steps "$BR_TRAINING_STEPS"
     --use_adaptive "$USE_ADAPTIVE"
+    --adaptive_launch "$ADAPTIVE_LAUNCH"
     --max_concurrent_adaptives "$MAX_CONCURRENT_ADAPTIVES"
     --adaptive_n_envs "$ADAPTIVE_N_ENVS"
     --adaptive_reserve_cores "$ADAPTIVE_RESERVE_CORES"

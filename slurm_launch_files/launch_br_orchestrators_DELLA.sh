@@ -27,8 +27,9 @@ RESOURCE_SCALE=1                  # absolute cpu multiplier for PACKED jobs (cpu
 # to the node. NOTE: runs LOCAL controllers on the allocated node, not per-spec sbatch.
 # Set USE_ADAPTIVE=False to restore the sbatch/packing fan-out. ----
 USE_ADAPTIVE=True
-MAX_CONCURRENT_ADAPTIVES=auto     # 'auto' = one per visible GPU (GPU-mem gated); or an integer
-ADAPTIVE_N_ENVS=auto              # 'auto' = fill cores given the concurrency, clamped [2,8]; or pin an integer
+ADAPTIVE_LAUNCH=local             # della = 2-GPU head node: run controllers LOCALLY (Popen), NOT sbatch
+MAX_CONCURRENT_ADAPTIVES=auto     # local: 'auto' = one adaptive per visible GPU -> 2 on the head node
+ADAPTIVE_N_ENVS=auto              # 'auto' = divide the head node's cores across the 2 concurrent adaptives, clamped [2,8]
 ADAPTIVE_RESERVE_CORES=2
 ADAPTIVE_OUT_DIR=""               # default <WORKDIR>/<MAIN_TRAINING_DIR>/adaptive_out
 ADAPTIVE_LEAGUE_STATES=""         # CSV state override for non-standard league members (PSRO *_historical_*)
@@ -69,6 +70,7 @@ DEDICATED_CMD=(
     --periodic_eval_freq "$PERIODIC_EVAL_FREQ"
     #--dry_run True
     --use_adaptive "$USE_ADAPTIVE"
+    --adaptive_launch "$ADAPTIVE_LAUNCH"
     --max_concurrent_adaptives "$MAX_CONCURRENT_ADAPTIVES"
     --adaptive_n_envs "$ADAPTIVE_N_ENVS"
     --adaptive_reserve_cores "$ADAPTIVE_RESERVE_CORES"
