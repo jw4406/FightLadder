@@ -1376,6 +1376,10 @@ def train_best_response(
     _br_nsteps = int(_os.environ.get("BR_NSTEPS", 1024))
     _br_batch = int(_os.environ.get("BR_BATCH", 512))
     _br_nepochs = int(_os.environ.get("BR_NEPOCHS", 4))
+    # Entropy floor via env (default = the caller's ent_coef, i.e. 0.0). The adaptive
+    # controller sets BR_ENT_COEF>0 to stop the ent_coef=0 entropy collapse; other
+    # callers are unchanged.
+    _br_ent = float(_os.environ["BR_ENT_COEF"]) if _os.environ.get("BR_ENT_COEF") else ent_coef
     _br_pk = None
     _net = _os.environ.get("BR_NET_ARCH")          # e.g. "256,256" -> pi & vf MLP head
     _feat = _os.environ.get("BR_FEATURES_DIM")     # CNN feature width
@@ -1387,7 +1391,7 @@ def train_best_response(
         if _feat:
             _br_pk["features_extractor_kwargs"] = dict(features_dim=int(_feat))
     print(f"[br HP] lr={_br_lr} n_steps={_br_nsteps} batch={_br_batch} "
-          f"n_epochs={_br_nepochs} policy_kwargs={_br_pk}", flush=True)
+          f"n_epochs={_br_nepochs} ent_coef={_br_ent} policy_kwargs={_br_pk}", flush=True)
     br_agent = Exploiter(
         'CnnPolicy' if is_image_space(env.observation_space) else 'MlpPolicy',
         env,
@@ -1403,7 +1407,7 @@ def train_best_response(
         n_steps=_br_nsteps,
         batch_size=_br_batch,
         n_epochs=_br_nepochs,
-        ent_coef=ent_coef,
+        ent_coef=_br_ent,
         exploiting='ego' if eval_prot is True else 'adv',
         ego_is_left=ego_is_left,
         br_tracker_patience=br_tracker_patience,
