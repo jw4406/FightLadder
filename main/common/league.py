@@ -610,7 +610,12 @@ class Player(object):
         interval = int(getattr(self.args, "exploit_snapshot_interval", 0) or 0)
         if interval <= 0 or self.agent is None:
             return
-        if not ("MA" in self.name and self.side == "left"):
+        # Snapshot BOTH main seats: left main (ego-exploit curve) AND right
+        # main(s) (adv-exploit curve) -- we need exploitability from both
+        # directions to measure the gap. "MA" selects MainPlayers only (ME/LE
+        # exploiters excluded); right mains are per-matchup (guile_vs_vega,
+        # guile_vs_chunli), each snapshots itself.
+        if "MA" not in self.name:
             return
         step = int(self.agent.get_steps())
         last = getattr(self, "_last_exploit_snapshot_step", 0)
@@ -623,7 +628,7 @@ class Player(object):
             # The save dir lives on Payoff, not the Player; use the CLI save-dir
             # (== the `todo/` dir where right historicals land).
             base_dir = getattr(self.args, "save_dir", None) or "trained_models/ma"
-            snap_dir = os.path.join(base_dir, "left_exploit_snapshots")
+            snap_dir = os.path.join(base_dir, ("left" if self.side == "left" else "right") + "_exploit_snapshots")
             os.makedirs(snap_dir, exist_ok=True)
             # Build a Historical named with the ACTUAL step, without permanently
             # changing _checkpoint_step (temp-set + restore) so the league gate that
@@ -638,7 +643,7 @@ class Player(object):
             save_kwargs = {"cls_name": cls_name, "kwargs": kwargs}
             path = os.path.join(snap_dir, f"{kwargs['name']}_{kwargs['checkpoint_step']}.task")
             torch.save(save_kwargs, path)
-            print(f"[exploit_snapshot] MA-left {kwargs['name']} @step {step} -> {path}", flush=True)
+            print(f"[exploit_snapshot] MA-{self.side} {kwargs['name']} @step {step} -> {path}", flush=True)
         except Exception as e:
             import traceback
             print(f"[exploit_snapshot] WARN snapshot failed @step {step}: {e}", flush=True)
