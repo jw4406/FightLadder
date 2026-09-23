@@ -64,6 +64,7 @@ for i in $(seq 1 ${NUM_WORKERS}); do
 	--transform-action
 	--save-dir "${SAVE_DIR}"
 	--total-steps "${TOTAL_STEPS}"
+    --exploit-snapshot-interval 1000000
     )
 
     if [ "${RUN_LIVE}" = "False" ]; then
