@@ -173,6 +173,17 @@ def build_parser() -> argparse.ArgumentParser:
     # preserving legacy behavior for SPAR/IPPO mains that restore it correctly.
     parser.add_argument("--main_step", type=int, default=-1)
     parser.add_argument(
+        "--save_video", type=str, default=os.environ.get("BR_EVAL_SAVE_VIDEO", ""),
+        help="If set (path to an .mp4/.gif), capture the exploiter-vs-main "
+             "rollout frame-by-frame (tiled across all vec envs) and write a "
+             "video there. Also settable via env BR_EVAL_SAVE_VIDEO so it can be "
+             "driven through the br_single_matchup --reeval_exploiter path without "
+             "arg-plumbing. Opt-in; default off leaves eval behavior unchanged.")
+    parser.add_argument(
+        "--video_max_frames", type=int,
+        default=int(os.environ.get("BR_EVAL_VIDEO_FRAMES", "900")),
+        help="Cap on captured frames for --save_video (default 900 ~ 90s @10fps).")
+    parser.add_argument(
         "--filename_suffix",
         type=str,
         default="",
@@ -271,6 +282,71 @@ def _collect_episode_returns(model, target_episodes, action_fn, reward_side="lef
     return finished_returns, finished_wins
 
 
+def _render_exploit_video(model, action_fn, out_path, max_frames=1500, fps=30):
+    """Opt-in: roll the exploiter-vs-main policy on model.env and record video.
+    Captures EVERY emulator frame per step (action + decision-timing/dwell skip
+    frames) via the SFWrapper set_render_capture/pop_render_frames hooks, so the
+    motion is smooth instead of teleporting between decision points (matches
+    duel.py --save_video). Purely additive -- never called unless --save_video is
+    set. Writes mp4 via PyAV; falls back to gif via imageio."""
+    import numpy as _np
+    frames = []
+    smooth = True
+    try:
+        model.env.env_method("set_render_capture", True)   # buffer per-tick frames
+    except Exception:
+        smooth = False
+    obs = model.env.reset()
+    guard = 0
+    while len(frames) < max_frames and guard < max_frames * 4:
+        obs, _rl, _rr, _done, _info = _extract_step_outputs(model.env.step(action_fn(obs)))
+        guard += 1
+        if smooth:
+            try:
+                per_env = model.env.env_method("pop_render_frames")   # list, one per env
+                frames.extend(_np.asarray(f) for f in per_env[0])     # env 0's tick frames
+                continue
+            except Exception:
+                smooth = False
+        try:
+            img = model.env.render(mode="rgb_array")
+        except Exception:
+            img = None
+        if img is not None:
+            frames.append(_np.asarray(img))
+    if not frames:
+        print("[video] no frames captured -- skipping", flush=True)
+        return
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
+    wrote = out_path if out_path.endswith(".mp4") else out_path.rsplit(".", 1)[0] + ".mp4"
+    try:
+        import av
+        from PIL import Image as _Img
+        imgs = [_Img.fromarray(f) for f in frames]
+        w, h = imgs[0].size
+        if w % 2 or h % 2:                       # h264 needs even dims
+            w -= w % 2; h -= h % 2
+            imgs = [im.resize((w, h)) for im in imgs]
+        container = av.open(wrote, mode="w")
+        st = container.add_stream("h264", rate=fps)
+        st.width, st.height, st.pix_fmt = w, h, "yuv420p"
+        for im in imgs:
+            for pkt in st.encode(av.VideoFrame.from_image(im)):
+                container.mux(pkt)
+        for pkt in st.encode(None):
+            container.mux(pkt)
+        container.close()
+    except Exception as e:
+        wrote = out_path.rsplit(".", 1)[0] + ".gif"
+        print(f"[video] av/mp4 failed ({e}); writing gif {wrote}", flush=True)
+        try:
+            import imageio.v2 as imageio
+        except Exception:
+            import imageio
+        imageio.mimsave(wrote, frames, duration=1.0 / fps)
+    print(f"[video] wrote {len(frames)} frames ({frames[0].shape}) @ {fps}fps smooth={smooth} -> {wrote}", flush=True)
+
+
 def _extract_left_right_names_from_state(state):
     if not state:
         return "unknown_left", "unknown_right"
@@ -325,7 +401,15 @@ def main() -> None:
     os.makedirs(br_winrates_folder, exist_ok=True)
     os.makedirs(selfplay_winrates_folder, exist_ok=True)
 
-    env = env_generator(args.game_args, STATE=args.state_list)
+    # For --save_video only: build the exploiter-eval env with N parallel envs so
+    # VecEnv.render tiles N simultaneous matches into one frame (opt-in; default
+    # keeps the single-env eval unchanged). Win-rate math averages over episodes
+    # regardless of env count.
+    _video_nenvs = int(os.environ.get("BR_EVAL_VIDEO_NENVS", "1")) if args.save_video else 1
+    if _video_nenvs > 1:
+        env = env_generator(args.game_args, STATE=args.state_list, n_envs=_video_nenvs)
+    else:
+        env = env_generator(args.game_args, STATE=args.state_list)
     full_env = env_generator(args.game_args, STATE=args.full_state_list)
     # ENV_ID = args.env_id
     # Which load path / arch each model went down, for the end-of-run printout.
@@ -709,6 +793,8 @@ def main() -> None:
     # adv-exploit) so the written value is consistently the MAIN's win-rate in both
     # directions; reward stays ego-centric ("left"). eval_prot True == ego-exploit.
     main_side = "left" if args.eval_prot else "right"
+    if args.save_video:
+        _render_exploit_video(model, exploiter_action_fn, args.save_video, args.video_max_frames)
     exploiter_rewards, exploiter_wins = _collect_episode_returns(model, nr, exploiter_action_fn, reward_side=ego_reward_side, win_side=main_side)
     # Selfplay baseline MUST run on the same single-matchup env (`model.env` is
     # still `env` from the exploiter run) and the same seat, so it is
