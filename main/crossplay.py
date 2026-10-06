@@ -25,6 +25,7 @@ import os
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 DUEL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "duel.py")
 
@@ -64,6 +65,10 @@ def main():
     ap.add_argument("--participant", action="append", required=True, metavar="label:model_type:ckpt",
                     help="repeat per run; provides an ego AND an adv from the same checkpoint")
     ap.add_argument("--rounds", type=int, default=8)
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="parallel duels (each shells out one duel.py; set ~= cpus-per-task)")
+    ap.add_argument("--row", type=int, default=-1,
+                    help="if >=0, compute only this ego row and write it to --out (job-array sharding)")
     ap.add_argument("--ego_char", default="Vega")
     ap.add_argument("--adv_char", default="Guile")
     ap.add_argument("--device", default="cuda")
@@ -93,11 +98,46 @@ def main():
     print(f"crossplay {n}x{n}: rows={a.ego_char}(ego) cols={a.adv_char}(adv)  "
           f"{a.rounds} rounds  dt={a.decision_timing}  (diagonal = self-play)", flush=True)
     M = [[float("nan")] * n for _ in range(n)]
-    for i, ego in enumerate(parts):
-        for j, adv in enumerate(parts):
-            wr = run_duel(ego["mt"], adv["mt"], ego["ck"], adv["ck"], a)
+
+    def _cell(i, j):
+        return i, j, run_duel(parts[i]["mt"], parts[j]["mt"],
+                              parts[i]["ck"], parts[j]["ck"], a)
+
+    # Row-sharding: if --row I is given, compute ONLY ego-row I (vs all advs) and
+    # write it as "<j>\t<label>\t<wr>" lines. Used by the job-array launcher so each
+    # task holds just one duel's memory at a time (duels are ~18GB each at n=500).
+    if a.row >= 0:
+        i = a.row
+        if not (0 <= i < n):
+            sys.exit(f"--row {i} out of range for {n} participants")
+        print(f"row {i} ego={parts[i]['label']} vs {n} advs, {a.rounds} rounds", flush=True)
+        rowvals = {}
+        with ThreadPoolExecutor(max_workers=max(1, a.jobs)) as ex:
+            futs = [ex.submit(_cell, i, j) for j in range(n)]
+            for fut in as_completed(futs):
+                _, j, wr = fut.result(); rowvals[j] = wr
+                print(f"  [{len(rowvals)}/{n}] {parts[i]['label']} vs {parts[j]['label']}: {_fmt(wr)}", flush=True)
+        if a.out:
+            os.makedirs(os.path.dirname(os.path.abspath(a.out)) or ".", exist_ok=True)
+            with open(a.out, "w") as f:
+                f.write(f"# row {i} ego={parts[i]['label']} n={n}\n")
+                for j in range(n):
+                    f.write(f"{j}\t{parts[j]['label']}\t{_fmt(rowvals[j])}\n")
+            print(f"saved row {i}: {a.out}")
+        return
+
+    cells = [(i, j) for i in range(n) for j in range(n)]
+    # Each duel is a blocking subprocess (duel.py); threads just wait on them,
+    # so a thread pool of a.jobs gives a.jobs concurrent duels.
+    with ThreadPoolExecutor(max_workers=max(1, a.jobs)) as ex:
+        futs = [ex.submit(_cell, i, j) for (i, j) in cells]
+        done = 0
+        for fut in as_completed(futs):
+            i, j, wr = fut.result()
             M[i][j] = wr
-            print(f"  {ego['label']}-{a.ego_char} vs {adv['label']}-{a.adv_char}: {_fmt(wr)}", flush=True)
+            done += 1
+            print(f"  [{done}/{len(cells)}] {parts[i]['label']}-{a.ego_char} vs "
+                  f"{parts[j]['label']}-{a.adv_char}: {_fmt(wr)}", flush=True)
 
     labels = [p["label"] for p in parts]
     w = max(9, max(len(l) for l in labels) + 2)

@@ -33,7 +33,7 @@ from ippo import env_generator, make_env
 from utils import agent_win, state2matchup
 
 
-MODEL_TYPES = ["league", "spar", "ippo", "2timescale"]
+MODEL_TYPES = ["league", "psro", "spar", "ippo", "2timescale"]
 
 # Canonical character names matching state-file naming (e.g. EHonda, ChunLi, MBison).
 CHARACTERS = [
@@ -42,6 +42,9 @@ CHARACTERS = [
 ]
 
 SPAR_FAMILY = {"spar", "ippo", "2timescale"}
+# psro & league share the torch-save {kwargs:{agent_dict:{policy, policy_other}}}
+# format (cls_name 'Historical' either way), so psro loads through the league path.
+LEAGUE_FAMILY = {"league", "psro"}
 
 
 # Observation/action config for the duel env, set once from CLI in main(). The
@@ -327,7 +330,7 @@ def main():
             # so we end up with one instance whose .policy is ego-trained-left and
             # .policy_other is adv-trained-right (Q4(a)). Otherwise build standalone.
             adv_dict = load_league_agent_dict(args.adv_model_file)
-            if args.ego_model_type == "league":
+            if args.ego_model_type in LEAGUE_FAMILY:
                 ego_model.set_parameters(filter_right_keys(adv_dict),
                                          exact_match=False, device=device)
                 adv_model = ego_model
