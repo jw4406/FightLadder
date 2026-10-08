@@ -30,10 +30,14 @@ ALGOS = {
      (segs_minimax(4034179,"ippo_rs1.0_GuileVegaChunLi_dtj_ent05_160M_ck1M_cont224")+"/todo", 224_001_792)]),
  "2tsA": dict(mt="2timescale", tol=2_500_000, rx=r"_(\d+)_steps", pat="spar_Gu_VeCh_*_steps.task", segs=[
      (segs_minimax(4005437,"rs1.0_GuileVegaChunLi_dtj_ent05_160M_ck1M_advLR3e4")+"/todo", 0),
-     (segs_minimax(4049346,"rs1.0_GuileVegaChunLi_dtj_ent05_160M_ck1M_advLR3e4_cont69")+"/todo", 69_000_552)]),
+     (segs_minimax(4049346,"rs1.0_GuileVegaChunLi_dtj_ent05_160M_ck1M_advLR3e4_cont69")+"/todo", 69_000_552),
+     (segs_minimax(4059181,"rs1.0_GuileVegaChunLi_dtj_ent05_160M_ck1M_advLR3e4_cont162")+"/todo", 162_001_296)]),
  "2tsC": dict(mt="2timescale", tol=2_500_000, rx=r"_(\d+)_steps", pat="spar_Gu_VeCh_*_steps.task", segs=[
      (segs_minimax(4004731,"rs1.0_GuileVegaChunLi_dtj_ent05_160M_ck1M_advLR3e4_crit6e4")+"/todo", 0),
-     (segs_minimax(4049347,"rs1.0_GuileVegaChunLi_dtj_ent05_160M_ck1M_advLR3e4_crit6e4_cont81")+"/todo", 81_000_648)]),
+     (segs_minimax(4049347,"rs1.0_GuileVegaChunLi_dtj_ent05_160M_ck1M_advLR3e4_crit6e4_cont81")+"/todo", 81_000_648),
+     (segs_minimax(4059182,"rs1.0_GuileVegaChunLi_dtj_ent05_160M_ck1M_advLR3e4_crit6e4_cont179")+"/todo", 179_001_432)]),
+ "2ts": dict(mt="2timescale", tol=2_500_000, rx=r"_(\d+)M", pat="2timescale_ego_*M.task", unit=1_000_000, segs=[
+     ("/n/fs/magics/2ts_ego_blocks", 0)]),
  "psro": dict(mt="psro", tol=2_500_000, rx=r"step_(\d+)_0", pat="PSRO0_left_m_00_left_vs_all_historical_step_*_0.pt", segs=[
      ("/n/fs/magics/3806994/FightLadder/main/trained_models/tasks/todo", 0)]),
  "league": dict(mt="league", tol=2_500_000, rx=r"step_(\d+)_0", pat="MA0_left_m_00_left_vs_all_historical_step_*_0.task", segs=[
@@ -42,11 +46,12 @@ ALGOS = {
 
 def candidates(spec):
     c = []
+    unit = spec.get("unit", 1)   # filenames encoding depth-in-M use unit=1_000_000
     for d, off in spec["segs"]:
         for f in glob.glob(os.path.join(d, spec["pat"])):
             m = re.search(spec["rx"], os.path.basename(f))
             if m:
-                c.append((int(m.group(1)) + off, os.path.realpath(f)))
+                c.append((int(m.group(1)) * unit + off, os.path.realpath(f)))
     return c
 
 def resolve(algo, M):
