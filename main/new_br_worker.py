@@ -281,7 +281,7 @@ class PeriodicLocalBREvalCallback(BaseCallback):
         try:
             subprocess.run(
                 [
-                    "python", self.script_path,
+                    sys.executable, self.script_path,
                     "--eval_prot", str(self.eval_prot),
                     "--main_checkpoint_model_path", self.main_checkpoint_path,
                     "--done_model_checkpoint_path", self.done_model_checkpoint_path,
@@ -291,6 +291,7 @@ class PeriodicLocalBREvalCallback(BaseCallback):
                     "--dedicated_exploiter", str(self.from_scratch),
                     "--br_index", str(self.br_index),
                     "--game_args", json.dumps(vars(self.game_args)),
+                    "--use_mirror", "False",   # required by local_br_eval; mirror off for these runs
                     "--device", self.device,
                     "--is_league", str(self.is_league),
                     "--output_subdir", self.output_subdir,
@@ -1486,12 +1487,13 @@ def train_best_response(
                 else getattr(ftm, "_worker_cds_arch", "spar")
             ),
         )
-        # DISABLED: the periodic eval's freq gate is broken (fires ~every step
-        # regardless of periodic_eval_freq) and its subprocess used bare "python"
-        # (not on the worker's PATH) -> hundreds of thousands of failed spawns and
-        # zero br_rewards written. The end-of-job local_br_eval below (now using
-        # sys.executable) is the reliable br_rewards / exploitability-gap source.
-        # _callbacks.append(periodic_eval_callback)
+        # RE-ENABLED: both original bugs are fixed -- the freq gate now advances
+        # _next_step by freq (fires every `freq` env-steps, not every step), and the
+        # subprocess now uses sys.executable (not bare "python"). Needed so the
+        # adaptive controller gets periodic mid-training exploitability points to
+        # drive plateau->escalate (esp. the KL-local beta ladder). Gated by
+        # launch_local_br_eval, so global dedicated runs can still disable it.
+        _callbacks.append(periodic_eval_callback)
     train_callback = CallbackList(_callbacks)
     print(
         f"Manual per-job stop configured: key={stop_key}, stop_file={stop_file_path}",
@@ -1734,7 +1736,11 @@ def train_best_response(
         #br_model_path = os.path.join(BR_MODEL_DIR, f"{br_model_name}_{br_interval_num}000_steps.zip")
         # In re-eval mode use the supplied exploiter; otherwise the one this run trained.
         br_model_path = reeval_exploiter if reeval_exploiter else exploiter_callback.model_path
-        if launch_local_br_eval:
+        # A --reeval_exploiter invocation EXISTS to produce a winrate, so it must always
+        # run local_br_eval even when launch_local_br_eval is off (global/dedicated configs
+        # set it False to suppress PERIODIC evals during training; the controller's
+        # out-of-band reeval still needs the "exploiter wins" line parsed from stdout).
+        if launch_local_br_eval or reeval_exploiter:
             subprocess.run([sys.executable, local_plot_and_eval_file,
             "--eval_prot", str(eval_prot),
             "--main_checkpoint_model_path", checkpoint_path,
@@ -1835,6 +1841,7 @@ def run_br_for_task_in_subprocess(
     br_kl_ref_coef: float = 0.0,
     br_kl_ref_direction: str = "reverse",
     br_kl_ref_drop_entropy: bool = True,
+    br_ent_coef: float = None,
     *,
     # Keyword-only required: total .learn() timesteps for this BR job.
     # Plumbed from the launcher via --br_training_steps; absent value
@@ -1957,6 +1964,13 @@ def run_br_for_task_in_subprocess(
         loaded_model.br_kl_ref_coef = br_kl_ref_coef
         loaded_model.br_kl_ref_direction = br_kl_ref_direction
         loaded_model.br_kl_ref_drop_entropy = br_kl_ref_drop_entropy
+        # Optional entropy-coef override for the continued seat (default None = keep
+        # the checkpoint's trained value). Lets us set a small, UNIFORM exploration
+        # floor across a KL-ladder so the entropy bonus isn't a hidden variable.
+        if br_ent_coef is not None:
+            loaded_model.ent_coef = float(br_ent_coef)
+            loaded_model.dstb_ent_coef = float(br_ent_coef)
+            print(f"[br ent override] ent_coef=dstb_ent_coef={float(br_ent_coef)}", flush=True)
     else:
         raise NotImplementedError("Non-SPAR multiprocessing BR training is not implemented.")
 

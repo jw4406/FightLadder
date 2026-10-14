@@ -169,6 +169,12 @@ def main() -> None:
         entropy_warmup_checks=cfg.get("entropy_warmup_checks", 100),
         entropy_ratio_only=cfg.get("entropy_ratio_only", False),
         local_plot_dir=args.local_plot_dir,
+        # KL-to-reference locality penalty (0.0 = off; turns this continue-BR
+        # into a KL-local BR when >0). Plumbed from build_shared_config.
+        br_kl_ref_coef=cfg.get("br_kl_ref_coef", 0.0),
+        br_kl_ref_direction=cfg.get("br_kl_ref_direction", "reverse"),
+        br_kl_ref_drop_entropy=cfg.get("br_kl_ref_drop_entropy", True),
+        br_ent_coef=cfg.get("br_ent_coef", None),
     )
 
     print(

@@ -33,7 +33,7 @@ from ippo import env_generator, make_env
 from utils import agent_win, state2matchup
 
 
-MODEL_TYPES = ["league", "spar", "ippo", "2timescale"]
+MODEL_TYPES = ["league", "psro", "spar", "ippo", "2timescale"]
 
 # Canonical character names matching state-file naming (e.g. EHonda, ChunLi, MBison).
 CHARACTERS = [
@@ -42,6 +42,9 @@ CHARACTERS = [
 ]
 
 SPAR_FAMILY = {"spar", "ippo", "2timescale"}
+# psro & league share the torch-save {kwargs:{agent_dict:{policy, policy_other}}}
+# format (cls_name 'Historical' either way), so psro loads through the league path.
+LEAGUE_FAMILY = {"league", "psro"}
 
 
 # Observation/action config for the duel env, set once from CLI in main(). The
@@ -135,9 +138,18 @@ def load_league_agent_dict(path):
     return obj["kwargs"]["agent_dict"]
 
 
-def build_league_model(duel_state, device):
-    """Construct a fresh LeaguePPO with a single-env vec for inference."""
-    env = env_generator(env_args(), STATE=[duel_state])
+def build_league_model(duel_state, device, size_state=None):
+    """Construct a fresh LeaguePPO with a single-env vec for inference.
+
+    size_state (optional): a state whose EGO/left character sizes the action
+    space. LeaguePPO builds BOTH policy and policy_other at the env's action
+    space, so to load a league ADVERSARY member that was trained in its own
+    character's space (e.g. ChunLi-right member = 65 actions) into a Guile-left
+    duel (66-action stepping env), we must size THIS model by the adversary's
+    character. The stepping duel env (built separately in main) still decodes
+    each seat with its own char's macros (sf_combos_p1/p2), so a 66-Guile ego
+    and a 65-ChunLi adversary interoperate. Defaults to duel_state (66)."""
+    env = env_generator(env_args(), STATE=[size_state or duel_state])
     return LeaguePPO(
         side="left",
         policy="CnnPolicy",
@@ -227,6 +239,9 @@ def parse_args():
     p.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--deterministic", default="False", choices=["True", "False"])
+    p.add_argument("--round_log_csv", default="",
+                   help="If set, write one row per round (round,ego_won,ego_hp,adv_hp) to this "
+                        "CSV. Raw per-round sequence for bootstrap / effective-sample-size analysis.")
     p.add_argument("--save_video", default="",
                    help="If set, capture env.render(rgb_array) each step and write "
                         "an mp4 to this path. Default off (no rendering, unchanged behavior).")
@@ -327,12 +342,24 @@ def main():
             # so we end up with one instance whose .policy is ego-trained-left and
             # .policy_other is adv-trained-right (Q4(a)). Otherwise build standalone.
             adv_dict = load_league_agent_dict(args.adv_model_file)
-            if args.ego_model_type == "league":
+            if args.ego_model_type in LEAGUE_FAMILY and args.ego_char == args.adv_char:
+                # Safe to fold only when both heads share an action width (same
+                # char). With a 66-Guile ego and a 65-ChunLi adv the ego LeaguePPO's
+                # right head is 66-wide and a 65 policy_other won't load -> fall
+                # through to the char-sized standalone adv below.
                 ego_model.set_parameters(filter_right_keys(adv_dict),
                                          exact_match=False, device=device)
                 adv_model = ego_model
             else:
-                adv_model = build_league_model(duel_state, device)
+                # Size the adversary LeaguePPO by the ADVERSARY's own character
+                # (right char) so a 65-wide ChunLi/Vega policy_other loads into a
+                # 65-action model, instead of the 66 Guile-ego duel space. Uses an
+                # {adv_char}-left sizing state (never stepped; only shapes the head).
+                _adv_size_state = (
+                    f"two_player/{args.adv_char}_left/"
+                    f"Champion.Level1.{args.adv_char}VsGuile.2Player.state"
+                )
+                adv_model = build_league_model(duel_state, device, size_state=_adv_size_state)
                 adv_model.set_parameters(filter_right_keys(adv_dict),
                                          exact_match=False, device=device)
             adv_matchups = []
@@ -368,6 +395,9 @@ def main():
     adv_device = (adv_model.device if hasattr(adv_model, "device") else device)
 
     wins = 0
+    round_records = []  # (round, ego_won, ego_hp, adv_hp) per round; dumped if --round_log_csv
+    ep_ego_rews = []  # per-episode summed ego reward (env reward is HP-shaped, scale=1.0)
+    ep_adv_rews = []  # per-episode summed adversary reward
     video_log = []  # populated only when --save_video is set
     if args.save_video:
         # Capture EVERY emulator frame (including decision-timing skips) so the
@@ -378,6 +408,7 @@ def main():
         #obs = np.expand_dims(obs, 0)
         done = False
         info = {}
+        ep_ego = 0.0; ep_adv = 0.0  # summed over this episode's steps
         while not done:
             obs_ego = obs_as_tensor(obs, ego_device)
             obs_adv = obs_as_tensor(obs, adv_device) if adv_model is not ego_model else obs_ego
@@ -386,6 +417,8 @@ def main():
             obs, _reward, _reward_other, done, info = duel_env.step(
                 np.hstack([left_action, right_action])
             )
+            ep_ego += float(np.asarray(_reward).sum())
+            ep_adv += float(np.asarray(_reward_other).sum())
             if args.save_video:
                 # Pull every emulator frame this step advanced (8 action frames +
                 # any decision-timing skip frames) so nothing teleports.
@@ -393,12 +426,22 @@ def main():
         info = info[0]
         ego_won = bool(agent_win(info))
         wins += int(ego_won)
+        ep_ego_rews.append(ep_ego); ep_adv_rews.append(ep_adv)
+        round_records.append((r, int(ego_won), info.get('agent_hp'), info.get('enemy_hp')))
         print(
             f"  round {r}/{args.num_rounds}: ego_won={ego_won}  "
             f"ego_hp={info.get('agent_hp')}  adv_hp={info.get('enemy_hp')}"
         )
 
     duel_env.close()
+
+    if args.round_log_csv:
+        os.makedirs(os.path.dirname(os.path.abspath(args.round_log_csv)) or ".", exist_ok=True)
+        with open(args.round_log_csv, "w") as _fh:
+            _fh.write("round,ego_won,ego_hp,adv_hp\n")
+            for _rec in round_records:
+                _fh.write(",".join("" if v is None else str(v) for v in _rec) + "\n")
+        print(f"  wrote per-round CSV: {args.round_log_csv} ({len(round_records)} rounds)")
 
     if args.save_video and video_log:
         import av
@@ -418,10 +461,18 @@ def main():
         print(f"  saved video: {args.save_video}  ({len(imgs)} frames @ {args.video_fps}fps)")
 
     win_rate = wins / args.num_rounds
+    ego_rew_mean = float(np.mean(ep_ego_rews)) if ep_ego_rews else float("nan")
+    adv_rew_mean = float(np.mean(ep_adv_rews)) if ep_adv_rews else float("nan")
+    ego_rew_std = float(np.std(ep_ego_rews)) if ep_ego_rews else float("nan")
+    adv_rew_std = float(np.std(ep_adv_rews)) if ep_adv_rews else float("nan")
     print(
         f"\nfinal: ego_win_rate={win_rate:.4f}  ({wins}/{args.num_rounds})  "
         f"matchup={matchup_key}  ego={args.ego_model_type}@{os.path.basename(args.ego_model_file)}  "
         f"adv={args.adv_model_type}@{os.path.basename(args.adv_model_file)}"
+    )
+    print(
+        f"ego_ep_reward_mean={ego_rew_mean:.4f} (std={ego_rew_std:.4f})  "
+        f"adv_ep_reward_mean={adv_rew_mean:.4f} (std={adv_rew_std:.4f})  n={len(ep_ego_rews)}"
     )
 
 

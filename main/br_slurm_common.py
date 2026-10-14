@@ -843,6 +843,11 @@ def build_shared_config(args: argparse.Namespace, manual_stop_file: Optional[str
         "periodic_eval_freq": args.periodic_eval_freq,
         "enable_local_kl_plot": args.enable_local_kl_plot,
         "use_wandb": args.use_wandb,
+        # KL-to-reference locality (continue BR). drop_entropy stays a string
+        # choice (not in normalize_bool_args) so == "True" is the right convert.
+        "br_kl_ref_coef": getattr(args, "br_kl_ref_coef", 0.0),
+        "br_kl_ref_direction": getattr(args, "br_kl_ref_direction", "reverse"),
+        "br_kl_ref_drop_entropy": getattr(args, "br_kl_ref_drop_entropy", "True") == "True",
     }
 
 
@@ -1066,6 +1071,17 @@ def add_shared_arguments(parser: argparse.ArgumentParser, *, default_processing_
                              "per-job KL-divergence CSV+PNG plots into "
                              "--local_plot_dir. Default True (preserves "
                              "existing behavior).")
+    # KL-to-reference locality penalty (RLHF-style) for CONTINUE BR: pulls the
+    # trained seat toward the frozen co-trained reference. 0.0 = off (default,
+    # byte-identical). >0 turns a continue-BR into a KL-local BR (local
+    # exploitability). See clean_derivative_free_spar.train_standard.
+    parser.add_argument("--br_kl_ref_coef", type=float, default=0.0,
+                        help="beta on KL(pi_theta||pi_ref); 0.0=off, larger=tighter local ball.")
+    parser.add_argument("--br_kl_ref_direction", type=str, default="reverse",
+                        choices=["reverse", "forward"],
+                        help="reverse=KL(pi_theta||pi_ref) (default); forward=KL(pi_ref||pi_theta).")
+    parser.add_argument("--br_kl_ref_drop_entropy", choices=["True", "False"], default="True",
+                        help="Drop the entropy bonus while the KL penalty is active (default True).")
 
     # SLURM
     #parser.add_argument("--slurm_partition", type=str, default="gpu")
