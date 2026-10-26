@@ -1456,7 +1456,12 @@ class CleanDerivativeFreeSPAR(PPO):
 
 
                 gc.collect()
-                if torch.cuda.is_available():
+                # keep_gpu_cache (shared-GPU co-tenant fix): when set, skip the per-iteration
+                # empty_cache() so PyTorch keeps the update-time peak (~17GB) cached for the whole
+                # run. A co-tenant then cannot grab the VRAM we release between updates and leave us
+                # OOM on the next update. No effect on computation -- only changes WHEN memory is
+                # returned to the driver. Set True only for the spar arch (see ippo.py guard).
+                if torch.cuda.is_available() and not getattr(self, "keep_gpu_cache", False):
                     torch.cuda.empty_cache()
                 #self.perturbed_agent.env.close()
                 #del self.perturbed_agent

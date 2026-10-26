@@ -382,7 +382,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # SCRIPT path and ignores both --save_dir and cwd. Every spar Ryu-vs-Sagat run
 # writes the same filenames, so without this override concurrent runs silently
 # overwrite each other. That already destroyed one baseline checkpoint.
-RUN_ROOT="${SCRIPT_DIR}/main/minimax_phase0_${TAG}"
+RUN_ROOT="${RUN_ROOT_BASE:-${SCRIPT_DIR}/main}/minimax_phase0_${TAG}"
 export FIGHTLADDER_TASK_DIR="${RUN_ROOT}/trained_models/tasks"
 mkdir -p "${FIGHTLADDER_TASK_DIR}/todo" "${FIGHTLADDER_TASK_DIR}/todo_continue"
 
@@ -425,6 +425,7 @@ CMD=(
     --num_perturbs "${NUM_PERTURBS}" --use_mirror False --ego_side left --side both
     --transform_action True --model_arch_type "${MODEL_ARCH}"
     ${EGO_VALUE_HEAD_LR:+--ego_value_head_lr "${EGO_VALUE_HEAD_LR}"}
+    --keep_gpu_cache "${KEEP_GPU_CACHE:-False}"
     --save_dir "${FIGHTLADDER_TASK_DIR}/todo"
     --use_lr_annealing "${USE_LR_ANNEALING}" --lr_anneal_coeff "${LR_ANNEAL_COEFF}"
     ${EGO_LR_ANNEAL_COEFF:+--ego_lr_anneal_coeff "${EGO_LR_ANNEAL_COEFF}"}
@@ -485,8 +486,8 @@ CMD=(
     --minimax_iters 1024 --minimax_eta 0.5
 )
 
-LOG="${SCRIPT_DIR}/logs/minimax_phase0_${TAG}.log"
-mkdir -p "${SCRIPT_DIR}/logs"
+LOG="${LOG_DIR_BASE:-${SCRIPT_DIR}/logs}/minimax_phase0_${TAG}.log"
+mkdir -p "${LOG_DIR_BASE:-${SCRIPT_DIR}/logs}"
 echo "=== minimax-Q PHASE 0 (head trains, feeds nothing) ==="
 echo "  arm        : ${ARM}   (vtrace_enabled=${VTRACE_ENABLED})"
 echo "  lrs        : c_lr=${C_LR}  d_lr=${D_LR}  v_lr=${V_LR}   (d/c ratio $(awk -v d="${D_LR}" -v c="${C_LR}" 'BEGIN{printf "%.1fx", d/c}'))"

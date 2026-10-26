@@ -1079,7 +1079,7 @@ def main(args):
             print("load model from " + model_file)
             if model_file.endswith(".pt"):
                 model_file = torch.load(model_file, map_location=torch.device('cpu'))["kwargs"]["agent_dict"]
-            finetune_model.set_parameters(model_file)
+            finetune_model.set_parameters(model_file, exact_match=False, device=finetune_model.device)
             if reinit_adversary:
                 # set_parameters() loads the WHOLE policy, so a checkpoint whose
                 # adversary has collapsed (advH ~ 0.02) resumes collapsed. For
@@ -1134,6 +1134,12 @@ def main(args):
                       f"checkpoint", flush=True)
         print("model generated")
         finetune_model.model_arch_type = model_arch_type
+        # keep_gpu_cache: hold the update-time VRAM peak cached for the whole run so a
+        # co-tenant on a shared GPU can't steal memory we release between updates (OOM fix).
+        finetune_model.keep_gpu_cache = (getattr(args, 'keep_gpu_cache', 'False') == 'True')
+        if finetune_model.keep_gpu_cache:
+            print("[spar] keep_gpu_cache=True -> skipping per-iteration empty_cache() "
+                  "(holds the ~17GB update peak cached to resist co-tenant VRAM theft)", flush=True)
         # Ego value-head LR: only ippo/2timescale build a dedicated ego_value_optimizer.
         # Guarded (arch check + hasattr) so CDS/spar models -- which have no such
         # optimizer -- never touch it and never fail on a missing attribute.
@@ -1523,6 +1529,12 @@ if __name__ == "__main__":
     parser.add_argument('--ego_side', type=str, choices=['left', 'right'], help='Which side the ego controls in cds-style training', required=True, default='left')
     parser.add_argument('--async_update', choices=['True', 'False'], help='Async update', required=True, default='False')
     parser.add_argument('--model_arch_type', type=str, help='Model architecture type', default="spar", required=True, choices=["spar", "ippo", "2timescale"])
+    parser.add_argument('--keep_gpu_cache', choices=['True', 'False'], default='False',
+                        help="SPAR arch only: skip the per-iteration torch.cuda.empty_cache() in "
+                             "learn() so the update-time peak (~17GB) stays cached for the whole run. "
+                             "Prevents co-tenants on a shared GPU from grabbing the VRAM we release "
+                             "between updates (the 'no-free-memory' OOM fix). No effect on computation. "
+                             "Refused for non-spar archs.")
     parser.add_argument('--total_timesteps', type=int, help='How many total steps to train', default=int(1e8))
     parser.add_argument('--use_wandb', choices=['True', 'False'], help='Enable Weights & Biases logging', default='False')
     parser.add_argument('--obs_type', type=str, default='image', choices=['image', 'info', 'ram'],
@@ -1833,6 +1845,13 @@ if __name__ == "__main__":
     if args.model_arch_type in ("ippo", "2timescale") and args.ego_value_head_lr is None:
         parser.error(
             "--ego_value_head_lr is required when --model_arch_type is 'ippo' or '2timescale'"
+        )
+    # keep_gpu_cache is wired for the spar arch only (ippo/2timescale take a different
+    # learn() path); refuse it elsewhere rather than silently no-op.
+    if args.keep_gpu_cache == 'True' and args.model_arch_type != 'spar':
+        parser.error(
+            f"--keep_gpu_cache is supported for the spar arch only; got "
+            f"--model_arch_type {args.model_arch_type}"
         )
     args.use_wandb = args.use_wandb == 'True'
     if not args.use_wandb:
