@@ -482,3 +482,30 @@ class AnnealAgressiveCallback(BaseCallback):
         else:
             self.training_env.agressive_coeff = anneal_coeff
         return True
+
+
+class SpacesVecEnv(VecEnv):
+    """Inference-only VecEnv carrying ONLY spaces -- no sub-env, no fork/spawn, no module re-import.
+    Used to build policy-only league opponents (whose env is never stepped), removing both the
+    per-opponent SubprocVecEnv worker spawn (the GPFS-flaky train_ma re-import that silently kills
+    learners) and the per-construct fork overhead. reset()/step() are never called for opponents."""
+    def __init__(self, observation_space, action_space, num_envs=1):
+        super().__init__(num_envs, observation_space, action_space)
+    def reset(self):
+        raise RuntimeError("SpacesVecEnv is inference-only (reset not supported)")
+    def step_async(self, actions):
+        raise RuntimeError("SpacesVecEnv is inference-only (step not supported)")
+    def step_wait(self):
+        raise RuntimeError("SpacesVecEnv is inference-only (step not supported)")
+    def close(self):
+        pass
+    def get_attr(self, attr_name, indices=None):
+        return [None] * self.num_envs
+    def set_attr(self, attr_name, value, indices=None):
+        pass
+    def env_method(self, method_name, *method_args, indices=None, **method_kwargs):
+        return [None] * self.num_envs
+    def env_is_wrapped(self, wrapper_class, indices=None):
+        return [False] * self.num_envs
+    def seed(self, seed=None):
+        return [None] * self.num_envs

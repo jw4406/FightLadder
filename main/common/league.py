@@ -302,7 +302,9 @@ class Payoff:
         #assert "LE0_left" in self._players and "LE1_left" in self._players and "LE0_right" in self._players_other and "LE1_right" in self._players_other, "League must be initialized with 2 LeagueExploiters on each side"
         #assert "ME0_left" in self._players and "ME0_right" in self._players_other, "League must be initialized with 1 MainExploiter on each side"
         #assert "MA0_left" in self._players and "MA0_right" in self._players_other, "League must be initialized with 1 MainPlayer on each side"
-        load_payoff = torch.load(path, map_location=torch.device('cpu'))
+        # weights_only=False: torch>=2.6 defaults to True, which rejects our own
+        # pickled checkpoints (e.g. __mp_main__.constructor). Matches new_br_worker.py.
+        load_payoff = torch.load(path, map_location=torch.device('cpu'), weights_only=False)
         self._wins.update(load_payoff["wins"])
         self._draws.update(load_payoff["draws"])
         self._losses.update(load_payoff["losses"])
@@ -316,7 +318,7 @@ class Payoff:
             for ext in ("pt", "task"):
                 p = f"{models_dir}/{nm}_0.{ext}"
                 if os.path.exists(p):
-                    return torch.load(p, map_location=torch.device('cpu'))
+                    return torch.load(p, map_location=torch.device('cpu'), weights_only=False)
             raise FileNotFoundError(
                 f"historical checkpoint for {nm} not found (.pt/.task) in {models_dir}")
 
@@ -353,6 +355,16 @@ def get_player_config(player):
             "state_name": getattr(p, "state_name", None),
         }
 
+    # Record the LIVE training step for active learners (agent constructed) so periodic
+    # sync-saves capture the true step, not the frozen _checkpoint_step (which only advances
+    # on a pool snapshot). Historicals / config-holders (agent is None) keep _checkpoint_step.
+    _step = player._checkpoint_step
+    if not isinstance(player, Historical) and getattr(player, "agent", None) is not None:
+        try:
+            _step = int(player.agent.get_steps())
+        except Exception:
+            _step = player._checkpoint_step
+
     if isinstance(player, MainPlayer):
         cls_name = "MainPlayer"
         kwargs = {
@@ -363,7 +375,7 @@ def get_player_config(player):
             "agent": None,
             "payoff": None,
             "agent_dict": deepcopy(player.get_parameters()),
-            "checkpoint_step": player._checkpoint_step,
+            "checkpoint_step": _step,
             **_matchup_kwargs(player),
         }
     elif isinstance(player, FSPPlayer):
@@ -376,7 +388,7 @@ def get_player_config(player):
             "agent": None,
             "payoff": None,
             "agent_dict": deepcopy(player.get_parameters()),
-            "checkpoint_step": player._checkpoint_step,
+            "checkpoint_step": _step,
             **_matchup_kwargs(player),
         }
     elif isinstance(player, PSROPlayer):
@@ -389,7 +401,7 @@ def get_player_config(player):
             "agent": None,
             "payoff": None,
             "agent_dict": deepcopy(player.get_parameters()),
-            "checkpoint_step": player._checkpoint_step,
+            "checkpoint_step": _step,
             **_matchup_kwargs(player),
         }
     elif isinstance(player, MainExploiter):
@@ -402,7 +414,7 @@ def get_player_config(player):
             "agent": None,
             "payoff": None,
             "agent_dict": deepcopy(player.get_parameters()),
-            "checkpoint_step": player._checkpoint_step,
+            "checkpoint_step": _step,
             **_matchup_kwargs(player),
         }
     elif isinstance(player, LeagueExploiter):
@@ -415,7 +427,7 @@ def get_player_config(player):
             "agent": None,
             "payoff": None,
             "agent_dict": deepcopy(player.get_parameters()),
-            "checkpoint_step": player._checkpoint_step,
+            "checkpoint_step": _step,
             **_matchup_kwargs(player),
         }
     elif isinstance(player, Historical):
@@ -429,7 +441,7 @@ def get_player_config(player):
             "payoff": None,
             "parent_name": player.parent,
             "agent_dict": deepcopy(player.get_parameters()),
-            "checkpoint_step": player._checkpoint_step,
+            "checkpoint_step": _step,
             **_matchup_kwargs(player),
         }
     else:
@@ -437,7 +449,7 @@ def get_player_config(player):
     return cls_name, kwargs
 
 
-def construct_player(cls_name, kwargs, construct_agent=False):
+def construct_player(cls_name, kwargs, construct_agent=False, single_env=False, policy_only=False):
     if cls_name == "MainPlayer":
         player = MainPlayer(**kwargs)
     elif cls_name == "FSPPlayer":
@@ -453,7 +465,7 @@ def construct_player(cls_name, kwargs, construct_agent=False):
     else:
         raise ValueError("cls_name must be either MainPlayer, MainExploiter, LeagueExploiter, or Historical")
     if construct_agent:
-        player.construct_agent()
+        player.construct_agent(single_env=single_env, policy_only=policy_only)
     return player
 
 
@@ -493,7 +505,7 @@ class Player(object):
         self.matchup_index = matchup_index
         self.state_name = state_name
     
-    def construct_agent(self):
+    def construct_agent(self, single_env=False, policy_only=False):
         print(f"Constructing agent for {self.name}") #TODO: DEBUG ONLY! Remove when done.
         # Historical players only run payoff-eval rollouts -> keep sticky exploration OFF for them.
         _eval_only = isinstance(self, Historical)
@@ -505,6 +517,8 @@ class Player(object):
             state_name=self.state_name, matchup_key=self.matchup_key,
             sticky_prob=(0.0 if _eval_only else None),
             ego_char=_ego,
+            single_env=single_env,
+            policy_only=policy_only,
         )
         self.agent._eval_only = _eval_only
         self.agent._ego_char = _ego
@@ -576,7 +590,14 @@ class Player(object):
 
     def get_player_by_name(self, name):
         cls_name, kwargs = self._payoff.get_player_by_name(name)
-        return construct_player(cls_name, kwargs, construct_agent=True)
+        # Opponents fetched for a match are used POLICY-ONLY (get_kwargs reads
+        # opponent.agent.policy / .policy_other; the opponent's own env is never
+        # stepped). Build with a single emulator instead of num_env (=8) to kill
+        # the per-iteration 8x SubprocVecEnv fork storm. Kill-switch: set env var
+        # LEAGUE_OPPONENT_SINGLE_ENV=0 to restore the old num_env behavior.
+        _single = os.environ.get("LEAGUE_OPPONENT_SINGLE_ENV", "1") != "0"
+        _policy_only = os.environ.get("LEAGUE_OPPONENT_POLICY_ONLY", "0") != "0"
+        return construct_player(cls_name, kwargs, construct_agent=True, single_env=_single, policy_only=_policy_only)
 
     def send_outcome(self, opponent_name, outcome):
         # print(f"[Player] send_outcome: {self.name} vs {opponent_name} = {outcome}")
@@ -599,7 +620,8 @@ class Player(object):
         self.add_player(self)
     
     def load(self, path):
-        load_kwargs = torch.load(path, map_location=torch.device('cpu'))["kwargs"]
+        # weights_only=False: torch>=2.6 default rejects our own pickled checkpoints.
+        load_kwargs = torch.load(path, map_location=torch.device('cpu'), weights_only=False)["kwargs"]
         self._initial_weights_restore = deepcopy(self._initial_weights)
         self._initial_weights = load_kwargs["agent_dict"]
         self._checkpoint_step = load_kwargs["checkpoint_step"]

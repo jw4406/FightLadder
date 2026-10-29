@@ -12,7 +12,7 @@ from multiprocessing import Process
 import retro
 
 from common.const import *
-from common.utils import SubprocVecEnv2P, VecTransposeImage2P
+from common.utils import SubprocVecEnv2P, VecTransposeImage2P, SpacesVecEnv
 from common.algorithms import LeaguePPO
 from common.retro_wrappers import SFWrapper, Monitor2P
 from common.league import PayoffManager, League, FSPLeague, PSROLeague, Learner
@@ -292,7 +292,8 @@ def resume_worker(idx, learner, total_steps, rollout_opponent_num, ckpt_path):
     """
     player = learner.player
     if ckpt_path and os.path.exists(ckpt_path):
-        load_kwargs = torch.load(ckpt_path, map_location="cpu")["kwargs"]
+        # weights_only=False: torch>=2.6 default rejects our own pickled checkpoints.
+        load_kwargs = torch.load(ckpt_path, map_location="cpu", weights_only=False)["kwargs"]
         player._initial_weights = load_kwargs["agent_dict"]
         player._checkpoint_step = load_kwargs.get("checkpoint_step", 0)
         print(f"[resume] {player.name} loaded step {player._checkpoint_step} "
@@ -304,8 +305,33 @@ def resume_worker(idx, learner, total_steps, rollout_opponent_num, ckpt_path):
         player.construct_agent()
         learner.run(total_timesteps=total_steps, rollout_opponent_num=rollout_opponent_num, reset_num_timesteps=False)
 
+_POLICYONLY_SPACES = {}
+def _policyonly_spaces(args, state_name, ego_char, left_char, right_char):
+    """(channels-first obs_space, action_space) for a policy-only opponent WITHOUT a SubprocVecEnv:
+    build ONE in-process env (no fork/re-import), capture + transpose, cache by ego char."""
+    if ego_char in _POLICYONLY_SPACES:
+        return _POLICYONLY_SPACES[ego_char]
+    e = make_env(sf_game, state_name=state_name, side=args.side, reset_type=args.reset,
+                 rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo,
+                 transform_action=args.transform_action, seed=0,
+                 reward_scale=getattr(args, "reward_scale", 0.001), sticky_prob=0.0,
+                 ego_char=ego_char, left_char=left_char, right_char=right_char,
+                 charge_obs=getattr(args, "charge_obs", False))()
+    obs_space, act_space = e.observation_space, e.action_space
+    try:
+        e.close()
+    except Exception:
+        pass
+    from stable_baselines3.common.preprocessing import is_image_space, is_image_space_channels_first
+    from stable_baselines3.common.vec_env import VecTransposeImage
+    if is_image_space(obs_space) and not is_image_space_channels_first(obs_space):
+        obs_space = VecTransposeImage.transpose_space(obs_space)
+    _POLICYONLY_SPACES[ego_char] = (obs_space, act_space)
+    return _POLICYONLY_SPACES[ego_char]
+
+
 #Added the default opponent so the opponent can be added to the end to not change the order of varaibles.
-def constructor(args, side, log_name=None, single_env=False, opponent: str="ryu", state_name: str=None, matchup_key: str=None, sticky_prob=None, ego_char=None):
+def constructor(args, side, log_name=None, single_env=False, opponent: str="ryu", state_name: str=None, matchup_key: str=None, sticky_prob=None, ego_char=None, policy_only=False):
     """
     Agent constructor for league players.
 
@@ -339,6 +365,19 @@ def constructor(args, side, log_name=None, single_env=False, opponent: str="ryu"
     _left_char, _right_char = _extract_chars_from_state_name(state_name) if state_name else ("left", "right")
     if ego_char is None:
         ego_char = _left_char if side == "left" else _right_char
+    if policy_only:
+        # Inference-only opponent: policy built from a spaces-only shim -- no retro env, no
+        # SubprocVecEnv worker spawn (no train_ma re-import -> no GPFS-flaky import crash) and no
+        # per-construct fork overhead. The opponent's env is never stepped. (LEAGUE_OPPONENT_POLICY_ONLY)
+        _obs_space, _act_space = _policyonly_spaces(args, state_name, ego_char, _left_char, _right_char)
+        league_ppo = LeaguePPO(
+            side, "CnnPolicy", SpacesVecEnv(_obs_space, _act_space, num_envs=1),
+            device="cuda", verbose=0, n_steps=2, batch_size=2, n_epochs=4, gamma=0.94,
+            learning_rate=1e-4, clip_range=0.1, tensorboard_log=None, other_learning_rate=1e-4,
+        )
+        league_ppo.constructor_args = args
+        league_ppo.current_opponent = _right_char_from_matchup_key(matchup_key)
+        return league_ppo
     env = [make_env(sf_game, state_name=state_name, side=args.side, reset_type=args.reset, rendering=args.render, enable_combo=args.enable_combo, null_combo=args.null_combo, transform_action=args.transform_action, seed=i, reward_scale=getattr(args, "reward_scale", 0.001), sticky_prob=(getattr(args, "sticky_prob", 0.0) if sticky_prob is None else sticky_prob), ego_char=ego_char, left_char=_left_char, right_char=_right_char, charge_obs=getattr(args, "charge_obs", False)) for i in range(num_env)]
     env = VecTransposeImage2P(SubprocVecEnv2P(env))
     league_ppo = LeaguePPO(
