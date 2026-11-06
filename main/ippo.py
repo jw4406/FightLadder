@@ -160,7 +160,7 @@ def _reward_env_kwargs(args):
 
 def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=None, verbose=False, enable_combo=True,
              null_combo=False, transform_action=False, seed=0, obs_type='image', ego_is_left=True,
-             ram_mask=None, ram_stack=1, ram_stride=8, num_step_frames=8, counterhit_kappa=0.0, trade_kappa=0.0, reset_close_range=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1, charge_preserving_skip=True, cps_no_up=False):
+             ram_mask=None, ram_stack=1, ram_stride=8, num_step_frames=8, counterhit_kappa=0.0, trade_kappa=0.0, reset_close_range=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1, charge_preserving_skip=True, cps_no_up=False, combo_capacity=None):
     def _init():
         players = 2
         env = retro.make(
@@ -197,7 +197,8 @@ def make_env(game, state, side, reset_type, rendering, init_level=1, state_dir=N
                         dwell_frames=dwell_frames,
                         charge_preserving_skip=charge_preserving_skip,
                         cps_no_up=cps_no_up,
-                        ego_char=_ego_char, left_char=_left_char, right_char=_right_char)
+                        ego_char=_ego_char, left_char=_left_char, right_char=_right_char,
+                        combo_capacity=combo_capacity)
         # Observation wrapper. NOTE: the InfoObsWrapper branch used to be
         # commented out here, so --obs_type info silently did nothing.
         if obs_type == 'ram':
@@ -472,7 +473,8 @@ def env_generator(args, max_envs: int = 0, i_start: int = 0, j_start: int = 0, S
                             enable_combo=args.enable_combo, null_combo=args.null_combo,
                             transform_action=args.transform_action, seed=0, obs_type=obs_type,
                             ram_mask=ram_mask, **_envkw,
-                            ego_is_left=ego_is_left))
+                            ego_is_left=ego_is_left,
+                            combo_capacity=getattr(args, "_combo_capacity", None)))
             env_count += 1
             if exceed_max_envs(env_count, max_envs):
                 break
@@ -491,14 +493,20 @@ def main(args):
     # across envs -> fail LOUDLY here rather than at a downstream vec-env shape mismatch. Single
     # protagonist vs many opponents stays uniform (ego is constant, even across mirror halves); the
     # union+char-obs path for true multi-protagonist policies is future work.
-    if (len(PLAYER) > 1 and getattr(args, "transform_action", False)
-            and (getattr(args, "enable_combo", False) or getattr(args, "null_combo", False))):
+    # Multi-protagonist is allowed ONLY when --combo_capacity pads the special-move tail to a uniform
+    # width (Phase 1). Without it, different ego chars size the action space differently (Ryu 69 vs
+    # Guile 66) and one shared policy / vec-env cannot mix them -> fail loudly here.
+    _cap_off = str(getattr(args, "combo_capacity", None) or "0").lower() in ("none", "0", "")
+    if (len(PLAYER) > 1 and str(getattr(args, "transform_action", "False")) == "True"
+            and (str(getattr(args, "enable_combo", "False")) == "True"
+                 or str(getattr(args, "null_combo", "False")) == "True")
+            and _cap_off):
         raise ValueError(
             f"Per-ego special-move macros require a SINGLE protagonist for a shared policy, but got "
             f"PLAYER={PLAYER} ({len(PLAYER)} chars) with --transform_action + combos enabled. Different "
             f"ego characters size the action space differently (e.g. Ryu=69 vs Guile=66), which one "
-            f"shared policy / vec-env cannot mix. Run one protagonist at a time, or disable "
-            f"--transform_action / combos to fall back to the uniform space."
+            f"shared policy / vec-env cannot mix. Pass --combo_capacity auto (pads the combo tail to a "
+            f"uniform width), run one protagonist at a time, or disable --transform_action / combos."
         )
     # global REMOVAL
     # PLAYER = "Blanka"  # "Blanka
@@ -514,6 +522,25 @@ def main(args):
     else:
         #OPPONENT_LIST = ["Sagat", "EHonda", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "ChunLi", "Guile", "Ken", "Balrog", "MBison"]
         OPPONENT_LIST = ["Guile", "Sagat"]#,"ChunLi", "MBison", "Blanka", "Ryu", "Dhalsim", "Zangief", "Ken", "Balrog", "Vega", "EHonda"]
+    # Resolve the combo-slot capacity (Phase 1 pad-to-uniform action space). None => legacy per-ego
+    # sizing (byte-identical to every prior run). 'auto' => max combo count over PLAYER+OPPONENTS, so
+    # every char on either seat can express its full moveset under one homogeneous action space.
+    _cap_req = getattr(args, "combo_capacity", None)
+    if str(_cap_req or "0").lower() in ("none", "0", ""):
+        args._combo_capacity = None
+    else:
+        _roster = list(dict.fromkeys(list(PLAYER) + list(OPPONENT_LIST)))
+        _nsf = int(getattr(args, "num_step_frames", 8))
+        _max_macros = max(len(build_sf_combos(_nsf, c)) for c in _roster)
+        args._combo_capacity = _max_macros if str(_cap_req).lower() == "auto" else int(_cap_req)
+        assert args._combo_capacity >= _max_macros, (
+            f"--combo_capacity {args._combo_capacity} < max char macros {_max_macros} over {_roster}; "
+            f"some character would lose moves.")
+        assert args._combo_capacity <= 7, (
+            f"--combo_capacity {args._combo_capacity} > 7: the combo index is a 3-bit field (max 7 "
+            f"slots). A larger union needs the 4-bit action-transformer change (not Phase 1).")
+        print(f"[config] combo_capacity={args._combo_capacity} "
+              f"(roster {_roster}, max macros {_max_macros})", flush=True)
     player_short = ''.join(player[:2] for player in PLAYER)
     opponent_short = ''.join(opponent[:2] for opponent in OPPONENT_LIST)
     # Preserve each path's existing default when --gamma is unset.
@@ -1343,6 +1370,12 @@ if __name__ == "__main__":
     #parser.add_argument("--player", type=str, required=True)
     parser.add_argument("--player", type=str, nargs='+', required=True, help="One or more protagonist players.")
     parser.add_argument("--opponents", type=str, nargs='+', required=False, default=None, help="One or more opponents.")
+    parser.add_argument("--combo_capacity", type=str, default=None,
+                        help="Special-move combo-slot capacity for the action space. None/0 = legacy "
+                             "(size by ego char, byte-identical to prior runs). 'auto' = max combo count "
+                             "over PLAYER+OPPONENTS (pads the tail to a uniform width so a multi-protagonist "
+                             "shared policy has a homogeneous action space). An int sets it explicitly. "
+                             "Must be <= 7 (3-bit combo encoding).")
     parser.add_argument("--num_env_to_load", type=int, required=False, help="Number of envs to load", default=1)
     parser.add_argument("--env_batch_size", type=int, required=True, help="Environment back size", default=32)
     parser.add_argument("--num_perturbs", type=int, help="Number of perturbed policies to be created.", default=1)

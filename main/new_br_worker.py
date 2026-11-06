@@ -492,6 +492,21 @@ def _resolve_matchup_index_for_state(loaded_model, dedicated_state: str) -> int:
     )
 
 
+def _infer_combo_capacity(action_space):
+    """Recover the combo capacity a spar-family checkpoint was trained with (action_dim = 63 + capacity),
+    so the model-reconstruction env AND the exploiter env are built to that SAME width. A union/padded
+    main is 69-wide; a per-ego env would be 66/65 and fail to load (check_for_correct_spaces) / mis-shape
+    the shared 2-player action. Legacy checkpoints -> the ego's own count (identical width, a verified
+    no-op). None for non-MultiDiscrete / combo-disabled (nvec==63) spaces, which keep the legacy path."""
+    nvec = getattr(action_space, "nvec", None)
+    try:
+        if nvec is not None and len(nvec) == 1 and int(nvec[0]) > 63:
+            return int(nvec[0]) - 63
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
 def load_spar_model(
     game_args: dict,
     task_file_path: str,
@@ -540,7 +555,10 @@ def load_spar_model(
     # state n_envs times to match existing worker conventions.
     STATE = [state for state in uniques for _ in range(n_envs)]
     game_args = argparse.Namespace(**game_args)
-    
+    # Build the reconstruction env at the checkpoint's own action-space width (union/padded mains are
+    # 69-wide); otherwise cls.load's check_for_correct_spaces fails 69-vs-66. Legacy -> native, a no-op.
+    game_args._combo_capacity = _infer_combo_capacity(data.get("action_space"))
+
 
     # argument to STATE should be the master list of states, including repeats for repeated matchups.
     # we should always follow this convention -- when there is a discrepancy
@@ -1349,6 +1367,9 @@ def train_best_response(
     # env = YourStreetFighterEnv(opponent_policy=fixed_opponent)
     if is_spar_like == True:
         game_args = argparse.Namespace(**game_args)
+        # Exploiter env must share the exploited main's action-space width (both seats live in one shared
+        # space). Build at the loaded main's capacity -> matches union/padded (69) mains; no-op for legacy.
+        game_args._combo_capacity = _infer_combo_capacity(getattr(ftm, "action_space", None))
         # In dedicated mode, train BR in a subset environment (usually one
         # matchup replicated `n_envs` times). This isolates BR rollouts while
         # leaving the exploited CDS model topology untouched.

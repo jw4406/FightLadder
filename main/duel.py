@@ -57,14 +57,18 @@ _OBS_CFG = {"obs_type": "image", "ram_mask": "", "transform_action": False,
             "actionable_statuses": "512,514,520"}
 
 
-def env_args():
+def env_args(combo_capacity=None):
     """Namespace shaped for ippo.env_generator (no rendering, no combos, side='both').
 
     obs_type/ram_mask/transform_action come from _OBS_CFG so the env matches the
     checkpoint. ram_stack/ram_stride/num_step_frames are left to env_generator's
     getattr defaults (1/8/8), which match the current RAM arms.
+
+    combo_capacity pads the special-move action tail to a fixed width so the eval env MATCHES a
+    union/padded spar checkpoint (63 + capacity). None => legacy per-ego sizing. env_generator reads
+    it off `_combo_capacity`.
     """
-    return _ap.Namespace(
+    ns = _ap.Namespace(
         side="both",
         reset="round",
         render=False,
@@ -77,6 +81,59 @@ def env_args():
         dwell_frames=_OBS_CFG["dwell_frames"],
         actionable_statuses=_OBS_CFG["actionable_statuses"],
     )
+    ns._combo_capacity = combo_capacity
+    return ns
+
+
+def infer_combo_capacity(data):
+    """Recover the combo capacity a SPAR-family checkpoint was SAVED with, so the eval env is built to
+    the SAME action-space width (otherwise cls.load's check_for_correct_spaces fails: 69-wide union
+    head vs a 66/65-wide per-ego env). The saved action space is MultiDiscrete([63 + capacity]) on the
+    transform_action path. For a LEGACY per-ego checkpoint this returns the ego's own combo count, i.e.
+    the identical width -> a verified no-op (see test_combo_capacity). Returns None for non-transform
+    (MultiBinary) or combo-disabled (nvec==63) checkpoints, which keep the legacy path."""
+    sp = data.get("action_space") if isinstance(data, dict) else None
+    nvec = getattr(sp, "nvec", None)
+    try:
+        if nvec is not None and len(nvec) == 1 and int(nvec[0]) > 63:
+            return int(nvec[0]) - 63
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _league_action_width(agent_dict, head):
+    """num actions in a league head's (policy/policy_other) action_net, or None."""
+    sd = agent_dict.get(head)
+    if isinstance(sd, dict):
+        w = sd.get("action_net.weight")
+        if w is not None:
+            try:
+                return int(w.shape[0])
+            except Exception:
+                return None
+    return None
+
+
+def _pad_league_head(filtered, head, target):
+    """Zero-pad a filtered league head's action_net rows up to `target` width so a legacy per-char head
+    (e.g. ChunLi 65) loads into a wider padded shared env (e.g. Guile-ego 66). The pad rows get a large
+    negative bias so the padded (non-existent) combo slots are never sampled -> the head behaves exactly
+    as its native per-char policy. Mirrors the SPAR union-head capacity padding on the league side."""
+    if target is None:
+        return filtered
+    sd = filtered.get(head)
+    if not isinstance(sd, dict):
+        return filtered
+    sd = dict(sd)
+    w = sd.get("action_net.weight"); b = sd.get("action_net.bias")
+    if w is not None and w.shape[0] < target:
+        extra = target - w.shape[0]
+        sd["action_net.weight"] = torch.cat([w, torch.zeros((extra, w.shape[1]), dtype=w.dtype)], dim=0)
+        if b is not None:
+            sd["action_net.bias"] = torch.cat([b, torch.full((extra,), -1e4, dtype=b.dtype)], dim=0)
+    out = dict(filtered); out[head] = sd
+    return out
 
 
 def spar_class_for(model_type):
@@ -92,13 +149,14 @@ def load_spar_family(model_type, path, device):
     cls = spar_class_for(model_type)
     data, _, _ = load_from_zip_file(path, device="cpu")
     state_list = data["state_list"]
-    env = env_generator(env_args(), STATE=state_list)
+    combo_capacity = infer_combo_capacity(data)   # match a union/padded head's width; no-op for legacy
+    env = env_generator(env_args(combo_capacity), STATE=state_list)
     model = cls.load(path, env=env, num_perturbed=1, device=device)
     matchups = list(getattr(model, "matchups", []) or [])
     if not matchups:
         # Defensive: fall back to deriving from state_list if attribute missing.
         matchups = [state2matchup(s) for s in state_list]
-    return model, matchups
+    return model, matchups, combo_capacity
 
 
 class _LenientUnpickler(_pickle.Unpickler):
@@ -138,9 +196,10 @@ def load_league_agent_dict(path):
     return obj["kwargs"]["agent_dict"]
 
 
-def build_league_model(duel_state, device):
-    """Construct a fresh LeaguePPO with a single-env vec for inference."""
-    env = env_generator(env_args(), STATE=[duel_state])
+def build_league_model(duel_state, device, combo_capacity=None):
+    """Construct a fresh LeaguePPO with a single-env vec for inference. combo_capacity pads the env's
+    action width so cross-character league heads (ego vs a different-char adversary) share one space."""
+    env = env_generator(env_args(combo_capacity), STATE=[duel_state])
     return LeaguePPO(
         side="left",
         policy="CnnPolicy",
@@ -294,24 +353,44 @@ def main():
         )
 
     # ---- Load ego model & build ego action fn ----
+    ego_cap = adv_cap = None   # SPAR-family action-space capacity (None => legacy per-ego width)
     if same_file:
         # Single instance shared across both sides.
         if args.ego_model_type in SPAR_FAMILY:
-            ego_model, ego_matchups = load_spar_family(
+            ego_model, ego_matchups, ego_cap = load_spar_family(
                 args.ego_model_type, args.ego_model_file, device
             )
             adv_model = ego_model
             adv_matchups = ego_matchups
+            adv_cap = ego_cap
         else:  # league
             ego_model = build_league_model(duel_state, device)
             agent_dict = load_league_agent_dict(args.ego_model_file)
             ego_model.set_parameters(agent_dict, exact_match=False, device=device)
             adv_model = ego_model
             ego_matchups = adv_matchups = []
+    elif args.ego_model_type in LEAGUE_FAMILY and args.adv_model_type in LEAGUE_FAMILY:
+        # Both league/psro, independent files (the normal xtime case: ego=left_m, adv=right_m). These may
+        # be DIFFERENT characters with different per-char action widths (Guile 66 vs ChunLi 65). Build ONE
+        # LeaguePPO at the padded MAX width and zero-pad each head so both load into the shared action space.
+        ego_dict = load_league_agent_dict(args.ego_model_file)
+        adv_dict = load_league_agent_dict(args.adv_model_file)
+        ew = _league_action_width(ego_dict, "policy")
+        aw = _league_action_width(adv_dict, "policy_other")
+        widths = [w for w in (ew, aw) if w]
+        tgt = max(widths) if widths else None
+        ego_cap = adv_cap = (tgt - 63) if tgt else None
+        ego_model = build_league_model(duel_state, device, combo_capacity=ego_cap)
+        ego_model.set_parameters(_pad_league_head(filter_left_keys(ego_dict), "policy", tgt),
+                                 exact_match=False, device=device)
+        ego_model.set_parameters(_pad_league_head(filter_right_keys(adv_dict), "policy_other", tgt),
+                                 exact_match=False, device=device)
+        adv_model = ego_model
+        ego_matchups = adv_matchups = []
     else:
-        # Independent loads per side.
+        # Independent loads per side (SPAR ego and/or SPAR adv; or mixed SPAR<->league).
         if args.ego_model_type in SPAR_FAMILY:
-            ego_model, ego_matchups = load_spar_family(
+            ego_model, ego_matchups, ego_cap = load_spar_family(
                 args.ego_model_type, args.ego_model_file, device
             )
         else:
@@ -322,22 +401,15 @@ def main():
             ego_matchups = []
 
         if args.adv_model_type in SPAR_FAMILY:
-            adv_model, adv_matchups = load_spar_family(
+            adv_model, adv_matchups, adv_cap = load_spar_family(
                 args.adv_model_type, args.adv_model_file, device
             )
         else:
-            # If both sides are league, fold the adv weights into the ego LeaguePPO
-            # so we end up with one instance whose .policy is ego-trained-left and
-            # .policy_other is adv-trained-right (Q4(a)). Otherwise build standalone.
+            # ego is SPAR-family, adv is league: build a standalone league adversary.
             adv_dict = load_league_agent_dict(args.adv_model_file)
-            if args.ego_model_type in LEAGUE_FAMILY:
-                ego_model.set_parameters(filter_right_keys(adv_dict),
-                                         exact_match=False, device=device)
-                adv_model = ego_model
-            else:
-                adv_model = build_league_model(duel_state, device)
-                adv_model.set_parameters(filter_right_keys(adv_dict),
-                                         exact_match=False, device=device)
+            adv_model = build_league_model(duel_state, device)
+            adv_model.set_parameters(filter_right_keys(adv_dict),
+                                     exact_match=False, device=device)
             adv_matchups = []
 
     # ---- Resolve heads (SPAR family only) ----
@@ -357,7 +429,17 @@ def main():
         adv_act = make_league_action_fn(adv_model, "right", deterministic)
 
     # ---- Build the actual duel env (single, non-vec) ----
-    duel_env = env_generator(env_args(), STATE=[duel_state])
+    # The play env hosts BOTH seats in one shared action space, so it must match the loaded head width.
+    # SPAR-family checkpoints may be union/padded (63 + capacity); build at that capacity (legacy => the
+    # ego's own count, a no-op). Two SPAR sides with different capacities can't share one env.
+    if (args.ego_model_type in SPAR_FAMILY and args.adv_model_type in SPAR_FAMILY
+            and ego_cap is not None and adv_cap is not None and ego_cap != adv_cap):
+        raise ValueError(
+            f"ego action-space capacity ({ego_cap}) != adv capacity ({adv_cap}); a single shared duel "
+            f"env cannot host both. Cross-width duels are unsupported."
+        )
+    play_cap = ego_cap if args.ego_model_type in SPAR_FAMILY else adv_cap
+    duel_env = env_generator(env_args(play_cap), STATE=[duel_state])
 
     # ---- Run rounds ----
     print(

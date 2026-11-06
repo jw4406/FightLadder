@@ -66,7 +66,7 @@ class _RetroGymCompat(gym.Wrapper):
 
 class SFWrapper(gym.Wrapper):
 
-    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, trade_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reset_close_range=0.0, close_max_steps=40, reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1, sticky_prob=0.0, ego_char=None, left_char=None, right_char=None, charge_obs=False, charge_preserving_skip=False, cps_no_up=False):
+    def __init__(self, env, side, reset_type="round", init_level=1, rendering=False, num_stack=12, num_step_frames=8, state_dir=None, verbose=False, enable_combo=True, null_combo=False, transform_action=False, counterhit_kappa=0.0, trade_kappa=0.0, pressure_beta=0.0, pressure_range=0.0, attack_statuses=(), reset_close_range=0.0, close_max_steps=40, reward_scale=0.001, aggresive_coeff=1.0, decision_timing="off", actionable_statuses=(), max_skip_frames=90, dwell_frames=1, sticky_prob=0.0, ego_char=None, left_char=None, right_char=None, charge_obs=False, charge_preserving_skip=False, cps_no_up=False, combo_capacity=None):
         env = _RetroGymCompat(env)  # gymnasium (stable-retro) -> gym 0.21 contract
         super(SFWrapper, self).__init__(env)
         self.env = FrameStack(env, num_stack=num_stack)
@@ -208,7 +208,18 @@ class SFWrapper(gym.Wrapper):
             # charge-move releases (forward+punch), command normals, etc. -- plus n_combo scripted
             # shoto-motion shortcuts appended after the pairs. A single scalar per player is preserved
             # so the 2-player hstack assembly in algorithms.py stays unchanged.
-            n_dir, n_att, n_combo = len(DIRECTIONS_BUTTONS), len(ATTACKS_BUTTONS), len(self.sf_combos)
+            n_dir, n_att = len(DIRECTIONS_BUTTONS), len(ATTACKS_BUTTONS)
+            # combo_capacity PADS the special-move tail to a FIXED width so a shared policy / vec-env
+            # can mix ego chars whose native combo counts differ (Guile 3, ChunLi 2, Ryu 6). None keeps
+            # the legacy per-ego sizing -> byte-identical action space for every existing run. The combo
+            # index is a 3-bit field in the action_transformer (max 7 slots); a larger union needs the
+            # 4-bit rewrite, so capacity is capped at 7 here. Out-of-range combo ids already no-op in
+            # step(), so padding never changes decode for the ego or either seat.
+            if combo_capacity is not None:
+                assert len(self.sf_combos) <= combo_capacity <= 7, (
+                    f"combo_capacity={combo_capacity} must satisfy len(ego combos)={len(self.sf_combos)} "
+                    f"<= capacity <= 7 (3-bit combo field); ego_char={ego_char}")
+            n_combo = combo_capacity if combo_capacity is not None else len(self.sf_combos)
             self.action_space = MultiDiscrete([n_dir * n_att + n_combo]) if (enable_combo or null_combo) else MultiDiscrete([n_dir * n_att])
             def action_transformer(action):
                 players_action = []
